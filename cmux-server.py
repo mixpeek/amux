@@ -1650,7 +1650,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .bv-btn.active { background: rgba(88,166,255,0.15); color: var(--accent); }
   .bv-btn:active { background: rgba(88,166,255,0.1); }
   /* Session-grouped view */
-  .board-session-group { margin-bottom: 8px; }
+  .board-session-group { margin-bottom: 8px; min-width: 0; }
   .board-session-header {
     display: flex; align-items: center; gap: 8px; padding: 8px 10px;
     cursor: pointer; -webkit-tap-highlight-color: transparent;
@@ -1673,7 +1673,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .board-session-count.done { background: rgba(63,185,80,0.15); color: var(--green); }
   .board-session-items { padding: 0 4px 4px 20px; }
   .board-session-items .board-card { margin-bottom: 6px; }
-  .tag-group-body { padding: 0 0 4px 0; }
+  .tag-group-body { padding: 0 0 4px 0; min-width: 0; overflow: hidden; }
   .board-session-items .board-card .board-status-dot {
     display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; flex-shrink: 0;
   }
@@ -2586,7 +2586,7 @@ function render() {
     const model = flagModel || s.active_model || null;
     const shortModel = model ? model.replace(/^claude-/, '').replace(/-\d{8}$/, '') : null;
     return `
-    <div class="card ${isExp ? 'expanded' : ''}" data-session="${esc(s.name)}" onclick="toggle('${s.name}')">
+    <div class="card ${isExp ? 'expanded' : ''}" data-session="${esc(s.name)}" onclick="event.stopPropagation();toggle('${s.name}')">
       <div class="card-header" onclick="headerTap('${s.name}', event)" onmousedown="tileMouseDown(event,'${s.name}')">
         <div class="dot ${s.running ? 'running' : 'stopped'}"></div>
         <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${esc(s.name)}</div>
