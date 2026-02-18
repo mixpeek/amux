@@ -1879,6 +1879,7 @@ Context, motivation, or link to the original request.
     <div style="text-align:center;">
       <h3 style="margin:0 0 4px;">cmux</h3>
       <div style="color:var(--dim);font-size:0.8rem;">Claude Code Multiplexer</div>
+      <div style="color:var(--dim);font-size:0.7rem;font-family:monospace;margin-top:2px;"><script>document.write(location.host)</script></div>
       <div style="margin:8px 0 4px;font-size:0.95rem;font-weight:600;cursor:pointer;" onclick="forceUpdate()" title="Tap to force update">v0.5.0 &#x21BB;</div>
       <div id="update-status" style="color:var(--dim);font-size:0.75rem;min-height:1.2em;"></div>
     </div>
