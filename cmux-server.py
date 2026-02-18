@@ -3685,7 +3685,7 @@ function renderBoardFilters() {
     html += '<span class="board-filter-label">Tag:</span>';
     allTags.forEach(t => {
       const active = boardFilterTag === t;
-      html += '<button class="board-filter-chip' + (active ? ' active' : '') + '" onclick="toggleBoardTag(' + JSON.stringify(t) + ')">' + esc(t) + '</button>';
+      html += "<button class='board-filter-chip" + (active ? " active" : "") + "' onclick='toggleBoardTag(" + JSON.stringify(t) + ")'>" + esc(t) + "</button>";
     });
   }
   if (allSessions.length) {
@@ -3693,7 +3693,7 @@ function renderBoardFilters() {
     html += '<span class="board-filter-label">Session:</span>';
     allSessions.forEach(s => {
       const active = boardFilterSession === s;
-      html += '<button class="board-filter-chip' + (active ? ' active' : '') + '" onclick="toggleBoardSession(' + JSON.stringify(s) + ')">' + esc(s) + '</button>';
+      html += "<button class='board-filter-chip" + (active ? " active" : "") + "' onclick='toggleBoardSession(" + JSON.stringify(s) + ")'>" + esc(s) + "</button>";
     });
   }
   if (boardFilterTag || boardFilterSession) {
