@@ -558,6 +558,13 @@ def list_sessions() -> list:
         status = ""
         tinfo = tmux_info.get(tmux_name(name), {})
         last_activity = tinfo.get("activity", 0)
+        # For stopped sessions, fall back to log file mtime, then .env mtime
+        if not last_activity:
+            lp = _log_path(name)
+            try:
+                last_activity = int((lp if lp.exists() else f).stat().st_mtime)
+            except Exception:
+                pass
         session_created = tinfo.get("created", 0)
         pane_title = tinfo.get("pane_title", "")
         raw = ""
