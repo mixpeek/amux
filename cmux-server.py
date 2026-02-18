@@ -2871,6 +2871,37 @@ function closePeek() {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
 }
 
+// Swipe right to close peek
+(function() {
+  const el = document.getElementById('peek-overlay');
+  let sx = 0, sy = 0, tracking = false;
+  el.addEventListener('touchstart', e => {
+    const t = e.touches[0];
+    sx = t.clientX; sy = t.clientY; tracking = true;
+    el.style.transition = 'none';
+  }, {passive: true});
+  el.addEventListener('touchmove', e => {
+    if (!tracking) return;
+    const dx = e.touches[0].clientX - sx;
+    const dy = Math.abs(e.touches[0].clientY - sy);
+    if (dy > 30 && dx < 30) { tracking = false; el.style.transform = ''; el.style.transition = ''; return; }
+    if (dx > 10) el.style.transform = 'translateX(' + dx + 'px)';
+  }, {passive: true});
+  el.addEventListener('touchend', e => {
+    if (!tracking) { el.style.transition = ''; return; }
+    tracking = false;
+    const dx = e.changedTouches[0].clientX - sx;
+    el.style.transition = 'transform 0.25s cubic-bezier(.4,0,.2,1), opacity 0.25s, pointer-events 0s';
+    if (dx > 80) {
+      el.style.transform = 'translateX(100%)';
+      setTimeout(() => { closePeek(); el.style.transform = ''; el.style.transition = ''; }, 260);
+    } else {
+      el.style.transform = '';
+      setTimeout(() => { el.style.transition = ''; }, 260);
+    }
+  }, {passive: true});
+})();
+
 // Tailscale URL rewriting
 function rewriteLocalhostUrls(html) {
   if (!remoteHostname) return html;
