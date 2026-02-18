@@ -900,7 +900,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   /* Expanded panel */
   .panel { display: none; margin-top: 12px; }
   .card.expanded .panel { display: block; }
-  @media (min-width: 768px) { .card.expanded { grid-column: 1 / -1; } }
   .panel-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
   .btn {
     font-size: 0.85rem; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border);
