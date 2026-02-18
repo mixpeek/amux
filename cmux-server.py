@@ -3084,16 +3084,51 @@ def _watch_self(server):
 TLS_DIR = CC_HOME / "tls"
 
 
+def _get_tailscale_hostname() -> str:
+    """Get Tailscale MagicDNS hostname if available."""
+    for ts_bin in ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "tailscale"]:
+        try:
+            r = subprocess.run([ts_bin, "status", "--self", "--json"],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                import json as _json
+                data = _json.loads(r.stdout)
+                dns = data.get("Self", {}).get("DNSName", "")
+                return dns.rstrip(".")  # e.g. "desktop.tail5ce8f5.ts.net"
+        except Exception:
+            continue
+    return ""
+
+
 def _ensure_tls(lan_ip: str) -> tuple:
-    """Ensure TLS cert exists for localhost + LAN IP. Returns (cert, key) paths."""
+    """Ensure TLS cert exists. Tries Tailscale → mkcert → self-signed. Returns (cert, key, hostname)."""
+    TLS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 1. Try Tailscale cert (real Let's Encrypt, trusted everywhere, no CA install)
+    ts_hostname = _get_tailscale_hostname()
+    if ts_hostname:
+        ts_cert = TLS_DIR / f"{ts_hostname}.crt"
+        ts_key = TLS_DIR / f"{ts_hostname}.key"
+        if ts_cert.exists() and ts_key.exists():
+            return str(ts_cert), str(ts_key), ts_hostname
+        for ts_bin in ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "tailscale"]:
+            try:
+                print(f"\033[2m  Getting Tailscale cert for {ts_hostname}...\033[0m")
+                r = subprocess.run(
+                    [ts_bin, "cert", "--cert-file", str(ts_cert), "--key-file", str(ts_key), ts_hostname],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if r.returncode == 0 and ts_cert.exists():
+                    return str(ts_cert), str(ts_key), ts_hostname
+            except Exception:
+                continue
+
+    # 2. Try mkcert (locally-trusted, no browser warnings on same machine)
     cert_file = TLS_DIR / "cert.pem"
     key_file = TLS_DIR / "key.pem"
     if cert_file.exists() and key_file.exists():
-        return str(cert_file), str(key_file)
+        return str(cert_file), str(key_file), ""
 
-    TLS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Prefer mkcert (locally-trusted, no browser warnings)
     if subprocess.run(["which", "mkcert"], capture_output=True).returncode == 0:
         print(f"\033[2m  Generating trusted TLS cert with mkcert...\033[0m")
         subprocess.run(
@@ -3101,9 +3136,9 @@ def _ensure_tls(lan_ip: str) -> tuple:
              "localhost", "127.0.0.1", lan_ip],
             capture_output=True, check=True,
         )
-        return str(cert_file), str(key_file)
+        return str(cert_file), str(key_file), ""
 
-    # Fallback: self-signed via openssl
+    # 3. Fallback: self-signed via openssl
     print(f"\033[2m  Generating self-signed TLS cert...\033[0m")
     subprocess.run(
         ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
@@ -3112,7 +3147,7 @@ def _ensure_tls(lan_ip: str) -> tuple:
          "-addext", f"subjectAltName=DNS:localhost,IP:127.0.0.1,IP:{lan_ip}"],
         capture_output=True, check=True,
     )
-    return str(cert_file), str(key_file)
+    return str(cert_file), str(key_file), ""
 
 
 # ── Main ──
@@ -3125,9 +3160,10 @@ def main():
     server = ThreadingHTTPServer(("0.0.0.0", port), CCHandler)
 
     scheme = "http"
+    ts_hostname = ""
     if not no_tls:
         try:
-            cert, key = _ensure_tls(lan_ip)
+            cert, key, ts_hostname = _ensure_tls(lan_ip)
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(cert, key)
             server.socket = ctx.wrap_socket(server.socket, server_side=True)
@@ -3137,10 +3173,18 @@ def main():
 
     print(f"\033[1m\033[34mcmux\033[0m web dashboard running")
     print(f"  Local:   {scheme}://localhost:{port}")
+    if ts_hostname:
+        print(f"  Tailscale: {scheme}://{ts_hostname}:{port}")
     print(f"  Network: {scheme}://{lan_ip}:{port}")
-    print(f"\n  Open on your phone → {scheme}://{lan_ip}:{port}")
+    if ts_hostname:
+        print(f"\n  Open on your phone → \033[1m{scheme}://{ts_hostname}:{port}\033[0m")
+    else:
+        print(f"\n  Open on your phone → {scheme}://{lan_ip}:{port}")
     if scheme == "https":
-        print(f"\033[32m  ✓ HTTPS enabled — service worker & offline mode will work\033[0m")
+        if ts_hostname:
+            print(f"\033[32m  ✓ Tailscale HTTPS — trusted cert, no setup needed on phone\033[0m")
+        else:
+            print(f"\033[32m  ✓ HTTPS enabled — service worker & offline mode will work\033[0m")
     else:
         print(f"\033[33m  ⚠ HTTP only — offline mode requires HTTPS on non-localhost\033[0m")
     print(f"\033[2m  Auto-reload active — editing cmux-server.py will restart\033[0m")
