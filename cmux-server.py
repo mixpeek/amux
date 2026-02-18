@@ -858,14 +858,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .toast.visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
 
-  /* Connection status indicator — dot only */
+  /* Connection status indicator — dot + short label */
   .conn-status {
-    font-size: 0.6rem; width: 10px; height: 10px; border-radius: 50%;
+    display: flex; align-items: center; gap: 5px;
+    font-size: 0.7rem; font-weight: 500; white-space: nowrap;
     cursor: pointer; -webkit-tap-highlight-color: transparent;
+    flex-shrink: 0; transition: color 0.2s;
+  }
+  .conn-status::before {
+    content: ''; width: 8px; height: 8px; border-radius: 50%;
     flex-shrink: 0; transition: background 0.2s;
   }
-  .conn-status.online { background: #4ade80; }
-  .conn-status.offline { background: #f87171; }
+  .conn-status.online { color: var(--dim); }
+  .conn-status.online::before { background: #4ade80; }
+  .conn-status.offline { color: #f87171; }
+  .conn-status.offline::before { background: #f87171; }
 
   /* Queue modal */
   .queue-overlay {
@@ -927,9 +934,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <body>
 
 <div class="header-row">
-  <h1>cmux</h1>
   <div style="display:flex;gap:8px;align-items:center;">
-    <span id="conn-status" class="conn-status online" onclick="showQueueModal()" title="Connected"></span>
+    <h1 style="margin:0;">cmux</h1>
+    <span id="conn-status" class="conn-status online" onclick="showQueueModal()"></span>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;">
     <div class="search-wrap" id="search-wrap">
       <input class="search-input" id="search-input" type="text" placeholder="Search..." autocomplete="off" autocorrect="off"
         oninput="searchQuery=this.value;document.getElementById('search-wrap').classList.toggle('has-value',!!this.value);render()">
@@ -1157,10 +1166,10 @@ function updateConnectionStatus() {
   if (!el) return;
   if (online) {
     el.className = 'conn-status online';
-    el.title = 'Connected';
+    el.textContent = '';
   } else {
     el.className = 'conn-status offline';
-    el.title = 'Offline' + (offlineQueue.length ? ' (' + offlineQueue.length + ' queued)' : '');
+    el.textContent = offlineQueue.length ? offlineQueue.length + ' queued' : 'offline';
   }
   // Update offline banner
   const banner = document.getElementById('offline-banner');
