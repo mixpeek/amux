@@ -1673,6 +1673,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .board-session-count.done { background: rgba(63,185,80,0.15); color: var(--green); }
   .board-session-items { padding: 0 4px 4px 20px; }
   .board-session-items .board-card { margin-bottom: 6px; }
+  .tag-group-body { padding: 0 0 4px 0; }
   .board-session-items .board-card .board-status-dot {
     display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; flex-shrink: 0;
   }
@@ -2576,7 +2577,7 @@ function render() {
   const focusedId = document.activeElement && document.activeElement.classList.contains('send-input')
     ? document.activeElement.id : null;
 
-  el.innerHTML = filtered.map(s => {
+  function _renderSessionCard(s) {
     const isExp = expanded === s.name;
     const flags = s.flags || '';
     const isYolo = flags.includes('--dangerously-skip-permissions');
@@ -2656,10 +2657,69 @@ function render() {
         </div>` : ''}
       </div>
     </div>`;
-  }).join('');
+  }
 
-  // Prepend drafts above server sessions
-  el.innerHTML = draftCards + el.innerHTML;
+  // Group by tag if sessions have tags and no filter is active
+  const anyTagged = filtered.some(s => s.tags && s.tags.length);
+  if (anyTagged && !activeTag && !q) {
+    const tagGroups = {};
+    const untagged = [];
+    filtered.forEach(s => {
+      if (s.tags && s.tags.length) {
+        s.tags.forEach(t => {
+          if (!tagGroups[t]) tagGroups[t] = [];
+          tagGroups[t].push(s);
+        });
+      } else {
+        untagged.push(s);
+      }
+    });
+    const sortedTags = Object.keys(tagGroups).sort((a, b) => tagGroups[b].length - tagGroups[a].length);
+    // Default: largest group open, rest closed
+    const largestTag = sortedTags[0];
+    sortedTags.forEach(t => {
+      if (_tagGroupCollapsed[t] === undefined) _tagGroupCollapsed[t] = (t !== largestTag);
+    });
+    if (untagged.length && _tagGroupCollapsed['__untagged__'] === undefined) _tagGroupCollapsed['__untagged__'] = true;
+
+    let groupHtml = '';
+    sortedTags.forEach(tag => {
+      const items = tagGroups[tag];
+      const col = _tagGroupCollapsed[tag];
+      const runC = items.filter(s => s.running).length;
+      const stopC = items.length - runC;
+      groupHtml += `<div class="board-session-group">
+        <div class="board-session-header" onclick="toggleTagGroup('${esc(tag)}')">
+          <span class="board-session-chevron${col ? '' : ' open'}">&#x25B6;</span>
+          <span class="board-session-name">${esc(tag)}</span>
+          <div class="board-session-counts">
+            ${runC ? `<span class="board-session-count doing">${runC} running</span>` : ''}
+            ${stopC ? `<span class="board-session-count todo">${stopC} stopped</span>` : ''}
+          </div>
+        </div>
+        ${!col ? `<div class="tag-group-body">${items.map(_renderSessionCard).join('')}</div>` : ''}
+      </div>`;
+    });
+    if (untagged.length) {
+      const col = _tagGroupCollapsed['__untagged__'];
+      const runC = untagged.filter(s => s.running).length;
+      const stopC = untagged.length - runC;
+      groupHtml += `<div class="board-session-group">
+        <div class="board-session-header" onclick="toggleTagGroup('__untagged__')">
+          <span class="board-session-chevron${col ? '' : ' open'}">&#x25B6;</span>
+          <span class="board-session-name" style="color:var(--dim)">Untagged</span>
+          <div class="board-session-counts">
+            ${runC ? `<span class="board-session-count doing">${runC} running</span>` : ''}
+            ${stopC ? `<span class="board-session-count todo">${stopC} stopped</span>` : ''}
+          </div>
+        </div>
+        ${!col ? `<div class="tag-group-body">${untagged.map(_renderSessionCard).join('')}</div>` : ''}
+      </div>`;
+    }
+    el.innerHTML = draftCards + groupHtml;
+  } else {
+    el.innerHTML = draftCards + filtered.map(_renderSessionCard).join('');
+  }
 
   // Restore input values and focus after re-rendering
   for (const [id, val] of Object.entries(savedInputs)) {
@@ -3595,6 +3655,11 @@ function toggleTagFilter(tag) {
   activeTag = activeTag === tag ? '' : tag;
   render();
 }
+function toggleTagGroup(tag) {
+  _tagGroupCollapsed[tag] = !_tagGroupCollapsed[tag];
+  localStorage.setItem('cmux_tag_collapsed', JSON.stringify(_tagGroupCollapsed));
+  render();
+}
 function clearSearch() {
   const inp = document.getElementById('search-input');
   inp.value = '';
@@ -4167,6 +4232,7 @@ let boardSearchQuery = '';
 let _boardDragId = null;
 let boardViewMode = localStorage.getItem('cmux_board_view') || 'session';
 let _sessionGroupCollapsed = JSON.parse(localStorage.getItem('cmux_board_collapsed') || '{}');
+let _tagGroupCollapsed = JSON.parse(localStorage.getItem('cmux_tag_collapsed') || '{}');
 
 function switchView(view) {
   activeView = view;
