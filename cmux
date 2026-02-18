@@ -194,6 +194,8 @@ cmd_start() {
   fi
 
   local dir="${CC_DIR:-$HOME}"
+  # Expand ~ in dir path
+  dir="${dir/#\~/$HOME}"
   [[ -d "$dir" ]] || die "directory not found: $dir"
 
   # Build claude command
@@ -212,7 +214,8 @@ cmd_start() {
   fi
 
   # Create tmux session and attach
-  tmux new-session -d -s "$tname" -n "$name" -c "$dir" "$cmd"
+  # Explicit cd to work dir in case shell profile overrides CWD
+  tmux new-session -d -s "$tname" -n "$name" -c "$dir" "cd $(printf '%q' "$dir"); $cmd"
   # Lock the window name so Claude can't overwrite it with escape sequences
   tmux set-option -t "$tname" allow-rename off 2>/dev/null
   tmux set-window-option -t "$tname" automatic-rename off 2>/dev/null

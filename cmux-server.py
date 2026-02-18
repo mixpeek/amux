@@ -3772,7 +3772,7 @@ function renderBoard() {
     cols[st].forEach(item => {
       const tags = item.tags || [];
       const firstLine = (item.desc || '').split('\n')[0].slice(0, 80);
-      html += '<div class="board-card" data-id="' + item.id + '" draggable="true" ondragstart="boardDragStart(event,\'' + item.id + '\')" ondragend="boardDragEnd()" onclick="openBoardDetail(\'' + item.id + '\')">';
+      html += '<div class="board-card" data-id="' + item.id + '" draggable="true" ondragstart="boardDragStart(event,\'' + item.id + '\')" ondragend="boardDragEnd()" onclick="if(event.target.closest(\'.board-card-tag[data-tag]\')){var t=event.target.closest(\'.board-card-tag[data-tag]\').dataset.tag;event.stopPropagation();toggleBoardTag(t);return}openBoardDetail(\'' + item.id + '\')">';
       if (item.key) html += '<div class="board-card-key">' + esc(item.key) + '</div>';
       html += '<div class="board-card-title">' + esc(item.title) + '</div>';
       if (firstLine) html += '<div class="board-card-desc">' + esc(firstLine) + ((item.desc || '').length > 80 ? '…' : '') + '</div>';
