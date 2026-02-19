@@ -374,23 +374,41 @@ if _legacy_board.exists() and not _BOARD_FILE.exists():
     _shutil.move(str(_legacy_board), str(_BOARD_FILE))
 
 
-def _load_board() -> list:
+_DEFAULT_STATUSES = [
+    {"id": "todo", "label": "To Do"},
+    {"id": "doing", "label": "In Progress"},
+    {"id": "done", "label": "Done"},
+]
+
+
+def _load_board_raw() -> dict:
     if _BOARD_FILE.exists():
         try:
-            return json.loads(_BOARD_FILE.read_text()).get("items", [])
+            return json.loads(_BOARD_FILE.read_text())
         except Exception:
             pass
-    return []
+    return {}
+
+
+def _load_board() -> list:
+    return _load_board_raw().get("items", [])
+
+
+def _load_board_statuses() -> list:
+    return _load_board_raw().get("statuses", list(_DEFAULT_STATUSES))
 
 
 def _save_board(items: list):
-    counters = {}
-    if _BOARD_FILE.exists():
-        try:
-            counters = json.loads(_BOARD_FILE.read_text()).get("counters", {})
-        except Exception:
-            pass
-    _BOARD_FILE.write_text(json.dumps({"items": items, "counters": counters}))
+    raw = _load_board_raw()
+    raw["items"] = items
+    raw.setdefault("counters", {})
+    _BOARD_FILE.write_text(json.dumps(raw))
+
+
+def _save_board_statuses(statuses: list):
+    raw = _load_board_raw()
+    raw["statuses"] = statuses
+    _BOARD_FILE.write_text(json.dumps(raw))
 
 
 def get_daily_token_stats() -> dict:
@@ -794,6 +812,10 @@ def _session_actual_cwd(name: str) -> str | None:
     return None
 
 
+_GLOBAL_MEM_FILE = CC_MEMORY / "_global.md"
+_MEM_MARKER = "<!-- amux:session-memory -->"
+
+
 def _session_mem_file(name: str) -> Path:
     """Return the per-session MEMORY.md file stored in ~/.amux/memory/.
 
@@ -849,36 +871,72 @@ def _migrate_memory_files():
 _migrate_memory_files()
 
 
-def _ensure_memory(name: str, work_dir: str):
-    """Ensure a per-session memory file exists and is symlinked into Claude's project path.
+def _compose_memory(global_content: str, session_content: str) -> str:
+    """Compose global + session memory into a single MEMORY.md for Claude."""
+    parts = []
+    if global_content.strip():
+        parts.append(global_content.strip())
+    parts.append(_MEM_MARKER)
+    if session_content.strip():
+        parts.append(session_content.strip())
+    return "\n\n".join(parts) + "\n"
 
-    Memory is keyed by session name (not project dir) so each session always has
-    its own independent memory regardless of whether sessions share a working dir.
-    """
-    mem_file = CC_MEMORY / f"{name}.md"
+
+def _capture_claude_memory_changes(name: str, work_dir: str):
+    """Capture changes Claude made to MEMORY.md during the previous session."""
     pname = _project_name(work_dir)
+    claude_mem_file = CLAUDE_HOME / "projects" / pname / "memory" / "MEMORY.md"
+    session_file = CC_MEMORY / f"{name}.md"
+    if not claude_mem_file.exists() or claude_mem_file.is_symlink():
+        return
+    try:
+        content = claude_mem_file.read_text(errors="replace")
+        if _MEM_MARKER in content:
+            session_part = content.split(_MEM_MARKER, 1)[1].strip()
+        else:
+            session_part = content.strip()
+        if session_part:
+            stored = session_file.read_text(errors="replace").strip() if session_file.exists() else ""
+            if session_part != stored:
+                session_file.write_text(session_part + "\n")
+    except Exception:
+        pass
 
-    if not mem_file.exists():
-        mem_file.write_text("")
 
-    # Create/repair symlink in Claude's project memory dir so Claude picks up this session's memory
+def _write_claude_memory(name: str, work_dir: str):
+    """Write composed (global + session) memory to Claude's project memory dir."""
+    pname = _project_name(work_dir)
+    session_file = CC_MEMORY / f"{name}.md"
+    global_content = _GLOBAL_MEM_FILE.read_text(errors="replace") if _GLOBAL_MEM_FILE.exists() else ""
+    session_content = session_file.read_text(errors="replace") if session_file.exists() else ""
+    composed = _compose_memory(global_content, session_content)
     claude_mem_dir = CLAUDE_HOME / "projects" / pname / "memory"
     claude_mem_file = claude_mem_dir / "MEMORY.md"
     try:
         claude_mem_dir.mkdir(parents=True, exist_ok=True)
-        if claude_mem_file.is_symlink() and claude_mem_file.resolve() == mem_file.resolve():
-            return
-        if claude_mem_file.exists() and not claude_mem_file.is_symlink():
-            existing = claude_mem_file.read_text(errors="replace").strip()
-            current = mem_file.read_text(errors="replace").strip()
-            if existing and existing not in current:
-                mem_file.write_text((current + "\n\n" + existing).strip() + "\n")
+        if claude_mem_file.is_symlink():
             claude_mem_file.unlink()
-        elif claude_mem_file.is_symlink():
-            claude_mem_file.unlink()
-        claude_mem_file.symlink_to(mem_file)
+        claude_mem_file.write_text(composed)
     except Exception:
         pass
+
+
+def _ensure_memory(name: str, work_dir: str):
+    """Ensure per-session memory file exists and write composed memory for Claude.
+
+    Memory is keyed by session name (not project dir). Global memory from
+    _global.md is composed above a marker so each session sees both.
+    """
+    mem_file = CC_MEMORY / f"{name}.md"
+
+    _capture_claude_memory_changes(name, work_dir)
+
+    if not mem_file.exists():
+        mem_file.write_text("")
+    if not _GLOBAL_MEM_FILE.exists():
+        _GLOBAL_MEM_FILE.write_text("")
+
+    _write_claude_memory(name, work_dir)
 
 
 def start_session(name: str, extra_flags: str = "") -> tuple[bool, str]:
@@ -1882,6 +1940,28 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .board-sortable-ghost { opacity: 0.25; background: rgba(88,166,255,0.15) !important; border-color: var(--accent) !important; }
   .board-sortable-chosen { box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 10; }
   .board-sortable-drag { opacity: 0; }
+  .col-del-btn {
+    background: none; border: none; color: var(--dim); cursor: pointer; font-size: 0.75rem;
+    padding: 0 2px; line-height: 1; opacity: 0.5; transition: opacity 0.15s, color 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .col-del-btn:hover, .col-del-btn:active { opacity: 1; color: var(--red); }
+  .board-add-col-btn {
+    flex-shrink: 0; align-self: flex-start; min-width: 120px; padding: 10px 14px;
+    font-size: 0.8rem; font-weight: 500; border: 1px dashed rgba(255,255,255,0.1);
+    border-radius: 10px; background: rgba(255,255,255,0.01); color: var(--dim);
+    cursor: pointer; transition: border-color 0.15s, color 0.15s; white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .board-add-col-btn:active { border-color: var(--accent); color: var(--accent); }
+  .board-col-new { min-width: 180px; max-width: 220px; }
+  .new-status-input {
+    width: 100%; box-sizing: border-box; background: var(--input-bg, rgba(255,255,255,0.05));
+    border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+    font-size: 0.85rem; padding: 6px 8px; outline: none; font-family: inherit;
+    transition: border-color 0.15s;
+  }
+  .new-status-input:focus { border-color: var(--accent); }
   .board-filters { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 0 8px; align-items: center; }
   .board-filter-label { font-size: 0.68rem; color: var(--dim); white-space: nowrap; }
   .board-filter-chip {
@@ -4801,10 +4881,12 @@ document.addEventListener('DOMContentLoaded', function() {
 // ═══════ BOARD ═══════
 let activeView = 'sessions';
 let boardItems = [];
+let boardStatuses = [{id:'todo',label:'To Do'},{id:'doing',label:'In Progress'},{id:'done',label:'Done'}];
 let boardTimer = null;
 let boardEditId = null;
 let boardEditStatus = 'todo';
 let lastBoardJSON = '';
+let lastStatusesJSON = '';
 let boardFilterTag = null;
 let boardFilterSession = null;
 let boardSearchQuery = '';
@@ -4812,6 +4894,26 @@ let _boardDragId = null;
 let boardViewMode = localStorage.getItem('amux_board_view') || 'session';
 let _sessionGroupCollapsed = JSON.parse(localStorage.getItem('amux_board_collapsed') || '{}');
 let _tagGroupCollapsed = JSON.parse(localStorage.getItem('amux_tag_collapsed') || '{}');
+
+const _BUILT_IN_STATUS_STYLE = {
+  'todo':  {bg:'rgba(139,148,158,0.12)',color:'var(--dim)',border:'rgba(139,148,158,0.3)',dot:'var(--dim)'},
+  'doing': {bg:'rgba(210,153,34,0.15)',color:'var(--yellow)',border:'rgba(210,153,34,0.4)',dot:'var(--yellow)'},
+  'done':  {bg:'rgba(63,185,80,0.15)',color:'var(--green)',border:'rgba(63,185,80,0.4)',dot:'var(--green)'},
+};
+const _CUSTOM_STATUS_PALETTE = [
+  {bg:'rgba(88,166,255,0.15)',color:'var(--accent)',border:'rgba(88,166,255,0.4)',dot:'var(--accent)'},
+  {bg:'rgba(188,140,255,0.15)',color:'#bc8cff',border:'rgba(188,140,255,0.4)',dot:'#bc8cff'},
+  {bg:'rgba(255,140,80,0.15)',color:'#ff8c50',border:'rgba(255,140,80,0.4)',dot:'#ff8c50'},
+  {bg:'rgba(248,81,73,0.15)',color:'var(--red)',border:'rgba(248,81,73,0.4)',dot:'var(--red)'},
+  {bg:'rgba(57,210,192,0.15)',color:'var(--cyan)',border:'rgba(57,210,192,0.4)',dot:'var(--cyan)'},
+  {bg:'rgba(255,100,180,0.15)',color:'#ff64b4',border:'rgba(255,100,180,0.4)',dot:'#ff64b4'},
+];
+function statusStyle(id) {
+  if (_BUILT_IN_STATUS_STYLE[id]) return _BUILT_IN_STATUS_STYLE[id];
+  const customs = boardStatuses.filter(s => !_BUILT_IN_STATUS_STYLE[s.id]);
+  const idx = customs.findIndex(s => s.id === id);
+  return _CUSTOM_STATUS_PALETTE[Math.max(0, idx) % _CUSTOM_STATUS_PALETTE.length];
+}
 
 function switchView(view) {
   activeView = view;
@@ -4831,12 +4933,21 @@ function switchView(view) {
 
 async function fetchBoard() {
   try {
-    const r = await fetch(API + '/api/board');
+    const [r, rs] = await Promise.all([
+      fetch(API + '/api/board'),
+      fetch(API + '/api/board/statuses'),
+    ]);
     const data = await r.json();
+    const statusData = await rs.json();
     consecutiveFailures = 0;
     if (!online) setOnline(true);
+    const sj = JSON.stringify(statusData);
+    if (sj !== lastStatusesJSON) {
+      lastStatusesJSON = sj;
+      boardStatuses = statusData;
+    }
     const j = JSON.stringify(data);
-    if (j !== lastBoardJSON) {
+    if (j !== lastBoardJSON || sj !== lastStatusesJSON) {
       lastBoardJSON = j;
       boardItems = data;
       localStorage.setItem('amux_board_cache', j);
@@ -4993,7 +5104,7 @@ function _renderBoardCard(item) {
   let h = '<div class="board-card" data-id="' + item.id + '" onclick="openBoardDetail(\'' + item.id + '\')">';
   if (item.key) h += '<div class="board-card-key">' + esc(item.key) + '</div>';
   h += '<div class="board-card-title">';
-  if (boardViewMode === 'session') h += '<span class="board-status-dot ' + (item.status || 'todo') + '"></span>';
+  if (boardViewMode === 'session') { const _st = item.status || 'todo'; h += '<span class="board-status-dot" style="background:' + statusStyle(_st).dot + '"></span>'; }
   h += esc(item.title) + '</div>';
   if (firstLine) h += '<div class="board-card-desc">' + esc(firstLine) + ((item.desc || '').length > 80 ? '\u2026' : '') + '</div>';
   h += '<div class="board-card-footer">';
@@ -5024,19 +5135,21 @@ function _renderBoardBySession(visible, container) {
   sessionNames.forEach(function(name) {
     const items = name ? groups[name] : noSession;
     const collapsed = _sessionGroupCollapsed[name || '__none__'];
-    const todoC = items.filter(function(i) { return i.status === 'todo'; }).length;
-    const doingC = items.filter(function(i) { return i.status === 'doing'; }).length;
-    const doneC = items.filter(function(i) { return i.status === 'done'; }).length;
     const groupKey = name || '__none__';
+    const statusCounts = {};
+    items.forEach(function(i) { const s = i.status || 'todo'; statusCounts[s] = (statusCounts[s] || 0) + 1; });
 
     html += '<div class="board-session-group">';
     html += '<div class="board-session-header" onclick="toggleSessionGroup(\'' + esc(groupKey) + '\')">';
     html += '<span class="board-session-chevron' + (collapsed ? '' : ' open') + '">\u25B6</span>';
     html += '<span class="board-session-name">' + (name ? esc(name) : 'No session') + '</span>';
     html += '<div class="board-session-counts">';
-    if (todoC) html += '<span class="board-session-count todo">' + todoC + ' todo</span>';
-    if (doingC) html += '<span class="board-session-count doing">' + doingC + ' active</span>';
-    if (doneC) html += '<span class="board-session-count done">' + doneC + ' done</span>';
+    boardStatuses.forEach(function(stObj) {
+      const c = statusCounts[stObj.id] || 0;
+      if (!c) return;
+      const sty = statusStyle(stObj.id);
+      html += '<span class="board-session-count" style="background:' + sty.bg + ';color:' + sty.color + '">' + c + ' ' + esc(stObj.label.toLowerCase()) + '</span>';
+    });
     html += '</div></div>';
     if (!collapsed) {
       html += '<div class="board-session-items">';
@@ -5086,13 +5199,13 @@ function renderBoard() {
   container.classList.add('board-columns');
   container.classList.remove('board-columns-list');
 
-  const cols = { todo: [], doing: [], done: [] };
+  const cols = {};
+  boardStatuses.forEach(s => { cols[s.id] = []; });
   visible.forEach(item => {
     const s = item.status || 'todo';
-    if (cols[s]) cols[s].push(item);
+    if (cols[s] !== undefined) cols[s].push(item);
+    else { cols['todo'] = cols['todo'] || []; cols['todo'].push(item); }
   });
-  const labels = { todo: 'To Do', doing: 'In Progress', done: 'Done' };
-  const statuses = ['todo', 'doing', 'done'];
 
   // FLIP step 1: snapshot current card positions
   const oldRects = {};
@@ -5104,22 +5217,33 @@ function renderBoard() {
     oldRects[id] = { top: r.top, left: r.left };
   });
 
+  const builtIn = new Set(['todo','doing','done']);
   let html = '';
-  statuses.forEach(st => {
+  boardStatuses.forEach(stObj => {
+    const st = stObj.id;
+    const stCol = cols[st] || [];
+    const sty = statusStyle(st);
+    const isBuiltIn = builtIn.has(st);
     html += '<div class="board-col" data-col="' + st + '">';
-    html += '<div class="board-col-header"><span>' + labels[st] + '</span>';
-    html += '<span class="col-count" data-col="' + st + '">' + cols[st].length + '</span></div>';
-    if (cols[st].length === 0) {
-      const hints = { todo: 'Nothing here yet', doing: 'Nothing in progress', done: 'Nothing done yet' };
-      html += '<div class="board-empty">' + hints[st] + '</div>';
+    html += '<div class="board-col-header">';
+    html += '<span style="color:' + sty.color + '">' + esc(stObj.label) + '</span>';
+    html += '<span style="display:flex;align-items:center;gap:6px;">';
+    html += '<span class="col-count" data-col="' + st + '">' + stCol.length + '</span>';
+    if (!isBuiltIn) {
+      html += '<button class="col-del-btn" onclick="event.stopPropagation();deleteBoardStatus(\'' + st + '\')" title="Delete column">&#x2715;</button>';
     }
-    cols[st].forEach(item => { html += _renderBoardCard(item); });
-    if (st === 'done' && cols[st].length > 0) {
+    html += '</span></div>';
+    if (stCol.length === 0) {
+      html += '<div class="board-empty">Nothing here</div>';
+    }
+    stCol.forEach(item => { html += _renderBoardCard(item); });
+    if (st === 'done' && stCol.length > 0) {
       html += '<button class="board-add-btn" style="color:var(--red);border-color:rgba(248,81,73,0.2);" onclick="clearDone()">Clear done</button>';
     }
     html += '<button class="board-add-btn" onclick="openBoardAdd(\'' + st + '\')">+ Add</button>';
     html += '</div>';
   });
+  html += '<button class="board-add-col-btn" onclick="addBoardStatus()">+ Add column</button>';
   container.innerHTML = html;
 
   // Init Sortable.js on each column for touch-friendly cross-column drag
@@ -5181,7 +5305,7 @@ function renderBoard() {
       el.addEventListener('animationend', () => el.classList.remove('bump'), { once: true });
     }
   });
-  statuses.forEach(st => { _prevCardRects[st] = cols[st].length; });
+  boardStatuses.forEach(stObj => { _prevCardRects[stObj.id] = (cols[stObj.id] || []).length; });
 }
 
 // Event delegation for board tag + session clicks (cards + detail)
@@ -5215,7 +5339,9 @@ function openBoardAdd(status) {
   boardEditStatus = status;
   document.getElementById('be-title').value = '';
   document.getElementById('be-desc').value = '';
-  document.getElementById('be-status').value = status;
+  const sel = document.getElementById('be-status');
+  sel.innerHTML = boardStatuses.map(s => '<option value="' + s.id + '">' + esc(s.label) + '</option>').join('');
+  sel.value = status;
   _populateSessionSelect('be-session-add', '');
   document.getElementById('board-edit-overlay').classList.add('active');
   document.getElementById('be-title').focus();
@@ -5294,10 +5420,12 @@ function boardDetailTab(tab) {
 }
 
 function _renderDetailStatusBtns() {
-  const statuses = [{v:'todo',l:'To Do'},{v:'doing',l:'In Progress'},{v:'done',l:'Done'}];
-  document.getElementById('bd-status-row').innerHTML = statuses.map(s =>
-    '<button class="board-detail-status-btn' + (boardDetailStatus === s.v ? ' active-' + s.v : '') + '" onclick="boardDetailSetStatus(\'' + s.v + '\')">' + s.l + '</button>'
-  ).join('');
+  document.getElementById('bd-status-row').innerHTML = boardStatuses.map(s => {
+    const sty = statusStyle(s.id);
+    const isActive = boardDetailStatus === s.id;
+    const activeStyle = isActive ? 'background:' + sty.bg + ';color:' + sty.color + ';border-color:' + sty.border : '';
+    return '<button class="board-detail-status-btn" style="' + activeStyle + '" onclick="boardDetailSetStatus(\'' + s.id + '\')">' + esc(s.label) + '</button>';
+  }).join('');
 }
 
 function boardDetailSetStatus(st) {
@@ -5460,6 +5588,66 @@ async function clearDone() {
   saveBoardCache();
   renderBoard();
   await apiCall(API + '/api/board/clear-done', { method: 'POST' });
+}
+
+function addBoardStatus() {
+  const container = document.getElementById('board-columns');
+  const existing = container.querySelector('.board-col-new');
+  if (existing) { existing.querySelector('.new-status-input').focus(); return; }
+  const div = document.createElement('div');
+  div.className = 'board-col board-col-new';
+  div.innerHTML = '<div style="padding:4px;">' +
+    '<input id="new-status-input" class="new-status-input" type="text" placeholder="Column name..." maxlength="30"' +
+    ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();saveNewBoardStatus();}if(event.key===\'Escape\')cancelNewBoardStatus();" />' +
+    '<div style="display:flex;gap:4px;margin-top:6px;">' +
+    '<button class="btn" style="flex:1;font-size:0.78rem;" onclick="saveNewBoardStatus()">Add</button>' +
+    '<button class="btn" style="font-size:0.78rem;" onclick="cancelNewBoardStatus()">&#x2715;</button>' +
+    '</div></div>';
+  // Insert before the "+ Add column" button (last child is the button)
+  const addColBtn = container.querySelector('.board-add-col-btn');
+  if (addColBtn) container.insertBefore(div, addColBtn);
+  else container.appendChild(div);
+  div.querySelector('.new-status-input').focus();
+}
+
+async function saveNewBoardStatus() {
+  const inp = document.getElementById('new-status-input');
+  if (!inp) return;
+  const label = inp.value.trim();
+  if (!label) { inp.style.borderColor = 'var(--red)'; return; }
+  inp.disabled = true;
+  const r = await apiCall(API + '/api/board/statuses', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({label})
+  });
+  if (r && r.ok) {
+    const status = await r.json();
+    boardStatuses.push(status);
+    cancelNewBoardStatus();
+    renderBoard();
+  } else {
+    inp.disabled = false;
+    inp.style.borderColor = 'var(--red)';
+    inp.focus();
+  }
+}
+
+function cancelNewBoardStatus() {
+  const el = document.querySelector('.board-col-new');
+  if (el) el.remove();
+}
+
+async function deleteBoardStatus(id) {
+  const stObj = boardStatuses.find(s => s.id === id);
+  const label = stObj ? stObj.label : id;
+  if (!await showConfirm('Delete "' + label + '" column? Items will move to To Do.', 'Delete', true)) return;
+  const r = await apiCall(API + '/api/board/statuses/' + id, { method: 'DELETE' });
+  if (r && r.ok) {
+    boardStatuses = boardStatuses.filter(s => s.id !== id);
+    boardItems.forEach(i => { if (i.status === id) i.status = 'todo'; });
+    saveBoardCache();
+    renderBoard();
+  }
 }
 
 
@@ -6414,6 +6602,24 @@ class CCHandler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/api/sessions":
             return self._json(list_sessions())
 
+        # GET/POST /api/memory/global
+        if path == "/api/memory/global":
+            if method == "GET":
+                content = _GLOBAL_MEM_FILE.read_text(errors="replace") if _GLOBAL_MEM_FILE.exists() else ""
+                return self._json({"content": content, "path": str(_GLOBAL_MEM_FILE)})
+            if method == "POST":
+                body = self._read_body()
+                content = body.get("content", "")
+                _GLOBAL_MEM_FILE.write_text(content)
+                # Recompose Claude memory for all registered sessions
+                if CC_SESSIONS.exists():
+                    for env_file in CC_SESSIONS.glob("*.env"):
+                        sname = env_file.stem
+                        wd = _session_work_dir(sname)
+                        if wd:
+                            _write_claude_memory(sname, wd)
+                return self._json({"ok": True})
+
         # GET /api/stats/daily
         if method == "GET" and path == "/api/stats/daily":
             return self._json(get_daily_token_stats())
@@ -6626,13 +6832,67 @@ class CCHandler(BaseHTTPRequestHandler):
                     "updated": int(time.time()),
                 }
                 items.append(item)
-                _BOARD_FILE.write_text(json.dumps({"items": items, "counters": counters}))
+                raw["items"] = items
+                raw["counters"] = counters
+                _BOARD_FILE.write_text(json.dumps(raw))
                 return self._json(item, 201)
 
             if method == "POST" and path == "/api/board/clear-done":
                 items = [i for i in _load_board() if i.get("status") != "done"]
                 _save_board(items)
                 return self._json({"ok": True, "remaining": len(items)})
+
+            # GET/POST/DELETE /api/board/statuses
+            if path == "/api/board/statuses":
+                if method == "GET":
+                    return self._json(_load_board_statuses())
+                if method == "POST":
+                    body = self._read_body()
+                    label = body.get("label", "").strip()
+                    if not label:
+                        return self._json({"error": "missing label"}, 400)
+                    sid = re.sub(r'[^a-z0-9]+', '-', label.lower()).strip('-')[:30]
+                    if not sid:
+                        return self._json({"error": "invalid label"}, 400)
+                    statuses = _load_board_statuses()
+                    if any(s["id"] == sid for s in statuses):
+                        base = sid
+                        for i in range(2, 20):
+                            sid = f"{base}-{i}"
+                            if not any(s["id"] == sid for s in statuses):
+                                break
+                    statuses.append({"id": sid, "label": label})
+                    _save_board_statuses(statuses)
+                    return self._json({"id": sid, "label": label}, 201)
+
+            # DELETE /api/board/statuses/<id>
+            status_m = re.match(r"^/api/board/statuses/([a-z0-9-]+)$", path)
+            if status_m:
+                if method == "DELETE":
+                    sid = status_m.group(1)
+                    if sid in ("todo", "doing", "done"):
+                        return self._json({"error": "cannot delete built-in status"}, 400)
+                    statuses = _load_board_statuses()
+                    statuses = [s for s in statuses if s["id"] != sid]
+                    _save_board_statuses(statuses)
+                    items = _load_board()
+                    for it in items:
+                        if it.get("status") == sid:
+                            it["status"] = "todo"
+                    _save_board(items)
+                    return self._json({"ok": True})
+                if method == "PATCH":
+                    sid = status_m.group(1)
+                    body = self._read_body()
+                    label = body.get("label", "").strip()
+                    statuses = _load_board_statuses()
+                    for s in statuses:
+                        if s["id"] == sid:
+                            if label:
+                                s["label"] = label
+                            break
+                    _save_board_statuses(statuses)
+                    return self._json({"ok": True})
 
             # PATCH/DELETE /api/board/<id>
             board_m = re.match(r"^/api/board/([a-f0-9]+)$", path)
@@ -6792,10 +7052,10 @@ class CCHandler(BaseHTTPRequestHandler):
                 body = self._read_body()
                 content = body.get("content", "")
                 mem_file = _session_mem_file(name)
+                mem_file.write_text(content)
                 wd = _session_work_dir(name)
                 if wd:
-                    _ensure_memory(name, wd)
-                mem_file.write_text(content)
+                    _write_claude_memory(name, wd)
                 return self._json({"ok": True})
             if action == "start":
                 cfg = parse_env_file(CC_SESSIONS / f"{name}.env") if (CC_SESSIONS / f"{name}.env").exists() else {}
