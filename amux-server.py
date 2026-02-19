@@ -2086,7 +2086,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="overlay-header">
     <div style="display:flex;align-items:center;gap:8px;">
       <h2 id="peek-title">peek</h2>
-      <span id="peek-conn-status" class="conn-status online"></span>
     </div>
     <div style="display:flex;gap:8px;align-items:center;">
       <div class="search-wrap" id="peek-search-wrap">
@@ -2407,7 +2406,7 @@ function describeOp(item) {
 // Connection status
 function updateConnectionStatus() {
   // Update all connection status indicators (main + peek)
-  document.querySelectorAll('#conn-status, #peek-conn-status').forEach(el => {
+  document.querySelectorAll('#conn-status').forEach(el => {
     if (!online) {
       el.className = 'conn-status offline';
       const total = offlineQueue.length + drafts.length;
