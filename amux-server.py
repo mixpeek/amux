@@ -2428,7 +2428,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <button class="board-detail-tab" id="pm-tab-global" onclick="peekMemoryTab('global')" title="Global memory shared by all sessions">Global</button>
       </div>
       <div style="display:flex;gap:6px;">
-        <button class="btn" id="peek-memory-sync" onclick="syncPeekMemory()" title="Ask Claude to update its memory now">Sync</button>
         <button class="btn primary" id="peek-memory-save" onclick="savePeekMemory()">Save</button>
       </div>
     </div>
@@ -3798,18 +3797,15 @@ function peekMemoryTab(tab) {
   const inp = document.getElementById('peek-memory-input');
   const preview = document.getElementById('peek-memory-preview');
   const globalInp = document.getElementById('peek-global-input');
-  const syncBtn = document.getElementById('peek-memory-sync');
   const saveBtn = document.getElementById('peek-memory-save');
   if (tab === 'global') {
     inp.style.display = 'none';
     preview.style.display = 'none';
     globalInp.style.display = '';
-    syncBtn.style.visibility = 'hidden';
     saveBtn.onclick = saveGlobalMemory;
     loadGlobalMemory();
   } else {
     globalInp.style.display = 'none';
-    syncBtn.style.visibility = '';
     saveBtn.onclick = savePeekMemory;
     if (tab === 'preview') {
       inp.style.display = 'none';
@@ -3844,6 +3840,8 @@ async function savePeekMemory() {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ content: inp.value })
     });
+    save.textContent = 'Syncing...';
+    await syncPeekMemory();
     save.textContent = 'Saved!';
     setTimeout(() => { save.disabled = false; save.textContent = 'Save'; }, 1500);
   } catch(e) {
@@ -3852,26 +3850,15 @@ async function savePeekMemory() {
   }
 }
 async function syncPeekMemory() {
-  const btn = document.getElementById('peek-memory-sync');
-  btn.disabled = true; btn.textContent = 'Sending...';
   const prompt = 'Please update your memory file now with any new facts, decisions, constraints, ' +
     'API details, file paths, or patterns from our recent work. Be concise and add only what ' +
     'is not already captured. Do not remove existing entries unless they are wrong.';
-  try {
-    await fetch(API + '/api/sessions/' + peekSession + '/send', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ text: prompt })
-    });
-    btn.textContent = 'Sent!';
-    showToast('Memory sync requested — switching to terminal');
-    setTimeout(() => {
-      btn.disabled = false; btn.textContent = 'Sync';
-      setPeekTab('terminal');
-    }, 1500);
-  } catch(e) {
-    btn.disabled = false; btn.textContent = 'Sync';
-    showToast('Failed to send sync request');
-  }
+  await fetch(API + '/api/sessions/' + peekSession + '/send', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ text: prompt })
+  });
+  showToast('Memory saved — sync requested');
+  setTimeout(() => setPeekTab('terminal'), 1000);
 }
 
 let _globalMemLoaded = false;
