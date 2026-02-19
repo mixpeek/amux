@@ -907,6 +907,9 @@ def start_session(name: str, extra_flags: str = "") -> tuple[bool, str]:
         cmd += f" {flags}"
     if extra_flags:
         cmd += f" {extra_flags}"
+    # Default to sonnet if no --model specified anywhere
+    if "--model" not in cmd:
+        cmd += " --model sonnet"
 
     try:
         tmux_sess = tmux_name(name)
@@ -5732,7 +5735,7 @@ function openAbout() {
   });
 }
 
-function resetTokenStats() {
+async function resetTokenStats() {
   if (!await showConfirm('Reset token counters to zero?', 'Reset', true)) return;
   fetch(API + '/api/stats/reset', { method: 'POST' }).then(r => r.json()).then(() => {
     openAbout();
