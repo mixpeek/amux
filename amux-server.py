@@ -2646,15 +2646,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <button class="peek-cmd-toggle" id="peek-cmd-toggle" onclick="togglePeekCmd()">&#x25B2; Send command</button>
       <div class="peek-cmd-row" id="peek-cmd-row" style="flex-wrap:wrap;">
         <div class="chips" style="width:100%;margin:0;">
-          <div class="chip" onclick="peekQuickSend('/compact')">/compact</div>
-          <div class="chip" onclick="peekQuickSend('/status')">/status</div>
-          <div class="chip" onclick="peekQuickSend('/clear')">/clear</div>
-          <div class="chip" onclick="peekQuickSend('/cost')">/cost</div>
           <div class="chip" onclick="peekQuickKeys('C-c')">Ctrl-C</div>
-          <div class="chip" onclick="peekQuickKeys('Escape')">Esc</div>
-          <div class="chip" onclick="peekQuickKeys('Enter')">Enter</div>
           <div class="chip" onclick="peekQuickKeys('Up')">&#x2191;</div>
           <div class="chip" onclick="peekQuickKeys('Down')">&#x2193;</div>
+          <div class="chip" onclick="peekQuickKeys('Enter')">Enter</div>
+          <div class="chip" onclick="peekQuickSend('/clear')">/clear</div>
+          <div class="chip" onclick="peekQuickSend('/compact')">/compact</div>
+          <div class="chip" onclick="peekQuickSend('/status')">/status</div>
+          <div class="chip" onclick="peekQuickSend('/cost')">/cost</div>
+          <div class="chip" onclick="peekQuickKeys('Escape')">Esc</div>
         </div>
         <!-- Attachment chips -->
         <div class="peek-attach-bar" id="peek-attach-bar"></div>
