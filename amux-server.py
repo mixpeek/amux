@@ -2403,7 +2403,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   /* Board inline edit */
   .board-edit-overlay {
-    position: fixed; inset: 0; z-index: 100;
+    position: fixed; inset: 0; z-index: 600;
     background: rgba(0,0,0,0); align-items: center; justify-content: center;
     padding: 16px; display: flex; pointer-events: none;
     transition: background 0.25s;
