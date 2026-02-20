@@ -2429,6 +2429,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <button class="board-detail-tab" id="pm-tab-global" onclick="peekMemoryTab('global')" title="Global memory shared by all sessions">Global</button>
       </div>
       <div style="display:flex;gap:6px;">
+        <button class="btn" id="peek-memory-pull" onclick="pullPeekMemory()" title="Pull latest from Claude's memory file">↻</button>
         <button class="btn primary" id="peek-memory-save" onclick="savePeekMemory()">Save</button>
       </div>
     </div>
@@ -3831,6 +3832,21 @@ async function loadPeekMemory() {
   } catch(e) { inp.value = ''; }
   inp.disabled = false; save.disabled = false;
   inp.focus();
+}
+async function pullPeekMemory() {
+  const inp = document.getElementById('peek-memory-input');
+  const btn = document.getElementById('peek-memory-pull');
+  const save = document.getElementById('peek-memory-save');
+  btn.disabled = true; btn.textContent = '…';
+  inp.disabled = true; save.disabled = true;
+  try {
+    const r = await fetch(API + '/api/sessions/' + peekSession + '/memory?pull=1');
+    const data = await r.json();
+    inp.value = data.content || '';
+    showToast('Pulled latest from Claude');
+  } catch(e) { showToast('Pull failed'); }
+  btn.disabled = false; btn.textContent = '↻';
+  inp.disabled = false; save.disabled = false;
 }
 async function savePeekMemory() {
   const inp = document.getElementById('peek-memory-input');
