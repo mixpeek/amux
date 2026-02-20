@@ -6124,13 +6124,67 @@ const _cachedInit = localStorage.getItem('amux_sessions_cache');
 if (_cachedInit) {
   try { sessions = JSON.parse(_cachedInit); } catch(e) {}
 }
-// Load cached board
+// Load cached board from localStorage (fast, synchronous)
 const _cachedBoard = localStorage.getItem('amux_board_cache');
 if (_cachedBoard) {
   try { boardItems = JSON.parse(_cachedBoard); lastBoardJSON = _cachedBoard; } catch(e) {}
 }
 if (sessions.length || drafts.length) render();
 updateConnectionStatus();
+
+// IDB fallback: if localStorage was purged (iOS), restore from IndexedDB
+if (!boardItems.length) {
+  _idb.getAll('issues').then(items => {
+    if (items && items.length) {
+      boardItems = items.filter(i => !i.deleted);
+      const j = JSON.stringify(boardItems);
+      lastBoardJSON = j;
+      localStorage.setItem('amux_board_cache', j);
+      if (activeView === 'board') renderBoard();
+      else if (activeView === 'calendar') renderCalendar();
+    }
+  });
+}
+
+// Delta sync: call /api/sync?since=last_sync_ts on startup to catch any missed updates
+// Runs after queue replay so server has our writes before we read
+async function _runDeltaSync() {
+  try {
+    const since = (await _idb.get('last_sync_ts')) || 0;
+    const r = await fetch(API + '/api/sync?since=' + since);
+    if (!r.ok) return;
+    const data = await r.json();
+    if (data.issues && data.issues.length) {
+      // Apply delta to in-memory boardItems
+      data.issues.forEach(item => {
+        const idx = boardItems.findIndex(i => i.id === item.id);
+        if (item.deleted) {
+          if (idx >= 0) boardItems.splice(idx, 1);
+        } else {
+          if (idx >= 0) boardItems[idx] = item;
+          else boardItems.push(item);
+        }
+      });
+      const j = JSON.stringify(boardItems);
+      lastBoardJSON = j;
+      localStorage.setItem('amux_board_cache', j);
+      _idb.applyIssueDelta(data.issues);
+    }
+    if (data.statuses && data.statuses.length) {
+      boardStatuses = data.statuses;
+      lastStatusesJSON = JSON.stringify(data.statuses);
+      _idb.putStatuses(data.statuses);
+    }
+    if (data.ts) _idb.set('last_sync_ts', data.ts);
+    if (activeView === 'board') renderBoard();
+    else if (activeView === 'calendar') renderCalendar();
+    _dbgLog('Delta sync: +' + (data.issues || []).length + ' issue changes');
+  } catch(e) {
+    _dbgLog('Delta sync failed: ' + e.message);
+  }
+}
+// Run delta sync shortly after startup (after queue replay window)
+setTimeout(_runDeltaSync, 2500);
 (function() {
   function _syncTabTop() {
     const h = document.querySelector('.header-row');
@@ -6152,11 +6206,14 @@ function connectSSE() {
   _sse = new EventSource(API + '/api/events');
 
   _sse.onmessage = function(e) {
+    const wasOffline = !_liveSSE;
     _sseRetries = 0;
     _lastDataTime = Date.now();
     if (_initialLoad) { _initialLoad = false; render(); }
     if (!_liveSSE) { _liveSSE = true; updateConnectionStatus(); }
     if (!online) setOnline(true);
+    // On reconnect after being offline: run delta sync to catch any missed changes
+    if (wasOffline && _sseRetries > 0) setTimeout(_runDeltaSync, 500);
     try {
       const msg = JSON.parse(e.data);
       if (msg.type === 'sessions') {
@@ -6173,7 +6230,11 @@ function connectSSE() {
           lastBoardJSON = j;
           boardItems = msg.payload;
           localStorage.setItem('amux_board_cache', j);
+          // Mirror to IDB for full offline durability (iOS-safe)
+          _idb.applyIssueDelta(msg.payload);
+          _idb.set('last_sync_ts', Math.floor(Date.now() / 1000));
           if (activeView === 'board') renderBoard();
+          else if (activeView === 'calendar') renderCalendar();
         }
       }
     } catch(err) { console.error('SSE parse:', err); }
@@ -6240,19 +6301,33 @@ if ('serviceWorker' in navigator) {
   }).catch(() => {});
 }
 
-// IndexedDB for durable draft/queue storage (survives iOS cache purges)
+// IndexedDB — v2: kv store + full issues/statuses mirror for offline sync
 const _idb = (() => {
   let db = null;
   const open = () => new Promise((resolve, reject) => {
     if (db) return resolve(db);
-    const req = indexedDB.open('amux', 1);
+    const req = indexedDB.open('amux', 2);
     req.onupgradeneeded = () => {
       const d = req.result;
       if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
+      if (!d.objectStoreNames.contains('issues')) {
+        const s = d.createObjectStore('issues', { keyPath: 'id' });
+        s.createIndex('by_updated', 'updated');
+        s.createIndex('by_session', 'session');
+        s.createIndex('by_status', 'status');
+      }
+      if (!d.objectStoreNames.contains('statuses')) {
+        d.createObjectStore('statuses', { keyPath: 'id' });
+      }
     };
     req.onsuccess = () => { db = req.result; resolve(db); };
     req.onerror = () => reject(req.error);
   });
+  const _txw = (store, fn) => open().then(d => new Promise((resolve, reject) => {
+    const tx = d.transaction(store, 'readwrite');
+    tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+    fn(tx.objectStore(store));
+  })).catch(() => {});
   return {
     set: (key, val) => open().then(d => {
       const tx = d.transaction('kv', 'readwrite');
@@ -6264,6 +6339,21 @@ const _idb = (() => {
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
     })).catch(() => null),
+    // Apply delta: upsert live items, remove soft-deleted ones from local mirror
+    applyIssueDelta: (issues) => _txw('issues', os => {
+      issues.forEach(item => { if (item.deleted) os.delete(item.id); else os.put(item); });
+    }),
+    // Replace all statuses in local mirror
+    putStatuses: (statuses) => _txw('statuses', os => {
+      os.clear(); statuses.forEach(s => os.put(s));
+    }),
+    // Read all items from a store
+    getAll: (store) => open().then(d => new Promise((resolve) => {
+      const tx = d.transaction(store, 'readonly');
+      const req = tx.objectStore(store).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => resolve([]);
+    })).catch(() => []),
   };
 })();
 
