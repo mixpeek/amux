@@ -8541,6 +8541,32 @@ def main():
     print(f"\033[2m  Auto-reload active — editing amux-server.py will restart\033[0m")
     print(f"\n\033[2mPress Ctrl-C to stop\033[0m")
 
+    # Plain HTTP cert server (so phones can fetch cert before trusting it)
+    if scheme == "https":
+        def _cert_server(port):
+            from http.server import HTTPServer, BaseHTTPRequestHandler
+            class H(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    cert_path = TLS_DIR / "cert.pem"
+                    if self.path.rstrip("/") == "/api/cert" and cert_path.exists():
+                        body = cert_path.read_bytes()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/x-pem-file")
+                        self.send_header("Content-Disposition", 'attachment; filename="amux.pem"')
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                    else:
+                        self.send_response(301)
+                        self.send_header("Location", f"https://{self.headers.get('Host', 'localhost').split(':')[0]}:{port}/")
+                        self.end_headers()
+                def log_message(self, *a): pass
+            class IPv4HTTPServer(HTTPServer):
+                address_family = socket.AF_INET
+            IPv4HTTPServer(("0.0.0.0", port + 1), H).serve_forever()
+        threading.Thread(target=_cert_server, args=(port,), daemon=True).start()
+        print(f"  Cert:    http://{lan_ip}:{port + 1}/api/cert")
+
     # Start file watcher thread
     watcher = threading.Thread(target=_watch_self, args=(server,), daemon=True)
     watcher.start()
