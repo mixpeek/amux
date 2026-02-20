@@ -1669,7 +1669,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   /* Connect session list */
   /* Calendar */
-  .cal-toolbar { display: flex; align-items: center; gap: 6px; padding: 10px 12px 6px; }
+  .cal-toolbar { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px 4px; }
+  .cal-nav-row { display: flex; align-items: center; gap: 6px; }
+  .cal-controls-row { display: flex; align-items: center; gap: 6px; }
   .cal-title { font-weight: 600; font-size: 0.95rem; flex: 1; text-align: center; }
   .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border-radius: 8px; overflow: hidden; margin: 0 8px 16px; }
   .cal-day-header { background: var(--card); text-align: center; font-size: 0.68rem; color: var(--dim); padding: 5px 2px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
@@ -1692,18 +1694,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .cal-chip { display: none; }
     .cal-more { display: none; }
     .cal-dots { display: flex; }
-    .cal-title { font-size: 0.9rem; }
-    .cal-toolbar .btn { padding: 5px 8px; font-size: 0.8rem; }
-    .cal-view-tabs { gap: 2px; }
-    .cal-view-tab { padding: 4px 9px !important; font-size: 0.75rem !important; }
+    .cal-title { font-size: 0.88rem; }
+    .cal-toolbar { padding: 6px 8px 2px; }
+    .cal-nav-row .btn, .cal-controls-row .btn { padding: 5px 8px; font-size: 0.78rem; }
+    .cal-view-tab { padding: 4px 10px; font-size: 0.75rem; }
     .cal-week-cell { min-height: 80px; }
     .cal-week-chip { display: none !important; }
     .cal-week-dot { display: block !important; }
   }
   /* Calendar view tabs */
-  .cal-view-tabs { display: flex; gap: 3px; margin-left: auto; }
-  .cal-view-tab { padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border);
-    background: none; color: var(--dim); font-size: 0.8rem; cursor: pointer;
+  .cal-view-tabs { display: flex; gap: 3px; flex: 1; justify-content: center; }
+  .cal-view-tab { padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: none; color: var(--dim); font-size: 0.82rem; cursor: pointer;
     -webkit-tap-highlight-color: transparent; transition: all 0.15s; }
   .cal-view-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
   /* Week view */
@@ -2632,16 +2634,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <!-- Calendar view -->
 <div id="calendar-view" style="display:none;">
   <div class="cal-toolbar">
-    <button class="btn" onclick="calPrev()">&#x2039;</button>
-    <span id="cal-title" class="cal-title"></span>
-    <button class="btn" onclick="calNext()">&#x203A;</button>
-    <button class="btn" id="cal-today-btn" onclick="calToday()" style="margin-left:4px;">Today</button>
-    <div class="cal-view-tabs">
-      <button class="cal-view-tab active" id="cal-tab-month" onclick="calSetView('month')">Month</button>
-      <button class="cal-view-tab" id="cal-tab-week" onclick="calSetView('week')">Week</button>
-      <button class="cal-view-tab" id="cal-tab-day" onclick="calSetView('day')">Day</button>
+    <div class="cal-nav-row">
+      <button class="btn" onclick="calPrev()">&#x2039;</button>
+      <span id="cal-title" class="cal-title"></span>
+      <button class="btn" onclick="calNext()">&#x203A;</button>
     </div>
-    <button class="btn" onclick="showIcalInfo()" title="Subscribe in Google / Apple Calendar" style="margin-left:4px;font-size:0.8rem;">&#x1F4C5;</button>
+    <div class="cal-controls-row">
+      <button class="btn" onclick="calToday()">Today</button>
+      <div class="cal-view-tabs">
+        <button class="cal-view-tab" id="cal-tab-month" onclick="calSetView('month')">Month</button>
+        <button class="cal-view-tab" id="cal-tab-week" onclick="calSetView('week')">Week</button>
+        <button class="cal-view-tab" id="cal-tab-day" onclick="calSetView('day')">Day</button>
+      </div>
+      <button class="btn" onclick="showIcalInfo()" title="Subscribe in Google / Apple Calendar" style="font-size:0.8rem;">&#x1F4C5;</button>
+    </div>
   </div>
   <div id="cal-body"></div>
 </div>
@@ -6380,7 +6386,7 @@ async function deleteBoardStatus(id) {
 let calYear = new Date().getFullYear();
 let calMonth = new Date().getMonth(); // 0-indexed
 let calDay = new Date().getDate();
-let calViewMode = 'month'; // 'month' | 'week' | 'day'
+let calViewMode = localStorage.getItem('amux_cal_view') || 'week'; // 'month' | 'week' | 'day'
 
 function _calNavigate(delta) {
   let d;
@@ -6406,8 +6412,10 @@ function calToday() {
 }
 function calSetView(mode) {
   calViewMode = mode;
+  localStorage.setItem('amux_cal_view', mode);
   ['month','week','day'].forEach(m => {
-    document.getElementById('cal-tab-' + m).classList.toggle('active', m === mode);
+    const el = document.getElementById('cal-tab-' + m);
+    if (el) el.classList.toggle('active', m === mode);
   });
   renderCalendar();
 }
@@ -6490,6 +6498,11 @@ function renderCalendar() {
   const titleEl = document.getElementById('cal-title');
   const bodyEl = document.getElementById('cal-body');
   if (!titleEl || !bodyEl) return;
+  // Sync active tab button state
+  ['month','week','day'].forEach(m => {
+    const el = document.getElementById('cal-tab-' + m);
+    if (el) el.classList.toggle('active', m === calViewMode);
+  });
   if (calViewMode === 'week') { _renderCalWeek(titleEl, bodyEl); return; }
   if (calViewMode === 'day')  { _renderCalDay(titleEl, bodyEl); return; }
   _renderCalMonth(titleEl, bodyEl);
