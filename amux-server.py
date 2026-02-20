@@ -1614,13 +1614,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     display: flex; justify-content: space-between; align-items: center;
     margin-bottom: 8px; flex-shrink: 0;
   }
-  .file-overlay-header h2 { font-size: 1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; margin-right: 8px; }
+  .file-overlay-header h2 { font-size: 1rem; word-break: break-all; flex: 1; margin-right: 8px; }
   .file-overlay-body {
     flex: 1; overflow: auto; background: #010409; border: 1px solid var(--border); border-radius: 8px;
     padding: 14px; font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
     font-size: 0.78rem; line-height: 1.5; white-space: pre-wrap;
     word-break: break-word; -webkit-overflow-scrolling: touch;
   }
+  .file-view-tabs { display: flex; gap: 3px; flex-shrink: 0; }
+  .file-view-tab { padding: 4px 11px; border-radius: 6px; border: 1px solid var(--border);
+    background: none; color: var(--dim); font-size: 0.78rem; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; transition: all 0.15s; }
+  .file-view-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .file-overlay-body.file-raw { white-space: pre-wrap; word-break: break-word; }
   .file-overlay-body.file-image { display:flex;align-items:center;justify-content:center;background:var(--bg);white-space:normal; }
   .file-overlay-body.file-pdf { padding:0;background:var(--bg);white-space:normal; }
   .file-overlay-body.file-csv { white-space:normal;overflow:auto; }
@@ -1654,7 +1660,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .explore-row { display: flex; align-items: center; gap: 10px; padding: 11px 16px; border-bottom: 1px solid var(--border); cursor: pointer; -webkit-tap-highlight-color: transparent; }
   .explore-row:active { background: var(--hover); }
   .explore-icon { font-size: 1rem; flex-shrink: 0; line-height: 1; }
-  .explore-name { font-size: 0.88rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .explore-name { font-size: 0.88rem; flex: 1; word-break: break-all; min-width: 0; }
   .explore-size { font-size: 0.72rem; color: var(--dim); flex-shrink: 0; }
   .explore-menu-btn { flex-shrink: 0; background: none; border: none; color: var(--dim);
     cursor: pointer; font-size: 1rem; padding: 2px 6px; border-radius: 4px; line-height: 1;
@@ -2975,7 +2981,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <div id="file-overlay" class="file-overlay" style="z-index:300;">
   <div class="file-overlay-header">
     <h2 id="file-title">file</h2>
-    <button class="btn" onclick="closeFilePreview()">&#x2715;</button>
+    <div class="file-view-tabs" id="file-view-tabs" style="display:none;">
+      <button class="file-view-tab active" id="file-tab-preview" onclick="setFileViewMode('preview')">Preview</button>
+      <button class="file-view-tab" id="file-tab-raw" onclick="setFileViewMode('raw')">Raw</button>
+    </div>
+    <button class="btn" onclick="closeFilePreview()" style="flex-shrink:0;">&#x2715;</button>
   </div>
   <div id="file-body" class="file-overlay-body"></div>
 </div>
@@ -5019,10 +5029,63 @@ function renderCsvTable(csv) {
   return `<div class="csv-wrap"><table class="csv-table"><thead>${thead}</thead><tbody>${tbody}</tbody></table></div>`;
 }
 
+let _fileData = null;
+let _fileViewMode = 'preview';
+
+function _renderFileBody(data, mode) {
+  const body = document.getElementById('file-body');
+  const isBinary = data.is_image || data.is_pdf;
+  // Binary — no tabs, just render
+  if (data.is_image) {
+    body.className = 'file-overlay-body file-image';
+    const img = document.createElement('img');
+    img.src = data.data_url;
+    img.alt = data.path ? data.path.split('/').pop() : '';
+    img.style.cssText = 'max-width:100%;height:auto;border-radius:4px;display:block;margin:auto;';
+    body.innerHTML = ''; body.appendChild(img);
+    return;
+  }
+  if (data.is_pdf) {
+    body.className = 'file-overlay-body file-pdf';
+    body.innerHTML = `<embed src="${data.data_url}" type="application/pdf" style="width:100%;height:100%;min-height:520px;border-radius:4px;">`;
+    return;
+  }
+  // Text files — Raw / Preview
+  if (mode === 'raw') {
+    body.className = 'file-overlay-body file-raw';
+    body.textContent = data.content;
+    return;
+  }
+  // Preview
+  if (data.is_csv) {
+    body.className = 'file-overlay-body file-csv';
+    body.innerHTML = renderCsvTable(data.content);
+  } else if (data.is_markdown) {
+    body.className = 'file-overlay-body markdown';
+    body.innerHTML = renderMarkdown(data.content);
+  } else {
+    // plain text, html source, etc. — preview = same as raw
+    body.className = 'file-overlay-body file-raw';
+    body.textContent = data.content;
+  }
+}
+
+function setFileViewMode(mode) {
+  _fileViewMode = mode;
+  document.getElementById('file-tab-preview').classList.toggle('active', mode === 'preview');
+  document.getElementById('file-tab-raw').classList.toggle('active', mode === 'raw');
+  if (_fileData) _renderFileBody(_fileData, mode);
+}
+
 async function openFilePreview(path) {
+  _fileData = null;
+  _fileViewMode = 'preview';
   document.getElementById('file-title').textContent = path.split('/').pop();
-  document.getElementById('file-body').textContent = 'Loading...';
   document.getElementById('file-body').className = 'file-overlay-body';
+  document.getElementById('file-body').textContent = 'Loading...';
+  document.getElementById('file-view-tabs').style.display = 'none';
+  document.getElementById('file-tab-preview').classList.add('active');
+  document.getElementById('file-tab-raw').classList.remove('active');
   document.getElementById('file-overlay').classList.add('active');
   try {
     let url = API + '/api/file?path=' + encodeURIComponent(path);
@@ -5033,32 +5096,12 @@ async function openFilePreview(path) {
       document.getElementById('file-body').textContent = 'Error: ' + data.error;
       return;
     }
-    const body = document.getElementById('file-body');
-    if (data.is_image) {
-      body.className = 'file-overlay-body file-image';
-      const img = document.createElement('img');
-      img.src = data.data_url;
-      img.alt = path.split('/').pop();
-      img.style.cssText = 'max-width:100%;height:auto;border-radius:4px;display:block;margin:auto;';
-      body.innerHTML = '';
-      body.appendChild(img);
-    } else if (data.is_pdf) {
-      body.className = 'file-overlay-body file-pdf';
-      body.innerHTML = `<embed src="${data.data_url}" type="application/pdf" style="width:100%;height:100%;min-height:520px;border-radius:4px;">`;
-    } else if (data.is_csv) {
-      body.className = 'file-overlay-body file-csv';
-      body.innerHTML = renderCsvTable(data.content);
-    } else if (data.is_markdown) {
-      body.className = 'file-overlay-body markdown';
-      body.innerHTML = renderMarkdown(data.content);
-    } else if (data.is_html) {
-      // Show HTML source highlighted as plain text
-      body.className = 'file-overlay-body';
-      body.textContent = data.content;
-    } else {
-      body.className = 'file-overlay-body';
-      body.textContent = data.content;
+    _fileData = data;
+    // Show tabs only for text files
+    if (!data.is_image && !data.is_pdf) {
+      document.getElementById('file-view-tabs').style.display = '';
     }
+    _renderFileBody(data, _fileViewMode);
   } catch(e) {
     document.getElementById('file-body').textContent = 'Failed to load file.';
   }
@@ -5066,6 +5109,7 @@ async function openFilePreview(path) {
 
 function closeFilePreview() {
   document.getElementById('file-overlay').classList.remove('active');
+  _fileData = null;
 }
 
 // ═══════ FILE EXPLORER ═══════
