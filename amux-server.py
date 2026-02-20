@@ -1635,6 +1635,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .explore-icon { font-size: 1rem; flex-shrink: 0; line-height: 1; }
   .explore-name { font-size: 0.88rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .explore-size { font-size: 0.72rem; color: var(--dim); flex-shrink: 0; }
+  .explore-copy { flex-shrink: 0; background: none; border: 1px solid transparent; color: var(--dim);
+    cursor: pointer; font-size: 0.7rem; padding: 2px 7px; border-radius: 4px;
+    opacity: 0; transition: opacity 0.15s; }
+  .explore-row:hover .explore-copy { opacity: 1; }
+  .explore-copy:hover { border-color: var(--border); background: var(--hover); color: var(--text); }
 
   /* Connect session list */
   /* Calendar */
@@ -4998,6 +5003,24 @@ function _fmtSize(bytes) {
   if (bytes < 1048576) return (bytes / 1024).toFixed(0) + 'K';
   return (bytes / 1048576).toFixed(1) + 'M';
 }
+function _copyExplorePath(path, btn) {
+  const orig = btn.textContent;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(path).then(() => {
+      btn.textContent = '✓'; setTimeout(() => { btn.textContent = orig; }, 1200);
+    }).catch(() => _copyExplorePathFallback(path, btn, orig));
+  } else {
+    _copyExplorePathFallback(path, btn, orig);
+  }
+}
+function _copyExplorePathFallback(path, btn, orig) {
+  const ta = document.createElement('textarea');
+  ta.value = path; ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+  document.body.appendChild(ta); ta.focus(); ta.select();
+  try { document.execCommand('copy'); btn.textContent = '✓'; } catch(e) { btn.textContent = '!'; }
+  document.body.removeChild(ta);
+  setTimeout(() => { btn.textContent = orig; }, 1200);
+}
 async function loadExplore(path) {
   const body = document.getElementById('explore-body');
   body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
@@ -5034,8 +5057,11 @@ async function loadExplore(path) {
       row.className = 'explore-row';
       const icon = entry.type === 'dir' ? '&#x1F4C2;' : '&#x1F4C4;';
       const displayName = entry.name + (entry.type === 'dir' ? '/' : '');
-      row.innerHTML = `<span class="explore-icon">${icon}</span><span class="explore-name">${esc(displayName)}</span><span class="explore-size">${esc(_fmtSize(entry.size))}</span>`;
       const entryPath = path.replace(/\/$/, '') + '/' + entry.name;
+      const copyBtn = entry.type === 'dir'
+        ? `<button class="explore-copy" title="Copy path" onclick="event.stopPropagation();_copyExplorePath('${entryPath.replace(/'/g,"\\'")}',this)">copy</button>`
+        : '';
+      row.innerHTML = `<span class="explore-icon">${icon}</span><span class="explore-name">${esc(displayName)}</span><span class="explore-size">${esc(_fmtSize(entry.size))}</span>${copyBtn}`;
       if (entry.type === 'dir') {
         row.onclick = () => loadExplore(entryPath);
       } else {
