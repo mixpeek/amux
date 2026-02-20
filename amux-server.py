@@ -1558,6 +1558,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     height: 100%; height: 100dvh;
     background: var(--bg);
     z-index: 100; flex-direction: column;
+  }
+  /* board-detail sits above peek when opened from within it */
+  #board-detail-overlay { z-index: 150; }
+  .overlay {
     padding: 12px; padding-top: max(12px, env(safe-area-inset-top));
     overflow: hidden;
     display: flex; pointer-events: none; opacity: 0;
@@ -1690,7 +1694,56 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .cal-dots { display: flex; }
     .cal-title { font-size: 0.9rem; }
     .cal-toolbar .btn { padding: 5px 8px; font-size: 0.8rem; }
+    .cal-view-tabs { gap: 2px; }
+    .cal-view-tab { padding: 4px 9px !important; font-size: 0.75rem !important; }
+    .cal-week-cell { min-height: 80px; }
+    .cal-week-chip { display: none !important; }
+    .cal-week-dot { display: block !important; }
   }
+  /* Calendar view tabs */
+  .cal-view-tabs { display: flex; gap: 3px; margin-left: auto; }
+  .cal-view-tab { padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border);
+    background: none; color: var(--dim); font-size: 0.8rem; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; transition: all 0.15s; }
+  .cal-view-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  /* Week view */
+  .cal-week-grid { display: grid; grid-template-columns: repeat(7,1fr); gap: 1px;
+    background: var(--border); border-radius: 8px; overflow: hidden; margin: 0 8px 16px; }
+  .cal-week-header { background: var(--card); text-align: center; font-size: 0.68rem;
+    color: var(--dim); padding: 5px 2px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+  .cal-week-cell { background: var(--card); min-height: 120px; padding: 6px 5px; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; }
+  .cal-week-cell:active { background: var(--hover); }
+  .cal-week-cell.today { border-top: 2px solid var(--accent); }
+  .cal-week-cell.today .cal-week-num { color: var(--accent); font-weight: 700; }
+  .cal-week-num { font-size: 0.72rem; color: var(--dim); margin-bottom: 4px; }
+  .cal-week-chip { font-size: 0.67rem; line-height: 1.3; padding: 2px 5px; border-radius: 3px;
+    margin-bottom: 2px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    display: block; }
+  .cal-week-chip:active { opacity: 0.7; }
+  .cal-week-more { font-size: 0.62rem; color: var(--dim); padding-left: 2px; }
+  .cal-week-dot { display: none; width: 6px; height: 6px; border-radius: 50%; margin: 1px; }
+  /* Day view */
+  .cal-day-view { padding: 6px 12px 16px; }
+  .cal-day-issue { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; margin-bottom: 8px; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; display: flex; align-items: flex-start; gap: 10px; }
+  .cal-day-issue:active { border-color: var(--accent); }
+  .cal-day-issue-text { flex: 1; min-width: 0; }
+  .cal-day-issue-title { font-size: 0.9rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cal-day-issue-desc { font-size: 0.78rem; color: var(--dim); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cal-day-empty { color: var(--dim); font-size: 0.88rem; text-align: center; padding: 32px 0; }
+  .cal-day-add { display: block; width: 100%; margin-top: 4px; text-align: center;
+    padding: 10px; border-radius: 8px; border: 1px dashed var(--border); background: none;
+    color: var(--dim); font-size: 0.82rem; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .cal-day-add:active { background: var(--hover); }
+  /* Board collapse */
+  .board-col-collapse { background: none; border: none; cursor: pointer; color: var(--dim);
+    font-size: 0.65rem; padding: 1px 3px; border-radius: 3px; line-height: 1; flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent; transition: color 0.15s; }
+  .board-col-collapse:hover { color: var(--text); }
+  .board-col.col-collapsed { min-height: unset !important; }
+  .board-col.col-collapsed > :not(.board-col-header) { display: none !important; }
   .skill-card {
     background: var(--card); border: 1px solid var(--border); border-radius: 8px;
     padding: 12px 14px; display: flex; flex-direction: column; gap: 4px;
@@ -2250,7 +2303,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .board-drag-handle:active { cursor: grabbing; }
   .board-card:hover .board-drag-handle { opacity: 0.55; }
   .board-drag-handle:hover { opacity: 1 !important; color: var(--fg); background: rgba(139,148,158,0.12); }
-  @media (hover: none) { .board-drag-handle { display: none; } }
+  @media (hover: none) { .board-drag-handle { opacity: 0.35; } }
   .board-card.card-enter { animation: cardEnter 0.3s cubic-bezier(.4,0,.2,1) both; }
   .board-card.card-flip { transition: transform 0.35s cubic-bezier(.4,0,.2,1); }
   @keyframes cardEnter {
@@ -2583,9 +2636,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <span id="cal-title" class="cal-title"></span>
     <button class="btn" onclick="calNext()">&#x203A;</button>
     <button class="btn" id="cal-today-btn" onclick="calToday()" style="margin-left:4px;">Today</button>
-    <button class="btn" onclick="showIcalInfo()" title="Subscribe in Google / Apple Calendar" style="margin-left:auto;font-size:0.8rem;">&#x1F4C5; iCal</button>
+    <div class="cal-view-tabs">
+      <button class="cal-view-tab active" id="cal-tab-month" onclick="calSetView('month')">Month</button>
+      <button class="cal-view-tab" id="cal-tab-week" onclick="calSetView('week')">Week</button>
+      <button class="cal-view-tab" id="cal-tab-day" onclick="calSetView('day')">Day</button>
+    </div>
+    <button class="btn" onclick="showIcalInfo()" title="Subscribe in Google / Apple Calendar" style="margin-left:4px;font-size:0.8rem;">&#x1F4C5;</button>
   </div>
-  <div id="cal-grid" class="cal-grid"></div>
+  <div id="cal-body"></div>
 </div>
 
 <!-- Board card "add" small modal -->
@@ -5513,6 +5571,7 @@ let _boardDragId = null;
 let boardViewMode = localStorage.getItem('amux_board_view') || 'session';
 let _sessionGroupCollapsed = JSON.parse(localStorage.getItem('amux_board_collapsed') || '{}');
 let _tagGroupCollapsed = JSON.parse(localStorage.getItem('amux_tag_collapsed') || '{}');
+let _collapsedCols = new Set(JSON.parse(localStorage.getItem('amux_col_collapsed') || '[]'));
 
 const _BUILT_IN_STATUS_STYLE = {
   'backlog':   {bg:'rgba(88,166,255,0.12)',color:'var(--accent)',border:'rgba(88,166,255,0.3)',dot:'var(--accent)'},
@@ -5856,9 +5915,13 @@ function renderBoard() {
     const stCol = cols[st] || [];
     const sty = statusStyle(st);
     const isBuiltIn = builtIn.has(st);
-    html += '<div class="board-col" data-col="' + st + '">';
-    html += '<div class="board-col-header">';
+    const collapsed = _collapsedCols.has(st);
+    html += '<div class="board-col' + (collapsed ? ' col-collapsed' : '') + '" data-col="' + st + '">';
+    html += '<div class="board-col-header" onclick="toggleColCollapse(\'' + st + '\')" style="cursor:pointer;" title="' + (collapsed ? 'Expand' : 'Collapse') + ' column">';
+    html += '<span style="display:flex;align-items:center;gap:5px;">';
+    html += '<button class="board-col-collapse" onclick="event.stopPropagation();toggleColCollapse(\'' + st + '\')" tabindex="-1">' + (collapsed ? '&#x25B8;' : '&#x25BE;') + '</button>';
     html += '<span style="color:' + sty.color + '">' + esc(stObj.label) + '</span>';
+    html += '</span>';
     html += '<span style="display:flex;align-items:center;gap:6px;">';
     html += '<span class="col-count" data-col="' + st + '">' + stCol.length + '</span>';
     if (!isBuiltIn) {
@@ -6292,6 +6355,13 @@ function cancelNewBoardStatus() {
   if (el) el.remove();
 }
 
+function toggleColCollapse(st) {
+  if (_collapsedCols.has(st)) _collapsedCols.delete(st);
+  else _collapsedCols.add(st);
+  localStorage.setItem('amux_col_collapsed', JSON.stringify([..._collapsedCols]));
+  renderBoard();
+}
+
 async function deleteBoardStatus(id) {
   const stObj = boardStatuses.find(s => s.id === id);
   const label = stObj ? stObj.label : id;
@@ -6309,10 +6379,42 @@ async function deleteBoardStatus(id) {
 // ═══════ CALENDAR ═══════
 let calYear = new Date().getFullYear();
 let calMonth = new Date().getMonth(); // 0-indexed
+let calDay = new Date().getDate();
+let calViewMode = 'month'; // 'month' | 'week' | 'day'
 
-function calPrev() { calMonth--; if (calMonth < 0) { calMonth = 11; calYear--; } renderCalendar(); }
-function calNext() { calMonth++; if (calMonth > 11) { calMonth = 0; calYear++; } renderCalendar(); }
-function calToday() { calYear = new Date().getFullYear(); calMonth = new Date().getMonth(); renderCalendar(); }
+function _calNavigate(delta) {
+  let d;
+  if (calViewMode === 'day') {
+    d = new Date(calYear, calMonth, calDay + delta);
+  } else if (calViewMode === 'week') {
+    d = new Date(calYear, calMonth, calDay + delta * 7);
+  } else {
+    calMonth += delta;
+    if (calMonth < 0) { calMonth = 11; calYear--; }
+    else if (calMonth > 11) { calMonth = 0; calYear++; }
+    renderCalendar(); return;
+  }
+  calYear = d.getFullYear(); calMonth = d.getMonth(); calDay = d.getDate();
+  renderCalendar();
+}
+function calPrev() { _calNavigate(-1); }
+function calNext() { _calNavigate(1); }
+function calToday() {
+  const n = new Date();
+  calYear = n.getFullYear(); calMonth = n.getMonth(); calDay = n.getDate();
+  renderCalendar();
+}
+function calSetView(mode) {
+  calViewMode = mode;
+  ['month','week','day'].forEach(m => {
+    document.getElementById('cal-tab-' + m).classList.toggle('active', m === mode);
+  });
+  renderCalendar();
+}
+function calSelectDay(y, m, d) {
+  calYear = y; calMonth = m; calDay = d;
+  calSetView('day');
+}
 
 function showIcalInfo() {
   const origin = window.location.origin;
@@ -6361,54 +6463,72 @@ function showIcalInfo() {
   document.body.appendChild(modal);
 }
 
-function renderCalendar() {
-  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-  const isMobCal = window.innerWidth <= 480;
-  const dayNames = isMobCal ? ['S','M','T','W','T','F','S'] : ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  const titleEl = document.getElementById('cal-title');
-  const gridEl = document.getElementById('cal-grid');
-  if (!titleEl || !gridEl) return;
-  titleEl.textContent = monthNames[calMonth] + ' ' + calYear;
-  const today = new Date();
-  const todayStr = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
-  const firstDay = new Date(calYear, calMonth, 1).getDay(); // 0=Sun
-  const daysInMonth = new Date(calYear, calMonth+1, 0).getDate();
-  const daysInPrevMonth = new Date(calYear, calMonth, 0).getDate();
-  // Build date → items map
-  const itemsByDate = {};
-  boardItems.forEach(item => {
-    if (item.due) {
-      if (!itemsByDate[item.due]) itemsByDate[item.due] = [];
-      itemsByDate[item.due].push(item);
+const _CAL_MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const _CAL_DAYS_LONG = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const _CAL_DAYS_SHORT = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const _CAL_DAYS_MIN = ['S','M','T','W','T','F','S'];
+
+function _calDateStr(y, m, d) {
+  return y + '-' + String(m+1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
+}
+function _calTodayStr() {
+  const t = new Date();
+  return _calDateStr(t.getFullYear(), t.getMonth(), t.getDate());
+}
+function _calItemsByDate() {
+  const map = {};
+  (boardItems || []).forEach(item => {
+    if (item.due && !item.deleted) {
+      if (!map[item.due]) map[item.due] = [];
+      map[item.due].push(item);
     }
   });
-  let html = '';
+  return map;
+}
+
+function renderCalendar() {
+  const titleEl = document.getElementById('cal-title');
+  const bodyEl = document.getElementById('cal-body');
+  if (!titleEl || !bodyEl) return;
+  if (calViewMode === 'week') { _renderCalWeek(titleEl, bodyEl); return; }
+  if (calViewMode === 'day')  { _renderCalDay(titleEl, bodyEl); return; }
+  _renderCalMonth(titleEl, bodyEl);
+}
+
+function _renderCalMonth(titleEl, bodyEl) {
+  const isMob = window.innerWidth <= 480;
+  const dayNames = isMob ? _CAL_DAYS_MIN : _CAL_DAYS_SHORT;
+  titleEl.textContent = _CAL_MONTHS[calMonth] + ' ' + calYear;
+  const todayStr = _calTodayStr();
+  const firstDay = new Date(calYear, calMonth, 1).getDay();
+  const daysInMonth = new Date(calYear, calMonth+1, 0).getDate();
+  const daysInPrevMonth = new Date(calYear, calMonth, 0).getDate();
+  const itemsByDate = _calItemsByDate();
+  let html = '<div class="cal-grid">';
   dayNames.forEach(d => { html += '<div class="cal-day-header">' + d + '</div>'; });
   const totalCells = Math.ceil((firstDay + daysInMonth) / 7) * 7;
   for (let i = 0; i < totalCells; i++) {
-    let day, dateStr, isOther = false;
+    let day, dateStr, isOther = false, cellY = calYear, cellM = calMonth;
     if (i < firstDay) {
       day = daysInPrevMonth - firstDay + i + 1;
-      const m = calMonth === 0 ? 12 : calMonth;
-      const y = calMonth === 0 ? calYear - 1 : calYear;
-      dateStr = y + '-' + String(m).padStart(2,'0') + '-' + String(day).padStart(2,'0');
+      cellM = calMonth === 0 ? 11 : calMonth - 1;
+      cellY = calMonth === 0 ? calYear - 1 : calYear;
       isOther = true;
     } else if (i >= firstDay + daysInMonth) {
       day = i - firstDay - daysInMonth + 1;
-      const m = calMonth === 11 ? 1 : calMonth + 2;
-      const y = calMonth === 11 ? calYear + 1 : calYear;
-      dateStr = y + '-' + String(m).padStart(2,'0') + '-' + String(day).padStart(2,'0');
+      cellM = calMonth === 11 ? 0 : calMonth + 1;
+      cellY = calMonth === 11 ? calYear + 1 : calYear;
       isOther = true;
     } else {
-      day = i - firstDay + 1;
-      dateStr = calYear + '-' + String(calMonth+1).padStart(2,'0') + '-' + String(day).padStart(2,'0');
+      day = i - firstDay + 1; cellY = calYear; cellM = calMonth;
     }
+    dateStr = _calDateStr(cellY, cellM, day);
     const isToday = dateStr === todayStr;
     const items = itemsByDate[dateStr] || [];
-    const safeDate = dateStr;
-    html += '<div class="cal-cell' + (isOther ? ' other-month' : '') + (isToday ? ' today' : '') + '" onclick="openBoardAdd(\'' + safeDate + '\')">';
+    html += '<div class="cal-cell' + (isOther ? ' other-month' : '') + (isToday ? ' today' : '') + '"'
+          + ' onclick="calSelectDay(' + cellY + ',' + cellM + ',' + day + ')">';
     html += '<div class="cal-cell-num">' + day + '</div>';
-    if (isMobCal) {
+    if (isMob) {
       if (items.length) {
         html += '<div class="cal-dots">';
         items.slice(0, 7).forEach(item => {
@@ -6420,13 +6540,83 @@ function renderCalendar() {
     } else {
       items.slice(0, 3).forEach(item => {
         const sty = statusStyle(item.status || 'todo');
-        html += '<div class="cal-chip" style="background:' + sty.bg + ';color:' + sty.color + '" onclick="event.stopPropagation();openBoardDetail(\'' + item.id + '\')" title="' + esc(item.title) + '">' + esc(item.title) + '</div>';
+        html += '<div class="cal-chip" style="background:' + sty.bg + ';color:' + sty.color + '"'
+              + ' onclick="event.stopPropagation();openBoardDetail(\'' + item.id + '\')"'
+              + ' title="' + esc(item.title) + '">' + esc(item.title) + '</div>';
       });
       if (items.length > 3) html += '<div class="cal-more">+' + (items.length - 3) + ' more</div>';
     }
     html += '</div>';
   }
-  gridEl.innerHTML = html;
+  html += '</div>';
+  bodyEl.innerHTML = html;
+}
+
+function _renderCalWeek(titleEl, bodyEl) {
+  const isMob = window.innerWidth <= 480;
+  // Find Sunday of current week
+  const anchor = new Date(calYear, calMonth, calDay);
+  const weekStart = new Date(anchor);
+  weekStart.setDate(anchor.getDate() - anchor.getDay());
+  const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6);
+  const fmtDay = d => _CAL_MONTHS[d.getMonth()].slice(0,3) + ' ' + d.getDate();
+  titleEl.textContent = fmtDay(weekStart) + ' – ' + fmtDay(weekEnd) + ', ' + weekEnd.getFullYear();
+  const todayStr = _calTodayStr();
+  const itemsByDate = _calItemsByDate();
+  const dayNames = isMob ? _CAL_DAYS_MIN : _CAL_DAYS_SHORT;
+  let html = '<div class="cal-week-grid">';
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(weekStart); d.setDate(weekStart.getDate() + i);
+    const dayLabel = dayNames[d.getDay()] + (isMob ? '' : ' ' + d.getDate());
+    html += '<div class="cal-week-header">' + dayLabel + '</div>';
+  }
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(weekStart); d.setDate(weekStart.getDate() + i);
+    const ds = _calDateStr(d.getFullYear(), d.getMonth(), d.getDate());
+    const isToday = ds === todayStr;
+    const items = itemsByDate[ds] || [];
+    html += '<div class="cal-week-cell' + (isToday ? ' today' : '') + '"'
+          + ' onclick="calSelectDay(' + d.getFullYear() + ',' + d.getMonth() + ',' + d.getDate() + ')">';
+    html += '<div class="cal-week-num">' + d.getDate() + '</div>';
+    items.slice(0, 4).forEach(item => {
+      const sty = statusStyle(item.status || 'todo');
+      html += '<div class="cal-week-chip" style="background:' + sty.bg + ';color:' + sty.color + '"'
+            + ' onclick="event.stopPropagation();openBoardDetail(\'' + item.id + '\')"'
+            + ' title="' + esc(item.title) + '">' + esc(item.title) + '</div>';
+      html += '<div class="cal-week-dot" style="background:' + sty.color + '"></div>';
+    });
+    if (items.length > 4) html += '<div class="cal-week-more">+' + (items.length - 4) + '</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+  bodyEl.innerHTML = html;
+}
+
+function _renderCalDay(titleEl, bodyEl) {
+  const d = new Date(calYear, calMonth, calDay);
+  const dayName = _CAL_DAYS_LONG[d.getDay()];
+  titleEl.textContent = dayName + ', ' + _CAL_MONTHS[calMonth].slice(0,3) + ' ' + calDay + ' ' + calYear;
+  const ds = _calDateStr(calYear, calMonth, calDay);
+  const items = (_calItemsByDate()[ds] || []);
+  let html = '<div class="cal-day-view">';
+  if (!items.length) {
+    html += '<div class="cal-day-empty">No issues due on this day</div>';
+  } else {
+    items.forEach(item => {
+      const sty = statusStyle(item.status || 'todo');
+      html += '<div class="cal-day-issue" onclick="openBoardDetail(\'' + item.id + '\')">';
+      html += '<span class="cal-dot" style="background:' + sty.color + ';width:8px;height:8px;flex-shrink:0;border-radius:50%;margin-top:5px;"></span>';
+      html += '<div class="cal-day-issue-text">';
+      html += '<div class="cal-day-issue-title">' + esc(item.title) + '</div>';
+      if (item.desc) html += '<div class="cal-day-issue-desc">' + esc(item.desc) + '</div>';
+      html += '</div>';
+      html += '<span style="font-size:0.7rem;padding:2px 7px;border-radius:10px;background:' + sty.bg + ';color:' + sty.color + ';flex-shrink:0;">' + esc(item.status || 'todo') + '</span>';
+      html += '</div>';
+    });
+  }
+  html += '<button class="cal-day-add" onclick="openBoardAdd(\'' + ds + '\')">+ Add issue for this day</button>';
+  html += '</div>';
+  bodyEl.innerHTML = html;
 }
 
 // ═══════ INIT ═══════
