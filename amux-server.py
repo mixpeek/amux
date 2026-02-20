@@ -1413,8 +1413,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     user-select: text; -webkit-user-select: text;
   }
   .card:active { border-color: var(--accent); }
-  .card-header { display: flex; align-items: center; gap: 10px; position: relative; min-width: 0; cursor: grab; }
+  .card-header { display: flex; flex-direction: column; gap: 4px; position: relative; min-width: 0; cursor: grab; }
   .card-header:active { cursor: grabbing; }
+  .card-header-top { display: flex; align-items: center; gap: 10px; width: 100%; }
+  .card-header-meta { display: flex; align-items: center; gap: 6px; margin-left: 20px; min-width: 0; }
   .card-menu-btn {
     width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--border);
     background: transparent; color: var(--dim); cursor: pointer;
@@ -3455,16 +3457,11 @@ function render() {
     return `
     <div class="card ${isExp ? 'expanded' : ''}" data-session="${esc(s.name)}" onclick="event.stopPropagation();toggle('${s.name}')">
       <div class="card-header" onclick="headerTap('${s.name}', event)" onmousedown="tileMouseDown(event,'${s.name}')">
-        <div class="dot ${s.running ? 'running' : 'stopped'}"></div>
-        <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${esc(s.name)}</div>
-        ${s.status === 'active' ? '<span class="status-badge active">working</span>' : ''}
-        ${s.status === 'waiting' ? '<span class="status-badge waiting">needs input</span>' : ''}
-        ${s.status === 'idle' ? '<span class="status-badge idle">idle</span>' : ''}
-        ${s.tokens ? `<span class="token-count">${fmtTokens(s.tokens)}</span>` : ''}
-        ${s.last_activity ? `<span class="last-active">${timeAgo(s.last_activity)}</span>` : ''}
-        ${!online ? '<span class="cached-badge">cached</span>' : ''}
-        <button class="card-menu-btn" onclick="event.stopPropagation();toggleMenu('${s.name}')" title="Options">&#x22EF;</button>
-        <div class="card-menu" id="menu-${s.name}">
+        <div class="card-header-top">
+          <div class="dot ${s.running ? 'running' : 'stopped'}"></div>
+          <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${esc(s.name)}</div>
+          <button class="card-menu-btn" onclick="event.stopPropagation();toggleMenu('${s.name}')" title="Options">&#x22EF;</button>
+          <div class="card-menu" id="menu-${s.name}">
           <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();openPeek('${s.name}')"><span class="mi">&#x1F4BB;</span> Peek terminal</div>
           <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();showSessionInfo('${s.name}')"><span class="mi">&#x2139;</span> Info</div>
           ${s.running ? `<div class="card-menu-item danger" onclick="event.stopPropagation();doStop('${s.name}')"><span class="mi">&#x23F9;</span> Stop</div>` : ''}
@@ -3481,6 +3478,15 @@ function render() {
           <div class="card-menu-sep"></div>
           <div class="card-menu-item danger" onclick="event.stopPropagation();deleteSession('${s.name}')"><span class="mi">&#x2716;</span> Delete</div>
         </div>
+        </div>
+        ${(s.status || s.tokens || s.last_activity || !online) ? `<div class="card-header-meta">
+          ${s.status === 'active' ? '<span class="status-badge active">working</span>' : ''}
+          ${s.status === 'waiting' ? '<span class="status-badge waiting">needs input</span>' : ''}
+          ${s.status === 'idle' ? '<span class="status-badge idle">idle</span>' : ''}
+          ${s.tokens ? `<span class="token-count">${fmtTokens(s.tokens)}</span>` : ''}
+          ${s.last_activity ? `<span class="last-active">${timeAgo(s.last_activity)}</span>` : ''}
+          ${!online ? '<span class="cached-badge">cached</span>' : ''}
+        </div>` : ''}
       </div>
       ${s.dir ? `<div class="card-dir" onclick="event.stopPropagation();openExplore('${s.dir.replace(/'/g,"\\'")}')" style="cursor:pointer;" title="Browse files">${esc(s.dir)}</div>` : ''}
       ${s.creator ? `<div class="card-dir" style="font-size:0.72rem;">${esc(s.creator)}</div>` : ''}
