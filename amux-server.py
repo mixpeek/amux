@@ -5862,20 +5862,33 @@ function _pwaCb(e) {
   // Cmd+A — select all in focused input
   if (k === 'a' && inp) { e.preventDefault(); inp.select(); return true; }
 
-  // Cmd+C / Cmd+X — copy or cut selected text
-  if ((k === 'c' || k === 'x') && inp && navigator.clipboard?.writeText) {
-    const sel = inp.value.slice(inp.selectionStart, inp.selectionEnd);
-    if (sel) {
-      e.preventDefault();
-      navigator.clipboard.writeText(sel).catch(() => {});
-      if (k === 'x') {
-        const s = inp.selectionStart, en = inp.selectionEnd;
-        inp.value = inp.value.slice(0, s) + inp.value.slice(en);
-        inp.selectionStart = inp.selectionEnd = s;
-        inp.dispatchEvent(new Event('input', { bubbles: true }));
-        if (typeof autoGrow === 'function') autoGrow(inp);
+  // Cmd+C / Cmd+X — copy (or cut) selected text.
+  // Works for both focused inputs AND plain text selected in terminal output divs.
+  if ((k === 'c' || k === 'x') && navigator.clipboard?.writeText) {
+    // Case 1: focused input/textarea with a text selection
+    if (inp) {
+      const sel = inp.value.slice(inp.selectionStart, inp.selectionEnd);
+      if (sel) {
+        e.preventDefault();
+        navigator.clipboard.writeText(sel).catch(() => {});
+        if (k === 'x') {
+          const s = inp.selectionStart, en = inp.selectionEnd;
+          inp.value = inp.value.slice(0, s) + inp.value.slice(en);
+          inp.selectionStart = inp.selectionEnd = s;
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          if (typeof autoGrow === 'function') autoGrow(inp);
+        }
+        return true;
       }
-      return true;
+    }
+    // Case 2: text selected in a terminal output div (peek body, workspace pane body, etc.)
+    if (k === 'c') {
+      const sel = window.getSelection()?.toString();
+      if (sel) {
+        e.preventDefault();
+        navigator.clipboard.writeText(sel).catch(() => {});
+        return true;
+      }
     }
   }
 
