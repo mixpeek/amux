@@ -417,7 +417,8 @@ CREATE TABLE IF NOT EXISTS issues (
     due         TEXT,
     created     INTEGER NOT NULL,
     updated     INTEGER NOT NULL,
-    deleted     INTEGER
+    deleted     INTEGER,
+    owner_type  TEXT NOT NULL DEFAULT 'human'
 );
 CREATE TABLE IF NOT EXISTS issue_tags (
     issue_id    TEXT NOT NULL,
@@ -478,6 +479,15 @@ def _init_db():
             (sid, label, pos, pos),
         )
     db.commit()
+    # Migrations: add columns that may not exist on older DBs
+    for migration in [
+        "ALTER TABLE issues ADD COLUMN owner_type TEXT NOT NULL DEFAULT 'human'",
+    ]:
+        try:
+            db.execute(migration)
+            db.commit()
+        except Exception:
+            pass  # column already exists
 
 
 def _load_board_raw() -> dict:
@@ -595,7 +605,7 @@ def _load_board() -> list:
     db = get_db()
     rows = db.execute(
         """SELECT i.id, i.title, i.desc, i.status, i.session, i.creator,
-                  i.due, i.created, i.updated,
+                  i.due, i.created, i.updated, i.owner_type,
                   GROUP_CONCAT(t.tag) AS tags_csv
            FROM issues i
            LEFT JOIN issue_tags t ON t.issue_id = i.id
@@ -624,7 +634,7 @@ def _item_by_id(bid: str) -> dict | None:
     db = get_db()
     row = db.execute(
         """SELECT i.id, i.title, i.desc, i.status, i.session, i.creator,
-                  i.due, i.created, i.updated,
+                  i.due, i.created, i.updated, i.owner_type,
                   GROUP_CONCAT(t.tag) AS tags_csv
            FROM issues i
            LEFT JOIN issue_tags t ON t.issue_id = i.id
@@ -2562,6 +2572,25 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .board-edit-actions .be-save { background: var(--accent); color: #fff; border-color: var(--accent); }
   .board-edit-actions .be-cancel:active { background: var(--border); }
   .board-edit-actions .be-save:active { opacity: 0.8; }
+  /* Owner type toggle (create form + detail view) */
+  .owner-toggle { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .owner-toggle-btn {
+    flex: 1; padding: 6px 0; font-size: 0.78rem; font-weight: 500; cursor: pointer;
+    border: none; background: var(--card); color: var(--dim);
+    -webkit-tap-highlight-color: transparent; transition: background 0.12s, color 0.12s;
+  }
+  .owner-toggle-btn.active { background: var(--hover); color: var(--text); }
+  .owner-toggle-btn:first-child { border-right: 1px solid var(--border); }
+  /* Owner badge on board cards */
+  .board-owner-badge {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: 0.6rem; font-weight: 500; padding: 2px 5px; border-radius: 3px;
+    white-space: nowrap;
+  }
+  .board-owner-badge.human { background: rgba(139,148,158,0.1); color: var(--dim); }
+  .board-owner-badge.agent { background: rgba(88,166,255,0.1); color: var(--accent); }
+  /* Human tasks group in session view */
+  .board-human-group { border-left: 2px solid rgba(139,148,158,0.2); padding-left: 2px; margin-bottom: 12px; }
 
   /* ═══ Grid Mode ═══ */
   #grid-view {
@@ -2761,6 +2790,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <div id="board-edit-overlay" class="board-edit-overlay" onclick="if(event.target===this)closeBoardEdit()">
   <div class="board-edit-box">
     <div class="field-group">
+      <div class="owner-toggle" style="margin-bottom:10px;">
+        <button class="owner-toggle-btn active" id="be-owner-human" onclick="setBoardOwnerType('human')">&#x1F464; For me</button>
+        <button class="owner-toggle-btn" id="be-owner-agent" onclick="setBoardOwnerType('agent')">&#x1F916; For agent</button>
+      </div>
+    </div>
+    <div class="field-group">
       <label class="field-label">Title</label>
       <input id="be-title" type="text" placeholder="What needs to be done?" autocomplete="off"
         onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('be-desc').focus();}">
@@ -2769,8 +2804,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <label class="field-label">Notes <span class="field-optional">(optional)</span></label>
       <textarea id="be-desc" placeholder="Add details or context..."></textarea>
     </div>
-    <div class="field-group">
-      <label class="field-label">Session</label>
+    <div class="field-group" id="be-session-row" style="display:none;">
+      <label class="field-label">Assign to session</label>
       <select id="be-session-add"></select>
     </div>
     <div class="field-group">
@@ -2801,6 +2836,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <textarea id="bd-title" class="board-detail-title-input" placeholder="Untitled" autocomplete="off" autocorrect="on" spellcheck="true" rows="1" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
     <div class="board-detail-status-row" id="bd-status-row"></div>
     <div class="board-detail-row">
+      <span style="font-size:0.78rem;color:var(--dim);">For:</span>
+      <div class="owner-toggle" style="flex:1;">
+        <button class="owner-toggle-btn" id="bd-owner-human" onclick="setBoardDetailOwner('human')">&#x1F464; Me</button>
+        <button class="owner-toggle-btn" id="bd-owner-agent" onclick="setBoardDetailOwner('agent')">&#x1F916; Agent</button>
+      </div>
+    </div>
+    <div class="board-detail-row" id="bd-session-row">
       <span style="font-size:0.78rem;color:var(--dim);">Session:</span>
       <select id="bd-session" class="board-detail-session-select"></select>
     </div>
@@ -5995,6 +6037,8 @@ function _renderBoardCard(item) {
   h += esc(item.title) + '</div>';
   if (firstLine) h += '<div class="board-card-desc">' + esc(firstLine) + ((item.desc || '').length > 80 ? '\u2026' : '') + '</div>';
   h += '<div class="board-card-footer">';
+  const isAgent = item.owner_type === 'agent';
+  if (isAgent) h += '<span class="board-owner-badge agent">&#x1F916; agent</span>';
   if (boardViewMode !== 'session' && item.session) h += '<span class="board-card-session" data-session="' + esc(item.session) + '">' + esc(item.session) + '</span>';
   tags.forEach(function(t) { h += '<span class="board-card-tag" data-tag="' + esc(t) + '">' + esc(t) + '</span>'; });
   if (item.due) { const today = new Date().toISOString().slice(0,10); const overdue = item.due < today && item.status !== 'done'; h += '<span class="board-card-time" style="' + (overdue ? 'color:var(--red)' : 'color:var(--accent)') + '">&#x1F4C5; ' + item.due + '</span>'; }
@@ -6005,10 +6049,14 @@ function _renderBoardCard(item) {
 }
 
 function _renderBoardBySession(visible, container) {
-  // Group by session
+  // Split human tasks (yours) from agent tasks
+  const humanItems = visible.filter(i => i.owner_type !== 'agent');
+  const agentItems = visible.filter(i => i.owner_type === 'agent');
+
+  // Group agent tasks by session
   const groups = {};
   const noSession = [];
-  visible.forEach(function(item) {
+  agentItems.forEach(function(item) {
     if (item.session) {
       if (!groups[item.session]) groups[item.session] = [];
       groups[item.session].push(item);
@@ -6019,26 +6067,47 @@ function _renderBoardBySession(visible, container) {
   const sessionNames = Object.keys(groups).sort();
   if (noSession.length) sessionNames.push('');
 
-  let html = '';
-  sessionNames.forEach(function(name) {
-    const items = name ? groups[name] : noSession;
-    const collapsed = _sessionGroupCollapsed[name || '__none__'];
-    const groupKey = name || '__none__';
+  function _sessionCountsHtml(items) {
     const statusCounts = {};
     items.forEach(function(i) { const s = i.status || 'todo'; statusCounts[s] = (statusCounts[s] || 0) + 1; });
-
-    html += '<div class="board-session-group">';
-    html += '<div class="board-session-header" onclick="toggleSessionGroup(\'' + esc(groupKey) + '\')">';
-    html += '<span class="board-session-chevron' + (collapsed ? '' : ' open') + '">\u25B6</span>';
-    html += '<span class="board-session-name">' + (name ? esc(name) : 'No session') + '</span>';
-    html += '<div class="board-session-counts">';
+    let h = '';
     boardStatuses.forEach(function(stObj) {
       const c = statusCounts[stObj.id] || 0;
       if (!c) return;
       const sty = statusStyle(stObj.id);
-      html += '<span class="board-session-count" style="background:' + sty.bg + ';color:' + sty.color + '">' + c + ' ' + esc(stObj.label.toLowerCase()) + '</span>';
+      h += '<span class="board-session-count" style="background:' + sty.bg + ';color:' + sty.color + '">' + c + ' ' + esc(stObj.label.toLowerCase()) + '</span>';
     });
-    html += '</div></div>';
+    return h;
+  }
+
+  let html = '';
+
+  // ── Yours (human tasks) at the top ──
+  if (humanItems.length) {
+    const collapsed = _sessionGroupCollapsed['__human__'];
+    html += '<div class="board-session-group board-human-group">';
+    html += '<div class="board-session-header" onclick="toggleSessionGroup(\'__human__\')">';
+    html += '<span class="board-session-chevron' + (collapsed ? '' : ' open') + '">\u25B6</span>';
+    html += '<span class="board-session-name">&#x1F464; Yours</span>';
+    html += '<div class="board-session-counts">' + _sessionCountsHtml(humanItems) + '</div></div>';
+    if (!collapsed) {
+      html += '<div class="board-session-items">';
+      humanItems.forEach(function(item) { html += _renderBoardCard(item); });
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
+  // ── Agent tasks grouped by session ──
+  sessionNames.forEach(function(name) {
+    const items = name ? groups[name] : noSession;
+    const collapsed = _sessionGroupCollapsed[name || '__none__'];
+    const groupKey = name || '__none__';
+    html += '<div class="board-session-group">';
+    html += '<div class="board-session-header" onclick="toggleSessionGroup(\'' + esc(groupKey) + '\')">';
+    html += '<span class="board-session-chevron' + (collapsed ? '' : ' open') + '">\u25B6</span>';
+    html += '<span class="board-session-name">' + (name ? '\uD83E\uDD16 ' + esc(name) : '<span style="color:var(--dim)">Unassigned agent tasks</span>') + '</span>';
+    html += '<div class="board-session-counts">' + _sessionCountsHtml(items) + '</div></div>';
     if (!collapsed) {
       html += '<div class="board-session-items">';
       items.forEach(function(item) { html += _renderBoardCard(item); });
@@ -6047,7 +6116,7 @@ function _renderBoardBySession(visible, container) {
     html += '</div>';
   });
 
-  if (!sessionNames.length) {
+  if (!humanItems.length && !sessionNames.length) {
     html = '<div class="board-session-empty">No board items yet</div>';
   }
   container.innerHTML = html;
@@ -6248,6 +6317,7 @@ function openBoardAdd(statusOrDate, prefillDate) {
   sel.innerHTML = boardStatuses.map(s => '<option value="' + s.id + '">' + esc(s.label) + '</option>').join('');
   sel.value = status;
   _populateSessionSelect('be-session-add', peekSession || '');
+  setBoardOwnerType(peekSession ? 'agent' : 'human');
   document.getElementById('board-edit-overlay').classList.add('active');
   document.getElementById('be-title').focus();
 }
@@ -6262,21 +6332,42 @@ async function saveBoardEdit() {
   if (!title) return;
   const desc = document.getElementById('be-desc').value.trim();
   const status = document.getElementById('be-status').value;
+  const ownerType = _boardCreateOwnerType;
   const sel = document.getElementById('be-session-add');
-  const session = sel ? sel.value : '';
+  const session = ownerType === 'agent' && sel ? sel.value : '';
   const sess = sessions.find(s => s.name === session);
   const tags = sess ? (sess.tags || []) : [];
   const dueEl = document.getElementById('be-due');
   const due = dueEl ? dueEl.value : '';
   closeBoardEdit();
-  await addBoardItem(title, desc, status, session, tags, due);
+  await addBoardItem(title, desc, status, session, tags, due, ownerType);
   if (_peekTab === 'issues') renderPeekIssues();
+}
+
+// ── Owner type helpers ──
+let _boardCreateOwnerType = 'human';
+
+function setBoardOwnerType(type) {
+  _boardCreateOwnerType = type;
+  document.getElementById('be-owner-human').classList.toggle('active', type === 'human');
+  document.getElementById('be-owner-agent').classList.toggle('active', type === 'agent');
+  document.getElementById('be-session-row').style.display = type === 'agent' ? '' : 'none';
+}
+
+let _boardDetailOwnerType = 'human';
+
+function setBoardDetailOwner(type) {
+  _boardDetailOwnerType = type;
+  document.getElementById('bd-owner-human').classList.toggle('active', type === 'human');
+  document.getElementById('bd-owner-agent').classList.toggle('active', type === 'agent');
+  const sessRow = document.getElementById('bd-session-row');
+  if (sessRow) sessRow.style.display = type === 'agent' ? '' : 'none';
 }
 
 // ── Board detail (full-screen) ──
 let boardDetailId = null;
 let boardDetailStatus = 'todo';
-const _boardDrafts = {};  // item id → { title, desc, session, status }
+const _boardDrafts = {};  // item id → { title, desc, session, status, owner_type }
 
 function openBoardDetail(id) {
   const item = boardItems.find(i => i.id === id);
@@ -6292,6 +6383,8 @@ function openBoardDetail(id) {
   _renderDetailStatusBtns();
   const keyEl = document.getElementById('bd-key');
   if (keyEl) keyEl.textContent = item.id || '';
+  const ownerType = draft ? draft.owner_type : (item.owner_type || 'human');
+  setBoardDetailOwner(ownerType);
   _populateSessionSelect('bd-session', draft ? draft.session : (item.session || ''));
   const dueEl = document.getElementById('bd-due');
   if (dueEl) dueEl.value = draft ? (draft.due || '') : (item.due || '');
@@ -6355,9 +6448,10 @@ function closeBoardDetail() {
       const st = boardDetailStatus;
       const dueEl = document.getElementById('bd-due');
       const due = dueEl ? dueEl.value : (item.due || '');
+      const ot = _boardDetailOwnerType;
       // Only save draft if something actually differs from saved state
-      if (t !== (item.title || '') || d !== (item.desc || '') || s !== (item.session || '') || st !== (item.status || 'todo') || due !== (item.due || '')) {
-        _boardDrafts[boardDetailId] = { title: t, desc: d, session: s, status: st, due };
+      if (t !== (item.title || '') || d !== (item.desc || '') || s !== (item.session || '') || st !== (item.status || 'todo') || due !== (item.due || '') || ot !== (item.owner_type || 'human')) {
+        _boardDrafts[boardDetailId] = { title: t, desc: d, session: s, status: st, due, owner_type: ot };
       } else {
         delete _boardDrafts[boardDetailId];
       }
@@ -6411,7 +6505,7 @@ async function boardDetailSave() {
   const session = sel ? sel.value : undefined;
   document.getElementById('bd-save-status').textContent = 'Saving...';
   const dueInput = document.getElementById('bd-due');
-  const changes = { title, desc, status: boardDetailStatus, due: dueInput ? dueInput.value : '' };
+  const changes = { title, desc, status: boardDetailStatus, due: dueInput ? dueInput.value : '', owner_type: _boardDetailOwnerType };
   if (session !== undefined) {
     changes.session = session;
     const item = boardItems.find(i => i.id === boardDetailId);
@@ -6452,16 +6546,17 @@ function saveBoardCache() {
   localStorage.setItem('amux_board_cache', lastBoardJSON);
 }
 
-async function addBoardItem(title, desc, status, session, tags, due) {
+async function addBoardItem(title, desc, status, session, tags, due, ownerType) {
+  ownerType = ownerType || 'human';
   const tempId = Math.random().toString(16).slice(2, 8);
   const now = Math.floor(Date.now() / 1000);
-  const tempItem = { id: tempId, title, desc, status, session: session || '', tags: tags || [], due: due || '', creator: _getDeviceName(), created: now, updated: now, _pending: true };
+  const tempItem = { id: tempId, title, desc, status, session: session || '', tags: tags || [], due: due || '', creator: _getDeviceName(), owner_type: ownerType, created: now, updated: now, _pending: true };
   boardItems.push(tempItem);
   saveBoardCache();
   renderBoard();
   const r = await apiCall(API + '/api/board', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ title, desc, status, session: session || '', tags: tags || [], due: due || '', creator: _getDeviceName() })
+    body: JSON.stringify({ title, desc, status, session: session || '', tags: tags || [], due: due || '', creator: _getDeviceName(), owner_type: ownerType })
   });
   if (r) {
     const item = await r.json();
@@ -8226,10 +8321,13 @@ class CCHandler(BaseHTTPRequestHandler):
                 creator = body.get("creator", "")
                 desc = body.get("desc", "").strip()
                 tags = [t for t in body.get("tags", []) if t]
+                owner_type = body.get("owner_type", "agent" if session else "human")
+                if owner_type not in ("human", "agent"):
+                    owner_type = "human"
                 db.execute(
-                    """INSERT INTO issues (id, title, desc, status, session, creator, due, created, updated)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (item_id, title, desc, status, session or None, creator, due, now, now),
+                    """INSERT INTO issues (id, title, desc, status, session, creator, due, created, updated, owner_type)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (item_id, title, desc, status, session or None, creator, due, now, now, owner_type),
                 )
                 for tag in tags:
                     db.execute(
@@ -8305,6 +8403,38 @@ class CCHandler(BaseHTTPRequestHandler):
                         db.commit()
                     return self._json({"ok": True})
 
+            # POST /api/board/<id>/claim — atomic task claim for multi-agent coordination
+            claim_m = re.match(r"^/api/board/([A-Za-z0-9_-]+)/claim$", path)
+            if claim_m and method == "POST":
+                bid = claim_m.group(1)
+                body = self._read_body()
+                session_name = body.get("session", "").strip()
+                if not session_name:
+                    return self._json({"error": "missing session"}, 400)
+                row = db.execute(
+                    "SELECT id, status, owner_type, session FROM issues WHERE id = ? AND deleted IS NULL",
+                    (bid,),
+                ).fetchone()
+                if not row:
+                    return self._json({"error": "item not found"}, 404)
+                if dict(row)["owner_type"] != "agent":
+                    return self._json({"error": "item is not an agent task"}, 409)
+                if dict(row)["status"] not in ("todo", "backlog"):
+                    return self._json({"error": f"item not available (status: {dict(row)['status']})"}, 409)
+                now = int(time.time())
+                # Atomic claim: only succeeds if still todo/backlog
+                db.execute(
+                    "UPDATE issues SET status='doing', session=?, updated=?"
+                    " WHERE id=? AND status IN ('todo','backlog') AND deleted IS NULL",
+                    (session_name, now, bid),
+                )
+                db.commit()
+                updated = db.execute("SELECT session FROM issues WHERE id=?", (bid,)).fetchone()
+                if not updated or dict(updated)["session"] != session_name:
+                    return self._json({"error": "claim failed — taken by another session"}, 409)
+                _sse_cache["board"]["time"] = 0
+                return self._json(_item_by_id(bid))
+
             # PATCH/DELETE /api/board/<id>
             board_m = re.match(r"^/api/board/([A-Za-z0-9_-]+)$", path)
             if board_m:
@@ -8319,7 +8449,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     body = self._read_body()
                     now = int(time.time())
                     set_clauses, params = [], []
-                    for k in ("title", "desc", "status", "session", "due"):
+                    for k in ("title", "desc", "status", "session", "due", "owner_type"):
                         if k in body:
                             set_clauses.append(f"{k} = ?")
                             v = body[k]
