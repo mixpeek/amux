@@ -5918,12 +5918,19 @@ function initSortable() {
     delay: 150,
     delayOnTouchOnly: false,
     touchStartThreshold: 4,
-    onStart: function() { _tileJustDragged = false; },
+    onStart: function(evt) {
+      _tileJustDragged = false;
+      console.log('[amux:drag] onStart', { session: evt.item?.dataset?.session, oldIndex: evt.oldIndex });
+    },
+    onMove: function(evt) {
+      console.log('[amux:drag] onMove', { dragged: evt.dragged?.dataset?.session, related: evt.related?.dataset?.session, willInsertAfter: evt.willInsertAfter });
+    },
     onEnd: function(evt) {
       _tileJustDragged = evt.oldIndex !== evt.newIndex;
       const allCards = cards.querySelectorAll('.card[data-session]');
       cardOrder = Array.from(allCards).map(c => c.dataset.session);
       localStorage.setItem('amux_card_order', JSON.stringify(cardOrder));
+      console.log('[amux:drag] onEnd', { session: evt.item?.dataset?.session, oldIndex: evt.oldIndex, newIndex: evt.newIndex, moved: _tileJustDragged, cardOrder });
     }
   });
 }
