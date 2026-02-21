@@ -2755,18 +2755,29 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   #gridstack-container .ui-resizable-handle { opacity: 0.3; }
   #gridstack-container .ui-resizable-handle:hover { opacity: 0.8; }
   .gp-send {
-    display: flex; gap: 4px; padding: 4px 6px;
+    display: flex; flex-direction: column; gap: 4px; padding: 5px 6px 6px;
     border-top: 1px solid var(--border); flex-shrink: 0;
     background: #161b22;
   }
+  .gp-chips {
+    display: flex; gap: 3px; flex-wrap: wrap; align-items: center;
+  }
+  .gp-chips .chip {
+    font-size: 0.65rem; padding: 2px 6px; border-radius: 8px;
+  }
+  .gp-send-row { display: flex; gap: 4px; align-items: flex-end; }
   .gp-send-input {
     flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
     color: var(--text); font-size: 0.73rem; padding: 4px 8px; min-width: 0; outline: none;
+    resize: none; overflow-x: hidden; overflow-y: auto; line-height: 1.4;
+    font-family: inherit; min-height: 28px; max-height: calc(1.4em * 5 + 16px);
+    field-sizing: content;
   }
   .gp-send-input:focus { border-color: var(--accent); }
   .gp-send-btn {
     background: var(--accent); border: none; color: #fff; border-radius: 4px;
     font-size: 0.73rem; padding: 4px 8px; cursor: pointer; flex-shrink: 0;
+    align-self: flex-end;
   }
   .gp-send-btn:hover { opacity: 0.85; }
   #tab-grid { display: none; }
@@ -7221,9 +7232,23 @@ function addGridPane(name, x, y, w, h) {
     '</div>' +
     '<div class="gp-body" id="' + sid + '-body">Loading\u2026</div>' +
     '<div class="gp-send">' +
-      '<input class="gp-send-input" id="' + sid + '-input" placeholder="Send\u2026" ' +
-        'onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){sendGridCmd(\'' + safeName + '\');event.preventDefault();}">' +
-      '<button class="gp-send-btn" onclick="sendGridCmd(\'' + safeName + '\')">&#x21B5;</button>' +
+      '<div class="gp-chips chips">' +
+        '<div class="chip" onclick="gpDoKeys(\'' + safeName + '\',\'C-c\')">Ctrl-C</div>' +
+        '<div class="chip" onclick="gpDoKeys(\'' + safeName + '\',\'Up\')">&#x2191;</div>' +
+        '<div class="chip" onclick="gpDoKeys(\'' + safeName + '\',\'Down\')">&#x2193;</div>' +
+        '<div class="chip" onclick="gpDoKeys(\'' + safeName + '\',\'Enter\')">Enter</div>' +
+        '<div class="chip" onclick="gpDoKeys(\'' + safeName + '\',\'Escape\')">Esc</div>' +
+        '<div class="chip" onclick="gpChipToInput(\'' + safeName + '\',\'/status\')">/status</div>' +
+        '<div class="chip" onclick="gpChipToInput(\'' + safeName + '\',\'/cost\')">/cost</div>' +
+        '<div class="chip danger" onclick="gpChipToInput(\'' + safeName + '\',\'/compact\')">/compact</div>' +
+        '<div class="chip danger" onclick="gpChipToInput(\'' + safeName + '\',\'/clear\')">/clear</div>' +
+      '</div>' +
+      '<div class="gp-send-row">' +
+        '<textarea class="gp-send-input" id="' + sid + '-input" rows="1" placeholder="Send\u2026"' +
+          ' oninput="autoGrow(this);cmdHistoryReset()"' +
+          ' onkeydown="gpSendKeydown(\'' + safeName + '\',event)"></textarea>' +
+        '<button class="gp-send-btn" onclick="sendGridCmd(\'' + safeName + '\')">&#x21B5;</button>' +
+      '</div>' +
     '</div>';
   const widget = _grid.addWidget({ id: name, x, y, w: w || 6, h: h || 7, content });
   _gridPanes[name] = { widget, timer: setInterval(() => _updateGridPane(name), 2000) };
@@ -7369,13 +7394,36 @@ function _wsRenderProfileBar() {
   }).join('');
 }
 
+function gpDoKeys(name, keys) { doKeys(name, keys); }
+
+function gpChipToInput(name, text) {
+  const inp = document.getElementById(_gpSafeId(name) + '-input');
+  if (!inp) return;
+  inp.value = text;
+  inp.focus({ preventScroll: true });
+  autoGrow(inp);
+}
+
+function gpSendKeydown(name, e) {
+  const inp = document.getElementById(_gpSafeId(name) + '-input');
+  if (e.key === 'Enter' && !e.shiftKey) {
+    sendGridCmd(name); e.preventDefault();
+  } else if (e.key === 'ArrowUp' && inp && inp.value.indexOf('\n') === -1) {
+    e.preventDefault(); cmdHistoryUp(inp);
+  } else if (e.key === 'ArrowDown' && _cmdHistoryIdx !== -1) {
+    e.preventDefault(); cmdHistoryDown(inp);
+  }
+}
+
 async function sendGridCmd(name) {
   const sid = _gpSafeId(name);
   const inp = document.getElementById(sid + '-input');
   if (!inp) return;
   const text = inp.value.trim();
   if (!text) return;
+  cmdHistoryAdd(text);
   inp.value = '';
+  autoGrow(inp);
   await doSend(name, text);
   inp.style.borderColor = 'var(--green)';
   setTimeout(() => { inp.style.borderColor = ''; }, 400);
