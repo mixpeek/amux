@@ -2662,25 +2662,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .board-edit-actions .be-save { background: var(--accent); color: #fff; border-color: var(--accent); }
   .board-edit-actions .be-cancel:active { background: var(--border); }
   .board-edit-actions .be-save:active { opacity: 0.8; }
-  /* Owner type toggle (create form + detail view) */
-  .owner-toggle { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-  .owner-toggle-btn {
-    flex: 1; padding: 6px 0; font-size: 0.78rem; font-weight: 500; cursor: pointer;
-    border: none; background: var(--card); color: var(--dim);
-    -webkit-tap-highlight-color: transparent; transition: background 0.12s, color 0.12s;
-  }
-  .owner-toggle-btn.active { background: var(--hover); color: var(--text); }
-  .owner-toggle-btn:first-child { border-right: 1px solid var(--border); }
-  /* Owner badge on board cards */
-  .board-owner-badge {
-    display: inline-flex; align-items: center; gap: 3px;
-    font-size: 0.6rem; font-weight: 500; padding: 2px 5px; border-radius: 3px;
-    white-space: nowrap;
-  }
-  .board-owner-badge.human { background: rgba(139,148,158,0.1); color: var(--dim); }
-  .board-owner-badge.agent { background: rgba(88,166,255,0.1); color: var(--accent); }
-  /* Human tasks group in session view */
-  .board-human-group { border-left: 2px solid rgba(139,148,158,0.2); padding-left: 2px; margin-bottom: 12px; }
 
   /* ═══ Grid Mode ═══ */
   #grid-view {
@@ -2895,12 +2876,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <div id="board-edit-overlay" class="board-edit-overlay" onclick="if(event.target===this)closeBoardEdit()">
   <div class="board-edit-box">
     <div class="field-group">
-      <div class="owner-toggle" style="margin-bottom:10px;">
-        <button class="owner-toggle-btn active" id="be-owner-human" onclick="setBoardOwnerType('human')">&#x1F464; For me</button>
-        <button class="owner-toggle-btn" id="be-owner-agent" onclick="setBoardOwnerType('agent')">&#x1F916; For agent</button>
-      </div>
-    </div>
-    <div class="field-group">
       <label class="field-label">Title</label>
       <input id="be-title" type="text" placeholder="What needs to be done?" autocomplete="off"
         onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('be-desc').focus();}">
@@ -2909,8 +2884,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <label class="field-label">Notes <span class="field-optional">(optional)</span></label>
       <textarea id="be-desc" placeholder="Add details or context..."></textarea>
     </div>
-    <div class="field-group" id="be-session-row" style="display:none;">
-      <label class="field-label">Assign to session</label>
+    <div class="field-group" id="be-session-row">
+      <label class="field-label">Session <span class="field-optional">(optional)</span></label>
       <select id="be-session-add"></select>
     </div>
     <div class="field-group">
@@ -2940,13 +2915,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="board-detail-body">
     <textarea id="bd-title" class="board-detail-title-input" placeholder="Untitled" autocomplete="off" autocorrect="on" spellcheck="true" rows="1" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
     <div class="board-detail-status-row" id="bd-status-row"></div>
-    <div class="board-detail-row">
-      <span style="font-size:0.78rem;color:var(--dim);">For:</span>
-      <div class="owner-toggle" style="flex:1;">
-        <button class="owner-toggle-btn" id="bd-owner-human" onclick="setBoardDetailOwner('human')">&#x1F464; Me</button>
-        <button class="owner-toggle-btn" id="bd-owner-agent" onclick="setBoardDetailOwner('agent')">&#x1F916; Agent</button>
-      </div>
-    </div>
     <div class="board-detail-row" id="bd-session-row">
       <span style="font-size:0.78rem;color:var(--dim);">Session:</span>
       <select id="bd-session" class="board-detail-session-select"></select>
@@ -6253,8 +6221,6 @@ function _renderBoardCard(item) {
   h += esc(item.title) + '</div>';
   if (firstLine) h += '<div class="board-card-desc">' + esc(firstLine) + ((item.desc || '').length > 80 ? '\u2026' : '') + '</div>';
   h += '<div class="board-card-footer">';
-  const isAgent = item.owner_type === 'agent';
-  if (isAgent) h += '<span class="board-owner-badge agent">&#x1F916; agent</span>';
   if (boardViewMode !== 'session' && item.session) h += '<span class="board-card-session" data-session="' + esc(item.session) + '">' + esc(item.session) + '</span>';
   tags.forEach(function(t) { h += '<span class="board-card-tag" data-tag="' + esc(t) + '">' + esc(t) + '</span>'; });
   if (item.due) { const today = new Date().toISOString().slice(0,10); const overdue = item.due < today && item.status !== 'done'; h += '<span class="board-card-time" style="' + (overdue ? 'color:var(--red)' : 'color:var(--accent)') + '">&#x1F4C5; ' + item.due + '</span>'; }
@@ -6265,14 +6231,10 @@ function _renderBoardCard(item) {
 }
 
 function _renderBoardBySession(visible, container) {
-  // Split human tasks (yours) from agent tasks
-  const humanItems = visible.filter(i => i.owner_type !== 'agent');
-  const agentItems = visible.filter(i => i.owner_type === 'agent');
-
-  // Group agent tasks by session
+  // Group all items by session
   const groups = {};
   const noSession = [];
-  agentItems.forEach(function(item) {
+  visible.forEach(function(item) {
     if (item.session) {
       if (!groups[item.session]) groups[item.session] = [];
       groups[item.session].push(item);
@@ -6322,7 +6284,7 @@ function _renderBoardBySession(visible, container) {
     html += '<div class="board-session-group">';
     html += '<div class="board-session-header" onclick="toggleSessionGroup(\'' + esc(groupKey) + '\')">';
     html += '<span class="board-session-chevron' + (collapsed ? '' : ' open') + '">\u25B6</span>';
-    html += '<span class="board-session-name">' + (name ? '\uD83E\uDD16 ' + esc(name) : '<span style="color:var(--dim)">Unassigned agent tasks</span>') + '</span>';
+    html += '<span class="board-session-name">' + (name ? esc(name) : '<span style="color:var(--dim)">Unassigned</span>') + '</span>';
     html += '<div class="board-session-counts">' + _sessionCountsHtml(items) + '</div></div>';
     if (!collapsed) {
       html += '<div class="board-session-items">';
@@ -6332,7 +6294,7 @@ function _renderBoardBySession(visible, container) {
     html += '</div>';
   });
 
-  if (!humanItems.length && !sessionNames.length) {
+  if (!visible.length) {
     html = '<div class="board-session-empty">No board items yet</div>';
   }
   container.innerHTML = html;
@@ -6533,7 +6495,6 @@ function openBoardAdd(statusOrDate, prefillDate) {
   sel.innerHTML = boardStatuses.map(s => '<option value="' + s.id + '">' + esc(s.label) + '</option>').join('');
   sel.value = status;
   _populateSessionSelect('be-session-add', peekSession || '');
-  setBoardOwnerType(peekSession ? 'agent' : 'human');
   document.getElementById('board-edit-overlay').classList.add('active');
   document.getElementById('be-title').focus();
 }
@@ -6548,42 +6509,22 @@ async function saveBoardEdit() {
   if (!title) return;
   const desc = document.getElementById('be-desc').value.trim();
   const status = document.getElementById('be-status').value;
-  const ownerType = _boardCreateOwnerType;
   const sel = document.getElementById('be-session-add');
-  const session = ownerType === 'agent' && sel ? sel.value : '';
+  const session = sel ? sel.value : '';
   const sess = sessions.find(s => s.name === session);
   const tags = sess ? (sess.tags || []) : [];
   const dueEl = document.getElementById('be-due');
   const due = dueEl ? dueEl.value : '';
   closeBoardEdit();
-  await addBoardItem(title, desc, status, session, tags, due, ownerType);
+  await addBoardItem(title, desc, status, session, tags, due);
   if (_peekTab === 'issues') renderPeekIssues();
 }
 
-// ── Owner type helpers ──
-let _boardCreateOwnerType = 'human';
-
-function setBoardOwnerType(type) {
-  _boardCreateOwnerType = type;
-  document.getElementById('be-owner-human').classList.toggle('active', type === 'human');
-  document.getElementById('be-owner-agent').classList.toggle('active', type === 'agent');
-  document.getElementById('be-session-row').style.display = type === 'agent' ? '' : 'none';
-}
-
-let _boardDetailOwnerType = 'human';
-
-function setBoardDetailOwner(type) {
-  _boardDetailOwnerType = type;
-  document.getElementById('bd-owner-human').classList.toggle('active', type === 'human');
-  document.getElementById('bd-owner-agent').classList.toggle('active', type === 'agent');
-  const sessRow = document.getElementById('bd-session-row');
-  if (sessRow) sessRow.style.display = type === 'agent' ? '' : 'none';
-}
 
 // ── Board detail (full-screen) ──
 let boardDetailId = null;
 let boardDetailStatus = 'todo';
-const _boardDrafts = {};  // item id → { title, desc, session, status, owner_type }
+const _boardDrafts = {};  // item id → { title, desc, session, status, due }
 
 function openBoardDetail(id) {
   const item = boardItems.find(i => i.id === id);
@@ -6599,8 +6540,6 @@ function openBoardDetail(id) {
   _renderDetailStatusBtns();
   const keyEl = document.getElementById('bd-key');
   if (keyEl) keyEl.textContent = item.id || '';
-  const ownerType = draft ? draft.owner_type : (item.owner_type || 'human');
-  setBoardDetailOwner(ownerType);
   _populateSessionSelect('bd-session', draft ? draft.session : (item.session || ''));
   const dueEl = document.getElementById('bd-due');
   if (dueEl) dueEl.value = draft ? (draft.due || '') : (item.due || '');
@@ -6664,10 +6603,9 @@ function closeBoardDetail() {
       const st = boardDetailStatus;
       const dueEl = document.getElementById('bd-due');
       const due = dueEl ? dueEl.value : (item.due || '');
-      const ot = _boardDetailOwnerType;
       // Only save draft if something actually differs from saved state
-      if (t !== (item.title || '') || d !== (item.desc || '') || s !== (item.session || '') || st !== (item.status || 'todo') || due !== (item.due || '') || ot !== (item.owner_type || 'human')) {
-        _boardDrafts[boardDetailId] = { title: t, desc: d, session: s, status: st, due, owner_type: ot };
+      if (t !== (item.title || '') || d !== (item.desc || '') || s !== (item.session || '') || st !== (item.status || 'todo') || due !== (item.due || '')) {
+        _boardDrafts[boardDetailId] = { title: t, desc: d, session: s, status: st, due };
       } else {
         delete _boardDrafts[boardDetailId];
       }
@@ -6721,7 +6659,7 @@ async function boardDetailSave() {
   const session = sel ? sel.value : undefined;
   document.getElementById('bd-save-status').textContent = 'Saving...';
   const dueInput = document.getElementById('bd-due');
-  const changes = { title, desc, status: boardDetailStatus, due: dueInput ? dueInput.value : '', owner_type: _boardDetailOwnerType };
+  const changes = { title, desc, status: boardDetailStatus, due: dueInput ? dueInput.value : '' };
   if (session !== undefined) {
     changes.session = session;
     const item = boardItems.find(i => i.id === boardDetailId);
