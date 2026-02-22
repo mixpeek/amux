@@ -822,15 +822,21 @@ def _upload_ical_to_s3():
     if not _S3_BUCKET:
         return
     try:
-        import boto3
+        import boto3, hashlib, base64
         ical = _generate_ical()
+        body = ical.encode("utf-8")
+        # ContentMD5 lets S3 verify the upload and sets the ETag to the content MD5,
+        # enabling efficient conditional GETs (If-None-Match) by Google Calendar.
+        content_md5 = base64.b64encode(hashlib.md5(body).digest()).decode()
         s3 = boto3.client("s3", region_name=_S3_REGION)
         s3.put_object(
             Bucket=_S3_BUCKET,
             Key=_S3_KEY,
-            Body=ical.encode("utf-8"),
+            Body=body,
             ContentType="text/calendar; charset=utf-8",
-            CacheControl="no-cache, max-age=0",
+            ContentMD5=content_md5,
+            # Allow 15-min caching; ETag + Last-Modified enable conditional revalidation
+            CacheControl="public, max-age=900, must-revalidate",
         )
         slog(f"iCal uploaded to s3://{_S3_BUCKET}/{_S3_KEY}")
     except Exception as e:
@@ -7808,6 +7814,12 @@ function addGridPane(name, x, y, w, h) {
     '</div>';
   const widget = _grid.addWidget({ id: name, x, y, w: w || 6, h: h || 7, content });
   _gridPanes[name] = { widget, timer: setInterval(() => _updateGridPane(name), 2000) };
+  // Attach URL click handler (same as peek body — ensures links open in new tab in PWA mode)
+  const gpBody = document.getElementById(sid + '-body');
+  if (gpBody) {
+    gpBody.addEventListener('click', _peekOpenLink);
+    gpBody.addEventListener('touchend', _peekOpenLink, {passive: false});
+  }
   _updateGridPane(name);
   _renderGridChips();
   _gridSaveLayout();
