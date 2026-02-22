@@ -32,6 +32,16 @@ for _old_home in [Path.home() / ".cmux", Path.home() / ".cc"]:
     if not _amux_home.exists() and _old_home.exists():
         _old_home.rename(_amux_home)
         break
+
+# Load ~/.amux/server.env before reading any env vars (persistent server config)
+_server_env_file = _amux_home / "server.env"
+if _server_env_file.exists():
+    for _line in _server_env_file.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _, _v = _line.partition("=")
+            os.environ.setdefault(_k.strip(), _v.strip())
+
 CC_HOME = Path(os.environ.get("CC_HOME", _amux_home))
 CC_SESSIONS = CC_HOME / "sessions"
 CC_LOGS = CC_HOME / "logs"
