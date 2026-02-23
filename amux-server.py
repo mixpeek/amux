@@ -2829,7 +2829,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .tab-bar button.active { color: var(--accent); border-bottom-color: var(--accent); }
   .tab-bar button:active { opacity: 0.7; }
-  @media (min-width: 700px) { #tab-reports { margin-left: auto; } }
 
   /* Board */
   .board-search-wrap {
@@ -6968,6 +6967,7 @@ function statusStyle(id) {
 }
 
 function switchView(view) {
+  if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
   activeView = view;
   document.getElementById('session-view').style.display = view === 'sessions' ? '' : 'none';
   document.getElementById('board-view').style.display = view === 'board' ? '' : 'none';
