@@ -3097,17 +3097,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .board-card:active { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(88,166,255,0.2); }
   .board-drag-handle {
-    position: absolute; top: 8px; right: 8px;
-    width: 18px; height: 18px;
+    position: absolute; top: 6px; right: 6px;
+    width: 24px; height: 24px;
     display: flex; align-items: center; justify-content: center;
     cursor: grab; color: var(--dim); opacity: 0;
     transition: opacity 0.15s;
-    border-radius: 3px;
+    border-radius: 4px;
+    touch-action: none;
   }
   .board-drag-handle:active { cursor: grabbing; }
   .board-card:hover .board-drag-handle { opacity: 0.55; }
   .board-drag-handle:hover { opacity: 1 !important; color: var(--fg); background: rgba(139,148,158,0.12); }
-  @media (hover: none) { .board-drag-handle { opacity: 0.35; } }
+  @media (hover: none) { .board-drag-handle { opacity: 0.5; width: 32px; height: 32px; } }
   .board-card.card-enter { animation: cardEnter 0.3s cubic-bezier(.4,0,.2,1) both; }
   .board-card.card-flip { transition: transform 0.35s cubic-bezier(.4,0,.2,1); }
   @keyframes cardEnter {
@@ -7722,9 +7723,12 @@ function renderBoard() {
         dragClass: 'board-sortable-drag',
         filter: '.board-col-header, .board-add-btn, .board-empty',
         preventOnFilter: false,
-        delay: 150,
+        delay: 200,
         delayOnTouchOnly: true,
-        touchStartThreshold: 4,
+        touchStartThreshold: 5,
+        forceFallback: true,
+        fallbackOnBody: true,
+        fallbackTolerance: 5,
         onEnd: function(evt) {
           const id = evt.item.dataset.id;
           const newStatus = evt.to.dataset.col;
