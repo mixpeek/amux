@@ -6470,12 +6470,20 @@ async function doConnect(tmuxName) {
 }
 
 // ── Create session ──
+let _createBranchEdited = false;  // track if user manually changed branch name
+
 function openCreate() {
   document.getElementById('create-name').value = '';
   document.getElementById('create-dir').value = '';
   document.getElementById('create-prompt').value = '';
+  document.getElementById('create-branch').value = '';
+  document.getElementById('create-branch-enabled').checked = false;
+  document.getElementById('create-branch-wrap').style.display = 'none';
+  document.getElementById('create-branch-suggestions').style.display = 'none';
+  document.getElementById('create-branch-suggestions').innerHTML = '';
   document.getElementById('ac-list').innerHTML = '';
   document.getElementById('ac-list').classList.remove('open');
+  _createBranchEdited = false;
   document.getElementById('create-overlay').classList.add('active');
   setTimeout(() => document.getElementById('create-name').focus({ preventScroll: true }), 100);
 }
@@ -6483,10 +6491,56 @@ function closeCreate() {
   document.getElementById('create-overlay').classList.remove('active');
   document.getElementById('ac-list').classList.remove('open');
 }
+function _createNameChanged(val) {
+  // Auto-update branch name if user hasn't manually edited it
+  if (!_createBranchEdited) {
+    const slug = val.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+    document.getElementById('create-branch').value = slug ? 'session/' + slug : '';
+  }
+}
+function _toggleCreateBranch(on) {
+  document.getElementById('create-branch-wrap').style.display = on ? '' : 'none';
+  if (on) {
+    // Pre-fill if empty
+    const inp = document.getElementById('create-branch');
+    if (!inp.value) {
+      const name = document.getElementById('create-name').value.trim();
+      const slug = name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+      inp.value = slug ? 'session/' + slug : '';
+    }
+    inp.addEventListener('input', () => { _createBranchEdited = true; }, {once: true});
+    setTimeout(() => inp.focus({preventScroll: true}), 50);
+  }
+}
+async function _suggestBranch() {
+  const name = document.getElementById('create-name').value.trim();
+  const dir = document.getElementById('create-dir').value.trim();
+  const prompt = document.getElementById('create-prompt').value.trim();
+  const btn = document.getElementById('create-branch-suggest-btn');
+  const sugg = document.getElementById('create-branch-suggestions');
+  btn.textContent = '…'; btn.disabled = true;
+  sugg.style.display = 'none'; sugg.innerHTML = '';
+  try {
+    const r = await fetch(API + '/api/suggest-branch', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, dir, prompt}),
+    });
+    const d = await r.json();
+    if (d.suggestions && d.suggestions.length) {
+      sugg.innerHTML = d.suggestions.map(s =>
+        `<span class="chip" style="cursor:pointer;" onclick="document.getElementById('create-branch').value='${esc(s)}';_createBranchEdited=true;document.getElementById('create-branch-suggestions').style.display='none';">${esc(s)}</span>`
+      ).join('');
+      sugg.style.display = 'flex';
+    }
+  } catch(e) {}
+  btn.textContent = '✨'; btn.disabled = false;
+}
 async function submitCreate() {
   const name = document.getElementById('create-name').value.trim();
   const dir = document.getElementById('create-dir').value.trim();
   const prompt = document.getElementById('create-prompt').value.trim();
+  const branchEnabled = document.getElementById('create-branch-enabled').checked;
+  const branch = branchEnabled ? document.getElementById('create-branch').value.trim() : '';
   if (!name) { document.getElementById('create-name').focus({ preventScroll: true }); return; }
   closeCreate();
 
@@ -6503,16 +6557,24 @@ async function submitCreate() {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ name, dir, creator: _getDeviceName() })
   });
-  if (r && r.ok && prompt) {
-    // Start session then send prompt
-    await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/start', { method: 'POST' });
-    // Wait a moment for Claude to initialize
-    setTimeout(async () => {
-      await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ text: prompt })
-      });
-    }, 5000);
+  if (r && r.ok) {
+    // Create branch if requested
+    if (branch && dir) {
+      await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/git', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({branch, create: true}),
+      }).catch(() => {});
+    }
+    if (prompt) {
+      // Start session then send prompt
+      await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/start', { method: 'POST' });
+      setTimeout(async () => {
+        await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ text: prompt })
+        });
+      }, 5000);
+    }
   }
   await fetchSessions();
 }
