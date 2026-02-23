@@ -1974,8 +1974,30 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     --cyan: #0550ae;
   }
   body.light .board-sortable-ghost { background: rgba(9,105,218,0.08) !important; }
-  body.light .peek-body, body.light .gp-output { color-scheme: light; }
   body.light .log-line { filter: none; }
+  /* ── Light mode contrast fixes ── */
+  /* Terminal output always dark regardless of theme — ANSI colors need dark bg */
+  body.light .overlay-body {
+    background: #1c2128 !important; color: #cdd9e5 !important;
+  }
+  body.light .peek-copy-btn {
+    background: rgba(28,33,40,0.85); border-color: rgba(255,255,255,0.2); color: #cdd9e5;
+  }
+  /* Connection status — hardcoded neon colors are invisible on white */
+  body.light .conn-status.online  { color: #1a7f37; background: rgba(26,127,55,0.1); }
+  body.light .conn-status.online::before  { background: #1a7f37; }
+  body.light .conn-status.polling { color: #9a6700; background: rgba(154,103,0,0.1); }
+  body.light .conn-status.polling::before { background: #9a6700; }
+  body.light .conn-status.offline { color: #cf222e; background: rgba(207,34,46,0.1); }
+  body.light .conn-status.offline::before { background: #cf222e; }
+  /* Board empty placeholder — 50% transparent is invisible on white */
+  body.light .board-empty { color: var(--dim) !important; }
+  /* Board tag chips — very transparent bg needs a real border */
+  body.light .board-card-tag { border: 1px solid var(--border); }
+  /* Peek search highlight — white text on yellow bg fine in dark; fix for light terminal */
+  body.light .peek-highlight { color: #fff; }
+  /* Ac section headers */
+  body.light .ac-section { background: var(--bg); }
   html { font-size: 16px; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
@@ -7224,6 +7246,14 @@ const _BUILT_IN_STATUS_STYLE = {
   'done':      {bg:'rgba(63,185,80,0.15)',color:'var(--green)',border:'rgba(63,185,80,0.4)',dot:'var(--green)'},
   'discarded': {bg:'rgba(139,148,158,0.08)',color:'rgba(139,148,158,0.5)',border:'rgba(139,148,158,0.2)',dot:'rgba(139,148,158,0.4)'},
 };
+// Light-mode versions of the same statuses — opaque/dark enough on white
+const _BUILT_IN_STATUS_STYLE_LIGHT = {
+  'backlog':   {bg:'rgba(9,105,218,0.1)',color:'#0550ae',border:'rgba(9,105,218,0.3)',dot:'#0550ae'},
+  'todo':      {bg:'rgba(101,109,118,0.1)',color:'#57606a',border:'rgba(101,109,118,0.3)',dot:'#57606a'},
+  'doing':     {bg:'rgba(154,103,0,0.1)',color:'#7d4e00',border:'rgba(154,103,0,0.35)',dot:'#7d4e00'},
+  'done':      {bg:'rgba(26,127,55,0.1)',color:'#1a7f37',border:'rgba(26,127,55,0.35)',dot:'#1a7f37'},
+  'discarded': {bg:'rgba(101,109,118,0.07)',color:'#57606a',border:'rgba(101,109,118,0.2)',dot:'#57606a'},
+};
 const _CUSTOM_STATUS_PALETTE = [
   {bg:'rgba(88,166,255,0.15)',color:'var(--accent)',border:'rgba(88,166,255,0.4)',dot:'var(--accent)'},
   {bg:'rgba(188,140,255,0.15)',color:'#bc8cff',border:'rgba(188,140,255,0.4)',dot:'#bc8cff'},
@@ -7232,11 +7262,22 @@ const _CUSTOM_STATUS_PALETTE = [
   {bg:'rgba(57,210,192,0.15)',color:'var(--cyan)',border:'rgba(57,210,192,0.4)',dot:'var(--cyan)'},
   {bg:'rgba(255,100,180,0.15)',color:'#ff64b4',border:'rgba(255,100,180,0.4)',dot:'#ff64b4'},
 ];
+const _CUSTOM_STATUS_PALETTE_LIGHT = [
+  {bg:'rgba(9,105,218,0.1)',color:'#0550ae',border:'rgba(9,105,218,0.3)',dot:'#0550ae'},
+  {bg:'rgba(130,80,255,0.1)',color:'#6639ba',border:'rgba(130,80,255,0.3)',dot:'#6639ba'},
+  {bg:'rgba(200,80,20,0.1)',color:'#bc4c00',border:'rgba(200,80,20,0.3)',dot:'#bc4c00'},
+  {bg:'rgba(207,34,46,0.1)',color:'#cf222e',border:'rgba(207,34,46,0.3)',dot:'#cf222e'},
+  {bg:'rgba(5,80,174,0.1)',color:'#0550ae',border:'rgba(5,80,174,0.3)',dot:'#0550ae'},
+  {bg:'rgba(180,30,120,0.1)',color:'#99286e',border:'rgba(180,30,120,0.3)',dot:'#99286e'},
+];
 function statusStyle(id) {
-  if (_BUILT_IN_STATUS_STYLE[id]) return _BUILT_IN_STATUS_STYLE[id];
+  const light = document.body.classList.contains('light');
+  const builtIn = light ? _BUILT_IN_STATUS_STYLE_LIGHT[id] : _BUILT_IN_STATUS_STYLE[id];
+  if (builtIn) return builtIn;
   const customs = boardStatuses.filter(s => !_BUILT_IN_STATUS_STYLE[s.id]);
   const idx = customs.findIndex(s => s.id === id);
-  return _CUSTOM_STATUS_PALETTE[Math.max(0, idx) % _CUSTOM_STATUS_PALETTE.length];
+  const palette = light ? _CUSTOM_STATUS_PALETTE_LIGHT : _CUSTOM_STATUS_PALETTE;
+  return palette[Math.max(0, idx) % palette.length];
 }
 
 function switchView(view) {
