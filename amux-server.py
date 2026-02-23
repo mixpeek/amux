@@ -7933,6 +7933,7 @@ function enterGridMode() {
   document.getElementById('tab-grid').classList.add('active');
   _renderGridChips();
   _wsRenderProfileBar();
+  _wsRestoreProfilesFromIdb(); // async, no-op if localStorage is already populated
   if (!_grid) {
     _grid = GridStack.init({
       cellHeight: 60,
@@ -8085,7 +8086,21 @@ function _wsLoadProfiles() {
 }
 
 function _wsSaveProfiles(profiles) {
-  localStorage.setItem(_wsProfilesKey(), JSON.stringify(profiles));
+  const j = JSON.stringify(profiles);
+  localStorage.setItem(_wsProfilesKey(), j);
+  // Mirror to IDB so profiles survive iOS localStorage purges
+  _idb.set(_wsProfilesKey(), j);
+}
+
+// Restore profiles from IDB into localStorage if localStorage was purged
+async function _wsRestoreProfilesFromIdb() {
+  const key = _wsProfilesKey();
+  if (localStorage.getItem(key)) return; // already have it
+  const val = await _idb.get(key);
+  if (val) {
+    localStorage.setItem(key, val);
+    _wsRenderProfileBar();
+  }
 }
 
 function wsShowSaveInput() {
@@ -8358,10 +8373,16 @@ function connectSSE() {
       if (msg.type === 'sessions') {
         const j = JSON.stringify(msg.payload);
         if (j !== lastSessionsJSON) {
+          const firstLoad = !lastSessionsJSON;
           lastSessionsJSON = j;
           sessions = msg.payload;
           localStorage.setItem('amux_sessions_cache', j);
           render();
+          // If workspace is open but no panes were restored yet (e.g. sessions
+          // cache was empty on startup), retry restoration now that we have data.
+          if (firstLoad && _grid && Object.keys(_gridPanes).length === 0) {
+            _gridRestoreLayout();
+          }
         }
       } else if (msg.type === 'board') {
         const j = JSON.stringify(msg.payload);
