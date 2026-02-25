@@ -937,7 +937,7 @@ def _report_fetch_mixpeek_ops_all(cfg):
       ops_token — override AMUX_MIXPEEK_OPS_TOKEN env var
       months    — months of history (default 12)
     """
-    import json as _j, urllib.request as _ur
+    import json as _j, urllib.request as _ur, ssl as _ssl
     _VENDORS = ("render", "gcp_cloud_run", "mongodb_atlas", "gke", "qdrant_cloud")
     url    = cfg.get("ops_url")   or os.environ.get("AMUX_MIXPEEK_OPS_URL", "")
     token  = cfg.get("ops_token") or os.environ.get("AMUX_MIXPEEK_OPS_TOKEN", "")
@@ -950,7 +950,10 @@ def _report_fetch_mixpeek_ops_all(cfg):
             f"{url.rstrip('/')}/dashboard/spend?months={months}",
             headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
         )
-        with _ur.urlopen(req, timeout=30) as resp:
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        with _ur.urlopen(req, timeout=30, context=ctx) as resp:
             return _j.loads(resp.read())
     except Exception as e:
         err = str(e)
@@ -6395,6 +6398,10 @@ const SLASH_COMMANDS = [
   { cmd: '/logout', desc: 'Log out of current account' },
   { cmd: '/doctor', desc: 'Check installation health' },
   { cmd: '/config', desc: 'Open config panel' },
+  { cmd: '/amux', desc: 'Interact with amux — board, memory, sessions' },
+  { cmd: '/amux-board', desc: 'Add a task or note to the board' },
+  { cmd: '/pw-test', desc: 'Run Playwright UI tests or investigate issues' },
+  { cmd: '/playwright-auth', desc: 'Capture/sync browser auth profiles' },
 ];
 let slashAcItems = [];
 let slashAcSelected = -1;
@@ -11349,7 +11356,7 @@ class CCHandler(BaseHTTPRequestHandler):
 
             # POST /api/reports — create report
             if method == "POST" and path == "/api/reports":
-                body_d = _json_r.loads(body or b"{}")
+                body_d = self._read_body()
                 name = body_d.get("name","New Report").strip()
                 rtype = body_d.get("type","infra-spend")
                 config = _json_r.dumps(body_d.get("config",{}))
@@ -11373,7 +11380,7 @@ class CCHandler(BaseHTTPRequestHandler):
             # PATCH /api/reports/<id> — rename
             if method == "PATCH" and del_m:
                 rid = del_m.group(1)
-                body_d = _json_r.loads(body or b"{}")
+                body_d = self._read_body()
                 if "name" in body_d:
                     db.execute("UPDATE reports SET name=? WHERE id=?", (body_d["name"], rid))
                     db.commit()
