@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>amux for Go Developers — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Go developers use amux to run parallel Claude Code agents for microservices, gRPC handlers, test coverage, and tooling.">
+  <meta name="keywords" content="golang AI coding agent, claude code go, parallel go development">
+  <link rel="canonical" href="https://amux.io/for/go-developers/">
+  <meta property="og:title" content="amux for Go Developers — amux">
+  <meta property="og:description" content="Go developers use amux to run parallel Claude Code agents for microservices, gRPC handlers, test coverage, and tooling.">
+  <meta property="og:url" content="https://amux.io/for/go-developers/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+  
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --bg:#0a0a0a; --fg:#ededed; --muted:#888; --border:#222; --code-bg:#111; --code-border:#1e1e1e; --accent:#4ade80; --btn-bg:#1a1a1a; --btn-hover:#242424; --card-bg:#111; }
+    @media (prefers-color-scheme: light) { :root { --bg:#fafafa; --fg:#111; --muted:#666; --border:#e5e5e5; --code-bg:#f4f4f4; --code-border:#e0e0e0; --accent:#16a34a; --btn-bg:#f0f0f0; --btn-hover:#e5e5e5; --card-bg:#fff; } }
+    html, body { background:var(--bg); color:var(--fg); font-family:'Geist',ui-sans-serif,system-ui,-apple-system,sans-serif; font-size:15px; line-height:1.7; -webkit-font-smoothing:antialiased; }
+    a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+    code { font-family:'Geist Mono',ui-monospace,monospace; font-size:0.85em; background:var(--code-bg); border:1px solid var(--code-border); padding:0.15em 0.4em; border-radius:4px; }
+    pre { background:var(--code-bg); border:1px solid var(--code-border); border-radius:8px; padding:1rem 1.2rem; overflow-x:auto; margin:1.2rem 0; font-family:'Geist Mono',ui-monospace,monospace; font-size:0.8rem; line-height:1.8; }
+    pre code { background:none; border:none; padding:0; }
+    .site-header { max-width:42rem; margin:0 auto; padding:1.5rem 1.5rem 0; display:flex; align-items:center; justify-content:space-between; }
+    .site-header a.logo { display:flex; align-items:center; gap:0.5rem; color:var(--fg); font-weight:600; font-size:1rem; text-decoration:none; }
+    .site-header a.logo img { width:24px; height:24px; border-radius:5px; }
+    .site-header nav { display:flex; gap:1.2rem; font-size:0.8rem; }
+    .site-header nav a { color:var(--muted); } .site-header nav a:hover { color:var(--fg); }
+    main { max-width:42rem; margin:0 auto; padding:2rem 1.5rem 4rem; }
+    .breadcrumb { font-size:0.75rem; color:var(--muted); margin-bottom:1.5rem; }
+    .breadcrumb a { color:var(--muted); } .breadcrumb a:hover { color:var(--accent); }
+    h1 { font-size:1.8rem; font-weight:700; letter-spacing:-0.03em; line-height:1.25; margin-bottom:0.6rem; }
+    .subtitle { font-size:1rem; color:var(--muted); margin-bottom:2rem; line-height:1.6; }
+    h2 { font-size:1.2rem; font-weight:600; margin:2.2rem 0 0.8rem; letter-spacing:-0.02em; }
+    h3 { font-size:1rem; font-weight:600; margin:1.5rem 0 0.6rem; }
+    p { margin-bottom:1rem; }
+    ul, ol { margin:0.5rem 0 1rem 1.5rem; } li { margin-bottom:0.4rem; }
+    table { width:100%; border-collapse:collapse; margin:1.2rem 0; font-size:0.85rem; }
+    th { text-align:left; font-weight:600; padding:0.6rem 0.8rem; border-bottom:2px solid var(--border); }
+    td { padding:0.5rem 0.8rem; border-bottom:1px solid var(--border); }
+    tr:hover td { background:rgba(74,222,128,0.04); }
+    .cta-box { background:var(--card-bg); border:1px solid var(--border); border-radius:8px; padding:1.5rem; margin:2rem 0; }
+    .cta-box h3 { margin-top:0; }
+    .btn { display:inline-flex; align-items:center; gap:0.4rem; padding:0.45rem 1rem; border-radius:6px; font-size:0.85rem; font-weight:500; text-decoration:none; border:1px solid var(--border); background:var(--btn-bg); color:var(--fg); transition:background 0.12s; }
+    .btn:hover { background:var(--btn-hover); text-decoration:none; }
+    .btn-primary { background:var(--accent); border-color:var(--accent); color:#0a0a0a; }
+    .btn-primary:hover { opacity:0.88; background:var(--accent); }
+    .tag { display:inline-block; font-size:0.7rem; font-weight:500; padding:0.15rem 0.5rem; border-radius:3px; background:var(--code-bg); border:1px solid var(--code-border); color:var(--muted); margin-right:0.3rem; }
+    footer { max-width:42rem; margin:0 auto; padding:0 1.5rem 3rem; border-top:1px solid var(--border); padding-top:1.5rem; display:flex; flex-wrap:wrap; gap:0.8rem; font-size:0.75rem; color:var(--muted); }
+    footer a { color:var(--muted); } footer a:hover { color:var(--fg); }
+    footer .sep { opacity:0.3; }
+    @media (max-width:600px) { h1 { font-size:1.4rem; } main { padding:1.5rem 1rem 3rem; } .site-header { padding:1rem 1rem 0; } }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/"><img src="/icon.svg" alt="amux">amux</a>
+    <nav>
+      <a href="/compare/">Compare</a>
+      <a href="/use-cases/">Use Cases</a>
+      <a href="/guides/">Guides</a>
+      <a href="/glossary/">Glossary</a>
+      <a href="/faq/">FAQ</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span style="opacity:0.4;margin:0 0.3rem">›</span> <a href="/for/">For</a> <span style="opacity:0.4;margin:0 0.3rem">›</span> <span>amux for Go Developers</span></div>
+    <h1>amux for Go Developers</h1>
+<p class="subtitle">Go's simplicity makes it fast to write. Parallel agents make it faster still.</p>
+<h2>Go + Parallel Agents</h2>
+<p>Go's philosophy is simplicity and explicitness — which also makes it highly parallelizable at the agent level. There's less magic, clearer patterns, and more code to write by hand. Agents excel at this kind of structured, pattern-following work.</p>
+<ul>
+<li><strong>gRPC service handlers:</strong> A gRPC service with 20 methods needs 20 handlers, with tests. Run 4-5 agents in parallel, each handling a group of methods.</li>
+<li><strong>HTTP middleware chains:</strong> Use agents to implement logging, auth, rate-limiting, and tracing middleware simultaneously.</li>
+<li><strong>Interface mocks:</strong> Generating mock implementations for testing is tedious in Go. Use agents to generate all your mocks across the entire codebase in a single run.</li>
+<li><strong>Error wrapping:</strong> Go's explicit error handling requires a lot of <code>if err != nil</code> boilerplate. Agents handle this pattern perfectly.</li>
+</ul>
+<h2>Microservice Architecture</h2>
+<p>Go is the dominant language for microservices (Kubernetes itself is Go). A microservice fleet maps naturally to an agent fleet:</p>
+<pre><code># One agent per microservice
+amux register auth-svc --dir ~/services/auth --yolo
+amux register billing-svc --dir ~/services/billing --yolo
+amux register notifications-svc --dir ~/services/notifications --yolo</code></pre>
+<h2>Fast Compilation = Fast Feedback</h2>
+<p>Go's near-instant compile times mean agents can run, test, fix, and iterate rapidly. Unlike Rust or Java, there's minimal waiting. An agent can make dozens of compile-test cycles per hour, making Go one of the best languages for autonomous agent work.</p>
+<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+  </main>
+  <footer>
+    <a href="/">Home</a><span class="sep">·</span>
+    <a href="/compare/">Comparisons</a><span class="sep">·</span>
+    <a href="/use-cases/">Use Cases</a><span class="sep">·</span>
+    <a href="/guides/">Guides</a><span class="sep">·</span>
+    <a href="/glossary/">Glossary</a><span class="sep">·</span>
+    <a href="/faq/">FAQ</a><span class="sep">·</span>
+    <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><span class="sep">·</span>
+    <span>MIT License</span>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Blog — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Insights on parallel AI coding, agent orchestration, and developer productivity.">
+  <meta name="keywords" content="amux, blog, claude code, AI coding">
+  <link rel="canonical" href="https://amux.io/blog/">
+  <meta property="og:title" content="Blog — amux">
+  <meta property="og:description" content="Insights on parallel AI coding, agent orchestration, and developer productivity.">
+  <meta property="og:url" content="https://amux.io/blog/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+  
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --bg:#0a0a0a; --fg:#ededed; --muted:#888; --border:#222; --code-bg:#111; --code-border:#1e1e1e; --accent:#4ade80; --btn-bg:#1a1a1a; --btn-hover:#242424; --card-bg:#111; }
+    @media (prefers-color-scheme: light) { :root { --bg:#fafafa; --fg:#111; --muted:#666; --border:#e5e5e5; --code-bg:#f4f4f4; --code-border:#e0e0e0; --accent:#16a34a; --btn-bg:#f0f0f0; --btn-hover:#e5e5e5; --card-bg:#fff; } }
+    html, body { background:var(--bg); color:var(--fg); font-family:'Geist',ui-sans-serif,system-ui,-apple-system,sans-serif; font-size:15px; line-height:1.7; -webkit-font-smoothing:antialiased; }
+    a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+    code { font-family:'Geist Mono',ui-monospace,monospace; font-size:0.85em; background:var(--code-bg); border:1px solid var(--code-border); padding:0.15em 0.4em; border-radius:4px; }
+    pre { background:var(--code-bg); border:1px solid var(--code-border); border-radius:8px; padding:1rem 1.2rem; overflow-x:auto; margin:1.2rem 0; font-family:'Geist Mono',ui-monospace,monospace; font-size:0.8rem; line-height:1.8; }
+    pre code { background:none; border:none; padding:0; }
+    .site-header { max-width:42rem; margin:0 auto; padding:1.5rem 1.5rem 0; display:flex; align-items:center; justify-content:space-between; }
+    .site-header a.logo { display:flex; align-items:center; gap:0.5rem; color:var(--fg); font-weight:600; font-size:1rem; text-decoration:none; }
+    .site-header a.logo img { width:24px; height:24px; border-radius:5px; }
+    .site-header nav { display:flex; gap:1.2rem; font-size:0.8rem; }
+    .site-header nav a { color:var(--muted); } .site-header nav a:hover { color:var(--fg); }
+    main { max-width:42rem; margin:0 auto; padding:2rem 1.5rem 4rem; }
+    .breadcrumb { font-size:0.75rem; color:var(--muted); margin-bottom:1.5rem; }
+    .breadcrumb a { color:var(--muted); } .breadcrumb a:hover { color:var(--accent); }
+    h1 { font-size:1.8rem; font-weight:700; letter-spacing:-0.03em; line-height:1.25; margin-bottom:0.6rem; }
+    .subtitle { font-size:1rem; color:var(--muted); margin-bottom:2rem; line-height:1.6; }
+    h2 { font-size:1.2rem; font-weight:600; margin:2.2rem 0 0.8rem; letter-spacing:-0.02em; }
+    h3 { font-size:1rem; font-weight:600; margin:1.5rem 0 0.6rem; }
+    p { margin-bottom:1rem; }
+    ul, ol { margin:0.5rem 0 1rem 1.5rem; } li { margin-bottom:0.4rem; }
+    table { width:100%; border-collapse:collapse; margin:1.2rem 0; font-size:0.85rem; }
+    th { text-align:left; font-weight:600; padding:0.6rem 0.8rem; border-bottom:2px solid var(--border); }
+    td { padding:0.5rem 0.8rem; border-bottom:1px solid var(--border); }
+    tr:hover td { background:rgba(74,222,128,0.04); }
+    .cta-box { background:var(--card-bg); border:1px solid var(--border); border-radius:8px; padding:1.5rem; margin:2rem 0; }
+    .cta-box h3 { margin-top:0; }
+    .btn { display:inline-flex; align-items:center; gap:0.4rem; padding:0.45rem 1rem; border-radius:6px; font-size:0.85rem; font-weight:500; text-decoration:none; border:1px solid var(--border); background:var(--btn-bg); color:var(--fg); transition:background 0.12s; }
+    .btn:hover { background:var(--btn-hover); text-decoration:none; }
+    .btn-primary { background:var(--accent); border-color:var(--accent); color:#0a0a0a; }
+    .btn-primary:hover { opacity:0.88; background:var(--accent); }
+    .tag { display:inline-block; font-size:0.7rem; font-weight:500; padding:0.15rem 0.5rem; border-radius:3px; background:var(--code-bg); border:1px solid var(--code-border); color:var(--muted); margin-right:0.3rem; }
+    footer { max-width:42rem; margin:0 auto; padding:0 1.5rem 3rem; border-top:1px solid var(--border); padding-top:1.5rem; display:flex; flex-wrap:wrap; gap:0.8rem; font-size:0.75rem; color:var(--muted); }
+    footer a { color:var(--muted); } footer a:hover { color:var(--fg); }
+    footer .sep { opacity:0.3; }
+    @media (max-width:600px) { h1 { font-size:1.4rem; } main { padding:1.5rem 1rem 3rem; } .site-header { padding:1rem 1rem 0; } }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/"><img src="/icon.svg" alt="amux">amux</a>
+    <nav>
+      <a href="/compare/">Compare</a>
+      <a href="/use-cases/">Use Cases</a>
+      <a href="/guides/">Guides</a>
+      <a href="/glossary/">Glossary</a>
+      <a href="/faq/">FAQ</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span style="opacity:0.4;margin:0 0.3rem">›</span> <span>Blog</span></div>
+    <h1>Blog</h1><p class="subtitle">Insights on parallel AI coding, agent orchestration, and developer productivity.</p><ul style="list-style:none;margin-left:0"><li style="margin-bottom:1rem"><a href="/blog/ship-features-while-you-sleep/" style="font-weight:500">Ship Features While You Sleep</a><br><span style="color:var(--muted);font-size:0.85rem">How to run AI coding agents overnight with self-healing to wake up to completed features.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/one-developer-five-person-team/" style="font-weight:500">How One Developer Replaces a 5-Person Team</a><br><span style="color:var(--muted);font-size:0.85rem">The economics and workflow of using parallel AI agents to multiply individual output.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/self-healing-pattern/" style="font-weight:500">The Self-Healing Agent Pattern</a><br><span style="color:var(--muted);font-size:0.85rem">Design patterns for building AI agents that automatically recover from failures.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/why-claude-code-sessions-crash/" style="font-weight:500">Why Claude Code Sessions Crash (and How to Fix It)</a><br><span style="color:var(--muted);font-size:0.85rem">Common Claude Code failure modes and how amux's self-healing handles each one automatically.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/scaling-parallel-development/" style="font-weight:500">From 1 Agent to 30: Scaling Parallel Development</a><br><span style="color:var(--muted);font-size:0.85rem">Lessons learned from scaling AI agent fleets from a single session to dozens.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/agent-to-agent-communication/" style="font-weight:500">The Case for Agent-to-Agent Communication</a><br><span style="color:var(--muted);font-size:0.85rem">Why AI coding agents need to communicate with each other and how amux enables it.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/mobile-first-agent-management/" style="font-weight:500">Mobile-First AI Agent Management</a><br><span style="color:var(--muted);font-size:0.85rem">Why managing AI agents from your phone matters and how amux's PWA enables it.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/token-economics-parallel-coding/" style="font-weight:500">Token Economics of Parallel AI Coding</a><br><span style="color:var(--muted);font-size:0.85rem">Understanding the cost structure of running multiple AI coding agents in parallel.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/end-of-single-threaded-development/" style="font-weight:500">The End of Single-Threaded Development</a><br><span style="color:var(--muted);font-size:0.85rem">Why sequential development is a bottleneck and how parallel AI agents change the equation.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/context-compaction-silent-killer/" style="font-weight:500">Context Compaction: The Silent Killer</a><br><span style="color:var(--muted);font-size:0.85rem">Why context compaction is the #1 reason AI coding agents fail and how to prevent it.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/running-ai-agents-24-7/" style="font-weight:500">Running AI Agents 24/7</a><br><span style="color:var(--muted);font-size:0.85rem">Architecture and best practices for running Claude Code agents continuously.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/developers-guide-unattended-coding/" style="font-weight:500">A Developer's Guide to Unattended Coding</a><br><span style="color:var(--muted);font-size:0.85rem">Practical guide to running AI coding agents without constant supervision.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/kanban-board-ai-agents-use/" style="font-weight:500">The Kanban Board Your AI Agents Actually Use</a><br><span style="color:var(--muted);font-size:0.85rem">How amux's shared board enables real task coordination between AI coding agents.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/open-source-agent-orchestration/" style="font-weight:500">Why Open Source Agent Orchestration Matters</a><br><span style="color:var(--muted);font-size:0.85rem">The case for open-source, self-hosted AI agent orchestration vs. proprietary platforms.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/building-agent-fleet/" style="font-weight:500">Building Your First Agent Fleet</a><br><span style="color:var(--muted);font-size:0.85rem">Step-by-step guide to setting up your first fleet of parallel AI coding agents with amux.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/vibe-coding-with-agents/" style="font-weight:500">Vibe Coding at Scale: How AI Agent Fleets Changed My Workflow</a><br><span style="color:var(--muted);font-size:0.85rem">What &quot;vibe coding&quot; actually means when you have 20 AI agents running in parallel.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/claude-4-agent-workflow/" style="font-weight:500">Building with Claude 4: The Parallel Agent Workflow</a><br><span style="color:var(--muted);font-size:0.85rem">How to structure your development workflow to take full advantage of Claude 4 capabilities in parallel.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/mcp-server-agent-orchestration/" style="font-weight:500">MCP Servers + Parallel Agents: A Force Multiplier</a><br><span style="color:var(--muted);font-size:0.85rem">How to configure MCP servers in amux sessions to give each agent specialized tool access.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/true-cost-ai-coding/" style="font-weight:500">The True Cost of AI Coding in 2025</a><br><span style="color:var(--muted);font-size:0.85rem">A realistic breakdown of what it costs to run AI coding agents — tokens, time, and how to optimize.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/solo-dev-ai-stack-2025/" style="font-weight:500">The Solo Developer's AI Stack in 2025</a><br><span style="color:var(--muted);font-size:0.85rem">The tools, workflows, and habits that let a solo developer ship at team speed.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/sprint-in-48-hours/" style="font-weight:500">How I Completed a 2-Week Sprint in 48 Hours</a><br><span style="color:var(--muted);font-size:0.85rem">A real walkthrough of using an agent fleet to compress a sprint: parallel features, automated tests, and overnight runs.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/debugging-20-agents/" style="font-weight:500">Debugging When You Have 20 AI Agents</a><br><span style="color:var(--muted);font-size:0.85rem">Strategies for monitoring, diagnosing, and fixing issues in a large agent fleet.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/overnight-saas-mvp/" style="font-weight:500">Building a SaaS MVP Overnight with Agent Fleets</a><br><span style="color:var(--muted);font-size:0.85rem">How to structure an agent fleet to go from spec to deployed MVP in under 24 hours.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/context-window-strategy/" style="font-weight:500">Context Window Strategy for Long-Running Agents</a><br><span style="color:var(--muted);font-size:0.85rem">How to design prompts and tasks to keep agents productive across context boundaries.</span></li>
+<li style="margin-bottom:1rem"><a href="/blog/ai-coding-2025-landscape/" style="font-weight:500">The 2025 AI Coding Landscape: A Developer's Field Guide</a><br><span style="color:var(--muted);font-size:0.85rem">A practical overview of the tools, tradeoffs, and workflows shaping AI-assisted development in 2025.</span></li></ul>
+  </main>
+  <footer>
+    <a href="/">Home</a><span class="sep">·</span>
+    <a href="/compare/">Comparisons</a><span class="sep">·</span>
+    <a href="/use-cases/">Use Cases</a><span class="sep">·</span>
+    <a href="/guides/">Guides</a><span class="sep">·</span>
+    <a href="/glossary/">Glossary</a><span class="sep">·</span>
+    <a href="/faq/">FAQ</a><span class="sep">·</span>
+    <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><span class="sep">·</span>
+    <span>MIT License</span>
+  </footer>
+</body>
+</html>

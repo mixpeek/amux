@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Frequently Asked Questions — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Common questions about amux — the open-source Claude Code agent multiplexer.">
+  <meta name="keywords" content="amux FAQ, amux questions, claude code multiplexer FAQ, parallel AI agents FAQ">
+  <link rel="canonical" href="https://amux.io/faq/">
+  <meta property="og:title" content="Frequently Asked Questions — amux">
+  <meta property="og:description" content="Common questions about amux — the open-source Claude Code agent multiplexer.">
+  <meta property="og:url" content="https://amux.io/faq/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is amux?","acceptedAnswer":{"@type":"Answer","text":"amux is an open-source agent multiplexer that runs dozens of Claude Code sessions in parallel from a web dashboard. It adds self-healing, task coordination, and mobile access on top of Claude Code + tmux."}},{"@type":"Question","name":"What do I need to run amux?","acceptedAnswer":{"@type":"Answer","text":"Python 3, tmux, and Claude Code (the claude CLI) installed and authenticated. That's it."}},{"@type":"Question","name":"How many agents can I run?","acceptedAnswer":{"@type":"Answer","text":"As many as your machine can handle. Each agent uses ~200-400MB RAM. On a 32GB machine, 50+ agents is practical."}},{"@type":"Question","name":"Does amux modify Claude Code?","acceptedAnswer":{"@type":"Answer","text":"No. amux manages Claude Code sessions externally via tmux. It parses terminal output to detect status — no hooks, patches, or modifications."}},{"@type":"Question","name":"What happens when an agent crashes?","acceptedAnswer":{"@type":"Answer","text":"amux's self-healing watchdog detects crashes and recovers automatically. Context exhaustion triggers auto-compaction. Thinking-block corruption triggers restart with message replay. Stuck prompts get auto-answered in YOLO mode."}},{"@type":"Question","name":"Can I use amux from my phone?","acceptedAnswer":{"@type":"Answer","text":"Yes. The dashboard is a PWA — install it on iOS or Android. Works offline with Background Sync."}},{"@type":"Question","name":"How do agents coordinate?","acceptedAnswer":{"@type":"Answer","text":"Via REST API. Every agent gets the API reference in global memory. They can send messages to peers, claim tasks from the board, and peek at each other's output."}},{"@type":"Question","name":"What does it cost?","acceptedAnswer":{"@type":"Answer","text":"amux is free and open source (MIT). You pay only for Claude API tokens. Running 10 agents typically costs $20-100/day depending on task complexity."}},{"@type":"Question","name":"Is it secure?","acceptedAnswer":{"@type":"Answer","text":"amux is local-first with no auth built in. Use Tailscale or bind to localhost. Never expose port 8822 to the internet."}},{"@type":"Question","name":"Can I use it with models other than Claude?","acceptedAnswer":{"@type":"Answer","text":"amux is specifically built for Claude Code (the claude CLI). It relies on Claude Code's specific terminal output patterns for status detection and self-healing."}},{"@type":"Question","name":"How is amux different from Claude Code Agent Teams?","acceptedAnswer":{"@type":"Answer","text":"Agent Teams spawns short-lived sub-agents from a parent. amux manages long-running independent sessions with a web dashboard, self-healing, and shared task board. See detailed comparison."}},{"@type":"Question","name":"Can I self-host it?","acceptedAnswer":{"@type":"Answer","text":"Yes — that's the only way to run it. amux runs on your own machine or server. No cloud service, no account needed."}}]}</script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --bg:#0a0a0a; --fg:#ededed; --muted:#888; --border:#222; --code-bg:#111; --code-border:#1e1e1e; --accent:#4ade80; --btn-bg:#1a1a1a; --btn-hover:#242424; --card-bg:#111; }
+    @media (prefers-color-scheme: light) { :root { --bg:#fafafa; --fg:#111; --muted:#666; --border:#e5e5e5; --code-bg:#f4f4f4; --code-border:#e0e0e0; --accent:#16a34a; --btn-bg:#f0f0f0; --btn-hover:#e5e5e5; --card-bg:#fff; } }
+    html, body { background:var(--bg); color:var(--fg); font-family:'Geist',ui-sans-serif,system-ui,-apple-system,sans-serif; font-size:15px; line-height:1.7; -webkit-font-smoothing:antialiased; }
+    a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+    code { font-family:'Geist Mono',ui-monospace,monospace; font-size:0.85em; background:var(--code-bg); border:1px solid var(--code-border); padding:0.15em 0.4em; border-radius:4px; }
+    pre { background:var(--code-bg); border:1px solid var(--code-border); border-radius:8px; padding:1rem 1.2rem; overflow-x:auto; margin:1.2rem 0; font-family:'Geist Mono',ui-monospace,monospace; font-size:0.8rem; line-height:1.8; }
+    pre code { background:none; border:none; padding:0; }
+    .site-header { max-width:42rem; margin:0 auto; padding:1.5rem 1.5rem 0; display:flex; align-items:center; justify-content:space-between; }
+    .site-header a.logo { display:flex; align-items:center; gap:0.5rem; color:var(--fg); font-weight:600; font-size:1rem; text-decoration:none; }
+    .site-header a.logo img { width:24px; height:24px; border-radius:5px; }
+    .site-header nav { display:flex; gap:1.2rem; font-size:0.8rem; }
+    .site-header nav a { color:var(--muted); } .site-header nav a:hover { color:var(--fg); }
+    main { max-width:42rem; margin:0 auto; padding:2rem 1.5rem 4rem; }
+    .breadcrumb { font-size:0.75rem; color:var(--muted); margin-bottom:1.5rem; }
+    .breadcrumb a { color:var(--muted); } .breadcrumb a:hover { color:var(--accent); }
+    h1 { font-size:1.8rem; font-weight:700; letter-spacing:-0.03em; line-height:1.25; margin-bottom:0.6rem; }
+    .subtitle { font-size:1rem; color:var(--muted); margin-bottom:2rem; line-height:1.6; }
+    h2 { font-size:1.2rem; font-weight:600; margin:2.2rem 0 0.8rem; letter-spacing:-0.02em; }
+    h3 { font-size:1rem; font-weight:600; margin:1.5rem 0 0.6rem; }
+    p { margin-bottom:1rem; }
+    ul, ol { margin:0.5rem 0 1rem 1.5rem; } li { margin-bottom:0.4rem; }
+    table { width:100%; border-collapse:collapse; margin:1.2rem 0; font-size:0.85rem; }
+    th { text-align:left; font-weight:600; padding:0.6rem 0.8rem; border-bottom:2px solid var(--border); }
+    td { padding:0.5rem 0.8rem; border-bottom:1px solid var(--border); }
+    tr:hover td { background:rgba(74,222,128,0.04); }
+    .cta-box { background:var(--card-bg); border:1px solid var(--border); border-radius:8px; padding:1.5rem; margin:2rem 0; }
+    .cta-box h3 { margin-top:0; }
+    .btn { display:inline-flex; align-items:center; gap:0.4rem; padding:0.45rem 1rem; border-radius:6px; font-size:0.85rem; font-weight:500; text-decoration:none; border:1px solid var(--border); background:var(--btn-bg); color:var(--fg); transition:background 0.12s; }
+    .btn:hover { background:var(--btn-hover); text-decoration:none; }
+    .btn-primary { background:var(--accent); border-color:var(--accent); color:#0a0a0a; }
+    .btn-primary:hover { opacity:0.88; background:var(--accent); }
+    .tag { display:inline-block; font-size:0.7rem; font-weight:500; padding:0.15rem 0.5rem; border-radius:3px; background:var(--code-bg); border:1px solid var(--code-border); color:var(--muted); margin-right:0.3rem; }
+    footer { max-width:42rem; margin:0 auto; padding:0 1.5rem 3rem; border-top:1px solid var(--border); padding-top:1.5rem; display:flex; flex-wrap:wrap; gap:0.8rem; font-size:0.75rem; color:var(--muted); }
+    footer a { color:var(--muted); } footer a:hover { color:var(--fg); }
+    footer .sep { opacity:0.3; }
+    @media (max-width:600px) { h1 { font-size:1.4rem; } main { padding:1.5rem 1rem 3rem; } .site-header { padding:1rem 1rem 0; } }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/"><img src="/icon.svg" alt="amux">amux</a>
+    <nav>
+      <a href="/compare/">Compare</a>
+      <a href="/use-cases/">Use Cases</a>
+      <a href="/guides/">Guides</a>
+      <a href="/glossary/">Glossary</a>
+      <a href="/faq/">FAQ</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span style="opacity:0.4;margin:0 0.3rem">›</span> <span>Frequently Asked Questions</span></div>
+    <h1>Frequently Asked Questions</h1>
+<p class="subtitle">Everything you need to know about amux.</p>
+<h2>What is amux?</h2><p>amux is an open-source agent multiplexer that runs dozens of Claude Code sessions in parallel from a web dashboard. It adds self-healing, task coordination, and mobile access on top of Claude Code + tmux.</p>
+<h2>What do I need to run amux?</h2><p>Python 3, tmux, and Claude Code (the <code>claude</code> CLI) installed and authenticated. That's it.</p>
+<h2>How many agents can I run?</h2><p>As many as your machine can handle. Each agent uses ~200-400MB RAM. On a 32GB machine, 50+ agents is practical.</p>
+<h2>Does amux modify Claude Code?</h2><p>No. amux manages Claude Code sessions externally via tmux. It parses terminal output to detect status — no hooks, patches, or modifications.</p>
+<h2>What happens when an agent crashes?</h2><p>amux's self-healing watchdog detects crashes and recovers automatically. Context exhaustion triggers auto-compaction. Thinking-block corruption triggers restart with message replay. Stuck prompts get auto-answered in YOLO mode.</p>
+<h2>Can I use amux from my phone?</h2><p>Yes. The dashboard is a PWA — install it on iOS or Android. Works offline with Background Sync.</p>
+<h2>How do agents coordinate?</h2><p>Via REST API. Every agent gets the API reference in global memory. They can send messages to peers, claim tasks from the board, and peek at each other's output.</p>
+<h2>What does it cost?</h2><p>amux is free and open source (MIT). You pay only for Claude API tokens. Running 10 agents typically costs $20-100/day depending on task complexity.</p>
+<h2>Is it secure?</h2><p>amux is local-first with no auth built in. Use Tailscale or bind to localhost. Never expose port 8822 to the internet.</p>
+<h2>Can I use it with models other than Claude?</h2><p>amux is specifically built for Claude Code (the <code>claude</code> CLI). It relies on Claude Code's specific terminal output patterns for status detection and self-healing.</p>
+<h2>How is amux different from Claude Code Agent Teams?</h2><p>Agent Teams spawns short-lived sub-agents from a parent. amux manages long-running independent sessions with a web dashboard, self-healing, and shared task board. <a href="/compare/amux-vs-claude-code-agent-teams/">See detailed comparison</a>.</p>
+<h2>Can I self-host it?</h2><p>Yes — that's the only way to run it. amux runs on your own machine or server. No cloud service, no account needed.</p>
+<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+  </main>
+  <footer>
+    <a href="/">Home</a><span class="sep">·</span>
+    <a href="/compare/">Comparisons</a><span class="sep">·</span>
+    <a href="/use-cases/">Use Cases</a><span class="sep">·</span>
+    <a href="/guides/">Guides</a><span class="sep">·</span>
+    <a href="/glossary/">Glossary</a><span class="sep">·</span>
+    <a href="/faq/">FAQ</a><span class="sep">·</span>
+    <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><span class="sep">·</span>
+    <span>MIT License</span>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Glossary — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Key concepts in AI agent orchestration and parallel development.">
+  <meta name="keywords" content="amux, glossary, claude code, AI coding">
+  <link rel="canonical" href="https://amux.io/glossary/">
+  <meta property="og:title" content="Glossary — amux">
+  <meta property="og:description" content="Key concepts in AI agent orchestration and parallel development.">
+  <meta property="og:url" content="https://amux.io/glossary/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+  
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --bg:#0a0a0a; --fg:#ededed; --muted:#888; --border:#222; --code-bg:#111; --code-border:#1e1e1e; --accent:#4ade80; --btn-bg:#1a1a1a; --btn-hover:#242424; --card-bg:#111; }
+    @media (prefers-color-scheme: light) { :root { --bg:#fafafa; --fg:#111; --muted:#666; --border:#e5e5e5; --code-bg:#f4f4f4; --code-border:#e0e0e0; --accent:#16a34a; --btn-bg:#f0f0f0; --btn-hover:#e5e5e5; --card-bg:#fff; } }
+    html, body { background:var(--bg); color:var(--fg); font-family:'Geist',ui-sans-serif,system-ui,-apple-system,sans-serif; font-size:15px; line-height:1.7; -webkit-font-smoothing:antialiased; }
+    a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+    code { font-family:'Geist Mono',ui-monospace,monospace; font-size:0.85em; background:var(--code-bg); border:1px solid var(--code-border); padding:0.15em 0.4em; border-radius:4px; }
+    pre { background:var(--code-bg); border:1px solid var(--code-border); border-radius:8px; padding:1rem 1.2rem; overflow-x:auto; margin:1.2rem 0; font-family:'Geist Mono',ui-monospace,monospace; font-size:0.8rem; line-height:1.8; }
+    pre code { background:none; border:none; padding:0; }
+    .site-header { max-width:42rem; margin:0 auto; padding:1.5rem 1.5rem 0; display:flex; align-items:center; justify-content:space-between; }
+    .site-header a.logo { display:flex; align-items:center; gap:0.5rem; color:var(--fg); font-weight:600; font-size:1rem; text-decoration:none; }
+    .site-header a.logo img { width:24px; height:24px; border-radius:5px; }
+    .site-header nav { display:flex; gap:1.2rem; font-size:0.8rem; }
+    .site-header nav a { color:var(--muted); } .site-header nav a:hover { color:var(--fg); }
+    main { max-width:42rem; margin:0 auto; padding:2rem 1.5rem 4rem; }
+    .breadcrumb { font-size:0.75rem; color:var(--muted); margin-bottom:1.5rem; }
+    .breadcrumb a { color:var(--muted); } .breadcrumb a:hover { color:var(--accent); }
+    h1 { font-size:1.8rem; font-weight:700; letter-spacing:-0.03em; line-height:1.25; margin-bottom:0.6rem; }
+    .subtitle { font-size:1rem; color:var(--muted); margin-bottom:2rem; line-height:1.6; }
+    h2 { font-size:1.2rem; font-weight:600; margin:2.2rem 0 0.8rem; letter-spacing:-0.02em; }
+    h3 { font-size:1rem; font-weight:600; margin:1.5rem 0 0.6rem; }
+    p { margin-bottom:1rem; }
+    ul, ol { margin:0.5rem 0 1rem 1.5rem; } li { margin-bottom:0.4rem; }
+    table { width:100%; border-collapse:collapse; margin:1.2rem 0; font-size:0.85rem; }
+    th { text-align:left; font-weight:600; padding:0.6rem 0.8rem; border-bottom:2px solid var(--border); }
+    td { padding:0.5rem 0.8rem; border-bottom:1px solid var(--border); }
+    tr:hover td { background:rgba(74,222,128,0.04); }
+    .cta-box { background:var(--card-bg); border:1px solid var(--border); border-radius:8px; padding:1.5rem; margin:2rem 0; }
+    .cta-box h3 { margin-top:0; }
+    .btn { display:inline-flex; align-items:center; gap:0.4rem; padding:0.45rem 1rem; border-radius:6px; font-size:0.85rem; font-weight:500; text-decoration:none; border:1px solid var(--border); background:var(--btn-bg); color:var(--fg); transition:background 0.12s; }
+    .btn:hover { background:var(--btn-hover); text-decoration:none; }
+    .btn-primary { background:var(--accent); border-color:var(--accent); color:#0a0a0a; }
+    .btn-primary:hover { opacity:0.88; background:var(--accent); }
+    .tag { display:inline-block; font-size:0.7rem; font-weight:500; padding:0.15rem 0.5rem; border-radius:3px; background:var(--code-bg); border:1px solid var(--code-border); color:var(--muted); margin-right:0.3rem; }
+    footer { max-width:42rem; margin:0 auto; padding:0 1.5rem 3rem; border-top:1px solid var(--border); padding-top:1.5rem; display:flex; flex-wrap:wrap; gap:0.8rem; font-size:0.75rem; color:var(--muted); }
+    footer a { color:var(--muted); } footer a:hover { color:var(--fg); }
+    footer .sep { opacity:0.3; }
+    @media (max-width:600px) { h1 { font-size:1.4rem; } main { padding:1.5rem 1rem 3rem; } .site-header { padding:1rem 1rem 0; } }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/"><img src="/icon.svg" alt="amux">amux</a>
+    <nav>
+      <a href="/compare/">Compare</a>
+      <a href="/use-cases/">Use Cases</a>
+      <a href="/guides/">Guides</a>
+      <a href="/glossary/">Glossary</a>
+      <a href="/faq/">FAQ</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span style="opacity:0.4;margin:0 0.3rem">›</span> <span>Glossary</span></div>
+    <h1>Glossary</h1><p class="subtitle">Key concepts in AI agent orchestration and parallel development.</p><ul style="list-style:none;margin-left:0"><li style="margin-bottom:1rem"><a href="/glossary/agent-multiplexer/" style="font-weight:500">Agent Multiplexer</a><br><span style="color:var(--muted);font-size:0.85rem">Agent Multiplexer: A tool that runs and manages multiple AI coding agents simultaneously.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/self-healing-agent/" style="font-weight:500">Self-Healing AI Agent</a><br><span style="color:var(--muted);font-size:0.85rem">Self-Healing AI Agent: An AI agent that automatically recovers from crashes, context exhaustion, and stuck states.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/context-compaction/" style="font-weight:500">Context Compaction</a><br><span style="color:var(--muted);font-size:0.85rem">Context Compaction: The process of summarizing conversation history to free up context window space in an AI agent.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/yolo-mode/" style="font-weight:500">YOLO Mode</a><br><span style="color:var(--muted);font-size:0.85rem">YOLO Mode: A configuration that auto-approves tool-use prompts in Claude Code for fully unattended operation.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/agent-orchestration/" style="font-weight:500">Agent Orchestration</a><br><span style="color:var(--muted);font-size:0.85rem">Agent Orchestration: Coordinating multiple AI agents to work together on complex tasks.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/parallel-coding-agents/" style="font-weight:500">Parallel Coding Agents</a><br><span style="color:var(--muted);font-size:0.85rem">Parallel Coding Agents: Multiple AI agents working on different coding tasks at the same time.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/token-accounting/" style="font-weight:500">Token Accounting</a><br><span style="color:var(--muted);font-size:0.85rem">Token Accounting: Tracking token usage and costs across multiple AI coding sessions.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/atomic-task-claiming/" style="font-weight:500">Atomic Task Claiming</a><br><span style="color:var(--muted);font-size:0.85rem">Atomic Task Claiming: A concurrent-safe mechanism for agents to claim tasks without duplicating work.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/session-persistence/" style="font-weight:500">Session Persistence</a><br><span style="color:var(--muted);font-size:0.85rem">Session Persistence: The ability for AI agent sessions to survive restarts and maintain their identity.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/prompt-replay/" style="font-weight:500">Prompt Replay</a><br><span style="color:var(--muted);font-size:0.85rem">Prompt Replay: Automatically re-sending the last message after an AI agent crash to recover progress.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/global-memory/" style="font-weight:500">Global Memory</a><br><span style="color:var(--muted);font-size:0.85rem">Global Memory: A shared knowledge base accessible to all AI agents in a multiplexer.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/background-watchdog/" style="font-weight:500">Background Watchdog</a><br><span style="color:var(--muted);font-size:0.85rem">Background Watchdog: A monitoring process that detects and recovers from AI agent failures automatically.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/conversation-fork/" style="font-weight:500">Conversation Fork</a><br><span style="color:var(--muted);font-size:0.85rem">Conversation Fork: Cloning an AI session's history into multiple new sessions for parallel exploration.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/terminal-peek/" style="font-weight:500">Terminal Peek</a><br><span style="color:var(--muted);font-size:0.85rem">Terminal Peek: Viewing an AI agent's live terminal output without attaching to the session.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/pwa-progressive-web-app/" style="font-weight:500">PWA (Progressive Web App)</a><br><span style="color:var(--muted);font-size:0.85rem">PWA (Progressive Web App): A web application installable on mobile devices with offline support.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/tmux-session-management/" style="font-weight:500">tmux Session Management</a><br><span style="color:var(--muted);font-size:0.85rem">tmux Session Management: Using tmux terminal multiplexer to run persistent background processes.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/rest-api-orchestration/" style="font-weight:500">REST API Orchestration</a><br><span style="color:var(--muted);font-size:0.85rem">REST API Orchestration: Using HTTP endpoints to coordinate AI agent communication and task management.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/ical-sync/" style="font-weight:500">iCal Sync</a><br><span style="color:var(--muted);font-size:0.85rem">iCal Sync: Exporting task deadlines as calendar events via the iCal format.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/sqlite-backed-board/" style="font-weight:500">SQLite-Backed Board</a><br><span style="color:var(--muted);font-size:0.85rem">SQLite-Backed Board: A kanban board using SQLite for concurrent-safe task management.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/git-worktree-isolation/" style="font-weight:500">Git Worktree Isolation</a><br><span style="color:var(--muted);font-size:0.85rem">Git Worktree Isolation: Using git worktrees to give each AI agent its own working copy of a repository.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/headless-coding-agent/" style="font-weight:500">Headless Coding Agent</a><br><span style="color:var(--muted);font-size:0.85rem">A coding agent that runs without a GUI, controlled entirely via CLI or API.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/vibe-coding/" style="font-weight:500">Vibe Coding</a><br><span style="color:var(--muted);font-size:0.85rem">A programming style where developers describe intent in natural language and AI generates the implementation.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/agent-fleet/" style="font-weight:500">Agent Fleet</a><br><span style="color:var(--muted);font-size:0.85rem">A group of AI coding agents running in parallel, coordinated toward a shared goal.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/llm-context-window/" style="font-weight:500">LLM Context Window</a><br><span style="color:var(--muted);font-size:0.85rem">The maximum amount of text an LLM can process in a single request — a key constraint in long-running agent sessions.</span></li>
+<li style="margin-bottom:1rem"><a href="/glossary/unattended-coding/" style="font-weight:500">Unattended Coding</a><br><span style="color:var(--muted);font-size:0.85rem">Running AI coding agents without human supervision — enabled by self-healing, YOLO mode, and atomic task management.</span></li></ul>
+  </main>
+  <footer>
+    <a href="/">Home</a><span class="sep">·</span>
+    <a href="/compare/">Comparisons</a><span class="sep">·</span>
+    <a href="/use-cases/">Use Cases</a><span class="sep">·</span>
+    <a href="/guides/">Guides</a><span class="sep">·</span>
+    <a href="/glossary/">Glossary</a><span class="sep">·</span>
+    <a href="/faq/">FAQ</a><span class="sep">·</span>
+    <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><span class="sep">·</span>
+    <span>MIT License</span>
+  </footer>
+</body>
+</html>

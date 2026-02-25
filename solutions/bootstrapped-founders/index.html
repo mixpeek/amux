@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>amux for Bootstrapped Founders — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Ship a full product with one engineer's time and a fleet of AI agents.">
+  <meta name="keywords" content="bootstrapped founder AI coding, solo founder developer tools, indie hacker AI agents">
+  <link rel="canonical" href="https://amux.io/solutions/bootstrapped-founders/">
+  <meta property="og:title" content="amux for Bootstrapped Founders — amux">
+  <meta property="og:description" content="Ship a full product with one engineer's time and a fleet of AI agents.">
+  <meta property="og:url" content="https://amux.io/solutions/bootstrapped-founders/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+  
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --bg:#0a0a0a; --fg:#ededed; --muted:#888; --border:#222; --code-bg:#111; --code-border:#1e1e1e; --accent:#4ade80; --btn-bg:#1a1a1a; --btn-hover:#242424; --card-bg:#111; }
+    @media (prefers-color-scheme: light) { :root { --bg:#fafafa; --fg:#111; --muted:#666; --border:#e5e5e5; --code-bg:#f4f4f4; --code-border:#e0e0e0; --accent:#16a34a; --btn-bg:#f0f0f0; --btn-hover:#e5e5e5; --card-bg:#fff; } }
+    html, body { background:var(--bg); color:var(--fg); font-family:'Geist',ui-sans-serif,system-ui,-apple-system,sans-serif; font-size:15px; line-height:1.7; -webkit-font-smoothing:antialiased; }
+    a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+    code { font-family:'Geist Mono',ui-monospace,monospace; font-size:0.85em; background:var(--code-bg); border:1px solid var(--code-border); padding:0.15em 0.4em; border-radius:4px; }
+    pre { background:var(--code-bg); border:1px solid var(--code-border); border-radius:8px; padding:1rem 1.2rem; overflow-x:auto; margin:1.2rem 0; font-family:'Geist Mono',ui-monospace,monospace; font-size:0.8rem; line-height:1.8; }
+    pre code { background:none; border:none; padding:0; }
+    .site-header { max-width:42rem; margin:0 auto; padding:1.5rem 1.5rem 0; display:flex; align-items:center; justify-content:space-between; }
+    .site-header a.logo { display:flex; align-items:center; gap:0.5rem; color:var(--fg); font-weight:600; font-size:1rem; text-decoration:none; }
+    .site-header a.logo img { width:24px; height:24px; border-radius:5px; }
+    .site-header nav { display:flex; gap:1.2rem; font-size:0.8rem; }
+    .site-header nav a { color:var(--muted); } .site-header nav a:hover { color:var(--fg); }
+    main { max-width:42rem; margin:0 auto; padding:2rem 1.5rem 4rem; }
+    .breadcrumb { font-size:0.75rem; color:var(--muted); margin-bottom:1.5rem; }
+    .breadcrumb a { color:var(--muted); } .breadcrumb a:hover { color:var(--accent); }
+    h1 { font-size:1.8rem; font-weight:700; letter-spacing:-0.03em; line-height:1.25; margin-bottom:0.6rem; }
+    .subtitle { font-size:1rem; color:var(--muted); margin-bottom:2rem; line-height:1.6; }
+    h2 { font-size:1.2rem; font-weight:600; margin:2.2rem 0 0.8rem; letter-spacing:-0.02em; }
+    h3 { font-size:1rem; font-weight:600; margin:1.5rem 0 0.6rem; }
+    p { margin-bottom:1rem; }
+    ul, ol { margin:0.5rem 0 1rem 1.5rem; } li { margin-bottom:0.4rem; }
+    table { width:100%; border-collapse:collapse; margin:1.2rem 0; font-size:0.85rem; }
+    th { text-align:left; font-weight:600; padding:0.6rem 0.8rem; border-bottom:2px solid var(--border); }
+    td { padding:0.5rem 0.8rem; border-bottom:1px solid var(--border); }
+    tr:hover td { background:rgba(74,222,128,0.04); }
+    .cta-box { background:var(--card-bg); border:1px solid var(--border); border-radius:8px; padding:1.5rem; margin:2rem 0; }
+    .cta-box h3 { margin-top:0; }
+    .btn { display:inline-flex; align-items:center; gap:0.4rem; padding:0.45rem 1rem; border-radius:6px; font-size:0.85rem; font-weight:500; text-decoration:none; border:1px solid var(--border); background:var(--btn-bg); color:var(--fg); transition:background 0.12s; }
+    .btn:hover { background:var(--btn-hover); text-decoration:none; }
+    .btn-primary { background:var(--accent); border-color:var(--accent); color:#0a0a0a; }
+    .btn-primary:hover { opacity:0.88; background:var(--accent); }
+    .tag { display:inline-block; font-size:0.7rem; font-weight:500; padding:0.15rem 0.5rem; border-radius:3px; background:var(--code-bg); border:1px solid var(--code-border); color:var(--muted); margin-right:0.3rem; }
+    footer { max-width:42rem; margin:0 auto; padding:0 1.5rem 3rem; border-top:1px solid var(--border); padding-top:1.5rem; display:flex; flex-wrap:wrap; gap:0.8rem; font-size:0.75rem; color:var(--muted); }
+    footer a { color:var(--muted); } footer a:hover { color:var(--fg); }
+    footer .sep { opacity:0.3; }
+    @media (max-width:600px) { h1 { font-size:1.4rem; } main { padding:1.5rem 1rem 3rem; } .site-header { padding:1rem 1rem 0; } }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/"><img src="/icon.svg" alt="amux">amux</a>
+    <nav>
+      <a href="/compare/">Compare</a>
+      <a href="/use-cases/">Use Cases</a>
+      <a href="/guides/">Guides</a>
+      <a href="/glossary/">Glossary</a>
+      <a href="/faq/">FAQ</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span style="opacity:0.4;margin:0 0.3rem">›</span> <a href="/solutions/">Solutions</a> <span style="opacity:0.4;margin:0 0.3rem">›</span> <span>amux for Bootstrapped Founders</span></div>
+    <h1>amux for Bootstrapped Founders</h1>
+<p class="subtitle">One engineer. A fleet of agents. Team-speed execution without the payroll.</p>
+<h2>The Bootstrapped Founder's Equation</h2>
+<p>Bootstrapped founders make a deliberate trade: less capital, more control. The risk is execution speed — you can't hire a 10-person engineering team. The opportunity with amux is closing that speed gap without the headcount cost.</p>
+<p>A bootstrapped founder running an amux agent fleet can execute product development at a pace that previously required 4-6 engineers. The cost: API tokens ($20-100/day depending on intensity) plus the time to write task specs and review output. The savings: $400k-800k/year in engineering salaries at typical startup rates.</p>
+<h2>How Bootstrapped Founders Use amux</h2>
+<ul>
+<li><strong>Launch fast:</strong> Build an MVP in days instead of weeks. Parallel agents handle the full stack simultaneously — backend, frontend, auth, payments, deployment.</li>
+<li><strong>Iterate on customer feedback:</strong> Gather feedback Monday, spec tasks Tuesday, agents ship changes by Thursday. A weekly product iteration cycle is achievable solo with a fleet.</li>
+<li><strong>Cover all the bases:</strong> Bootstrapped founders can't afford gaps — no dedicated QA engineer, no DevOps specialist. Agent fleets cover test writing, CI setup, monitoring config, and documentation in parallel with feature work.</li>
+<li><strong>Stay lean through growth:</strong> Scale development capacity by adding agent sessions, not headcount. The marginal cost of an additional agent is API tokens.</li>
+</ul>
+<h2>The Right Way to Think About It</h2>
+<p>amux doesn't replace engineering judgment — it amplifies it. The founder still decides what to build, what the architecture should be, and what good looks like. The agents implement those decisions at scale. The bottleneck becomes product clarity and taste, not implementation capacity. That's actually a better bottleneck for a founder to have.</p>
+<h2>Practical Cost</h2>
+<p>A typical bootstrapped founder running amux might spend $30-60/day on API tokens during active development sprints and $5-10/day during lighter periods. Monthly: $300-600 during intensive phases. Compare to a single mid-level engineer at $150k/year ($12,500/month). The math is clear.</p>
+<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+  </main>
+  <footer>
+    <a href="/">Home</a><span class="sep">·</span>
+    <a href="/compare/">Comparisons</a><span class="sep">·</span>
+    <a href="/use-cases/">Use Cases</a><span class="sep">·</span>
+    <a href="/guides/">Guides</a><span class="sep">·</span>
+    <a href="/glossary/">Glossary</a><span class="sep">·</span>
+    <a href="/faq/">FAQ</a><span class="sep">·</span>
+    <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><span class="sep">·</span>
+    <span>MIT License</span>
+  </footer>
+</body>
+</html>
