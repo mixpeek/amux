@@ -98,6 +98,8 @@ _SSE_CACHE_TTL = 2  # seconds
 # Auto-recovery state
 _sse_alerts: list = []           # ring buffer of alert dicts pushed to all SSE clients
 _sse_alert_lock = threading.Lock()
+_send_locks: dict = {}          # per-session locks for serializing send_text/send_keys
+_send_locks_lock = threading.Lock()  # protects _send_locks dict itself
 _session_auto_actions: dict = {} # {name: {"last_compact": ts, "last_restart": ts}}
 
 # Per-session token cache — refreshed every 30s, keyed by resolved dir
@@ -947,7 +949,7 @@ def _report_fetch_mixpeek_ops_all(cfg):
         return {v: {"name": v, "error": err, "daily": [], "monthly": []} for v in _VENDORS}
     try:
         req = _ur.Request(
-            f"{url.rstrip('/')}/dashboard/spend?months={months}",
+            f"{url.rstrip('/')}/api/dashboard/spend?months={months}",
             headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
         )
         ctx = _ssl.create_default_context()
@@ -2108,50 +2110,62 @@ def stop_session(name: str) -> tuple[bool, str]:
         return False, e.stderr.decode(errors="replace")
 
 
+def _get_send_lock(name: str) -> threading.Lock:
+    """Get or create a per-session lock for serializing send operations."""
+    with _send_locks_lock:
+        if name not in _send_locks:
+            _send_locks[name] = threading.Lock()
+        return _send_locks[name]
+
+
 def send_text(name: str, text: str) -> tuple[bool, str]:
     if not is_running(name):
         return False, "not running"
-    try:
-        t = tmux_name(name)
-        # tmux send-keys -l has a ~500 char buffer limit; use load-buffer+paste-buffer for longer text
-        if len(text) > 400:
-            import tempfile, os as _os
-            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as f:
-                f.write(text)
-                tmp = f.name
-            try:
-                subprocess.run(["tmux", "load-buffer", tmp], check=True, capture_output=True, timeout=5)
-                subprocess.run(["tmux", "paste-buffer", "-t", t], check=True, capture_output=True, timeout=5)
-            finally:
-                _os.unlink(tmp)
-        else:
-            # Send text literally (-l) then Enter separately
+    lock = _get_send_lock(name)
+    with lock:
+        try:
+            t = tmux_name(name)
+            # tmux send-keys -l has a ~500 char buffer limit; use load-buffer+paste-buffer for longer text
+            if len(text) > 400:
+                import tempfile, os as _os
+                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as f:
+                    f.write(text)
+                    tmp = f.name
+                try:
+                    subprocess.run(["tmux", "load-buffer", tmp], check=True, capture_output=True, timeout=5)
+                    subprocess.run(["tmux", "paste-buffer", "-t", t], check=True, capture_output=True, timeout=5)
+                finally:
+                    _os.unlink(tmp)
+            else:
+                # Send text literally (-l) then Enter separately
+                subprocess.run(
+                    ["tmux", "send-keys", "-t", t, "-l", text],
+                    check=True, capture_output=True, timeout=5,
+                )
+            # Give readline time to process all queued characters before Enter arrives
+            time.sleep(0.1)
             subprocess.run(
-                ["tmux", "send-keys", "-t", t, "-l", text],
+                ["tmux", "send-keys", "-t", t, "Enter"],
                 check=True, capture_output=True, timeout=5,
             )
-        # Give readline time to process all queued characters before Enter arrives
-        time.sleep(0.1)
-        subprocess.run(
-            ["tmux", "send-keys", "-t", t, "Enter"],
-            check=True, capture_output=True, timeout=5,
-        )
-        return True, "sent"
-    except subprocess.CalledProcessError as e:
-        return False, e.stderr.decode(errors="replace")
+            return True, "sent"
+        except subprocess.CalledProcessError as e:
+            return False, e.stderr.decode(errors="replace")
 
 
 def send_keys(name: str, keys: str) -> tuple[bool, str]:
     if not is_running(name):
         return False, "not running"
-    try:
-        subprocess.run(
-            ["tmux", "send-keys", "-t", tmux_name(name), keys],
-            check=True, capture_output=True, timeout=5,
-        )
-        return True, "sent"
-    except subprocess.CalledProcessError as e:
-        return False, e.stderr.decode(errors="replace")
+    lock = _get_send_lock(name)
+    with lock:
+        try:
+            subprocess.run(
+                ["tmux", "send-keys", "-t", tmux_name(name), keys],
+                check=True, capture_output=True, timeout=5,
+            )
+            return True, "sent"
+        except subprocess.CalledProcessError as e:
+            return False, e.stderr.decode(errors="replace")
 
 
 def list_tmux_sessions() -> list:
