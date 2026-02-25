@@ -4167,6 +4167,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div style="display:flex;gap:8px;align-items:center;">
     <h1 style="margin:0;cursor:pointer;" onclick="openAbout()">amux</h1>
     <span id="conn-status" class="conn-status online" onclick="showQueueModal()"></span>
+    <button id="notif-btn" onclick="toggleNotifications()" title="Session notifications" style="background:none;border:none;cursor:pointer;padding:2px 4px;font-size:1rem;opacity:0.5;line-height:1;" aria-label="Toggle notifications">&#x1F514;</button>
   </div>
   <div style="display:flex;gap:8px;align-items:center;">
     <div class="active-wrap">
@@ -5395,6 +5396,64 @@ function reconcileQueue(queue) {
 
 // ═══════ API & CONNECTION ═══════
 let lastSessionsJSON = '';
+
+// ── Session notifications ──
+const _prevSessionState = {};  // name → {status, running}
+let _notifsEnabled = localStorage.getItem('amux_notifs') === '1';
+
+function _updateNotifBtn() {
+  const btn = document.getElementById('notif-btn');
+  if (!btn) return;
+  const granted = Notification.permission === 'granted';
+  btn.textContent = _notifsEnabled && granted ? '\uD83D\uDD14' : '\uD83D\uDD15';
+  btn.style.opacity = _notifsEnabled && granted ? '1' : '0.4';
+  btn.title = _notifsEnabled ? 'Notifications on — click to disable' : 'Notifications off — click to enable';
+}
+
+async function toggleNotifications() {
+  if (!_notifsEnabled) {
+    const perm = Notification.permission === 'granted'
+      ? 'granted'
+      : await Notification.requestPermission();
+    if (perm !== 'granted') { showToast('Notification permission denied'); return; }
+    _notifsEnabled = true;
+    localStorage.setItem('amux_notifs', '1');
+    showToast('Session notifications enabled');
+  } else {
+    _notifsEnabled = false;
+    localStorage.setItem('amux_notifs', '0');
+    showToast('Session notifications disabled');
+  }
+  _updateNotifBtn();
+}
+
+function _fireSessionNotif(name, title, body) {
+  if (!_notifsEnabled || Notification.permission !== 'granted') return;
+  const n = new Notification(title, { body, tag: 'amux-' + name, renotify: true, silent: false });
+  n.onclick = () => { window.focus(); openPeek(name); n.close(); };
+}
+
+function _checkSessionTransitions(newData) {
+  if (_initialLoad) return;  // skip initial load to avoid flood
+  for (const s of newData) {
+    const prev = _prevSessionState[s.name];
+    if (!prev) { _prevSessionState[s.name] = { status: s.status, running: s.running }; continue; }
+    const statusChanged = s.status !== prev.status;
+    const stoppedNow = prev.running && !s.running;
+    if (statusChanged) {
+      if (s.status === 'waiting') {
+        _fireSessionNotif(s.name, s.name + ' needs input', s.task_name || 'Waiting for a response');
+      } else if (s.status === 'active' && prev.status !== 'active') {
+        _fireSessionNotif(s.name, s.name + ' started working', s.task_name || '');
+      }
+    }
+    if (stoppedNow && prev.status !== '') {
+      _fireSessionNotif(s.name, s.name + ' stopped', '');
+    }
+    _prevSessionState[s.name] = { status: s.status, running: s.running };
+  }
+}
+
 async function fetchSessions() {
   try {
     const r = await fetch(API + '/api/sessions');
@@ -5405,6 +5464,7 @@ async function fetchSessions() {
     if (!online) setOnline(true);
     const j = JSON.stringify(data);
     if (j !== lastSessionsJSON) {
+      _checkSessionTransitions(data);
       lastSessionsJSON = j;
       sessions = data;
       localStorage.setItem('amux_sessions_cache', j);
@@ -10901,6 +10961,7 @@ function enablePollingFallback() {
 
 // Start SSE (falls back to polling on failure)
 connectSSE();
+_updateNotifBtn();
 
 // Register service worker for offline asset caching
 if ('serviceWorker' in navigator) {
