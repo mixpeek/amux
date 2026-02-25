@@ -1916,6 +1916,16 @@ def list_sessions() -> list:
     captures = _tmux_capture_batch(running_names, 30) if running_names else {}
     # Refresh token cache once (not per session)
     _refresh_token_cache()
+    # Batch-load "doing" board tasks per session for task_name display
+    try:
+        _doing_tasks = {
+            row["session"]: row["title"]
+            for row in get_db().execute(
+                "SELECT session, title FROM issues WHERE status='doing' AND deleted IS NULL AND session IS NOT NULL"
+            ).fetchall()
+        }
+    except Exception:
+        _doing_tasks = {}
     for f in env_files:
         name = f.stem
         cfg = parse_env_file(f)
@@ -1988,7 +1998,7 @@ def list_sessions() -> list:
             "active_model": active_model,
             "session_created": session_created,
             "task_time": task_time,
-            "task_name": pane_title,
+            "task_name": _doing_tasks.get(name) or pane_title,
             "tokens": tokens,
         })
     status_order = {"active": 0, "waiting": 0, "idle": 1, "": 1}
