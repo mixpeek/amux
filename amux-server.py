@@ -6455,7 +6455,7 @@ function closePeek() {
   lastPeekHTML = '';
   clearPeekFiles();
   const ov = document.getElementById('peek-overlay');
-  ov.classList.remove('active');
+  ov.classList.remove('active', 'vv-compact');
   ov.style.height = '';
   ov.style.top = '';
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
