@@ -8725,24 +8725,28 @@ async function fetchRawLogs() {
   } catch(e) {}
 }
 
+function _stripAnsi(s) {
+  return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*(\x07|$)/g, '');
+}
+
 function renderRawLogs() {
   const el = document.getElementById('logs-raw-body');
   if (!el) return;
   const filt = (document.getElementById('raw-filter')?.value || '').toLowerCase();
-  const lines = filt ? _logsRawLines.filter(l => l.toLowerCase().includes(filt)) : _logsRawLines;
+  const lines = filt
+    ? _logsRawLines.filter(l => _stripAnsi(l).toLowerCase().includes(filt))
+    : _logsRawLines;
   el.innerHTML = lines.map(l => {
-    const isErr = /error|exception|traceback/i.test(l);
-    const isWarn = /warn/i.test(l);
-    const esc = l.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const clean = _stripAnsi(l);
+    const isErr = /error|exception|traceback/i.test(clean);
+    const isWarn = /warn/i.test(clean);
+    const esc = clean.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     if (isErr)  return '<span style="color:var(--red)">'  + esc + '</span>';
     if (isWarn) return '<span style="color:#e07000">' + esc + '</span>';
-    if (/^\d{4}-\d{2}-\d{2}/.test(l)) {
-      // timestamp prefix in dim color
-      const tEnd = l.indexOf(' ', 20);
+    if (/^\d{4}-\d{2}-\d{2}/.test(clean)) {
+      const tEnd = clean.indexOf(' ', 20);
       if (tEnd > 0) {
-        const ts = l.slice(0,tEnd);
-        const rest = l.slice(tEnd);
-        return '<span style="color:var(--dim)">' + escHtml(ts) + '</span>' + escHtml(rest);
+        return '<span style="color:var(--dim)">' + escHtml(clean.slice(0,tEnd)) + '</span>' + escHtml(clean.slice(tEnd));
       }
     }
     return esc;
@@ -12784,6 +12788,33 @@ class CCHandler(BaseHTTPRequestHandler):
                 return self._json({"error": f"session '{sname}' not found"}, 404)
             return self._json(match)
 
+        # GET /api/logs — structured event feed + raw server log
+        if path == "/api/logs" and method == "GET":
+            log_type  = qs.get("type",   ["events"])[0]   # events | raw | both
+            since     = float(qs.get("since",  ["0"])[0])
+            limit_n   = min(int(qs.get("limit", ["500"])[0]), 2000)
+            filt      = qs.get("filter", [""])[0]          # event type filter
+            result: dict = {}
+            if log_type in ("events", "both"):
+                with _event_log_lock:
+                    evts = list(_event_log)
+                if since:
+                    evts = [e for e in evts if e["ts"] > since]
+                if filt:
+                    evts = [e for e in evts if e["type"] == filt]
+                result["events"] = list(reversed(evts[-limit_n:]))
+            if log_type in ("raw", "both"):
+                lines_n = int(qs.get("lines", ["300"])[0])
+                try:
+                    with open(SERVER_LOG, "r", errors="replace") as _f:
+                        all_lines = _f.readlines()
+                    result["raw"] = "".join(all_lines[-lines_n:])
+                    result["raw_total_lines"] = len(all_lines)
+                except Exception:
+                    result["raw"] = ""
+                    result["raw_total_lines"] = 0
+            return self._json(result)
+
         # Session-specific routes: /api/sessions/<name>/<action>[/<subid>]
         m = re.match(r"^/api/sessions/([^/]+)(/([^/]+)(/([^/]+))?)?$", path)
         if not m:
@@ -13137,33 +13168,6 @@ class CCHandler(BaseHTTPRequestHandler):
 
                 return self._json({"error": "nothing to update"}, 400)
             return self._json({"error": "not found"}, 404)
-
-        # GET /api/logs — structured event feed + raw server log
-        if path == "/api/logs" and method == "GET":
-            log_type  = qs.get("type",   ["events"])[0]   # events | raw | both
-            since     = float(qs.get("since",  ["0"])[0])
-            limit_n   = min(int(qs.get("limit", ["500"])[0]), 2000)
-            filt      = qs.get("filter", [""])[0]          # event type filter
-            result: dict = {}
-            if log_type in ("events", "both"):
-                with _event_log_lock:
-                    evts = list(_event_log)
-                if since:
-                    evts = [e for e in evts if e["ts"] > since]
-                if filt:
-                    evts = [e for e in evts if e["type"] == filt]
-                result["events"] = list(reversed(evts[-limit_n:]))
-            if log_type in ("raw", "both"):
-                lines_n = int(qs.get("lines", ["300"])[0])
-                try:
-                    with open(SERVER_LOG, "r", errors="replace") as _f:
-                        all_lines = _f.readlines()
-                    result["raw"] = "".join(all_lines[-lines_n:])
-                    result["raw_total_lines"] = len(all_lines)
-                except Exception:
-                    result["raw"] = ""
-                    result["raw_total_lines"] = 0
-            return self._json(result)
 
         return self._json({"error": "method not allowed"}, 405)
 
