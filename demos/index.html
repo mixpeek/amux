@@ -1,203 +1,364 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Demos — amux</title>
-  <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Watch every amux feature in action — session management, kanban board, self-healing, agent orchestration, mobile PWA, and more.">
-  <meta name="keywords" content="amux demos, claude code demo, AI agent orchestration demo, parallel coding agents video">
-  <link rel="canonical" href="https://amux.io/demos/">
-  <meta property="og:title" content="Demos — amux">
-  <meta property="og:description" content="Watch every amux feature in action — session management, kanban board, self-healing, agent orchestration, mobile PWA, and more.">
-  <meta property="og:url" content="https://amux.io/demos/">
-  <meta property="og:image" content="https://amux.io/demos/demo.gif">
-  <meta property="og:type" content="article">
-  <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:image" content="https://amux.io/demos/demo.gif">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root { --bg:#0a0a0a; --fg:#ededed; --muted:#888; --border:#222; --code-bg:#111; --code-border:#1e1e1e; --accent:#4ade80; --btn-bg:#1a1a1a; --btn-hover:#242424; --card-bg:#111; }
-  @media (prefers-color-scheme: light) { :root { --bg:#fafafa; --fg:#111; --muted:#666; --border:#e5e5e5; --code-bg:#f4f4f4; --code-border:#e0e0e0; --accent:#16a34a; --btn-bg:#f0f0f0; --btn-hover:#e5e5e5; --card-bg:#fff; } }
-  html, body { background:var(--bg); color:var(--fg); font-family:'Geist',ui-sans-serif,system-ui,-apple-system,sans-serif; font-size:15px; line-height:1.7; -webkit-font-smoothing:antialiased; }
-  a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
-  code { font-family:'Geist Mono',ui-monospace,monospace; font-size:0.85em; background:var(--code-bg); border:1px solid var(--code-border); padding:0.15em 0.4em; border-radius:4px; }
-  pre { background:var(--code-bg); border:1px solid var(--code-border); border-radius:8px; padding:1rem 1.2rem; overflow-x:auto; margin:1.2rem 0; font-family:'Geist Mono',ui-monospace,monospace; font-size:0.8rem; line-height:1.8; }
-  pre code { background:none; border:none; padding:0; }
-  .site-header { max-width:52rem; margin:0 auto; padding:1.5rem 1.5rem 0; display:flex; align-items:center; justify-content:space-between; }
-  .site-header a.logo { display:flex; align-items:center; gap:0.5rem; color:var(--fg); font-weight:600; font-size:1rem; text-decoration:none; }
-  .site-header a.logo img { width:24px; height:24px; border-radius:5px; }
-  .site-header nav { display:flex; gap:1.2rem; font-size:0.8rem; }
-  .site-header nav a { color:var(--muted); } .site-header nav a:hover { color:var(--fg); }
-  main { max-width:52rem; margin:0 auto; padding:2rem 1.5rem 4rem; }
-  .breadcrumb { font-size:0.75rem; color:var(--muted); margin-bottom:1.5rem; }
-  .breadcrumb a { color:var(--muted); } .breadcrumb a:hover { color:var(--accent); }
-  h1 { font-size:1.8rem; font-weight:700; letter-spacing:-0.03em; line-height:1.25; margin-bottom:0.5rem; }
-  .subtitle { font-size:1rem; color:var(--muted); margin-bottom:1.8rem; line-height:1.6; }
-  h2 { font-size:1.15rem; font-weight:600; margin:2rem 0 0.7rem; letter-spacing:-0.02em; }
-  p { margin-bottom:1rem; }
-  ul, ol { margin:0.5rem 0 1rem 1.5rem; } li { margin-bottom:0.4rem; }
-  .demo-gif { width:100%; border-radius:8px; border:1px solid var(--border); display:block; margin:1.5rem 0; }
-  .demo-gif-mobile { max-width:360px; border-radius:12px; }
-  .step-list { list-style:none; margin-left:0; counter-reset:steps; }
-  .step-list li { counter-increment:steps; padding:0.6rem 0 0.6rem 2.8rem; position:relative; border-bottom:1px solid var(--border); font-size:0.9rem; }
-  .step-list li:last-child { border-bottom:none; }
-  .step-list li::before { content:counter(steps); position:absolute; left:0; top:0.55rem; width:1.8rem; height:1.8rem; border-radius:50%; background:var(--accent); color:#0a0a0a; font-size:0.7rem; font-weight:700; display:flex; align-items:center; justify-content:center; }
-  .cta-box { background:var(--card-bg); border:1px solid var(--border); border-radius:8px; padding:1.5rem; margin:2rem 0; }
-  .cta-box h3 { margin-top:0; margin-bottom:0.6rem; font-size:1rem; font-weight:600; }
-  .btn { display:inline-flex; align-items:center; gap:0.4rem; padding:0.45rem 1rem; border-radius:6px; font-size:0.85rem; font-weight:500; text-decoration:none; border:1px solid var(--border); background:var(--btn-bg); color:var(--fg); transition:background 0.12s; margin-right:0.5rem; margin-top:0.5rem; }
-  .btn:hover { background:var(--btn-hover); text-decoration:none; }
-  .btn-primary { background:var(--accent); border-color:var(--accent); color:#0a0a0a; }
-  .btn-primary:hover { opacity:0.88; background:var(--accent); }
-  .related { display:flex; flex-wrap:wrap; gap:0.5rem; margin-top:0.8rem; }
-  .related a { font-size:0.8rem; color:var(--muted); padding:0.25rem 0.6rem; border:1px solid var(--border); border-radius:4px; text-decoration:none; }
-  .related a:hover { color:var(--fg); border-color:var(--muted); }
-  footer { max-width:52rem; margin:0 auto; padding:0 1.5rem 3rem; border-top:1px solid var(--border); padding-top:1.5rem; display:flex; flex-wrap:wrap; gap:0.8rem; font-size:0.75rem; color:var(--muted); }
-  footer a { color:var(--muted); } footer a:hover { color:var(--fg); }
-  footer .sep { opacity:0.3; }
-  @media (max-width:600px) { h1 { font-size:1.4rem; } main { padding:1.5rem 1rem 3rem; } .site-header { padding:1rem 1rem 0; } }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>amux Demos — See It in Action</title>
+<meta name="description" content="Interactive demos and GIFs showing amux in action: parallel agents, kanban board, self-healing, mobile PWA, agent orchestration, and more.">
+<link rel="canonical" href="https://amux.io/demos/">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d1117;color:#e6edf3;line-height:1.6;padding:32px 16px;}
+a{color:inherit;text-decoration:none;}
+.wrap{max-width:1100px;margin:0 auto;}
+h1{font-size:2rem;font-weight:700;margin-bottom:8px;}
+.subtitle{color:#8b949e;margin-bottom:28px;font-size:1.05rem;}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:28px;}
+.filter-btn{padding:6px 14px;border-radius:20px;border:1px solid #30363d;background:transparent;color:#8b949e;cursor:pointer;font-size:0.82rem;transition:all .15s;}
+.filter-btn:hover,.filter-btn.active{background:#238636;color:#fff;border-color:#238636;}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px;}
+.demo-card{border-radius:8px;overflow:hidden;border:1px solid #21262d;background:#161b22;transition:border-color .15s;}
+.demo-card:hover{border-color:#388bfd;}
+.demo-card.hidden{display:none;}
+.demo-thumb{overflow:hidden;aspect-ratio:16/9;background:#0d1117;}
+.demo-thumb img{width:100%;height:100%;object-fit:cover;display:block;}
+.demo-info{padding:12px 14px;}
+.demo-tag{font-size:0.7rem;color:#3fb950;text-transform:uppercase;letter-spacing:.05em;font-weight:600;}
+.demo-info h3{font-size:0.95rem;font-weight:600;margin-top:4px;color:#e6edf3;}
+.back{margin-top:32px;font-size:0.85rem;color:#8b949e;}<a href="/" style="color:#58a6ff;">← amux home</a>
 </style>
 </head>
-<style>
-  .demo-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:1rem; margin-bottom:2.5rem; }
-  @media (max-width:640px) { .demo-grid { grid-template-columns:1fr; } }
-  .demo-card { display:block; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:var(--card-bg); text-decoration:none; transition:border-color 0.15s; }
-  .demo-card:hover { border-color:var(--accent); text-decoration:none; }
-  .demo-card-gif { width:100%; display:block; aspect-ratio:16/10; object-fit:cover; object-position:top; }
-  .demo-card-body { padding:0.9rem 1rem 1rem; }
-  .demo-card-title { font-weight:600; font-size:0.9rem; margin-bottom:0.3rem; color:var(--fg); }
-  .demo-card-desc { font-size:0.78rem; color:var(--muted); line-height:1.5; }</style>
 <body>
-  <header class="site-header">
-    <a class="logo" href="/"><img src="/icon.svg" alt="amux">amux</a>
-    <nav>
-      <a href="/demos/">Demos</a>
-      <a href="/compare/">Compare</a>
-      <a href="/guides/">Guides</a>
-      <a href="/faq/">FAQ</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-    </nav>
-  </header>
-  <main>
-    <div class="breadcrumb"><a href="/">amux</a> <span style="opacity:0.4;margin:0 0.3rem">›</span> <span>Demos</span></div>
-    <h1>amux Demos</h1>
-<p class="subtitle">See every feature in action. Click any demo to see the full walkthrough with step-by-step breakdown.</p>
-
-<h2>Web Dashboard</h2>
-<div class="demo-grid">
-  <a href="/demos/session-cards-overview/" class="demo-card">
-    <img src="/demos/session-cards-overview/demo.gif" alt="Session Cards Overview" class="demo-card-gif" loading="lazy">
-    <div class="demo-card-body">
-      <div class="demo-card-title">Session Cards Overview</div>
-      <div class="demo-card-desc">See all your Claude Code agents at a glance — live status, token spend, current task, and …</div>
-    </div>
-  </a>
-  <a href="/demos/send-command-dashboard/" class="demo-card">
-    <img src="/demos/send-command-dashboard/demo.gif" alt="Send Commands from the Dashboard" class="demo-card-gif" loading="lazy">
-    <div class="demo-card-body">
-      <div class="demo-card-title">Send Commands from the Dashboard</div>
-      <div class="demo-card-desc">Type prompts and commands directly to any Claude Code agent from the browser — no terminal…</div>
-    </div>
-  </a>
-  <a href="/demos/workspace-tiled-view/" class="demo-card">
-    <img src="/demos/workspace-tiled-view/demo.gif" alt="Workspace — Tiled Multi-Agent View" class="demo-card-gif" loading="lazy">
-    <div class="demo-card-body">
-      <div class="demo-card-title">Workspace — Tiled Multi-Agent View</div>
-      <div class="demo-card-desc">Watch multiple Claude Code agents work side by side in a tiled layout. Each pane has its o…</div>
-    </div>
-  </a>
+<div class="wrap">
+<h1>amux Demos</h1>
+<p class="subtitle">28 demos covering every use case and feature</p>
+<div class="filters">
+    <button class="filter-btn active" onclick="filterDemos('All')">All</button>
+    <button class="filter-btn" onclick="filterDemos('Sessions')">Sessions</button>
+    <button class="filter-btn" onclick="filterDemos('Board')">Board</button>
+    <button class="filter-btn" onclick="filterDemos('Features')">Features</button>
+    <button class="filter-btn" onclick="filterDemos('Use Cases')">Use Cases</button>
 </div>
+<div class="grid" id="demo-grid">
 
-<h2>Kanban Board</h2>
-<div class="demo-grid">
-  <a href="/demos/kanban-board-overview/" class="demo-card">
-    <img src="/demos/kanban-board-overview/demo.gif" alt="Kanban Board" class="demo-card-gif" loading="lazy">
-    <div class="demo-card-body">
-      <div class="demo-card-title">Kanban Board</div>
-      <div class="demo-card-desc">SQLite-backed kanban with auto-generated issue keys, tags, due dates, and atomic task clai…</div>
-    </div>
-  </a>
-  <a href="/demos/atomic-task-claiming/" class="demo-card">
-    <img src="/demos/atomic-task-claiming/demo.gif" alt="Atomic Task Claiming" class="demo-card-gif" loading="lazy">
-    <div class="demo-card-body">
-      <div class="demo-card-title">Atomic Task Claiming</div>
-      <div class="demo-card-desc">Dozens of agents race to claim the same task queue — only one wins. SQLite CAS ensures zer…</div>
-    </div>
-  </a>
-  <a href="/demos/ical-calendar-sync/" class="demo-card">
-    <img src="/demos/ical-calendar-sync/demo.gif" alt="iCal Calendar Sync" class="demo-card-gif" loading="lazy">
-    <div class="demo-card-body">
-      <div class="demo-card-title">iCal Calendar Sync</div>
-      <div class="demo-card-desc">Board items with due dates automatically appear in Google Calendar, Apple Calendar, or any…</div>
-    </div>
-  </a>
+  <div class="demo-card" data-playlist="Sessions">
+    <a href="/demos/session-cards-overview/">
+      <div class="demo-thumb">
+        <img src="/demos/session-cards-overview/demo.gif" alt="Session Cards Overview" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Sessions</span>
+        <h3>Session Cards Overview</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Sessions">
+    <a href="/demos/send-command-dashboard/">
+      <div class="demo-thumb">
+        <img src="/demos/send-command-dashboard/demo.gif" alt="Send Command from Dashboard" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Sessions</span>
+        <h3>Send Command from Dashboard</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Board">
+    <a href="/demos/kanban-board-overview/">
+      <div class="demo-thumb">
+        <img src="/demos/kanban-board-overview/demo.gif" alt="Kanban Board Overview" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Board</span>
+        <h3>Kanban Board Overview</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Board">
+    <a href="/demos/atomic-task-claiming/">
+      <div class="demo-thumb">
+        <img src="/demos/atomic-task-claiming/demo.gif" alt="Atomic Task Claiming" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Board</span>
+        <h3>Atomic Task Claiming</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Sessions">
+    <a href="/demos/self-healing-watchdog/">
+      <div class="demo-thumb">
+        <img src="/demos/self-healing-watchdog/demo.gif" alt="Self-Healing Watchdog" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Sessions</span>
+        <h3>Self-Healing Watchdog</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Sessions">
+    <a href="/demos/workspace-tiled-view/">
+      <div class="demo-thumb">
+        <img src="/demos/workspace-tiled-view/demo.gif" alt="Workspace Tiled View" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Sessions</span>
+        <h3>Workspace Tiled View</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Features">
+    <a href="/demos/agent-orchestration/">
+      <div class="demo-thumb">
+        <img src="/demos/agent-orchestration/demo.gif" alt="Agent Orchestration" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Features</span>
+        <h3>Agent Orchestration</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Board">
+    <a href="/demos/ical-calendar-sync/">
+      <div class="demo-thumb">
+        <img src="/demos/ical-calendar-sync/demo.gif" alt="iCal Calendar Sync" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Board</span>
+        <h3>iCal Calendar Sync</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Sessions">
+    <a href="/demos/conversation-fork/">
+      <div class="demo-thumb">
+        <img src="/demos/conversation-fork/demo.gif" alt="Conversation Fork" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Sessions</span>
+        <h3>Conversation Fork</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Features">
+    <a href="/demos/mobile-pwa/">
+      <div class="demo-thumb">
+        <img src="/demos/mobile-pwa/demo.gif" alt="Mobile PWA" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Features</span>
+        <h3>Mobile PWA</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/ai-coding-while-you-sleep/">
+      <div class="demo-thumb">
+        <img src="/demos/ai-coding-while-you-sleep/demo.gif" alt="AI Coding While You Sleep" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>AI Coding While You Sleep</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/parallel-feature-development/">
+      <div class="demo-thumb">
+        <img src="/demos/parallel-feature-development/demo.gif" alt="Parallel Feature Development" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>Parallel Feature Development</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/test-generation-at-scale/">
+      <div class="demo-thumb">
+        <img src="/demos/test-generation-at-scale/demo.gif" alt="Test Generation at Scale" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>Test Generation at Scale</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/large-scale-refactoring/">
+      <div class="demo-thumb">
+        <img src="/demos/large-scale-refactoring/demo.gif" alt="Large-Scale Refactoring" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>Large-Scale Refactoring</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/bug-triage-and-fixing/">
+      <div class="demo-thumb">
+        <img src="/demos/bug-triage-and-fixing/demo.gif" alt="Bug Triage & Fixing" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>Bug Triage & Fixing</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/automated-code-review/">
+      <div class="demo-thumb">
+        <img src="/demos/automated-code-review/demo.gif" alt="Automated Code Review" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>Automated Code Review</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/documentation-generation/">
+      <div class="demo-thumb">
+        <img src="/demos/documentation-generation/demo.gif" alt="Documentation Generation" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>Documentation Generation</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/api-endpoint-generation/">
+      <div class="demo-thumb">
+        <img src="/demos/api-endpoint-generation/demo.gif" alt="API Endpoint Generation" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>API Endpoint Generation</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/code-migration/">
+      <div class="demo-thumb">
+        <img src="/demos/code-migration/demo.gif" alt="Code Migration" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>Code Migration</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/legacy-code-modernization/">
+      <div class="demo-thumb">
+        <img src="/demos/legacy-code-modernization/demo.gif" alt="Legacy Code Modernization" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>Legacy Code Modernization</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/monorepo-management/">
+      <div class="demo-thumb">
+        <img src="/demos/monorepo-management/demo.gif" alt="Monorepo Management" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>Monorepo Management</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/dependency-updates/">
+      <div class="demo-thumb">
+        <img src="/demos/dependency-updates/demo.gif" alt="Dependency Updates" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>Dependency Updates</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/security-audit/">
+      <div class="demo-thumb">
+        <img src="/demos/security-audit/demo.gif" alt="Security Audit" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>Security Audit</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/ci-cd-pipeline-creation/">
+      <div class="demo-thumb">
+        <img src="/demos/ci-cd-pipeline-creation/demo.gif" alt="CI/CD Pipeline Creation" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>CI/CD Pipeline Creation</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Use Cases">
+    <a href="/demos/research-and-prototyping/">
+      <div class="demo-thumb">
+        <img src="/demos/research-and-prototyping/demo.gif" alt="Research & Prototyping" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Use Cases</span>
+        <h3>Research & Prototyping</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Features">
+    <a href="/demos/agent-coordination/">
+      <div class="demo-thumb">
+        <img src="/demos/agent-coordination/demo.gif" alt="Agent Coordination via REST" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Features</span>
+        <h3>Agent Coordination via REST</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Features">
+    <a href="/demos/single-file-architecture/">
+      <div class="demo-thumb">
+        <img src="/demos/single-file-architecture/demo.gif" alt="Single-File Architecture" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Features</span>
+        <h3>Single-File Architecture</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Features">
+    <a href="/demos/web-dashboard/">
+      <div class="demo-thumb">
+        <img src="/demos/web-dashboard/demo.gif" alt="Web Dashboard Overview" loading="lazy">
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Features</span>
+        <h3>Web Dashboard Overview</h3>
+      </div>
+    </a>
+  </div>
 </div>
-
-<h2>Self-Healing</h2>
-<div class="demo-grid">
-  <a href="/demos/self-healing-watchdog/" class="demo-card">
-    <img src="/demos/self-healing-watchdog/demo.gif" alt="Self-Healing Watchdog" class="demo-card-gif" loading="lazy">
-    <div class="demo-card-body">
-      <div class="demo-card-title">Self-Healing Watchdog</div>
-      <div class="demo-card-desc">A background watchdog monitors every session and recovers automatically — context compacti…</div>
-    </div>
-  </a>
+<div class="back"><a href="/">← amux home</a></div>
 </div>
-
-<h2>Orchestration</h2>
-<div class="demo-grid">
-  <a href="/demos/agent-orchestration/" class="demo-card">
-    <img src="/demos/agent-orchestration/demo.gif" alt="Agent-to-Agent Orchestration" class="demo-card-gif" loading="lazy">
-    <div class="demo-card-body">
-      <div class="demo-card-title">Agent-to-Agent Orchestration</div>
-      <div class="demo-card-desc">Agents discover peers and delegate work via REST API. Every session gets $AMUX_SESSION and…</div>
-    </div>
-  </a>
-</div>
-
-<h2>Session Management</h2>
-<div class="demo-grid">
-  <a href="/demos/conversation-fork/" class="demo-card">
-    <img src="/demos/conversation-fork/demo.gif" alt="Conversation Fork" class="demo-card-gif" loading="lazy">
-    <div class="demo-card-body">
-      <div class="demo-card-title">Conversation Fork</div>
-      <div class="demo-card-desc">Clone any session's conversation to a new branch point. Two agents explore different appro…</div>
-    </div>
-  </a>
-</div>
-
-<h2>Mobile</h2>
-<div class="demo-grid">
-  <a href="/demos/mobile-pwa/" class="demo-card">
-    <img src="/demos/mobile-pwa/demo.gif" alt="Mobile PWA" class="demo-card-gif" loading="lazy">
-    <div class="demo-card-body">
-      <div class="demo-card-title">Mobile PWA</div>
-      <div class="demo-card-desc">Install amux on your iPhone or Android as a Progressive Web App. Monitor sessions, send co…</div>
-    </div>
-  </a>
-</div>
-
-    <div class="cta-box">
-  <h3>Try amux</h3>
-  <p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p>
-  <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux serve  # → https://localhost:8822</code></pre>
-  <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
-  <a class="btn" href="/guides/getting-started/">Getting started →</a>
-</div>
-  </main>
-  <footer>
-    <a href="/">Home</a><span class="sep">·</span>
-    <a href="/demos/">Demos</a><span class="sep">·</span>
-    <a href="/compare/">Comparisons</a><span class="sep">·</span>
-    <a href="/guides/">Guides</a><span class="sep">·</span>
-    <a href="/faq/">FAQ</a><span class="sep">·</span>
-    <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><span class="sep">·</span>
-    <span>MIT License</span>
-  </footer>
+<script>
+function filterDemos(playlist) {
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.textContent === playlist));
+  document.querySelectorAll('.demo-card').forEach(c => {
+    c.classList.toggle('hidden', playlist !== 'All' && c.dataset.playlist !== playlist);
+  });
+}
+</script>
 </body>
 </html>

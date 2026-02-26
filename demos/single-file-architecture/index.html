@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Single-File Architecture Demo — amux</title>
+<meta name="description" content="Entire amux server and dashboard in one Python file. Zero config — just python3 amux-server.py.">
+<link rel="canonical" href="https://amux.io/demos/single-file-architecture/">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d1117;color:#e6edf3;line-height:1.6;padding:24px 16px;}
+a{color:#58a6ff;text-decoration:none;}a:hover{text-decoration:underline;}
+.wrap{max-width:900px;margin:0 auto;}
+.breadcrumb{font-size:0.82rem;color:#8b949e;margin-bottom:16px;}
+h1{font-size:1.6rem;font-weight:700;margin-bottom:8px;}
+.desc{color:#8b949e;margin-bottom:24px;font-size:1.05rem;}
+.gif-wrap{border-radius:8px;overflow:hidden;border:1px solid #30363d;margin-bottom:24px;background:#161b22;}
+.gif-wrap img{width:100%;display:block;}
+.steps{list-style:none;margin-bottom:24px;}
+.steps li{padding:8px 0;border-bottom:1px solid #21262d;font-size:0.95rem;color:#c9d1d9;display:flex;gap:10px;align-items:flex-start;}
+.steps li:last-child{border:none;}
+.step-num{background:#238636;color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:700;flex-shrink:0;margin-top:1px;}
+.cta{margin-top:24px;display:flex;gap:12px;flex-wrap:wrap;}
+.btn{display:inline-block;padding:10px 20px;border-radius:6px;font-size:0.9rem;font-weight:600;}
+.btn-primary{background:#238636;color:#fff;}
+.btn-secondary{background:#21262d;color:#c9d1d9;border:1px solid #30363d;}
+.related{margin-top:32px;padding-top:24px;border-top:1px solid #21262d;font-size:0.9rem;}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="breadcrumb"><a href="/features/">Features</a> → Single-File Architecture</div>
+<h1>Single-File Architecture</h1>
+<p class="desc">Entire amux server and dashboard in one Python file. Zero config — just python3 amux-server.py.</p>
+<div class="gif-wrap">
+  <img src="demo.gif" alt="Single-File Architecture demo" loading="lazy">
+</div>
+<ol class="steps">
+  <li><span class="step-num">1</span><span>Entire server + dashboard in amux-server.py</span></li>
+  <li><span class="step-num">2</span><span>Sessions are plain .env files — no database needed</span></li>
+  <li><span class="step-num">3</span><span>Edit the file → auto-restart → changes live instantly</span></li>
+  <li><span class="step-num">4</span><span>No Docker, no K8s, no config files</span></li>
+</ol>
+<div class="cta">
+  <a class="btn btn-primary" href="https://github.com/mixpeek/amux">Get started free →</a>
+  <a class="btn btn-secondary" href="/demos/">All demos</a>
+</div>
+<div class="related"><a href="/features/single-file-architecture/">Full feature guide →</a></div>
+</div>
+</body>
+</html>
