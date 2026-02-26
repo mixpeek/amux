@@ -14,10 +14,12 @@
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-  
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Use Cases","item":"https://amux.io/use-cases/"},{"@type":"ListItem","position":3,"name":"Test Generation at Scale","item":"https://amux.io/use-cases/test-generation-at-scale/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Test Generation at Scale","description":"Generate comprehensive test suites in parallel with multiple Claude Code agents.","url":"https://amux.io/use-cases/test-generation-at-scale/","datePublished":"2026-02-26","dateModified":"2026-02-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root { --bg:#0a0a0a; --fg:#ededed; --muted:#888; --border:#222; --code-bg:#111; --code-border:#1e1e1e; --accent:#4ade80; --btn-bg:#1a1a1a; --btn-hover:#242424; --card-bg:#111; }
@@ -73,12 +75,6 @@
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span style="opacity:0.4;margin:0 0.3rem">›</span> <a href="/use-cases/">Use Cases</a> <span style="opacity:0.4;margin:0 0.3rem">›</span> <span>Test Generation at Scale</span></div>
     <h1>Test Generation at Scale</h1>
-
-<div style="margin:24px 0;border-radius:8px;overflow:hidden;border:1px solid #30363d;">
-  <img src="/demos/test-generation-at-scale/demo.gif" alt="Test Generation at Scale demo" style="width:100%;display:block;" loading="lazy">
-</div>
-<p style="text-align:center;margin-bottom:24px;"><a href="/demos/test-generation-at-scale/" style="color:#58a6ff;font-size:0.9rem;">Watch full demo →</a></p>
-
 <p class="subtitle">One agent per module. Full test coverage by morning.</p>
 <p>Low test coverage? Assign one Claude Code agent per module or file. Each agent writes unit tests, integration tests, and edge cases. amux's self-healing ensures they keep working through context resets.</p>
 <h2>Workflow</h2>

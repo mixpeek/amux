@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>amux Blog — AI Agent Orchestration &amp; Parallel Coding</title>
+    <link>https://amux.io/blog/</link>
+    <description>Insights on parallel AI coding, agent orchestration, and developer productivity with amux.</description>
+    <language>en-us</language>
+    <lastBuildDate>Thu, 26 Feb 2026 16:14:06 GMT</lastBuildDate>
+    <atom:link href="https://amux.io/blog/rss.xml" rel="self" type="application/rss+xml"/>
+    <image><url>https://amux.io/og-image.png</url><title>amux</title><link>https://amux.io/</link></image>
+  <item>
+    <title><![CDATA[Ship Features While You Sleep]]></title>
+    <description><![CDATA[How to run AI coding agents overnight with self-healing to wake up to completed features.]]></description>
+    <link>https://amux.io/blog/ship-features-while-you-sleep/</link>
+    <guid isPermaLink="true">https://amux.io/blog/ship-features-while-you-sleep/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[How One Developer Replaces a 5-Person Team]]></title>
+    <description><![CDATA[The economics and workflow of using parallel AI agents to multiply individual output.]]></description>
+    <link>https://amux.io/blog/one-developer-five-person-team/</link>
+    <guid isPermaLink="true">https://amux.io/blog/one-developer-five-person-team/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[The Self-Healing Agent Pattern]]></title>
+    <description><![CDATA[Design patterns for building AI agents that automatically recover from failures.]]></description>
+    <link>https://amux.io/blog/self-healing-pattern/</link>
+    <guid isPermaLink="true">https://amux.io/blog/self-healing-pattern/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[Why Claude Code Sessions Crash (and How to Fix It)]]></title>
+    <description><![CDATA[Common Claude Code failure modes and how amux's self-healing handles each one automatically.]]></description>
+    <link>https://amux.io/blog/why-claude-code-sessions-crash/</link>
+    <guid isPermaLink="true">https://amux.io/blog/why-claude-code-sessions-crash/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[From 1 Agent to 30: Scaling Parallel Development]]></title>
+    <description><![CDATA[Lessons learned from scaling AI agent fleets from a single session to dozens.]]></description>
+    <link>https://amux.io/blog/scaling-parallel-development/</link>
+    <guid isPermaLink="true">https://amux.io/blog/scaling-parallel-development/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[The Case for Agent-to-Agent Communication]]></title>
+    <description><![CDATA[Why AI coding agents need to communicate with each other and how amux enables it.]]></description>
+    <link>https://amux.io/blog/agent-to-agent-communication/</link>
+    <guid isPermaLink="true">https://amux.io/blog/agent-to-agent-communication/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[Mobile-First AI Agent Management]]></title>
+    <description><![CDATA[Why managing AI agents from your phone matters and how amux's PWA enables it.]]></description>
+    <link>https://amux.io/blog/mobile-first-agent-management/</link>
+    <guid isPermaLink="true">https://amux.io/blog/mobile-first-agent-management/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[Token Economics of Parallel AI Coding]]></title>
+    <description><![CDATA[Understanding the cost structure of running multiple AI coding agents in parallel.]]></description>
+    <link>https://amux.io/blog/token-economics-parallel-coding/</link>
+    <guid isPermaLink="true">https://amux.io/blog/token-economics-parallel-coding/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[The End of Single-Threaded Development]]></title>
+    <description><![CDATA[Why sequential development is a bottleneck and how parallel AI agents change the equation.]]></description>
+    <link>https://amux.io/blog/end-of-single-threaded-development/</link>
+    <guid isPermaLink="true">https://amux.io/blog/end-of-single-threaded-development/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[Context Compaction: The Silent Killer]]></title>
+    <description><![CDATA[Why context compaction is the #1 reason AI coding agents fail and how to prevent it.]]></description>
+    <link>https://amux.io/blog/context-compaction-silent-killer/</link>
+    <guid isPermaLink="true">https://amux.io/blog/context-compaction-silent-killer/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[Running AI Agents 24/7]]></title>
+    <description><![CDATA[Architecture and best practices for running Claude Code agents continuously.]]></description>
+    <link>https://amux.io/blog/running-ai-agents-24-7/</link>
+    <guid isPermaLink="true">https://amux.io/blog/running-ai-agents-24-7/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[A Developer's Guide to Unattended Coding]]></title>
+    <description><![CDATA[Practical guide to running AI coding agents without constant supervision.]]></description>
+    <link>https://amux.io/blog/developers-guide-unattended-coding/</link>
+    <guid isPermaLink="true">https://amux.io/blog/developers-guide-unattended-coding/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[The Kanban Board Your AI Agents Actually Use]]></title>
+    <description><![CDATA[How amux's shared board enables real task coordination between AI coding agents.]]></description>
+    <link>https://amux.io/blog/kanban-board-ai-agents-use/</link>
+    <guid isPermaLink="true">https://amux.io/blog/kanban-board-ai-agents-use/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[Why Open Source Agent Orchestration Matters]]></title>
+    <description><![CDATA[The case for open-source, self-hosted AI agent orchestration vs. proprietary platforms.]]></description>
+    <link>https://amux.io/blog/open-source-agent-orchestration/</link>
+    <guid isPermaLink="true">https://amux.io/blog/open-source-agent-orchestration/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[Building Your First Agent Fleet]]></title>
+    <description><![CDATA[Step-by-step guide to setting up your first fleet of parallel AI coding agents with amux.]]></description>
+    <link>https://amux.io/blog/building-agent-fleet/</link>
+    <guid isPermaLink="true">https://amux.io/blog/building-agent-fleet/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[Vibe Coding at Scale: How AI Agent Fleets Changed My Workflow]]></title>
+    <description><![CDATA[What "vibe coding" actually means when you have 20 AI agents running in parallel.]]></description>
+    <link>https://amux.io/blog/vibe-coding-with-agents/</link>
+    <guid isPermaLink="true">https://amux.io/blog/vibe-coding-with-agents/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[Building with Claude 4: The Parallel Agent Workflow]]></title>
+    <description><![CDATA[How to structure your development workflow to take full advantage of Claude 4 capabilities in parallel.]]></description>
+    <link>https://amux.io/blog/claude-4-agent-workflow/</link>
+    <guid isPermaLink="true">https://amux.io/blog/claude-4-agent-workflow/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[MCP Servers + Parallel Agents: A Force Multiplier]]></title>
+    <description><![CDATA[How to configure MCP servers in amux sessions to give each agent specialized tool access.]]></description>
+    <link>https://amux.io/blog/mcp-server-agent-orchestration/</link>
+    <guid isPermaLink="true">https://amux.io/blog/mcp-server-agent-orchestration/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[The True Cost of AI Coding in 2025]]></title>
+    <description><![CDATA[A realistic breakdown of what it costs to run AI coding agents — tokens, time, and how to optimize.]]></description>
+    <link>https://amux.io/blog/true-cost-ai-coding/</link>
+    <guid isPermaLink="true">https://amux.io/blog/true-cost-ai-coding/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[The Solo Developer's AI Stack in 2025]]></title>
+    <description><![CDATA[The tools, workflows, and habits that let a solo developer ship at team speed.]]></description>
+    <link>https://amux.io/blog/solo-dev-ai-stack-2025/</link>
+    <guid isPermaLink="true">https://amux.io/blog/solo-dev-ai-stack-2025/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[How I Completed a 2-Week Sprint in 48 Hours]]></title>
+    <description><![CDATA[A real walkthrough of using an agent fleet to compress a sprint: parallel features, automated tests, and overnight runs.]]></description>
+    <link>https://amux.io/blog/sprint-in-48-hours/</link>
+    <guid isPermaLink="true">https://amux.io/blog/sprint-in-48-hours/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[Debugging When You Have 20 AI Agents]]></title>
+    <description><![CDATA[Strategies for monitoring, diagnosing, and fixing issues in a large agent fleet.]]></description>
+    <link>https://amux.io/blog/debugging-20-agents/</link>
+    <guid isPermaLink="true">https://amux.io/blog/debugging-20-agents/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[Building a SaaS MVP Overnight with Agent Fleets]]></title>
+    <description><![CDATA[How to structure an agent fleet to go from spec to deployed MVP in under 24 hours.]]></description>
+    <link>https://amux.io/blog/overnight-saas-mvp/</link>
+    <guid isPermaLink="true">https://amux.io/blog/overnight-saas-mvp/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[Context Window Strategy for Long-Running Agents]]></title>
+    <description><![CDATA[How to design prompts and tasks to keep agents productive across context boundaries.]]></description>
+    <link>https://amux.io/blog/context-window-strategy/</link>
+    <guid isPermaLink="true">https://amux.io/blog/context-window-strategy/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[The 2025 AI Coding Landscape: A Developer's Field Guide]]></title>
+    <description><![CDATA[A practical overview of the tools, tradeoffs, and workflows shaping AI-assisted development in 2025.]]></description>
+    <link>https://amux.io/blog/ai-coding-2025-landscape/</link>
+    <guid isPermaLink="true">https://amux.io/blog/ai-coding-2025-landscape/</guid>
+    <pubDate>Thu, 26 Feb 2026 16:14:06 GMT</pubDate>
+  </item>
+  </channel>
+</rss>

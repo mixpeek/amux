@@ -14,10 +14,12 @@
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-  
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Use Cases","item":"https://amux.io/use-cases/"},{"@type":"ListItem","position":3,"name":"Automated Dependency Updates","item":"https://amux.io/use-cases/dependency-updates/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Automated Dependency Updates","description":"Run AI agents in parallel to update dependencies, fix breaking changes, and run tests.","url":"https://amux.io/use-cases/dependency-updates/","datePublished":"2026-02-26","dateModified":"2026-02-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root { --bg:#0a0a0a; --fg:#ededed; --muted:#888; --border:#222; --code-bg:#111; --code-border:#1e1e1e; --accent:#4ade80; --btn-bg:#1a1a1a; --btn-hover:#242424; --card-bg:#111; }
@@ -73,12 +75,6 @@
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span style="opacity:0.4;margin:0 0.3rem">›</span> <a href="/use-cases/">Use Cases</a> <span style="opacity:0.4;margin:0 0.3rem">›</span> <span>Automated Dependency Updates</span></div>
     <h1>Automated Dependency Updates</h1>
-
-<div style="margin:24px 0;border-radius:8px;overflow:hidden;border:1px solid #30363d;">
-  <img src="/demos/dependency-updates/demo.gif" alt="Dependency Updates demo" style="width:100%;display:block;" loading="lazy">
-</div>
-<p style="text-align:center;margin-bottom:24px;"><a href="/demos/dependency-updates/" style="color:#58a6ff;font-size:0.9rem;">Watch full demo →</a></p>
-
 <p class="subtitle">Upgrade every dependency in parallel. Fix breaking changes automatically.</p>
 <p>Major version bumps break things. Assign each dependency update to its own agent. It upgrades, fixes breaking changes, runs tests, and reports results. Self-healing keeps agents running through long update cycles.</p>
 <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh

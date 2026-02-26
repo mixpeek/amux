@@ -1,0 +1,85 @@
+# amux
+
+> Open-source Claude Code agent multiplexer — run dozens of parallel AI coding agents unattended via tmux, with a web dashboard, kanban board, self-healing watchdog, and agent-to-agent REST API orchestration.
+
+amux (Agent Multiplexer) is a Python + tmux tool that runs multiple Claude Code sessions in parallel. It provides a mobile-friendly PWA dashboard, atomic kanban board (SQLite), session peek/send, iCal sync, and a REST API for agent orchestration. MIT licensed. No cloud dependency.
+
+## Quick Start
+
+```bash
+git clone https://github.com/mixpeek/amux && cd amux
+python3 amux-server.py  # opens dashboard at https://localhost:8822
+```
+
+## Documentation
+
+- [FAQ](https://amux.io/faq/): What is amux, how does it work, pricing, requirements
+- [Getting Started](https://amux.io/guides/getting-started-with-amux/): Installation, first session, dashboard tour
+- [Parallel Agents Guide](https://amux.io/guides/running-parallel-claude-agents/): Run multiple agents simultaneously
+- [Agent Orchestration](https://amux.io/guides/agent-orchestration-patterns/): Multi-agent coordination patterns
+- [Self-Healing Agents](https://amux.io/guides/self-healing-agent-watchdog/): Watchdog auto-restart setup
+- [Getting Started with amux](https://amux.io/guides/getting-started/): Install amux and run your first parallel Claude Code agents in under 5 minutes.
+- [Running 10+ Agents in Parallel](https://amux.io/guides/running-10-plus-agents/): How to effectively run 10 or more Claude Code agents simultaneously with amux.
+- [Self-Healing Configuration](https://amux.io/guides/self-healing-configuration/): Configure amux's self-healing watchdog for auto-compaction, restart, and prompt recovery.
+- [Agent-to-Agent Orchestration](https://amux.io/guides/agent-to-agent-orchestration/): How to make Claude Code agents discover peers, delegate tasks, and coordinate work via REST API.
+- [Mobile Management via PWA](https://amux.io/guides/mobile-management-pwa/): Install amux as a PWA on your phone to manage AI agents from anywhere.
+- [Token Spend Tracking](https://amux.io/guides/token-spend-tracking/): Monitor per-session AI token spend and daily costs with amux's built-in dashboards.
+- [Kanban Board for AI Agents](https://amux.io/guides/kanban-board-for-agents/): Use amux's SQLite-backed kanban board to coordinate work across parallel AI agents.
+- [Conversation Forking](https://amux.io/guides/conversation-forking/): Clone a Claude Code session's context into multiple new agents to explore different approaches.
+- [Git Conflict Avoidance](https://amux.io/guides/git-conflict-avoidance/): How amux detects and prevents git conflicts when multiple AI agents work on the same repo.
+- [REST API Reference](https://amux.io/guides/rest-api-reference/): Complete reference for amux's REST API — sessions, board, memory, sync, and orchestration.
+
+## Use Cases
+
+- [Parallel Feature Development](https://amux.io/use-cases/parallel-feature-development/)
+- [Automated Code Review with AI Agents](https://amux.io/use-cases/automated-code-review/)
+- [Large-Scale Refactoring with AI Agents](https://amux.io/use-cases/large-scale-refactoring/)
+- [Test Generation at Scale](https://amux.io/use-cases/test-generation-at-scale/)
+- [Bug Triage and Fixing](https://amux.io/use-cases/bug-triage-and-fixing/)
+- [Documentation Generation](https://amux.io/use-cases/documentation-generation/)
+- [Monorepo Management with AI Agents](https://amux.io/use-cases/monorepo-management/)
+- [Automated Dependency Updates](https://amux.io/use-cases/dependency-updates/)
+- [API Endpoint Generation](https://amux.io/use-cases/api-endpoint-generation/)
+- [Security Audit with AI Agents](https://amux.io/use-cases/security-audit/)
+- [Code Migration (Language/Framework)](https://amux.io/use-cases/code-migration/)
+- [Research and Prototyping](https://amux.io/use-cases/research-and-prototyping/)
+- [CI/CD Pipeline Creation](https://amux.io/use-cases/ci-cd-pipeline-creation/)
+- [Legacy Code Modernization](https://amux.io/use-cases/legacy-code-modernization/)
+- [AI Coding While You Sleep](https://amux.io/use-cases/ai-coding-while-you-sleep/)
+
+## Comparisons
+
+- [amux vs Claude Code Agent Teams](https://amux.io/compare/amux-vs-claude-code-agent-teams/)
+- [amux vs Cursor](https://amux.io/compare/amux-vs-cursor/)
+- [amux vs Aider](https://amux.io/compare/amux-vs-aider/)
+- [amux vs Devin](https://amux.io/compare/amux-vs-devin/)
+- [amux vs GitHub Copilot](https://amux.io/compare/amux-vs-github-copilot/)
+- [amux vs Windsurf](https://amux.io/compare/amux-vs-windsurf/)
+- [amux vs OpenHands](https://amux.io/compare/amux-vs-openhands/)
+- [amux vs DIY tmux Scripts](https://amux.io/compare/amux-vs-diy-tmux/)
+- [amux vs CrewAI](https://amux.io/compare/amux-vs-crewai/)
+- [amux vs Cline (Roo Code)](https://amux.io/compare/amux-vs-cline/)
+- [amux vs Goose](https://amux.io/compare/amux-vs-goose/)
+- [amux vs OpenAI Codex](https://amux.io/compare/amux-vs-codex/)
+- [amux vs sandboxed.sh (Open Agent)](https://amux.io/compare/amux-vs-sandboxed-sh/)
+- [amux vs Claude Code Web UIs](https://amux.io/compare/amux-vs-claude-code-web-ui/)
+- [amux vs LangGraph](https://amux.io/compare/amux-vs-langraph/)
+
+## Key Features
+
+- Parallel Claude Code sessions via tmux (unlimited agents)
+- Self-healing watchdog (auto-restarts stalled sessions)
+- Web dashboard (PWA, mobile-friendly, dark/light mode)
+- Kanban board with atomic task claiming (SQLite)
+- Agent-to-agent REST API (POST /api/sessions/NAME/send)
+- iCal feed for board items with due dates
+- Single-file architecture (amux-server.py — no Docker, no config)
+- MIT License — free, open-source, self-hosted
+
+## Source
+
+- GitHub: https://github.com/mixpeek/amux
+- Homepage: https://amux.io
+- Blog: https://amux.io/blog/
+- RSS: https://amux.io/blog/rss.xml
+- Sitemap: https://amux.io/sitemap.xml

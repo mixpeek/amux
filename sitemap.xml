@@ -164,33 +164,4 @@
   <url><loc>https://amux.io/solutions/</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://amux.io/blog/</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://amux.io/for/</loc><changefreq>weekly</changefreq></url>
-  <url><loc>https://amux.io/demos/session-cards-overview/</loc><changefreq>monthly</changefreq></url>
-  <url><loc>https://amux.io/demos/send-command-dashboard/</loc><changefreq>monthly</changefreq></url>
-  <url><loc>https://amux.io/demos/kanban-board-overview/</loc><changefreq>monthly</changefreq></url>
-  <url><loc>https://amux.io/demos/atomic-task-claiming/</loc><changefreq>monthly</changefreq></url>
-  <url><loc>https://amux.io/demos/self-healing-watchdog/</loc><changefreq>monthly</changefreq></url>
-  <url><loc>https://amux.io/demos/workspace-tiled-view/</loc><changefreq>monthly</changefreq></url>
-  <url><loc>https://amux.io/demos/agent-orchestration/</loc><changefreq>monthly</changefreq></url>
-  <url><loc>https://amux.io/demos/ical-calendar-sync/</loc><changefreq>monthly</changefreq></url>
-  <url><loc>https://amux.io/demos/conversation-fork/</loc><changefreq>monthly</changefreq></url>
-  <url><loc>https://amux.io/demos/mobile-pwa/</loc><changefreq>monthly</changefreq></url>
-  <url><loc>https://amux.io/demos/</loc><changefreq>monthly</changefreq></url>
-  <url><loc>https://amux.io/demos/ai-coding-while-you-sleep/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/parallel-feature-development/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/test-generation-at-scale/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/large-scale-refactoring/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/bug-triage-and-fixing/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/automated-code-review/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/documentation-generation/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/api-endpoint-generation/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/code-migration/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/legacy-code-modernization/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/monorepo-management/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/dependency-updates/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/security-audit/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/ci-cd-pipeline-creation/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/research-and-prototyping/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/agent-coordination/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/single-file-architecture/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
-  <url><loc>https://amux.io/demos/web-dashboard/</loc><lastmod>2026-02-26</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
 </urlset>

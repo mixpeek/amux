@@ -5,8 +5,44 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 
 // ── Shared template ──────────────────────────────────────────────
+const TODAY = new Date().toISOString().slice(0, 10);
+
+// Auto-generate JSON-LD schema based on category + page data
+function autoSchema(page, category, canonical) {
+  const url = `https://amux.io${canonical}`;
+  const breadcrumbItems = [
+    { '@type': 'ListItem', position: 1, name: 'amux', item: 'https://amux.io/' },
+  ];
+  if (category) {
+    const catLabel = category.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    breadcrumbItems.push({ '@type': 'ListItem', position: 2, name: catLabel, item: `https://amux.io/${category}/` });
+    breadcrumbItems.push({ '@type': 'ListItem', position: 3, name: page.title, item: url });
+  } else {
+    breadcrumbItems.push({ '@type': 'ListItem', position: 2, name: page.title, item: url });
+  }
+  const breadcrumbList = { '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: breadcrumbItems };
+  const amuxOrg = { '@type': 'Organization', name: 'amux', url: 'https://amux.io/' };
+
+  let main = null;
+  if (category === 'blog') {
+    main = { '@context': 'https://schema.org', '@type': 'BlogPosting', headline: page.title, description: page.description, url, datePublished: TODAY, dateModified: TODAY, author: amuxOrg, publisher: amuxOrg, mainEntityOfPage: { '@type': 'WebPage', '@id': url } };
+  } else if (category === 'guides' || category === 'use-cases' || category === 'solutions') {
+    main = { '@context': 'https://schema.org', '@type': 'Article', headline: page.title, description: page.description, url, datePublished: TODAY, dateModified: TODAY, author: amuxOrg };
+  } else if (category === 'glossary') {
+    main = { '@context': 'https://schema.org', '@type': 'DefinedTerm', name: page.title, description: page.description, url, inDefinedTermSet: { '@type': 'DefinedTermSet', name: 'amux Glossary', url: 'https://amux.io/glossary/' } };
+  } else if (category === 'compare') {
+    main = { '@context': 'https://schema.org', '@type': 'WebPage', name: page.title, description: page.description, url, about: { '@type': 'SoftwareApplication', name: 'amux', url: 'https://amux.io/', applicationCategory: 'DeveloperApplication' } };
+  } else if (category === 'features') {
+    main = { '@context': 'https://schema.org', '@type': 'WebPage', name: page.title, description: page.description, url, about: { '@type': 'SoftwareApplication', name: 'amux', url: 'https://amux.io/', featureList: page.title } };
+  } else if (category === 'for') {
+    main = { '@context': 'https://schema.org', '@type': 'WebPage', name: page.title, description: page.description, url, audience: { '@type': 'Audience', audienceType: page.title } };
+  }
+  return main ? [breadcrumbList, main] : [breadcrumbList];
+}
+
 function template({ title, description, keywords, canonical, content, breadcrumb, schema }) {
-  const schemaTag = schema ? `<script type="application/ld+json">${JSON.stringify(schema)}</script>` : '';
+  const schemas = schema ? (Array.isArray(schema) ? schema : [schema]) : [];
+  const schemaTag = schemas.map(s => `<script type="application/ld+json">${JSON.stringify(s)}</script>`).join('\n  ');
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -23,6 +59,7 @@ function template({ title, description, keywords, canonical, content, breadcrumb
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -127,6 +164,7 @@ pages.push({ ...faqPage, category: '' });
 // ── Generate ─────────────────────────────────────────────────────
 let generated = 0;
 const sitemapEntries = ['https://amux.io/'];
+const blogRssItems = []; // collect blog posts for RSS feed
 
 for (const page of pages) {
   const slug = page.slug;
@@ -140,6 +178,14 @@ for (const page of pages) {
   breadcrumbParts.push(`<span>${esc(page.title)}</span>`);
   const breadcrumb = breadcrumbParts.join(' <span style="opacity:0.4;margin:0 0.3rem">›</span> ');
 
+  // Use explicit schema if provided, otherwise auto-generate from category
+  const schema = page.schema || autoSchema(page, page.category, canonical);
+
+  // Collect blog posts for RSS
+  if (page.category === 'blog') {
+    blogRssItems.push({ title: page.title, description: page.description, url: `https://amux.io${canonical}` });
+  }
+
   const html = template({
     title: page.title,
     description: page.description,
@@ -147,7 +193,7 @@ for (const page of pages) {
     canonical,
     content: page.content,
     breadcrumb,
-    schema: page.schema || null,
+    schema,
   });
 
   fs.mkdirSync(dir, { recursive: true });
@@ -197,5 +243,85 @@ fs.writeFileSync(path.join(ROOT, 'sitemap.xml'), sitemap);
 // ── robots.txt ───────────────────────────────────────────────────
 fs.writeFileSync(path.join(ROOT, 'robots.txt'), `User-agent: *\nAllow: /\nSitemap: https://amux.io/sitemap.xml\n`);
 
-console.log(`Generated ${generated} pages + ${categories.length} index pages + sitemap.xml + robots.txt`);
+// ── Blog RSS Feed ─────────────────────────────────────────────────
+const rssItems = blogRssItems.map(item => `  <item>
+    <title><![CDATA[${item.title}]]></title>
+    <description><![CDATA[${item.description}]]></description>
+    <link>${item.url}</link>
+    <guid isPermaLink="true">${item.url}</guid>
+    <pubDate>${new Date().toUTCString()}</pubDate>
+  </item>`).join('\n');
+const rssFeed = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>amux Blog — AI Agent Orchestration &amp; Parallel Coding</title>
+    <link>https://amux.io/blog/</link>
+    <description>Insights on parallel AI coding, agent orchestration, and developer productivity with amux.</description>
+    <language>en-us</language>
+    <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+    <atom:link href="https://amux.io/blog/rss.xml" rel="self" type="application/rss+xml"/>
+    <image><url>https://amux.io/og-image.png</url><title>amux</title><link>https://amux.io/</link></image>
+${rssItems}
+  </channel>
+</rss>`;
+const blogDir = path.join(ROOT, 'blog');
+fs.mkdirSync(blogDir, { recursive: true });
+fs.writeFileSync(path.join(blogDir, 'rss.xml'), rssFeed);
+
+// ── llms.txt (AI crawler discovery file) ─────────────────────────
+const guideLinks = [...guides, ...moreGuides].slice(0, 10).map(g => `- [${g.title}](https://amux.io/guides/${g.slug}/): ${g.description}`).join('\n');
+const useCaseLinks = useCases.map(u => `- [${u.title}](https://amux.io/use-cases/${u.slug}/)`).join('\n');
+const compareLinks = comparisons.map(c => `- [${c.title}](https://amux.io/compare/${c.slug}/)`).join('\n');
+const llmsTxt = `# amux
+
+> Open-source Claude Code agent multiplexer — run dozens of parallel AI coding agents unattended via tmux, with a web dashboard, kanban board, self-healing watchdog, and agent-to-agent REST API orchestration.
+
+amux (Agent Multiplexer) is a Python + tmux tool that runs multiple Claude Code sessions in parallel. It provides a mobile-friendly PWA dashboard, atomic kanban board (SQLite), session peek/send, iCal sync, and a REST API for agent orchestration. MIT licensed. No cloud dependency.
+
+## Quick Start
+
+\`\`\`bash
+git clone https://github.com/mixpeek/amux && cd amux
+python3 amux-server.py  # opens dashboard at https://localhost:8822
+\`\`\`
+
+## Documentation
+
+- [FAQ](https://amux.io/faq/): What is amux, how does it work, pricing, requirements
+- [Getting Started](https://amux.io/guides/getting-started-with-amux/): Installation, first session, dashboard tour
+- [Parallel Agents Guide](https://amux.io/guides/running-parallel-claude-agents/): Run multiple agents simultaneously
+- [Agent Orchestration](https://amux.io/guides/agent-orchestration-patterns/): Multi-agent coordination patterns
+- [Self-Healing Agents](https://amux.io/guides/self-healing-agent-watchdog/): Watchdog auto-restart setup
+${guideLinks}
+
+## Use Cases
+
+${useCaseLinks}
+
+## Comparisons
+
+${compareLinks}
+
+## Key Features
+
+- Parallel Claude Code sessions via tmux (unlimited agents)
+- Self-healing watchdog (auto-restarts stalled sessions)
+- Web dashboard (PWA, mobile-friendly, dark/light mode)
+- Kanban board with atomic task claiming (SQLite)
+- Agent-to-agent REST API (POST /api/sessions/NAME/send)
+- iCal feed for board items with due dates
+- Single-file architecture (amux-server.py — no Docker, no config)
+- MIT License — free, open-source, self-hosted
+
+## Source
+
+- GitHub: https://github.com/mixpeek/amux
+- Homepage: https://amux.io
+- Blog: https://amux.io/blog/
+- RSS: https://amux.io/blog/rss.xml
+- Sitemap: https://amux.io/sitemap.xml
+`;
+fs.writeFileSync(path.join(ROOT, 'llms.txt'), llmsTxt);
+
+console.log(`Generated ${generated} pages + ${categories.length} index pages + sitemap.xml + robots.txt + rss.xml + llms.txt`);
 console.log(`Total URLs in sitemap: ${sitemapEntries.length}`);
