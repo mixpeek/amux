@@ -20,7 +20,7 @@ a{color:#58a6ff;text-decoration:none;}a:hover{text-decoration:underline;}
 h1{font-size:1.8rem;font-weight:700;letter-spacing:-0.02em;margin-bottom:8px;line-height:1.25;}
 .tagline{color:#8b949e;font-size:1.05rem;margin-bottom:24px;}
 .gif-wrap{border-radius:10px;overflow:hidden;border:1px solid #21262d;margin-bottom:28px;background:#161b22;}
-.gif-wrap img{width:100%;display:block;}
+.gif-wrap video,.gif-wrap img{width:100%;display:block;}
 .body-text{font-size:0.97rem;color:#c9d1d9;margin-bottom:24px;white-space:pre-line;}
 .body-text em{color:#e6edf3;font-style:normal;font-weight:600;}
 ul{list-style:none;margin-bottom:28px;display:flex;flex-direction:column;gap:10px;}
@@ -38,7 +38,7 @@ li::before{content:'→';position:absolute;left:0;color:#3fb950;font-weight:700;
   <div class="tweet-badge">🧵 7 of 7</div>
   <h1>Up and Running in 60 Seconds</h1>
   <p class="tagline">Python 3 + tmux. Single file. Zero build step.</p>
-  <div class="gif-wrap"><img src="demo.gif" alt="Up and Running in 60 Seconds demo" loading="lazy"></div>
+  <div class="gif-wrap"><video src="demo.mp4" autoplay loop muted playsinline title="Up and Running in 60 Seconds demo"></video></div>
   <p class="body-text">MIT license. Python 3 + tmux. That's it.</p>
   <pre style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px;font-family:monospace;font-size:0.82rem;line-height:1.8;overflow-x:auto;margin:0 0 24px;">git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register api --dir ~/Dev/api --yolo && amux start api
