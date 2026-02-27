@@ -6996,9 +6996,7 @@ async function toggleMic() {
           autoGrow(inp);
           inp.focus();
         } else {
-          const msg = r.status === 429
-            ? 'Rate limited — wait a moment and try again'
-            : 'Transcription failed: ' + (d.error || 'unknown');
+          const msg = 'Transcription failed: ' + (d.error || 'unknown');
           showToast(msg);
         }
       } catch(e) {
@@ -13009,6 +13007,7 @@ class CCHandler(BaseHTTPRequestHandler):
                         err_msg = err_body.get("error", {}).get("message", str(e))
                     except Exception:
                         err_msg = str(e)
+                    _log_event("transcribe", "error", detail=f"HTTP {e.code}: {err_msg}", level="warn")
                     return self._json({"error": err_msg}, e.code)
                 except Exception as e:
                     return self._json({"error": str(e)}, 500)
