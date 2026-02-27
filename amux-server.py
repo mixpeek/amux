@@ -207,17 +207,18 @@ rl.on('line', async (line) => {
           profilePath = PROFILES_DIR + '/' + cmd.profile.replace(/[^a-zA-Z0-9_-]/g, '');
           fs.mkdirSync(profilePath, { recursive: true });
         }
+        const headed = !!cmd.headed;
         ctx = await chromium.launchPersistentContext(profilePath, {
-          headless: true,
-          viewport: { width: 1280, height: 800 },
+          headless: !headed,
+          viewport: headed ? null : { width: 1280, height: 800 },
           ignoreHTTPSErrors: true,
           args: ['--no-first-run', '--disable-blink-features=AutomationControlled'],
         });
         page = ctx.pages()[0] || await ctx.newPage();
-        if (cmd.url) {
+        if (cmd.url && !headed) {
           await page.goto(cmd.url, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(()=>{});
         }
-        respond({ ok: true, url: page.url(), title: await page.title(), profile: cmd.profile || 'default' });
+        respond({ ok: true, url: headed ? '' : page.url(), title: headed ? '' : await page.title(), profile: cmd.profile || 'default', headed });
         break;
       }
       case 'navigate': {
@@ -4412,6 +4413,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </select>
     <button class="btn" onclick="_rbNewProfile()" style="font-size:0.6rem;padding:1px 6px;">+ New</button>
     <button class="btn" id="rb-del-profile" onclick="_rbDeleteProfile()" style="font-size:0.6rem;padding:1px 6px;color:var(--red);display:none;" title="Delete profile">&#x2715;</button>
+    <button class="btn" onclick="_rbLogin()" style="font-size:0.6rem;padding:1px 8px;" title="Open headed browser to log in and save credentials">&#x1F511; Login</button>
     <span id="rb-profile-status" style="color:var(--dim);margin-left:auto;"></span>
   </div>
   <!-- URL bar -->
@@ -4432,6 +4434,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div>Remote Browser</div>
       <div style="font-size:0.75rem;margin-top:8px;">Enter a URL above or</div>
       <button class="btn primary" onclick="_rbStart()" style="margin-top:12px;font-size:0.8rem;padding:6px 16px;">Launch Browser</button>
+    </div>
+    <div id="rb-login-panel" style="display:none;text-align:center;padding:40px;color:var(--fg);">
+      <div style="font-size:2.5rem;margin-bottom:16px;">&#x1F511;</div>
+      <div style="font-weight:600;font-size:1rem;margin-bottom:8px;">Browser window open on your desktop</div>
+      <div style="font-size:0.8rem;color:var(--dim);margin-bottom:24px;max-width:320px;margin-left:auto;margin-right:auto;">Log in to your accounts, then click Done to save your credentials to this profile.</div>
+      <button class="btn primary" onclick="_rbLoginDone()" style="font-size:0.85rem;padding:8px 24px;">Done — Save & Close</button>
     </div>
     <img id="rb-screen" style="display:none;max-width:100%;max-height:100%;cursor:crosshair;image-rendering:auto;user-select:none;-webkit-user-select:none;"
       onclick="_rbClick(event)" oncontextmenu="event.preventDefault();_rbClick(event,true)">
@@ -7654,6 +7662,7 @@ async function copyFileContent() {
 let _rbActive = false;
 let _rbLoading = false;
 let _rbCurrentProfile = 'default';
+let _rbLoginMode = false;
 
 async function _rbLoadProfiles() {
   try {
@@ -7745,11 +7754,50 @@ async function _rbStart(url) {
 async function _rbStop() {
   try { await fetch(API + '/api/browser/stop', { method: 'POST' }); } catch(e) {}
   _rbActive = false;
+  _rbLoginMode = false;
   document.getElementById('rb-screen').style.display = 'none';
   document.getElementById('rb-screen').src = '';
+  document.getElementById('rb-login-panel').style.display = 'none';
   document.getElementById('rb-placeholder').style.display = '';
   document.getElementById('rb-url').value = '';
   document.getElementById('rb-status').textContent = '';
+  document.getElementById('rb-profile-status').textContent = '';
+}
+
+async function _rbLogin() {
+  if (_rbActive) await _rbStop();
+  const status = document.getElementById('rb-status');
+  status.textContent = 'Opening...';
+  try {
+    const body = { headed: true };
+    if (_rbCurrentProfile && _rbCurrentProfile !== 'default') body.profile = _rbCurrentProfile;
+    const r = await fetch(API + '/api/browser/start', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!d.ok) { status.textContent = d.error || 'Failed'; return; }
+    _rbActive = true;
+    _rbLoginMode = true;
+    if (d.profile) {
+      _rbCurrentProfile = d.profile;
+      document.getElementById('rb-profile').value = d.profile;
+    }
+    document.getElementById('rb-placeholder').style.display = 'none';
+    document.getElementById('rb-screen').style.display = 'none';
+    document.getElementById('rb-login-panel').style.display = '';
+    document.getElementById('rb-profile-status').textContent = 'Login window open';
+    status.textContent = '';
+  } catch(e) {
+    status.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function _rbLoginDone() {
+  await _rbStop();
+  const ps = document.getElementById('rb-profile-status');
+  ps.textContent = 'Credentials saved for ' + _rbCurrentProfile;
+  setTimeout(() => { if (ps.textContent.startsWith('Credentials')) ps.textContent = ''; }, 3000);
 }
 
 async function _rbRefresh() {
@@ -12728,6 +12776,8 @@ class CCHandler(BaseHTTPRequestHandler):
             body = self._read_body()
             profile = body.get("profile", "").strip()
             cmd = {"action": "start", "url": body.get("url", "")}
+            if body.get("headed"):
+                cmd["headed"] = True
             if profile and profile != "default":
                 cmd["profile"] = profile
                 _rb_profile = profile
