@@ -7523,7 +7523,6 @@ let _fileViewMode = 'preview';
 
 function _renderFileBody(data, mode) {
   const body = document.getElementById('file-body');
-  const isBinary = data.is_image || data.is_pdf;
   // Binary — no tabs, just render
   if (data.is_image) {
     body.className = 'file-overlay-body file-image';
@@ -7537,6 +7536,28 @@ function _renderFileBody(data, mode) {
   if (data.is_pdf) {
     body.className = 'file-overlay-body file-pdf';
     body.innerHTML = `<embed src="${data.data_url}" type="application/pdf" style="width:100%;height:100%;min-height:520px;border-radius:4px;">`;
+    return;
+  }
+  if (data.is_video) {
+    body.className = 'file-overlay-body file-image';
+    const rawUrl = API + '/api/file/raw?path=' + encodeURIComponent(data.path) + (peekSessionDir ? '&cwd=' + encodeURIComponent(peekSessionDir) : '');
+    body.innerHTML = `<video controls style="max-width:100%;max-height:100%;border-radius:4px;display:block;margin:auto;background:#000;" src="${rawUrl}"></video>`;
+    return;
+  }
+  if (data.is_audio) {
+    body.className = 'file-overlay-body file-image';
+    const rawUrl = API + '/api/file/raw?path=' + encodeURIComponent(data.path) + (peekSessionDir ? '&cwd=' + encodeURIComponent(peekSessionDir) : '');
+    const fname = data.path.split('/').pop();
+    const sizeMB = data.size ? (data.size / 1048576).toFixed(1) + ' MB' : '';
+    body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:16px;padding:32px;"><div style="font-size:2.5rem;">🎵</div><div style="font-size:0.95rem;color:var(--muted);">${fname}${sizeMB ? ' · ' + sizeMB : ''}</div><audio controls style="width:100%;max-width:480px;" src="${rawUrl}"></audio></div>`;
+    return;
+  }
+  if (data.is_binary) {
+    body.className = 'file-overlay-body file-image';
+    const fname = data.path.split('/').pop();
+    const sizeMB = data.size ? (data.size / 1048576).toFixed(1) + ' MB' : '';
+    const rawUrl = API + '/api/file/raw?path=' + encodeURIComponent(data.path) + (peekSessionDir ? '&cwd=' + encodeURIComponent(peekSessionDir) : '');
+    body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:32px;"><div style="font-size:2.5rem;">📦</div><div style="font-size:0.95rem;color:var(--muted);">${fname}${sizeMB ? ' · ' + sizeMB : ''}${data.ext ? ' · ' + data.ext : ''}</div><a href="${rawUrl}" download="${fname}" style="padding:8px 18px;background:var(--green);color:#fff;border-radius:6px;font-size:0.85rem;font-weight:600;text-decoration:none;">Download</a></div>`;
     return;
   }
   // Text files — Raw / Preview
@@ -7587,7 +7608,8 @@ async function openFilePreview(path) {
     }
     _fileData = data;
     // Show tabs only for text files
-    if (!data.is_image && !data.is_pdf) {
+    const isTextFile = !data.is_image && !data.is_pdf && !data.is_video && !data.is_audio && !data.is_binary;
+    if (isTextFile) {
       document.getElementById('file-view-tabs').style.display = '';
     }
     _renderFileBody(data, _fileViewMode);
@@ -7601,7 +7623,8 @@ async function openFilePreview(path) {
       const age = Math.round((Date.now() - cached.ts) / 60000);
       const ageStr = age < 60 ? age + 'm ago' : Math.round(age/60) + 'h ago';
       document.getElementById('file-title').textContent = path.split('/').pop() + ' \u2022 cached ' + ageStr;
-      if (!cached.data.is_image && !cached.data.is_pdf) {
+      const cachedIsText = !cached.data.is_image && !cached.data.is_pdf && !cached.data.is_video && !cached.data.is_audio && !cached.data.is_binary;
+      if (cachedIsText) {
         document.getElementById('file-view-tabs').style.display = '';
       }
       _renderFileBody(cached.data, _fileViewMode);
@@ -12738,6 +12761,14 @@ class CCHandler(BaseHTTPRequestHandler):
                     ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
                     ".bmp": "image/bmp", ".ico": "image/x-icon",
                 }
+                VIDEO_MIMES = {
+                    ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+                    ".avi": "video/x-msvideo", ".mkv": "video/x-matroska", ".m4v": "video/mp4",
+                }
+                AUDIO_MIMES = {
+                    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
+                    ".m4a": "audio/mp4", ".aac": "audio/aac", ".flac": "audio/flac",
+                }
                 if ext in IMAGE_MIMES:
                     raw = p.read_bytes()
                     if len(raw) > 5_000_000:
@@ -12751,6 +12782,17 @@ class CCHandler(BaseHTTPRequestHandler):
                         return self._json({"error": "PDF too large (>10 MB)"}, 400)
                     data_url = f"data:application/pdf;base64,{base64.b64encode(raw).decode()}"
                     return self._json({"path": str(p), "is_pdf": True, "data_url": data_url})
+                if ext in VIDEO_MIMES:
+                    return self._json({"path": str(p), "is_video": True, "mime": VIDEO_MIMES[ext], "size": p.stat().st_size})
+                if ext in AUDIO_MIMES:
+                    return self._json({"path": str(p), "is_audio": True, "mime": AUDIO_MIMES[ext], "size": p.stat().st_size})
+                # Detect other binary files (non-printable bytes in first 8KB)
+                try:
+                    sample = p.read_bytes()[:8192]
+                    if b'\x00' in sample:
+                        return self._json({"path": str(p), "is_binary": True, "size": p.stat().st_size, "ext": ext})
+                except Exception:
+                    pass
                 content = p.read_text(errors="replace")
                 # Limit to 200KB for safety
                 if len(content) > 200_000:
@@ -12764,6 +12806,60 @@ class CCHandler(BaseHTTPRequestHandler):
                 })
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
+
+        # GET /api/file/raw?path=...&cwd=...  — streams binary files with range support
+        if method == "GET" and path == "/api/file/raw":
+            fpath = qs.get("path", [""])[0]
+            cwd = qs.get("cwd", [""])[0]
+            if not fpath:
+                return self._json({"error": "missing path"}, 400)
+            p = Path(fpath).expanduser()
+            if not p.is_absolute() and cwd:
+                p = Path(cwd).expanduser() / p
+            elif not p.is_absolute():
+                return self._json({"error": "relative path without cwd"}, 400)
+            if not p.is_file():
+                return self._json({"error": "file not found"}, 404)
+            ext = p.suffix.lower()
+            ALL_MIMES = {
+                ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+                ".bmp": "image/bmp", ".ico": "image/x-icon",
+                ".pdf": "application/pdf",
+                ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+                ".avi": "video/x-msvideo", ".mkv": "video/x-matroska", ".m4v": "video/mp4",
+                ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
+                ".m4a": "audio/mp4", ".aac": "audio/aac", ".flac": "audio/flac",
+            }
+            mime = ALL_MIMES.get(ext, "application/octet-stream")
+            file_size = p.stat().st_size
+            range_header = self.headers.get("Range", "")
+            import re as _re
+            if range_header:
+                m = _re.match(r'bytes=(\d*)-(\d*)', range_header)
+                start = int(m.group(1)) if m and m.group(1) else 0
+                end = int(m.group(2)) if m and m.group(2) else file_size - 1
+                end = min(end, file_size - 1)
+                length = end - start + 1
+                self.send_response(206)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                self.send_header("Content-Length", str(length))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                with open(p, "rb") as f:
+                    f.seek(start)
+                    self.wfile.write(f.read(length))
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(file_size))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(p.read_bytes())
+            return
 
         # GET /api/autocomplete/dir?q=...
         if method == "GET" and path == "/api/autocomplete/dir":
