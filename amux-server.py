@@ -2740,42 +2740,66 @@ _EMAIL_CALENDAR_NAME = os.environ.get("AMUX_CALENDAR_NAME", "")  # empty = first
 _email_sync_lock     = threading.Lock()
 
 
-def _mail_fetch_messages() -> list:
+def _email_last_synced() -> int:
+    """Return unix timestamp of last successful email sync (0 = never)."""
+    row = get_db().execute(
+        "SELECT value FROM prefs WHERE key='email_last_synced'"
+    ).fetchone()
+    return int(row["value"]) if row else 0
+
+
+def _email_set_synced(ts: int) -> None:
+    get_db().execute(
+        "INSERT OR REPLACE INTO prefs (key, value) VALUES ('email_last_synced', ?)",
+        (str(ts),),
+    )
+    get_db().commit()
+
+
+def _mail_fetch_messages(lookback_seconds: int) -> list:
     """
-    Read recent event-candidate emails from all Mail.app inboxes via AppleScript.
-    AppleScript string comparisons are case-insensitive, so no lowercasing needed.
-    Only fetches message content for emails whose subject/sender match keywords.
+    Read event-candidate emails from Mail.app inboxes via AppleScript.
+    lookback_seconds: how far back to scan (small = fast; first run uses 7 days).
+    Messages are newest-first, so we exit the loop as soon as we hit the cutoff.
+    Only fetches message body for keyword-matching emails.
     """
+    # Convert seconds to fractional days for AppleScript
+    lookback_days_frac = max(lookback_seconds / 86400, 0.1)
+    # Cap max messages per inbox to keep things fast
+    max_msgs = 200 if lookback_days_frac > 3 else 80
+
     script = f"""
 set NL to ASCII character 10
 set output to ""
-set cutoff to (current date) - {_EMAIL_LOOKBACK_DAYS} * days
+set cutoff to (current date) - ({lookback_days_frac} * days)
 tell application "Mail"
     repeat with acct in accounts
         set acctName to name of acct
-        repeat with mb in mailboxes of acct
-            if name of mb is "INBOX" then
-                set processed to 0
-                repeat with msg in (messages of mb)
-                    if processed >= 300 then exit repeat
-                    try
-                        if date received of msg < cutoff then exit repeat
-                    end try
-                    set processed to processed + 1
-                    try
-                        set subj to subject of msg
-                        set sndr to sender of msg
-                        if (subj contains "ticket" or subj contains "confirmation" or subj contains "reservation" or subj contains "booking" or subj contains "receipt" or subj contains "invitation" or subj contains "event reminder" or subj contains "your tickets" or subj contains "order confirm" or sndr contains "ticketmaster" or sndr contains "eventbrite" or sndr contains "axs.com" or sndr contains "dice.fm" or sndr contains "livenation" or sndr contains "stubhub" or sndr contains "songkick" or sndr contains "bandsintown" or sndr contains "etix" or sndr contains "tixr" or sndr contains "seetickets") then
-                            set rcvd to date received of msg as string
-                            set msgId to message id of msg
-                            set msgBody to content of msg
-                            if length of msgBody > 5000 then set msgBody to text 1 thru 5000 of msgBody
-                            set output to output & "MSG_START" & NL & acctName & NL & sndr & NL & rcvd & NL & subj & NL & msgId & NL & msgBody & "MSG_END" & NL
-                        end if
-                    end try
-                end repeat
-            end if
-        end repeat
+        try
+            repeat with mb in mailboxes of acct
+                if name of mb is "INBOX" then
+                    set processed to 0
+                    repeat with msg in (messages of mb)
+                        if processed >= {max_msgs} then exit repeat
+                        try
+                            if date received of msg < cutoff then exit repeat
+                        end try
+                        set processed to processed + 1
+                        try
+                            set subj to subject of msg
+                            set sndr to sender of msg
+                            if (subj contains "ticket" or subj contains "confirmation" or subj contains "reservation" or subj contains "booking" or subj contains "receipt" or subj contains "invitation" or subj contains "event reminder" or subj contains "your tickets" or subj contains "order confirm" or subj contains "seating" or sndr contains "ticketmaster" or sndr contains "eventbrite" or sndr contains "axs.com" or sndr contains "dice.fm" or sndr contains "livenation" or sndr contains "stubhub" or sndr contains "songkick" or sndr contains "bandsintown" or sndr contains "etix" or sndr contains "tixr" or sndr contains "seetickets") then
+                                set rcvd to date received of msg as string
+                                set msgId to message id of msg
+                                set msgBody to content of msg
+                                if length of msgBody > 5000 then set msgBody to text 1 thru 5000 of msgBody
+                                set output to output & "MSG_START" & NL & acctName & NL & sndr & NL & rcvd & NL & subj & NL & msgId & NL & msgBody & "MSG_END" & NL
+                            end if
+                        end try
+                    end repeat
+                end if
+            end repeat
+        end try
     end repeat
 end tell
 return output
@@ -2783,7 +2807,7 @@ return output
     try:
         result = subprocess.run(
             ["osascript", "-e", script],
-            capture_output=True, text=True, timeout=180,
+            capture_output=True, text=True, timeout=120,
         )
         if result.returncode != 0:
             slog(f"[email] AppleScript error: {result.stderr[:300]}")
@@ -2804,10 +2828,10 @@ return output
                 "msg_id":  lines[4],
                 "body":    lines[5] if len(lines) > 5 else "",
             })
-        slog(f"[email] Mail.app: {len(messages)} candidate emails")
+        slog(f"[email] Mail.app: {len(messages)} candidates (lookback {lookback_days_frac:.1f}d)")
         return messages
     except subprocess.TimeoutExpired:
-        slog("[email] Mail.app AppleScript timed out (>180s)")
+        slog("[email] Mail.app AppleScript timed out (>120s)")
         return []
     except Exception as e:
         slog(f"[email] mail fetch error: {e}")
@@ -2921,7 +2945,15 @@ return "ok"
 def _email_sync() -> None:
     """Read Mail.app → AI extract → Calendar.app. No accounts to manage."""
     db = get_db()
-    messages = _mail_fetch_messages()
+    last_ts = _email_last_synced()
+    now_ts  = int(time.time())
+    if last_ts == 0:
+        lookback_seconds = 7 * 86400  # first run: 7 days
+    else:
+        elapsed = now_ts - last_ts
+        lookback_seconds = elapsed + 300  # add 5 min buffer to avoid gaps
+    slog(f"[email] syncing lookback={lookback_seconds//60}min")
+    messages = _mail_fetch_messages(lookback_seconds)
     for msg in messages:
         # Use message-id as dedup key; fall back to subject+date hash
         msg_id = msg["msg_id"] or f"{msg['subject']}|{msg['date']}"
@@ -2964,6 +2996,7 @@ def _email_sync() -> None:
                  "not_event", now),
             )
             db.commit()
+    _email_set_synced(now_ts)
 
 
 def _email_sync_loop() -> None:
