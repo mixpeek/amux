@@ -201,17 +201,9 @@ def _run_browser_agent(task: str, start_url: str = "", max_steps: int = 25):
     global _rb_last_video
     try:
         import anthropic
-    except ImportError:
-        # Framework Python may have restricted sys.path after os.execv — add site-packages explicitly
-        import sys as _sys, site as _site
-        for _sp in _site.getsitepackages():
-            if _sp not in _sys.path:
-                _sys.path.insert(1, _sp)
-        try:
-            import anthropic
-        except ImportError:
-            _rb_agent_update(running=False, error="anthropic not installed — run: python3 -m pip install anthropic", action="Error")
-            return
+    except ImportError as _e:
+        _rb_agent_update(running=False, error=f"anthropic not installed: {_e}", action="Error")
+        return
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
