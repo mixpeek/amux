@@ -1,0 +1,9 @@
+dbs:
+  - path: /root/.amux/amux.db
+    replicas:
+      - type: s3
+        bucket: amux-cloud-users
+        path: users/${USER_ID}/amux.db
+        endpoint: https://4507e1d25a7f5ebec509c3e4d4b39074.r2.cloudflarestorage.com
+        region: auto
+        force-path-style: true

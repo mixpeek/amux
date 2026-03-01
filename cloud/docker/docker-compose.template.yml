@@ -1,0 +1,40 @@
+# Per-user docker-compose — instantiated by gateway.py
+# Variables replaced: USER_ID, USER_PORT, CF_ACCOUNT_ID, R2_ACCESS_KEY, R2_SECRET_KEY
+
+services:
+  amux:
+    image: ghcr.io/mixpeek/amux:latest
+    container_name: amux-user-${USER_ID}
+    restart: unless-stopped
+    volumes:
+      - amux-data:/root/.amux
+    environment:
+      AMUX_PORT: "8822"
+    ports:
+      - "${USER_PORT}:8822"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8822/api/sessions"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  litestream:
+    image: litestream/litestream:latest
+    container_name: amux-litestream-${USER_ID}
+    restart: unless-stopped
+    volumes:
+      - amux-data:/root/.amux
+      - ./litestream.yml:/etc/litestream.yml:ro
+    environment:
+      LITESTREAM_ACCESS_KEY_ID: "${R2_ACCESS_KEY}"
+      LITESTREAM_SECRET_ACCESS_KEY: "${R2_SECRET_KEY}"
+      USER_ID: "${USER_ID}"
+    command: replicate
+    depends_on:
+      amux:
+        condition: service_healthy
+
+volumes:
+  amux-data:
+    name: amux-data-${USER_ID}
