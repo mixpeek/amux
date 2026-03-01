@@ -8808,17 +8808,22 @@ let _filesCwd = '/';   // saved working directory (persisted on server)
 let _filesShowHidden = false;
 
 // ── File pins (persisted in localStorage, scoped by session or global) ──
+// Pin format: [{path: string, type: 'file'|'dir'}]
+// Legacy format (plain strings) is normalized on load.
 let _exploreSession = null;  // set when explore overlay is opened from a session
 function _pinsKey(session) { return session ? 'amux_pins_' + session : 'amux_file_pins'; }
 function _loadPins(session) {
-  try { return JSON.parse(localStorage.getItem(_pinsKey(session)) || '[]'); } catch(e) { return []; }
+  try {
+    const raw = JSON.parse(localStorage.getItem(_pinsKey(session)) || '[]');
+    return raw.map(p => typeof p === 'string' ? {path: p, type: 'dir'} : p);
+  } catch(e) { return []; }
 }
 function _savePins(pins, session) { localStorage.setItem(_pinsKey(session), JSON.stringify(pins)); }
-function _isPinned(path, session) { return _loadPins(session).includes(path); }
-function _togglePin(path, session) {
+function _isPinned(path, session) { return _loadPins(session).some(p => p.path === path); }
+function _togglePin(path, session, type) {
   const pins = _loadPins(session);
-  const i = pins.indexOf(path);
-  if (i >= 0) pins.splice(i, 1); else pins.push(path);
+  const i = pins.findIndex(p => p.path === path);
+  if (i >= 0) pins.splice(i, 1); else pins.push({path, type: type || 'dir'});
   _savePins(pins, session);
 }
 // Load saved working dir from server prefs
@@ -8894,27 +8899,45 @@ function _renderFilesEntries(body, path, data, cacheTs) {
     back.onclick = () => loadFiles(data.parent);
     body.appendChild(back);
   }
+  // Pinned section: show ALL global pins at top of every directory view
+  const pins = _loadPins();
+  if (pins.length > 0) {
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'padding:3px 12px 3px 14px;font-size:0.7rem;color:var(--dim);border-bottom:1px solid var(--border);letter-spacing:0.06em;text-transform:uppercase;';
+    hdr.textContent = 'Pinned';
+    body.appendChild(hdr);
+    for (const pin of pins) {
+      const pinName = pin.path.split('/').pop();
+      const icon = pin.type === 'file' ? '&#x1F4C4;' : '&#x1F4C2;';
+      const displayName = pinName + (pin.type === 'dir' ? '/' : '');
+      const menuBtn = '<button class="explore-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu(\'' + pin.path.replace(/'/g, "\\'") + '\',this,\'' + pin.type + '\')">⋯</button>';
+      const row = document.createElement('div');
+      row.className = 'explore-row explore-row-pinned';
+      row.innerHTML = '<span class="explore-icon">' + icon + '</span><span class="explore-pin-dot" title="Pinned">&#x1F4CC;</span><span class="explore-name">' + esc(displayName) + '</span><span class="explore-size" style="opacity:0.5;font-size:0.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px;" title="' + esc(pin.path) + '">' + esc(pin.path) + '</span>' + menuBtn;
+      if (pin.type === 'file') {
+        row.onclick = () => openFilePreview(pin.path);
+      } else {
+        row.onclick = () => loadFiles(pin.path);
+      }
+      body.appendChild(row);
+    }
+  }
   if (!data.entries.length) {
     body.innerHTML += '<div style="padding:16px;color:var(--dim)">Empty directory</div>';
     return;
   }
-  const pins = _loadPins();
-  const pinSet = new Set(pins);
-  // Sort: pinned first (preserving pin order), then dirs, then files
-  const pinned = pins.map(p => data.entries.find(e => path.replace(/\/$/, '') + '/' + e.name === p)).filter(Boolean);
-  const rest = data.entries.filter(e => !pinSet.has(path.replace(/\/$/, '') + '/' + e.name));
-  const sorted = [...pinned, ...rest];
-  for (const entry of sorted) {
+  // Paths already shown in pinned section above
+  const pinnedPaths = new Set(pins.map(p => p.path));
+  for (const entry of data.entries) {
     const entryPath = path.replace(/\/$/, '') + '/' + entry.name;
-    const isPinned = pinSet.has(entryPath);
+    if (pinnedPaths.has(entryPath)) continue; // already shown in pinned section
     const row = document.createElement('div');
-    row.className = 'explore-row' + (isPinned ? ' explore-row-pinned' : '');
+    row.className = 'explore-row';
     const icon = entry.type === 'dir' ? '&#x1F4C2;' : '&#x1F4C4;';
     const displayName = entry.name + (entry.type === 'dir' ? '/' : '');
-    const pinIndicator = isPinned ? '<span class="explore-pin-dot" title="Pinned">&#x1F4CC;</span>' : '';
-    const menuBtn = '<button class="explore-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu(\'' + entryPath.replace(/'/g, "\\'") + '\',this)">⋯</button>';
+    const menuBtn = '<button class="explore-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu(\'' + entryPath.replace(/'/g, "\\'") + '\',this,\'' + entry.type + '\')">⋯</button>';
     const mtime = entry.modified ? '<span class="explore-mtime">' + timeAgo(entry.modified) + '</span>' : '';
-    row.innerHTML = '<span class="explore-icon">' + icon + '</span>' + pinIndicator + '<span class="explore-name">' + esc(displayName) + '</span><span class="explore-size">' + esc(_fmtSize(entry.size)) + '</span>' + mtime + menuBtn;
+    row.innerHTML = '<span class="explore-icon">' + icon + '</span><span class="explore-name">' + esc(displayName) + '</span><span class="explore-size">' + esc(_fmtSize(entry.size)) + '</span>' + mtime + menuBtn;
     if (entry.type === 'dir') {
       row.onclick = () => loadFiles(entryPath);
     } else {
@@ -9006,7 +9029,7 @@ function _fmtSize(bytes) {
   if (bytes < 1048576) return (bytes / 1024).toFixed(0) + 'K';
   return (bytes / 1048576).toFixed(1) + 'M';
 }
-function _showExploreMenu(path, btn) {
+function _showExploreMenu(path, btn, type) {
   // Remove any existing popup
   document.querySelectorAll('.explore-menu-popup').forEach(el => el.remove());
   const popup = document.createElement('div');
@@ -9015,7 +9038,7 @@ function _showExploreMenu(path, btn) {
   const pinItem = document.createElement('button');
   pinItem.className = 'explore-menu-item';
   pinItem.textContent = _isPinned(path, _exploreSession) ? '📌 Unpin' : '📌 Pin to top';
-  pinItem.onclick = () => { popup.remove(); _togglePin(path, _exploreSession); loadExplore(_explorePath); };
+  pinItem.onclick = () => { popup.remove(); _togglePin(path, _exploreSession, type || 'dir'); loadExplore(_explorePath); };
   popup.appendChild(pinItem);
   const copyItem = document.createElement('button');
   copyItem.className = 'explore-menu-item';
@@ -9038,7 +9061,7 @@ function _showExploreMenu(path, btn) {
     document.addEventListener('pointerdown', dismiss, true);
   }, 0);
 }
-function _showFilesMenu(path, btn) {
+function _showFilesMenu(path, btn, type) {
   document.querySelectorAll('.explore-menu-popup').forEach(el => el.remove());
   const popup = document.createElement('div');
   popup.className = 'explore-menu-popup';
@@ -9047,7 +9070,7 @@ function _showFilesMenu(path, btn) {
   pinItem.className = 'explore-menu-item';
   const pinned = _isPinned(path);
   pinItem.textContent = pinned ? '📌 Unpin' : '📌 Pin to top';
-  pinItem.onclick = () => { popup.remove(); _togglePin(path); loadFiles(_filesPath); };
+  pinItem.onclick = () => { popup.remove(); _togglePin(path, null, type || 'dir'); loadFiles(_filesPath); };
   popup.appendChild(pinItem);
   // Copy path
   const copyItem = document.createElement('button');
@@ -9126,25 +9149,45 @@ function _renderExploreEntries(body, path, data, cacheTs) {
     back.onclick = () => loadExplore(data.parent);
     body.appendChild(back);
   }
+  // Pinned section: show ALL session pins at top of every directory view
+  const pins = _loadPins(_exploreSession);
+  if (pins.length > 0) {
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'padding:3px 12px 3px 14px;font-size:0.7rem;color:var(--dim);border-bottom:1px solid var(--border);letter-spacing:0.06em;text-transform:uppercase;';
+    hdr.textContent = 'Pinned';
+    body.appendChild(hdr);
+    for (const pin of pins) {
+      const pinName = pin.path.split('/').pop();
+      const icon = pin.type === 'file' ? '&#x1F4C4;' : '&#x1F4C2;';
+      const displayName = pinName + (pin.type === 'dir' ? '/' : '');
+      const menuBtn = `<button class="explore-menu-btn" title="Options" onclick="event.stopPropagation();_showExploreMenu('${pin.path.replace(/'/g,"\\'")}',this,'${pin.type}')">⋯</button>`;
+      const row = document.createElement('div');
+      row.className = 'explore-row explore-row-pinned';
+      row.innerHTML = `<span class="explore-icon">${icon}</span><span class="explore-pin-dot" title="Pinned">&#x1F4CC;</span><span class="explore-name">${esc(displayName)}</span><span class="explore-size" style="opacity:0.5;font-size:0.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px;" title="${esc(pin.path)}">${esc(pin.path)}</span>${menuBtn}`;
+      if (pin.type === 'file') {
+        row.onclick = () => openFilePreview(pin.path);
+      } else {
+        row.onclick = () => loadExplore(pin.path);
+      }
+      body.appendChild(row);
+    }
+  }
   if (!data.entries.length) {
     body.innerHTML += '<div style="padding:16px;color:var(--dim)">Empty directory</div>';
     return;
   }
-  const pins = _loadPins(_exploreSession);
-  const pinSet = new Set(pins);
-  const pinned = pins.map(p => data.entries.find(e => path.replace(/\/$/, '') + '/' + e.name === p)).filter(Boolean);
-  const rest = data.entries.filter(e => !pinSet.has(path.replace(/\/$/, '') + '/' + e.name));
-  for (const entry of [...pinned, ...rest]) {
+  // Paths already shown in pinned section above
+  const pinnedPaths = new Set(pins.map(p => p.path));
+  for (const entry of data.entries) {
     const entryPath = path.replace(/\/$/, '') + '/' + entry.name;
-    const isPinned = pinSet.has(entryPath);
+    if (pinnedPaths.has(entryPath)) continue; // already shown in pinned section
     const row = document.createElement('div');
-    row.className = 'explore-row' + (isPinned ? ' explore-row-pinned' : '');
+    row.className = 'explore-row';
     const icon = entry.type === 'dir' ? '&#x1F4C2;' : '&#x1F4C4;';
     const displayName = entry.name + (entry.type === 'dir' ? '/' : '');
-    const pinIndicator = isPinned ? '<span class="explore-pin-dot" title="Pinned">&#x1F4CC;</span>' : '';
-    const menuBtn = `<button class="explore-menu-btn" title="Options" onclick="event.stopPropagation();_showExploreMenu('${entryPath.replace(/'/g,"\\'")}',this)">⋯</button>`;
+    const menuBtn = `<button class="explore-menu-btn" title="Options" onclick="event.stopPropagation();_showExploreMenu('${entryPath.replace(/'/g,"\\'")}',this,'${entry.type}')">⋯</button>`;
     const mtime = entry.modified ? `<span class="explore-mtime">${timeAgo(entry.modified)}</span>` : '';
-    row.innerHTML = `<span class="explore-icon">${icon}</span>${pinIndicator}<span class="explore-name">${esc(displayName)}</span><span class="explore-size">${esc(_fmtSize(entry.size))}</span>${mtime}${menuBtn}`;
+    row.innerHTML = `<span class="explore-icon">${icon}</span><span class="explore-name">${esc(displayName)}</span><span class="explore-size">${esc(_fmtSize(entry.size))}</span>${mtime}${menuBtn}`;
     if (entry.type === 'dir') {
       row.onclick = () => loadExplore(entryPath);
     } else {
