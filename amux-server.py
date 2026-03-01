@@ -3397,8 +3397,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   /* File viewer body — keep dark for ANSI/code readability; use card bg for non-raw views */
   body.light #file-overlay .file-overlay-body { background: #1c2128; color: #cdd9e5; }
   body.light #file-overlay .file-overlay-body.file-image,
+  body.light #file-overlay .file-overlay-body.file-video,
   body.light #file-overlay .file-overlay-body.file-pdf,
   body.light #file-overlay .file-overlay-body.markdown { background: var(--bg); color: var(--text); }
+  body.light #file-overlay .file-overlay-body.file-video { background: #000; }
   /* ── Reports ── */
   .report-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
   .report-card-header { display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid var(--border); background:var(--bg); }
@@ -3691,6 +3693,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .file-view-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
   .file-overlay-body.file-raw { white-space: pre-wrap; word-break: break-word; }
   .file-overlay-body.file-image { display:flex;align-items:center;justify-content:center;background:var(--bg);white-space:normal; }
+  .file-overlay-body.file-video { display:flex;flex-direction:column;align-items:center;justify-content:center;background:#000;padding:0;white-space:normal; }
+  .file-video-player { max-width:100%;max-height:calc(100% - 36px);outline:none;display:block; }
+  .file-video-meta { width:100%;box-sizing:border-box;padding:6px 14px;display:flex;align-items:center;gap:12px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:0.72rem;color:var(--dim);flex-shrink:0;background:rgba(0,0,0,0.7); }
   .file-overlay-body.file-pdf { padding:0;background:var(--bg);white-space:normal; }
   .file-overlay-body.file-csv { white-space:normal;overflow:auto; }
   .csv-wrap { overflow:auto; }
@@ -5243,6 +5248,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <button class="btn" id="rb-del-profile" onclick="_rbDeleteProfile()" style="font-size:0.6rem;padding:1px 6px;color:var(--red);display:none;" title="Delete profile">&#x2715;</button>
     <button class="btn" onclick="_rbLogin()" style="font-size:0.6rem;padding:1px 8px;" title="Open headed browser to log in and save credentials">&#x1F511; Login</button>
     <button class="btn" id="rb-rec-btn" onclick="_rbToggleRecord()" style="font-size:0.6rem;padding:1px 8px;" title="Toggle video recording (takes effect on next launch)">&#x23FA; Rec</button>
+    <button class="btn" onclick="openRecordingsDir()" style="font-size:0.6rem;padding:1px 8px;" title="Browse saved recordings">&#x1F3A5; Recordings</button>
     <span id="rb-profile-status" style="color:var(--dim);margin-left:auto;"></span>
   </div>
   <!-- Recording download banner -->
@@ -5761,6 +5767,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <button class="file-view-tab" id="file-tab-raw" onclick="setFileViewMode('raw')">Raw</button>
       <button class="file-view-tab" id="file-tab-copy" onclick="copyFileContent()" title="Copy to clipboard">Copy</button>
     </div>
+    <a id="file-download-btn" style="display:none;font-size:0.72rem;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--accent);text-decoration:none;white-space:nowrap;flex-shrink:0;">&#x2B07; Download</a>
     <button class="btn" onclick="closeFilePreview()" style="flex-shrink:0;">&#x2715;</button>
   </div>
   <div id="file-body" class="file-overlay-body"></div>
@@ -8403,9 +8410,22 @@ function _renderFileBody(data, mode) {
     return;
   }
   if (data.is_video) {
-    body.className = 'file-overlay-body file-image';
-    const rawUrl = API + '/api/file/raw?path=' + encodeURIComponent(data.path) + (peekSessionDir ? '&cwd=' + encodeURIComponent(peekSessionDir) : '');
-    body.innerHTML = `<video controls style="max-width:100%;max-height:100%;border-radius:4px;display:block;margin:auto;background:#000;" src="${rawUrl}"></video>`;
+    body.className = 'file-overlay-body file-video';
+    const rawUrl = API + '/api/file/raw?path=' + encodeURIComponent(data.path);
+    const fname = data.path.split('/').pop();
+    const sizeMB = data.size ? (data.size / 1048576).toFixed(1) + ' MB' : '';
+    const dateStr = data.modified ? new Date(data.modified * 1000).toLocaleString() : '';
+    const trackHtml = data.srt
+      ? `<track kind="captions" label="Captions" src="${API}/api/file/vtt?path=${encodeURIComponent(data.srt)}" default>`
+      : '';
+    body.innerHTML = `
+      <video class="file-video-player" controls src="${rawUrl}">${trackHtml}</video>
+      <div class="file-video-meta">
+        ${sizeMB ? `<span>${sizeMB}</span>` : ''}
+        ${dateStr ? `<span>${dateStr}</span>` : ''}
+        ${data.srt ? '<span>📝 Captions</span>' : ''}
+        <a href="${rawUrl}" download="${fname}" style="margin-left:auto;color:var(--accent);text-decoration:none;">⬇ Download</a>
+      </div>`;
     return;
   }
   if (data.is_audio) {
@@ -8460,6 +8480,7 @@ async function openFilePreview(path) {
   document.getElementById('file-view-tabs').style.display = 'none';
   document.getElementById('file-tab-preview').classList.add('active');
   document.getElementById('file-tab-raw').classList.remove('active');
+  document.getElementById('file-download-btn').style.display = 'none';
   document.getElementById('file-overlay').classList.add('active');
   try {
     let url = API + '/api/file?path=' + encodeURIComponent(path);
@@ -8475,6 +8496,14 @@ async function openFilePreview(path) {
     const isTextFile = !data.is_image && !data.is_pdf && !data.is_video && !data.is_audio && !data.is_binary;
     if (isTextFile) {
       document.getElementById('file-view-tabs').style.display = '';
+    }
+    // Show download button for binary/audio/video/image (not text — they use copy)
+    if (!isTextFile) {
+      const dlBtn = document.getElementById('file-download-btn');
+      const rawUrl = API + '/api/file/raw?path=' + encodeURIComponent(data.path);
+      dlBtn.href = rawUrl;
+      dlBtn.download = data.path.split('/').pop();
+      dlBtn.style.display = '';
     }
     _renderFileBody(data, _fileViewMode);
     // Update cache
@@ -8499,7 +8528,10 @@ async function openFilePreview(path) {
 }
 
 function closeFilePreview() {
+  const v = document.querySelector('#file-body video');
+  if (v) { v.pause(); v.src = ''; }
   document.getElementById('file-overlay').classList.remove('active');
+  document.getElementById('file-download-btn').style.display = 'none';
   _fileData = null;
 }
 
@@ -8704,6 +8736,14 @@ async function _rbLoginDone() {
   const ps = document.getElementById('rb-profile-status');
   ps.textContent = 'Credentials saved for ' + _rbCurrentProfile;
   setTimeout(() => { if (ps.textContent.startsWith('Credentials')) ps.textContent = ''; }, 3000);
+}
+
+async function openRecordingsDir() {
+  try {
+    const r = await fetch(API + '/api/recordings');
+    const d = await r.json();
+    openExplore(d.dir || null, null);
+  } catch(e) { openExplore(null, null); }
 }
 
 // ── Browser agent ──
@@ -14195,6 +14235,42 @@ class CCHandler(BaseHTTPRequestHandler):
             save_token_baseline(raw_stats)
             return self._json({"ok": True})
 
+        # GET /api/recordings — list all recordings in ~/.amux/recordings/
+        if method == "GET" and path == "/api/recordings":
+            recs = []
+            if _RB_RECORDINGS_DIR.exists():
+                video_exts = {".mp4", ".webm", ".mov"}
+                for f in sorted(_RB_RECORDINGS_DIR.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+                    if f.suffix.lower() in video_exts and f.is_file():
+                        srt = f.with_suffix(".srt")
+                        st = f.stat()
+                        recs.append({
+                            "name": f.name, "path": str(f),
+                            "size": st.st_size, "modified": int(st.st_mtime),
+                            "srt": str(srt) if srt.exists() else None,
+                        })
+            return self._json({"recordings": recs, "dir": str(_RB_RECORDINGS_DIR)})
+
+        # GET /api/file/vtt?path=... — convert SRT → WebVTT for <track> elements
+        if method == "GET" and path == "/api/file/vtt":
+            import re as _re
+            srt_p = qs.get("path", [""])[0]
+            if not srt_p:
+                return self._json({"error": "missing path"}, 400)
+            srt_file = Path(srt_p).expanduser()
+            if not srt_file.is_file():
+                return self._json({"error": "not found"}, 404)
+            srt_text = srt_file.read_text(encoding="utf-8", errors="replace")
+            vtt = "WEBVTT\n\n" + _re.sub(r"(\d{2}:\d{2}:\d{2}),(\d{3})", r"\1.\2", srt_text)
+            data = vtt.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/vtt; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
         # GET /api/file?path=...&cwd=...
         if method == "GET" and path == "/api/file":
             fpath = qs.get("path", [""])[0]
@@ -14237,7 +14313,10 @@ class CCHandler(BaseHTTPRequestHandler):
                     data_url = f"data:application/pdf;base64,{base64.b64encode(raw).decode()}"
                     return self._json({"path": str(p), "is_pdf": True, "data_url": data_url})
                 if ext in VIDEO_MIMES:
-                    return self._json({"path": str(p), "is_video": True, "mime": VIDEO_MIMES[ext], "size": p.stat().st_size})
+                    srt_path = p.with_suffix(".srt")
+                    return self._json({"path": str(p), "is_video": True, "mime": VIDEO_MIMES[ext],
+                                       "size": p.stat().st_size, "modified": int(p.stat().st_mtime),
+                                       "srt": str(srt_path) if srt_path.exists() else None})
                 if ext in AUDIO_MIMES:
                     return self._json({"path": str(p), "is_audio": True, "mime": AUDIO_MIMES[ext], "size": p.stat().st_size})
                 # Detect other binary files (non-printable bytes in first 8KB)
