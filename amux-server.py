@@ -1523,6 +1523,7 @@ def _init_db():
     for migration in [
         "ALTER TABLE issues ADD COLUMN owner_type TEXT NOT NULL DEFAULT 'human'",
         "ALTER TABLE issues ADD COLUMN due_time TEXT",
+        "ALTER TABLE issues ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
     ]:
         try:
             db.execute(migration)
@@ -1920,12 +1921,13 @@ def _load_board() -> list:
     rows = db.execute(
         """SELECT i.id, i.title, i.desc, i.status, i.session, i.creator,
                   i.due, i.due_time, i.created, i.updated, i.owner_type,
+                  COALESCE(i.pinned, 0) AS pinned,
                   GROUP_CONCAT(t.tag) AS tags_csv
            FROM issues i
            LEFT JOIN issue_tags t ON t.issue_id = i.id
            WHERE i.deleted IS NULL
            GROUP BY i.id
-           ORDER BY i.updated DESC"""
+           ORDER BY COALESCE(i.pinned, 0) DESC, i.updated DESC"""
     ).fetchall()
     result = []
     for row in rows:
@@ -1949,6 +1951,7 @@ def _item_by_id(bid: str) -> dict | None:
     row = db.execute(
         """SELECT i.id, i.title, i.desc, i.status, i.session, i.creator,
                   i.due, i.due_time, i.created, i.updated, i.owner_type,
+                  COALESCE(i.pinned, 0) AS pinned,
                   GROUP_CONCAT(t.tag) AS tags_csv
            FROM issues i
            LEFT JOIN issue_tags t ON t.issue_id = i.id
@@ -4634,6 +4637,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   /* Kill all transitions while dragging so Sortable's JS animation is the sole driver */
   body.board-dragging .board-card { transition: none !important; }
   .board-card:active { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(88,166,255,0.2); }
+  .board-card-pinned { border-color: rgba(88,166,255,0.35); box-shadow: 0 0 0 1px rgba(88,166,255,0.12); }
+  .board-pin-btn {
+    position: absolute; top: 6px; right: 30px;
+    width: 22px; height: 22px; padding: 0; border: none; background: none;
+    font-size: 0.72rem; cursor: pointer; opacity: 0;
+    transition: opacity 0.15s; border-radius: 4px;
+    color: var(--dim); display: flex; align-items: center; justify-content: center;
+  }
+  .board-card:hover .board-pin-btn { opacity: 0.5; }
+  .board-pin-btn:hover { opacity: 1 !important; background: rgba(139,148,158,0.12); }
+  .board-pin-btn.active { opacity: 0.8 !important; color: var(--accent); }
+  .board-card:hover .board-pin-btn.active { opacity: 1 !important; }
   .board-drag-handle {
     position: absolute; top: 6px; right: 6px;
     width: 24px; height: 24px;
@@ -11018,8 +11033,10 @@ function toggleSessionGroup(name) {
 function _renderBoardCard(item) {
   const tags = item.tags || [];
   const firstLine = (item.desc || '').split('\n')[0].slice(0, 80);
-  let h = '<div class="board-card" data-id="' + item.id + '" onclick="openBoardDetail(\'' + item.id + '\')">';
+  const pinned = item.pinned ? 1 : 0;
+  let h = '<div class="board-card' + (pinned ? ' board-card-pinned' : '') + '" data-id="' + item.id + '" onclick="openBoardDetail(\'' + item.id + '\')">';
   h += '<div class="board-drag-handle" onclick="event.stopPropagation()" title="Drag to move"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="3.5" cy="2.5" r="1.25"/><circle cx="8.5" cy="2.5" r="1.25"/><circle cx="3.5" cy="6" r="1.25"/><circle cx="8.5" cy="6" r="1.25"/><circle cx="3.5" cy="9.5" r="1.25"/><circle cx="8.5" cy="9.5" r="1.25"/></svg></div>';
+  h += '<button class="board-pin-btn' + (pinned ? ' active' : '') + '" onclick="event.stopPropagation();_togglePin(\'' + item.id + '\')" title="' + (pinned ? 'Unpin' : 'Pin to top') + '">&#x1F4CC;</button>';
   h += '<div class="board-card-key">' + esc(item.id) + '</div>';
   h += '<div class="board-card-title">';
   if (boardViewMode === 'session') { const _st = item.status || 'todo'; h += '<span class="board-status-dot" style="background:' + statusStyle(_st).dot + '"></span>'; }
@@ -11033,6 +11050,16 @@ function _renderBoardCard(item) {
   if (item.creator) h += '<span class="board-card-time">' + esc(item.creator) + '</span>';
   h += '</div></div>';
   return h;
+}
+
+async function _togglePin(id) {
+  const item = _boardItems.find(i => i.id === id);
+  if (!item) return;
+  const newVal = item.pinned ? 0 : 1;
+  await fetch(API + '/api/board/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ pinned: newVal }),
+  });
 }
 
 function _renderBoardBySession(visible, container) {
@@ -14816,7 +14843,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     body = self._read_body()
                     now = int(time.time())
                     set_clauses, params = [], []
-                    for k in ("title", "desc", "status", "session", "due", "due_time", "owner_type"):
+                    for k in ("title", "desc", "status", "session", "due", "due_time", "owner_type", "pinned"):
                         if k in body:
                             set_clauses.append(f"{k} = ?")
                             v = body[k]
@@ -15092,6 +15119,7 @@ class CCHandler(BaseHTTPRequestHandler):
             rows = db.execute(
                 """SELECT i.id, i.title, i.desc, i.status, i.session, i.creator,
                           i.due, i.due_time, i.created, i.updated, i.deleted,
+                          COALESCE(i.pinned, 0) AS pinned,
                           GROUP_CONCAT(t.tag) AS tags_csv
                    FROM issues i
                    LEFT JOIN issue_tags t ON t.issue_id = i.id
