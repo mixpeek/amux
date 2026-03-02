@@ -1124,7 +1124,9 @@ def _snapshot_all_sessions():
             ctx_match = re.search(r'context left until auto-compact[:\s]+(\d+)%', clean, re.IGNORECASE)
             if ctx_match:
                 pct = int(ctx_match.group(1))
-                if pct < 20 and now - actions.get("last_compact", 0) > 300:
+                _ac_row = get_db().execute("SELECT value FROM prefs WHERE key='auto_compact_enabled'").fetchone()
+                _ac_enabled = (_ac_row is None) or (_ac_row[0] != "0")  # default ON
+                if _ac_enabled and pct < 20 and now - actions.get("last_compact", 0) > 300:
                     actions["last_compact"] = now
                     actions["post_compact_continue"] = True  # send continuation when compact finishes
                     send_text(name, "/compact")
@@ -5128,6 +5130,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         </div>
         <div class="settings-sep"></div>
         <div class="settings-section">
+          <div class="settings-section-label">Automation</div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;">
+            <span style="font-size:0.85rem;">Auto-compact</span>
+            <label class="theme-toggle">
+              <input type="checkbox" id="auto-compact-checkbox" onchange="toggleAutoCompact(this.checked)" checked>
+              <span class="theme-track"><span class="theme-thumb"></span></span>
+            </label>
+          </div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Send /compact when context &lt; 20%</div>
+        </div>
+        <div class="settings-sep"></div>
+        <div class="settings-section">
           <div class="settings-section-label">Appearance</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;">
             <span style="font-size:0.85rem;" id="theme-label">Dark mode</span>
@@ -5920,6 +5934,23 @@ function toggleTheme(checked) {
   const saved = localStorage.getItem('amux_theme');
   const preferLight = saved ? saved === 'light' : window.matchMedia('(prefers-color-scheme: light)').matches;
   _applyTheme(preferLight);
+})();
+
+// ── Auto-compact toggle ──
+async function toggleAutoCompact(checked) {
+  await fetch('/api/prefs', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ key: 'auto_compact_enabled', value: checked ? '1' : '0' })
+  });
+}
+(async function initAutoCompact() {
+  try {
+    const r = await fetch('/api/prefs?key=auto_compact_enabled');
+    const d = await r.json();
+    const enabled = d.value !== '0';  // default ON
+    const cb = document.getElementById('auto-compact-checkbox');
+    if (cb) cb.checked = enabled;
+  } catch(e) {}
 })();
 
 // ═══════ STATE & GLOBALS ═══════
