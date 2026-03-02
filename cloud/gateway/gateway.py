@@ -65,13 +65,13 @@ _LOGIN_HTML = """<!DOCTYPE html>
       document.getElementById('status').textContent = msg;
     }
 
-    async function exchangeAndRedirect(clerk) {
+    async function exchangeAndRedirect() {
       if (exchanging) return;
       exchanging = true;
       document.getElementById('clerk-root').innerHTML = '<div class="spinner"></div>';
       setStatus('Starting your workspace\u2026');
       try {
-        const token = await clerk.session.getToken();
+        const token = await window.Clerk.session.getToken();
         const res = await fetch('/api/cloud-auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -93,20 +93,18 @@ _LOGIN_HTML = """<!DOCTYPE html>
     }
 
     const s = document.createElement('script');
+    s.setAttribute('data-clerk-publishable-key', PK);
     s.src = 'https://cdn.jsdelivr.net/npm/@clerk/clerk-js@4/dist/clerk.browser.js';
     s.onerror = () => setStatus('Failed to load auth library.');
     s.onload = async () => {
       try {
-        setStatus('Initializing\u2026');
-        const ClerkClass = typeof window.Clerk === 'function' ? window.Clerk : null;
-        if (!ClerkClass) { setStatus('ERROR: window.Clerk=' + typeof window.Clerk); return; }
-        const clerk = new ClerkClass(PK);
-        await clerk.load();
+        if (!window.Clerk) { setStatus('ERROR: Clerk not initialized'); return; }
+        await window.Clerk.load();
         setStatus('');
-        if (clerk.user) { await exchangeAndRedirect(clerk); return; }
-        clerk.mountSignIn(document.getElementById('clerk-root'), { routing: 'hash' });
-        clerk.addListener(({ user }) => {
-          if (user && !exchanging) exchangeAndRedirect(clerk);
+        if (window.Clerk.user) { await exchangeAndRedirect(); return; }
+        window.Clerk.mountSignIn(document.getElementById('clerk-root'), { routing: 'hash' });
+        window.Clerk.addListener(({ user }) => {
+          if (user && !exchanging) exchangeAndRedirect();
         });
       } catch(e) {
         setStatus('ERROR: ' + e.message);
