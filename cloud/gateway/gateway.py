@@ -93,10 +93,10 @@ _LOGIN_HTML = """<!DOCTYPE html>
     }
 
     const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/@clerk/clerk-js@5/dist/clerk.browser.js';
+    s.src = 'https://cdn.jsdelivr.net/npm/@clerk/clerk-js@4/dist/clerk.browser.js';
     s.onerror = () => setStatus('Failed to load auth library.');
     s.onload = async () => {
-      const clerk = new window.Clerk(PK);
+      const clerk = new Clerk(PK);
       await clerk.load();
       if (clerk.user) {
         await exchangeAndRedirect(clerk);
