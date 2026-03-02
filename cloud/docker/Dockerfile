@@ -12,4 +12,4 @@ COPY amux-server.py .
 ENV AMUX_PORT=8822
 EXPOSE 8822
 
-CMD ["python", "amux-server.py"]
+CMD ["python", "amux-server.py", "8822", "--no-tls"]
