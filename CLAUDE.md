@@ -44,21 +44,4 @@ The feed auto-uploads to S3 on every board write (POST/PATCH/DELETE). The dashbo
 
 Always use the `claude-in-chrome` MCP server for browser tasks (tools: `mcp__claude-in-chrome__*`). Do not use Playwright or any other browser MCP unless explicitly asked. claude-in-chrome connects directly to the user's Chrome browser and preserves session state across navigations.
 
-**Cross-device access**: The amux server runs on the desktop; Chrome (with the Claude Code extension) runs on the laptop. `localhost` from Chrome refers to the laptop, not the desktop — so always use the desktop's Tailscale IP instead:
-
-```
-https://100.108.219.90:8822
-```
-
-The server cert already includes `100.108.219.90` as a SAN. You may need to accept the cert once in Chrome on the laptop (navigate to the URL → Advanced → Proceed). After that, use `https://100.108.219.90:8822` for all `mcp__claude-in-chrome__navigate` calls to the amux dashboard.
-
-If the Tailscale IP is unreachable (e.g. not connected), fall back to ngrok:
-
-```bash
-# Step 1 — start tunnel
-ngrok http https://localhost:8822 --host-header=localhost > /tmp/ngrok.log 2>&1 &
-# Step 2 — get URL (run as a separate Bash call after a few seconds)
-sleep 4 && curl -s http://localhost:4040/api/tunnels | python3 -c "import json,sys; print(json.load(sys.stdin)['tunnels'][0]['public_url'])"
-```
-
-If an ngrok interstitial appears, use `mcp__claude-in-chrome__find` for "Visit Site" and click it. Kill ngrok when done: `pkill -f "ngrok http"`.
+Claude Code, the amux server, and Chrome all run on the same desktop machine. Use `https://localhost:8822` for all `mcp__claude-in-chrome__navigate` calls to the amux dashboard.
