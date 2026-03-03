@@ -163,8 +163,6 @@ def _classify_request(method: str, path: str) -> tuple:
     # Uploads
     if path.startswith("/api/uploads") and method == "POST":
         return ("file", "uploaded", "", "")
-    if path == "/api/fs/upload" and method == "POST":
-        return ("file", "uploaded", "", "")
     # System
     if path == "/api/pull" and method == "POST":
         return ("system", "pull", "repo", "")
@@ -3880,7 +3878,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     cursor: pointer; font-size: 1rem; padding: 2px 6px; border-radius: 4px; line-height: 1;
     opacity: 0.4; transition: opacity 0.15s; }
   .explore-row:hover .explore-menu-btn, .explore-menu-btn:focus { opacity: 1; }
-  #files-body.files-drop-active { outline: 2px dashed var(--accent); outline-offset: -4px; background: color-mix(in srgb, var(--accent) 6%, var(--bg)); }
   .explore-menu-popup { position: fixed; background: var(--card); border: 1px solid var(--border);
     border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.3); z-index: 900; min-width: 140px;
     overflow: hidden; }
@@ -4617,14 +4614,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .offline-op .op-stale { color: var(--red); font-size: 0.65rem; font-style: italic; }
 
   /* Tab bar */
-  .tab-bar-outer {
-    display: flex; align-items: stretch;
-    margin: 0 -16px 12px -16px;
+  .tab-bar {
+    display: flex; gap: 0; margin: 0 -16px 12px -16px; padding: 0 0 0 16px;
     border-bottom: 1px solid var(--border);
     position: sticky; top: 60px; z-index: 39; background: var(--bg);
-  }
-  .tab-bar {
-    display: flex; gap: 0; padding: 0 0 0 16px; flex: 1;
     overflow-x: auto; -webkit-overflow-scrolling: touch; scroll-behavior: smooth;
   }
   .tab-bar::-webkit-scrollbar { display: none; }
@@ -4635,30 +4628,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     color: var(--dim); cursor: pointer; transition: color 0.15s, border-color 0.15s;
     -webkit-tap-highlight-color: transparent; white-space: nowrap;
   }
+  .tab-bar button:last-child { border-right: none; }
   .tab-bar button.active { color: var(--accent); border-bottom-color: var(--accent); }
   .tab-bar button:active { opacity: 0.7; }
-  .tab-customize-wrap {
-    position: relative; flex-shrink: 0; display: flex; align-items: center;
-    padding: 0 10px; border-left: 1px solid var(--border);
-  }
-  .tab-customize-btn {
-    background: none; border: none; cursor: pointer; font-size: 1rem; line-height: 1;
-    color: var(--dim); padding: 4px 2px; transition: color 0.15s;
-  }
-  .tab-customize-btn:hover { color: var(--fg); }
-  .tab-customizer-menu {
-    position: absolute; right: 0; top: calc(100% + 2px);
-    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
-    min-width: 150px; z-index: 200; padding: 6px 0;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
-  }
-  .tab-customizer-item {
-    display: flex; align-items: center; gap: 8px; padding: 6px 14px;
-    font-size: 0.82rem; cursor: pointer; color: var(--fg); user-select: none;
-  }
-  .tab-customizer-item:hover { background: var(--hover); }
-  .tab-customizer-item.required { opacity: 0.45; cursor: not-allowed; }
-  .tab-customizer-item input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
 
   /* Logs view */
   .logs-toolbar {
@@ -5236,23 +5208,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 </div>
-<div class="tab-bar-outer">
 <div class="tab-bar">
   <button id="tab-sessions" class="active" onclick="switchView('sessions')">Sessions</button>
   <button id="tab-board" onclick="switchView('board')">Board</button>
   <button id="tab-calendar" onclick="switchView('calendar')">Calendar</button>
   <button id="tab-reports" onclick="switchView('reports')">Reports</button>
-  <button id="tab-notifications" onclick="switchView('notifications')">Notifications</button>
+  <button id="tab-notifications" onclick="switchView('notifications')" style="display:none;">Notifications</button>
   <button id="tab-files" onclick="switchView('files')">Files</button>
   <button id="tab-logs" onclick="switchView('logs')">Logs</button>
   <button id="tab-browser" onclick="switchView('browser')">Browser</button>
   <button id="tab-grid" onclick="enterGridMode()">Workspace</button>
   <button id="tab-email" onclick="switchView('email')">Email</button>
-</div>
-<div class="tab-customize-wrap">
-  <button class="tab-customize-btn" onclick="event.stopPropagation();toggleTabCustomizer()" title="Show/hide tabs">&#x229E;</button>
-  <div class="tab-customizer-menu" id="tab-customizer-menu" style="display:none;"></div>
-</div>
 </div>
 <div id="session-view">
 <div style="padding:0 12px;margin-top:4px;display:flex;align-items:center;gap:8px;">
@@ -5393,8 +5359,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <button class="btn" id="files-home-btn" onclick="loadFiles(_filesCwd)" style="font-size:0.7rem;padding:2px 8px;" title="Go to working directory">&#x1F3E0;</button>
     <button class="btn" id="files-setcwd-btn" onclick="setFilesCwd()" style="font-size:0.7rem;padding:2px 8px;" title="Set current directory as working directory">&#x1F4CC; Set CWD</button>
     <button class="btn" id="files-hidden-btn" onclick="toggleFilesHidden()" style="font-size:0.7rem;padding:2px 8px;" title="Show hidden files">.*</button>
-    <button class="btn" id="files-upload-btn" onclick="triggerFilesUpload()" style="font-size:0.7rem;padding:2px 8px;" title="Upload files to current directory">&#x2191; Upload</button>
-    <input type="file" id="files-upload-input" multiple style="display:none;" onchange="handleFilesUpload(this.files)">
     <button class="btn" id="files-cache-btn" onclick="cacheFilesDir(_filesPath)" style="font-size:0.7rem;padding:2px 8px;" title="Cache directory for offline viewing">&#x2601; Cache</button>
     <span id="files-cache-status" style="font-size:0.7rem;color:var(--dim);white-space:nowrap;"></span>
   </div>
@@ -5992,8 +5956,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="file-overlay-header">
     <div class="explore-breadcrumb" id="explore-breadcrumb" style="flex:1;margin-right:8px;"></div>
     <button class="btn" id="explore-hidden-btn" onclick="toggleExploreHidden()" style="font-size:0.7rem;padding:2px 8px;" title="Show hidden files">.*</button>
-    <button class="btn" onclick="triggerExploreUpload()" style="font-size:0.7rem;padding:2px 8px;" title="Upload files to current directory">&#x2191; Upload</button>
-    <input type="file" id="explore-upload-input" multiple style="display:none;" onchange="handleExploreUpload(this.files)">
     <button class="btn" onclick="closeExplore()">&#x2715;</button>
   </div>
   <div id="explore-body" class="file-overlay-body" style="padding:0;overflow-y:auto;"></div>
@@ -6991,9 +6953,9 @@ async function doCreateBranch(name) {
       gitInfo[name] = {...(gitInfo[name] || {}), branch, _conflict: false};
       render();
     } else {
-      showAlert('Branch creation failed: ' + (d.error || 'unknown error'));
+      alert('Branch creation failed: ' + (d.error || 'unknown error'));
     }
-  } catch(ex) { showAlert('Error: ' + ex.message); }
+  } catch(ex) { alert('Error: ' + ex.message); }
 }
 
 function toggle(name) {
@@ -7082,90 +7044,7 @@ function closeAllMenus() {
   }
   openMenu = null;
 }
-document.addEventListener('click', e => {
-  closeAllMenus(); closeActiveDropdown(e); closeAddMenu();
-  if (_tabCustomizerOpen && !e.target.closest('.tab-customize-wrap')) {
-    _tabCustomizerOpen = false;
-    const m = document.getElementById('tab-customizer-menu');
-    if (m) m.style.display = 'none';
-  }
-});
-
-const ALL_TABS = [
-  { id: 'sessions',      label: 'Sessions',   required: true },
-  { id: 'board',         label: 'Board' },
-  { id: 'calendar',      label: 'Calendar' },
-  { id: 'reports',       label: 'Reports' },
-  { id: 'notifications', label: 'Notifications' },
-  { id: 'files',         label: 'Files' },
-  { id: 'logs',          label: 'Logs' },
-  { id: 'browser',       label: 'Browser' },
-  { id: 'grid',          label: 'Workspace' },
-  { id: 'email',         label: 'Email' },
-];
-
-let hiddenTabs = (function() {
-  try {
-    const s = localStorage.getItem('amux_hidden_tabs');
-    if (s !== null) return new Set(JSON.parse(s));
-  } catch(e) {}
-  return new Set(['notifications']); // default: notifications hidden
-})();
-
-function _saveHiddenTabs() {
-  localStorage.setItem('amux_hidden_tabs', JSON.stringify([...hiddenTabs]));
-}
-
-function _applyTabVisibility() {
-  ALL_TABS.forEach(t => {
-    const el = document.getElementById('tab-' + t.id);
-    if (el) el.style.display = hiddenTabs.has(t.id) ? 'none' : '';
-  });
-}
-
-let _tabCustomizerOpen = false;
-
-function toggleTabCustomizer() {
-  _tabCustomizerOpen = !_tabCustomizerOpen;
-  const menu = document.getElementById('tab-customizer-menu');
-  if (!menu) return;
-  if (_tabCustomizerOpen) {
-    _renderTabCustomizerMenu();
-    menu.style.display = '';
-  } else {
-    menu.style.display = 'none';
-  }
-}
-
-function _renderTabCustomizerMenu() {
-  const menu = document.getElementById('tab-customizer-menu');
-  if (!menu) return;
-  menu.innerHTML = ALL_TABS.map(t => {
-    const checked = !hiddenTabs.has(t.id);
-    const req = t.required ? ' required' : '';
-    const disabled = t.required ? ' disabled' : '';
-    return `<label class="tab-customizer-item${req}" onclick="event.stopPropagation()">
-      <input type="checkbox" ${checked ? 'checked' : ''}${disabled} onchange="toggleTabVisibility('${t.id}',this.checked)">
-      ${t.label}
-    </label>`;
-  }).join('');
-}
-
-function toggleTabVisibility(id, show) {
-  const tab = ALL_TABS.find(t => t.id === id);
-  if (!tab || tab.required) return;
-  if (show) {
-    hiddenTabs.delete(id);
-  } else {
-    // If hiding the currently active tab, switch to sessions first
-    const gridActive = id === 'grid' && document.getElementById('grid-view')?.classList.contains('active');
-    if (activeView === id || gridActive) switchView('sessions');
-    hiddenTabs.add(id);
-  }
-  _saveHiddenTabs();
-  _applyTabVisibility();
-  _renderTabCustomizerMenu();
-}
+document.addEventListener('click', e => { closeAllMenus(); closeActiveDropdown(e); closeAddMenu(); });
 
 function toggleArchived() {
   archivedExpanded = !archivedExpanded;
@@ -9565,43 +9444,6 @@ function _renderFilesEntries(body, path, data, cacheTs) {
     }
     body.appendChild(row);
   }
-  // Drag-and-drop upload
-  body.ondragover = e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; body.classList.add('files-drop-active'); };
-  body.ondragleave = () => body.classList.remove('files-drop-active');
-  body.ondrop = e => { e.preventDefault(); body.classList.remove('files-drop-active'); if (e.dataTransfer.files.length) handleFilesUpload(e.dataTransfer.files); };
-}
-
-function triggerFilesUpload() {
-  const inp = document.getElementById('files-upload-input');
-  inp.value = '';
-  inp.click();
-}
-
-async function handleFilesUpload(files) {
-  if (!files || !files.length) return;
-  const statusEl = document.getElementById('files-cache-status');
-  let uploaded = 0, failed = 0;
-  for (const file of Array.from(files)) {
-    statusEl.textContent = `Uploading ${file.name}…`;
-    const fd = new FormData();
-    fd.append('dir', _filesPath);
-    fd.append('file', file, file.name);
-    try {
-      const r = await fetch(API + '/api/fs/upload', { method: 'POST', body: fd });
-      const d = await r.json();
-      if (r.ok && d.saved?.length) uploaded++;
-      else { failed++; showToast('Upload failed: ' + (d.error || r.status)); }
-    } catch(e) {
-      failed++;
-      showToast('Upload error: ' + e.message);
-    }
-  }
-  statusEl.textContent = '';
-  document.getElementById('files-upload-input').value = '';
-  if (uploaded) {
-    showToast(`Uploaded ${uploaded} file${uploaded !== 1 ? 's' : ''} to ${_filesPath}`);
-    loadFiles(_filesPath);
-  }
 }
 
 // ═══════ OFFLINE FILE CACHE ═══════
@@ -9672,28 +9514,6 @@ function openExplore(startPath, session) {
 }
 function closeExplore() {
   document.getElementById('explore-overlay').classList.remove('active');
-}
-function triggerExploreUpload() {
-  const inp = document.getElementById('explore-upload-input');
-  inp.value = '';
-  inp.click();
-}
-async function handleExploreUpload(files) {
-  if (!files || !files.length) return;
-  let uploaded = 0, failed = 0;
-  for (const file of Array.from(files)) {
-    const fd = new FormData();
-    fd.append('dir', _explorePath);
-    fd.append('file', file, file.name);
-    try {
-      const r = await fetch(API + '/api/fs/upload', { method: 'POST', body: fd });
-      const d = await r.json();
-      if (r.ok && d.saved?.length) uploaded++;
-      else { failed++; showToast('Upload failed: ' + (d.error || r.status)); }
-    } catch(e) { failed++; showToast('Upload error: ' + e.message); }
-  }
-  document.getElementById('explore-upload-input').value = '';
-  if (uploaded) { showToast(`Uploaded ${uploaded} file${uploaded !== 1 ? 's' : ''}`); loadExplore(_explorePath); }
 }
 function toggleExploreHidden() {
   _exploreShowHidden = !_exploreShowHidden;
@@ -9803,9 +9623,6 @@ async function loadExplore(path) {
 }
 function _renderExploreEntries(body, path, data, cacheTs) {
   body.innerHTML = '';
-  body.ondragover = e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; body.classList.add('files-drop-active'); };
-  body.ondragleave = () => body.classList.remove('files-drop-active');
-  body.ondrop = e => { e.preventDefault(); body.classList.remove('files-drop-active'); if (e.dataTransfer.files.length) handleExploreUpload(e.dataTransfer.files); };
   if (cacheTs) {
     const age = Math.round((Date.now() - cacheTs) / 60000);
     const ageStr = age < 60 ? age + 'm ago' : Math.round(age/60) + 'h ago';
@@ -12428,7 +12245,7 @@ function _gpSafeId(name) {
 function enterGridMode() {
   const view = document.getElementById('grid-view');
   // Position below the tab bar so both header and tabs remain visible
-  const tabBar = document.querySelector('.tab-bar-outer');
+  const tabBar = document.querySelector('.tab-bar');
   const ref = tabBar || document.querySelector('.header-row');
   if (ref) {
     const rect = ref.getBoundingClientRect();
@@ -12863,11 +12680,10 @@ async function _runDeltaSync() {
 }
 // Run delta sync shortly after startup (after queue replay window)
 setTimeout(_runDeltaSync, 2500);
-_applyTabVisibility();
 (function() {
   function _syncTabTop() {
     const h = document.querySelector('.header-row');
-    const t = document.querySelector('.tab-bar-outer');
+    const t = document.querySelector('.tab-bar');
     if (h && t) t.style.top = h.offsetHeight + 'px';
   }
   _syncTabTop();
@@ -13580,7 +13396,7 @@ async function openTeamInvite() {
   closeSettings();
   const res = await fetch('/api/org/invites', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
   const data = await res.json();
-  if (!data.url) { showAlert('Failed to create invite: ' + (data.error || 'unknown error')); return; }
+  if (!data.url) { alert('Failed to create invite'); return; }
   // Show modal with copyable link
   const modal = document.createElement('div');
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:9999;';
@@ -14052,7 +13868,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.6.3';
+const CACHE = 'amux-v0.6.2';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -15032,51 +14848,6 @@ class CCHandler(BaseHTTPRequestHandler):
             except PermissionError:
                 return self._json({"error": "permission denied"}, 403)
 
-        # ── Directory upload (Files view) ──
-        if method == "POST" and path == "/api/fs/upload":
-            ctype = self.headers.get("Content-Type", "")
-            if "multipart/form-data" not in ctype:
-                return self._json({"error": "expected multipart/form-data"}, 400)
-            length = int(self.headers.get("Content-Length", 0))
-            if length > 200 * 1024 * 1024:
-                return self._json({"error": "request too large (max 200 MB)"}, 413)
-            raw = self.rfile.read(length)
-            from email import message_from_bytes
-            from email.policy import compat32 as _compat32
-            msg = message_from_bytes(
-                (f"Content-Type: {ctype}\r\n\r\n").encode() + raw,
-                policy=_compat32,
-            )
-            parts = msg.get_payload()
-            if not isinstance(parts, list):
-                return self._json({"error": "invalid multipart"}, 400)
-            # find target directory field
-            target_dir = None
-            for part in parts:
-                if part.get_param("name", header="content-disposition") == "dir":
-                    target_dir = (part.get_payload(decode=True) or b"").decode("utf-8", errors="replace").strip()
-            if not target_dir:
-                return self._json({"error": "missing 'dir' field"}, 400)
-            dest_dir = Path(target_dir).expanduser().resolve()
-            if not dest_dir.is_dir():
-                return self._json({"error": f"not a directory: {target_dir}"}, 400)
-            saved = []
-            for part in parts:
-                filename = part.get_param("filename", header="content-disposition")
-                if not filename:
-                    continue
-                safe_name = re.sub(r'[^\w.\- ]', '_', Path(filename).name)[:240] or "upload"
-                data = part.get_payload(decode=True) or b""
-                dest = dest_dir / safe_name
-                if dest.exists():
-                    stem, suffix, i = dest.stem, dest.suffix, 1
-                    while dest.exists():
-                        dest = dest_dir / f"{stem}_{i}{suffix}"
-                        i += 1
-                dest.write_bytes(data)
-                saved.append({"name": dest.name, "size": len(data)})
-            return self._json({"saved": saved})
-
         # ── File upload ──
         if method == "POST" and path == "/api/upload":
             body = self._read_body()
@@ -15879,208 +15650,6 @@ class CCHandler(BaseHTTPRequestHandler):
 
             return self._json({"error": "not found"}, 404)
 
-        # ── Cloud Waitlist ──
-        if path == "/api/waitlist":
-            db = get_db()
-            if method == "POST":
-                body = self._read_body()
-                email = body.get("email", "").strip().lower()
-                if not email or "@" not in email:
-                    return self._json({"error": "invalid email"}, 400)
-                note = body.get("note", "").strip()[:500]
-                try:
-                    db.execute(
-                        "INSERT INTO waitlist (email, note, ts) VALUES (?,?,?)",
-                        (email, note or None, int(time.time()))
-                    )
-                    db.commit()
-                    return self._json({"ok": True})
-                except sqlite3.IntegrityError:
-                    return self._json({"ok": True, "already": True})
-            if method == "GET":
-                rows = db.execute(
-                    "SELECT id, email, note, ts FROM waitlist ORDER BY ts DESC"
-                ).fetchall()
-                return self._json([dict(r) for r in rows])
-
-        # ── Settings env (ANTHROPIC_API_KEY etc.) ─────────────────────────────
-        if path == "/api/settings/env":
-            _allowed_env_keys = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}
-            if method == "GET":
-                result = {}
-                for k in _allowed_env_keys:
-                    v = os.environ.get(k, "")
-                    result[k] = ("*" * (len(v) - 4) + v[-4:]) if len(v) > 8 else ("set" if v else "")
-                return self._json(result)
-            if method == "PATCH":
-                body = self._read_body()
-                updates = {k: v for k, v in body.items() if k in _allowed_env_keys and isinstance(v, str)}
-                if not updates:
-                    return self._json({"error": "no valid keys"}, 400)
-                # Read existing server.env
-                lines = []
-                if _server_env_file.exists():
-                    lines = _server_env_file.read_text().splitlines()
-                for key, val in updates.items():
-                    found = False
-                    for i, line in enumerate(lines):
-                        if line.startswith(key + "=") or line.startswith(key + " ="):
-                            lines[i] = f"{key}={val}"
-                            found = True
-                            break
-                    if not found:
-                        lines.append(f"{key}={val}")
-                    os.environ[key] = val  # live effect
-                _server_env_file.write_text("\n".join(lines) + "\n")
-                return self._json({"ok": True})
-
-        # ── Org / Team / Invites ──────────────────────────────────────────────
-        if path.startswith("/api/org") or path.startswith("/invite/"):
-            import secrets as _sec
-            db = get_db()
-
-            def _get_org():
-                row = db.execute("SELECT * FROM org WHERE id='default'").fetchone()
-                if not row:
-                    db.execute("INSERT INTO org (id, name, created_at) VALUES ('default','My Workspace',?)",
-                               (int(time.time()),))
-                    db.commit()
-                    row = db.execute("SELECT * FROM org WHERE id='default'").fetchone()
-                return dict(row)
-
-            # GET /api/org — org info + member count
-            if method == "GET" and path == "/api/org":
-                org = _get_org()
-                members = db.execute("SELECT COUNT(*) FROM org_members").fetchone()[0]
-                invites = db.execute(
-                    "SELECT COUNT(*) FROM org_invites WHERE used_at IS NULL AND expires_at > ?",
-                    (int(time.time()),)
-                ).fetchone()[0]
-                return self._json({**org, "member_count": members, "invite_count": invites})
-
-            # PATCH /api/org — rename workspace
-            if method == "PATCH" and path == "/api/org":
-                body = self._read_body()
-                name = body.get("name", "").strip()[:80]
-                if not name:
-                    return self._json({"error": "name required"}, 400)
-                _get_org()
-                db.execute("UPDATE org SET name=? WHERE id='default'", (name,))
-                db.commit()
-                return self._json({"ok": True, "name": name})
-
-            # GET /api/org/members
-            if method == "GET" and path == "/api/org/members":
-                rows = db.execute(
-                    "SELECT id, email, name, role, joined_at FROM org_members ORDER BY joined_at"
-                ).fetchall()
-                return self._json([dict(r) for r in rows])
-
-            # DELETE /api/org/members/:id
-            if method == "DELETE" and path.startswith("/api/org/members/"):
-                mid = path[len("/api/org/members/"):]
-                db.execute("DELETE FROM org_members WHERE id=?", (mid,))
-                db.commit()
-                return self._json({"ok": True})
-
-            # GET /api/org/invites — list pending invites
-            if method == "GET" and path == "/api/org/invites":
-                now = int(time.time())
-                rows = db.execute(
-                    "SELECT token, email, created_at, expires_at, used_at, used_by "
-                    "FROM org_invites WHERE used_at IS NULL AND expires_at > ? ORDER BY created_at DESC",
-                    (now,)
-                ).fetchall()
-                host = self.headers.get("Host", "localhost:8822")
-                scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
-                base = f"{scheme}://{host}"
-                return self._json([{**dict(r), "url": f"{base}/invite/{r['token']}"} for r in rows])
-
-            # POST /api/org/invites — create invite
-            if method == "POST" and path == "/api/org/invites":
-                body = self._read_body()
-                email = body.get("email", "").strip().lower() or None
-                token = _sec.token_urlsafe(24)
-                now = int(time.time())
-                expires = now + 7 * 86400  # 7 days
-                db.execute(
-                    "INSERT INTO org_invites (token, email, created_at, expires_at) VALUES (?,?,?,?)",
-                    (token, email, now, expires)
-                )
-                db.commit()
-                host = self.headers.get("Host", "localhost:8822")
-                scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
-                url = f"{scheme}://{host}/invite/{token}"
-                return self._json({"token": token, "url": url, "expires_at": expires}, 201)
-
-            # DELETE /api/org/invites/:token
-            if method == "DELETE" and path.startswith("/api/org/invites/"):
-                tok = path[len("/api/org/invites/"):]
-                db.execute("DELETE FROM org_invites WHERE token=?", (tok,))
-                db.commit()
-                return self._json({"ok": True})
-
-            # GET /invite/:token — landing page
-            if method == "GET" and path.startswith("/invite/"):
-                tok = path[len("/invite/"):]
-                now = int(time.time())
-                row = db.execute(
-                    "SELECT * FROM org_invites WHERE token=? AND used_at IS NULL AND expires_at > ?",
-                    (tok, now)
-                ).fetchone()
-                org = _get_org()
-                if not row:
-                    html = f"""<!doctype html><html><head><meta charset=utf-8><title>Invalid Invite</title>
-<style>body{{font-family:system-ui;background:#0d0d0d;color:#e8e8e8;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}
-.card{{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:32px;max-width:400px;text-align:center}}
-h2{{margin:0 0 12px;color:#f87171}}p{{color:#888;margin:0}}</style></head>
-<body><div class=card><h2>Invite expired or invalid</h2><p>This invite link is no longer valid.</p></div></body></html>"""
-                    return self._html(html, 410)
-                host = self.headers.get("Host", "localhost:8822")
-                scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
-                redirect = f"{scheme}://{host}/"
-                html = f"""<!doctype html><html><head><meta charset=utf-8><title>Join {org['name']}</title>
-<style>body{{font-family:system-ui;background:#0d0d0d;color:#e8e8e8;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}
-.card{{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:40px;max-width:420px;text-align:center;width:100%}}
-h1{{margin:0 0 6px;font-size:1.4rem}}.org{{color:#a78bfa;font-weight:600}}
-p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
-.btn{{background:#a78bfa;color:#000;border:none;border-radius:8px;padding:12px 32px;font-size:1rem;font-weight:600;cursor:pointer;text-decoration:none;display:inline-block}}
-.btn:hover{{background:#c4b5fd}}.note{{font-size:0.75rem;color:#555;margin-top:16px}}</style></head>
-<body><div class=card>
-<h1>You&#39;re invited to join</h1>
-<div class=org>{org['name']}</div>
-<p>Someone has shared their amux workspace with you.<br>Click below to open it.</p>
-<a class=btn href="{redirect}?invite_token={tok}">Accept Invite</a>
-<div class=note>This invite expires in 7 days.</div>
-</div></body></html>"""
-                return self._html(html)
-
-            # POST /invite/:token — mark used (called by frontend after auth)
-            if method == "POST" and path.startswith("/invite/"):
-                tok = path[len("/invite/"):]
-                body = self._read_body()
-                used_by = body.get("email", "").strip() or body.get("name", "").strip() or "anonymous"
-                now = int(time.time())
-                row = db.execute(
-                    "SELECT * FROM org_invites WHERE token=? AND used_at IS NULL AND expires_at > ?",
-                    (tok, now)
-                ).fetchone()
-                if not row:
-                    return self._json({"error": "invalid or expired invite"}, 410)
-                db.execute("UPDATE org_invites SET used_at=?, used_by=? WHERE token=?",
-                           (now, used_by, tok))
-                # Add to members if not already there
-                mid = _sec.token_urlsafe(12)
-                try:
-                    db.execute(
-                        "INSERT INTO org_members (id, email, name, role, joined_at) VALUES (?,?,?,?,?)",
-                        (mid, used_by, body.get("name", "").strip() or None, "member", now)
-                    )
-                except Exception:
-                    pass
-                db.commit()
-                return self._json({"ok": True})
-
         # Session-specific routes: /api/sessions/<name>/<action>[/<subid>]
         m = re.match(r"^/api/sessions/([^/]+)(/([^/]+)(/([^/]+))?)?$", path)
         if not m:
@@ -16440,6 +16009,208 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
 
                 return self._json({"error": "nothing to update"}, 400)
             return self._json({"error": "not found"}, 404)
+
+        # ── Cloud Waitlist ──
+        if path == "/api/waitlist":
+            db = get_db()
+            if method == "POST":
+                body = self._read_body()
+                email = body.get("email", "").strip().lower()
+                if not email or "@" not in email:
+                    return self._json({"error": "invalid email"}, 400)
+                note = body.get("note", "").strip()[:500]
+                try:
+                    db.execute(
+                        "INSERT INTO waitlist (email, note, ts) VALUES (?,?,?)",
+                        (email, note or None, int(time.time()))
+                    )
+                    db.commit()
+                    return self._json({"ok": True})
+                except sqlite3.IntegrityError:
+                    return self._json({"ok": True, "already": True})
+            if method == "GET":
+                rows = db.execute(
+                    "SELECT id, email, note, ts FROM waitlist ORDER BY ts DESC"
+                ).fetchall()
+                return self._json([dict(r) for r in rows])
+
+        # ── Settings env (ANTHROPIC_API_KEY etc.) ─────────────────────────────
+        if path == "/api/settings/env":
+            _allowed_env_keys = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}
+            if method == "GET":
+                result = {}
+                for k in _allowed_env_keys:
+                    v = os.environ.get(k, "")
+                    result[k] = ("*" * (len(v) - 4) + v[-4:]) if len(v) > 8 else ("set" if v else "")
+                return self._json(result)
+            if method == "PATCH":
+                body = self._read_body()
+                updates = {k: v for k, v in body.items() if k in _allowed_env_keys and isinstance(v, str)}
+                if not updates:
+                    return self._json({"error": "no valid keys"}, 400)
+                # Read existing server.env
+                lines = []
+                if _server_env_file.exists():
+                    lines = _server_env_file.read_text().splitlines()
+                for key, val in updates.items():
+                    found = False
+                    for i, line in enumerate(lines):
+                        if line.startswith(key + "=") or line.startswith(key + " ="):
+                            lines[i] = f"{key}={val}"
+                            found = True
+                            break
+                    if not found:
+                        lines.append(f"{key}={val}")
+                    os.environ[key] = val  # live effect
+                _server_env_file.write_text("\n".join(lines) + "\n")
+                return self._json({"ok": True})
+
+        # ── Org / Team / Invites ──────────────────────────────────────────────
+        if path.startswith("/api/org") or path.startswith("/invite/"):
+            import secrets as _sec
+            db = get_db()
+
+            def _get_org():
+                row = db.execute("SELECT * FROM org WHERE id='default'").fetchone()
+                if not row:
+                    db.execute("INSERT INTO org (id, name, created_at) VALUES ('default','My Workspace',?)",
+                               (int(time.time()),))
+                    db.commit()
+                    row = db.execute("SELECT * FROM org WHERE id='default'").fetchone()
+                return dict(row)
+
+            # GET /api/org — org info + member count
+            if method == "GET" and path == "/api/org":
+                org = _get_org()
+                members = db.execute("SELECT COUNT(*) FROM org_members").fetchone()[0]
+                invites = db.execute(
+                    "SELECT COUNT(*) FROM org_invites WHERE used_at IS NULL AND expires_at > ?",
+                    (int(time.time()),)
+                ).fetchone()[0]
+                return self._json({**org, "member_count": members, "invite_count": invites})
+
+            # PATCH /api/org — rename workspace
+            if method == "PATCH" and path == "/api/org":
+                body = self._read_body()
+                name = body.get("name", "").strip()[:80]
+                if not name:
+                    return self._json({"error": "name required"}, 400)
+                _get_org()
+                db.execute("UPDATE org SET name=? WHERE id='default'", (name,))
+                db.commit()
+                return self._json({"ok": True, "name": name})
+
+            # GET /api/org/members
+            if method == "GET" and path == "/api/org/members":
+                rows = db.execute(
+                    "SELECT id, email, name, role, joined_at FROM org_members ORDER BY joined_at"
+                ).fetchall()
+                return self._json([dict(r) for r in rows])
+
+            # DELETE /api/org/members/:id
+            if method == "DELETE" and path.startswith("/api/org/members/"):
+                mid = path[len("/api/org/members/"):]
+                db.execute("DELETE FROM org_members WHERE id=?", (mid,))
+                db.commit()
+                return self._json({"ok": True})
+
+            # GET /api/org/invites — list pending invites
+            if method == "GET" and path == "/api/org/invites":
+                now = int(time.time())
+                rows = db.execute(
+                    "SELECT token, email, created_at, expires_at, used_at, used_by "
+                    "FROM org_invites WHERE used_at IS NULL AND expires_at > ? ORDER BY created_at DESC",
+                    (now,)
+                ).fetchall()
+                host = self.headers.get("Host", "localhost:8822")
+                scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
+                base = f"{scheme}://{host}"
+                return self._json([{**dict(r), "url": f"{base}/invite/{r['token']}"} for r in rows])
+
+            # POST /api/org/invites — create invite
+            if method == "POST" and path == "/api/org/invites":
+                body = self._read_body()
+                email = body.get("email", "").strip().lower() or None
+                token = _sec.token_urlsafe(24)
+                now = int(time.time())
+                expires = now + 7 * 86400  # 7 days
+                db.execute(
+                    "INSERT INTO org_invites (token, email, created_at, expires_at) VALUES (?,?,?,?)",
+                    (token, email, now, expires)
+                )
+                db.commit()
+                host = self.headers.get("Host", "localhost:8822")
+                scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
+                url = f"{scheme}://{host}/invite/{token}"
+                return self._json({"token": token, "url": url, "expires_at": expires}, 201)
+
+            # DELETE /api/org/invites/:token
+            if method == "DELETE" and path.startswith("/api/org/invites/"):
+                tok = path[len("/api/org/invites/"):]
+                db.execute("DELETE FROM org_invites WHERE token=?", (tok,))
+                db.commit()
+                return self._json({"ok": True})
+
+            # GET /invite/:token — landing page
+            if method == "GET" and path.startswith("/invite/"):
+                tok = path[len("/invite/"):]
+                now = int(time.time())
+                row = db.execute(
+                    "SELECT * FROM org_invites WHERE token=? AND used_at IS NULL AND expires_at > ?",
+                    (tok, now)
+                ).fetchone()
+                org = _get_org()
+                if not row:
+                    html = f"""<!doctype html><html><head><meta charset=utf-8><title>Invalid Invite</title>
+<style>body{{font-family:system-ui;background:#0d0d0d;color:#e8e8e8;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}
+.card{{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:32px;max-width:400px;text-align:center}}
+h2{{margin:0 0 12px;color:#f87171}}p{{color:#888;margin:0}}</style></head>
+<body><div class=card><h2>Invite expired or invalid</h2><p>This invite link is no longer valid.</p></div></body></html>"""
+                    return self._html(html, 410)
+                host = self.headers.get("Host", "localhost:8822")
+                scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
+                redirect = f"{scheme}://{host}/"
+                html = f"""<!doctype html><html><head><meta charset=utf-8><title>Join {org['name']}</title>
+<style>body{{font-family:system-ui;background:#0d0d0d;color:#e8e8e8;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}
+.card{{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:40px;max-width:420px;text-align:center;width:100%}}
+h1{{margin:0 0 6px;font-size:1.4rem}}.org{{color:#a78bfa;font-weight:600}}
+p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
+.btn{{background:#a78bfa;color:#000;border:none;border-radius:8px;padding:12px 32px;font-size:1rem;font-weight:600;cursor:pointer;text-decoration:none;display:inline-block}}
+.btn:hover{{background:#c4b5fd}}.note{{font-size:0.75rem;color:#555;margin-top:16px}}</style></head>
+<body><div class=card>
+<h1>You&#39;re invited to join</h1>
+<div class=org>{org['name']}</div>
+<p>Someone has shared their amux workspace with you.<br>Click below to open it.</p>
+<a class=btn href="{redirect}?invite_token={tok}">Accept Invite</a>
+<div class=note>This invite expires in 7 days.</div>
+</div></body></html>"""
+                return self._html(html)
+
+            # POST /invite/:token — mark used (called by frontend after auth)
+            if method == "POST" and path.startswith("/invite/"):
+                tok = path[len("/invite/"):]
+                body = self._read_body()
+                used_by = body.get("email", "").strip() or body.get("name", "").strip() or "anonymous"
+                now = int(time.time())
+                row = db.execute(
+                    "SELECT * FROM org_invites WHERE token=? AND used_at IS NULL AND expires_at > ?",
+                    (tok, now)
+                ).fetchone()
+                if not row:
+                    return self._json({"error": "invalid or expired invite"}, 410)
+                db.execute("UPDATE org_invites SET used_at=?, used_by=? WHERE token=?",
+                           (now, used_by, tok))
+                # Add to members if not already there
+                mid = _sec.token_urlsafe(12)
+                try:
+                    db.execute(
+                        "INSERT INTO org_members (id, email, name, role, joined_at) VALUES (?,?,?,?,?)",
+                        (mid, used_by, body.get("name", "").strip() or None, "member", now)
+                    )
+                except Exception:
+                    pass
+                db.commit()
+                return self._json({"ok": True})
 
         return self._json({"error": "method not allowed"}, 405)
 
