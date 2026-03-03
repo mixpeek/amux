@@ -722,7 +722,8 @@ class Handler(BaseHTTPRequestHandler):
         # GET /api/gateway/members → list members of your workspace
         if path == "/api/gateway/members" and self.command == "GET":
             rows = db.execute(
-                "SELECT u.email, m.joined_at FROM org_members m JOIN users u ON m.member_id = u.id "
+                "SELECT COALESCE(NULLIF(u.email,''), m.member_email) AS email, m.member_id, m.joined_at "
+                "FROM org_members m JOIN users u ON m.member_id = u.id "
                 "WHERE m.owner_id=? ORDER BY m.joined_at",
                 (user_id,)
             ).fetchall()

@@ -3038,9 +3038,12 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 break
         else:
             shell_rc += f"cd {shlex.quote(work_dir)}; "
-        # Forward API keys from server env into the tmux session
+        # Forward select env vars into the tmux session.
+        # NOTE: Do NOT forward ANTHROPIC_API_KEY — Claude Code manages its own
+        # auth via ~/.claude/ (OAuth/Max). Forwarding a server-level key would
+        # override the user's login and cause stale-key failures.
         _env_args = []
-        for _ekey in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        for _ekey in ("OPENAI_API_KEY",):
             _eVal = os.environ.get(_ekey, "")
             if _eVal:
                 _env_args += ["-e", f"{_ekey}={_eVal}"]
