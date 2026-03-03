@@ -5992,6 +5992,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="file-overlay-header">
     <div class="explore-breadcrumb" id="explore-breadcrumb" style="flex:1;margin-right:8px;"></div>
     <button class="btn" id="explore-hidden-btn" onclick="toggleExploreHidden()" style="font-size:0.7rem;padding:2px 8px;" title="Show hidden files">.*</button>
+    <button class="btn" onclick="triggerExploreUpload()" style="font-size:0.7rem;padding:2px 8px;" title="Upload files to current directory">&#x2191; Upload</button>
+    <input type="file" id="explore-upload-input" multiple style="display:none;" onchange="handleExploreUpload(this.files)">
     <button class="btn" onclick="closeExplore()">&#x2715;</button>
   </div>
   <div id="explore-body" class="file-overlay-body" style="padding:0;overflow-y:auto;"></div>
@@ -9671,6 +9673,28 @@ function openExplore(startPath, session) {
 function closeExplore() {
   document.getElementById('explore-overlay').classList.remove('active');
 }
+function triggerExploreUpload() {
+  const inp = document.getElementById('explore-upload-input');
+  inp.value = '';
+  inp.click();
+}
+async function handleExploreUpload(files) {
+  if (!files || !files.length) return;
+  let uploaded = 0, failed = 0;
+  for (const file of Array.from(files)) {
+    const fd = new FormData();
+    fd.append('dir', _explorePath);
+    fd.append('file', file, file.name);
+    try {
+      const r = await fetch(API + '/api/fs/upload', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (r.ok && d.saved?.length) uploaded++;
+      else { failed++; showToast('Upload failed: ' + (d.error || r.status)); }
+    } catch(e) { failed++; showToast('Upload error: ' + e.message); }
+  }
+  document.getElementById('explore-upload-input').value = '';
+  if (uploaded) { showToast(`Uploaded ${uploaded} file${uploaded !== 1 ? 's' : ''}`); loadExplore(_explorePath); }
+}
 function toggleExploreHidden() {
   _exploreShowHidden = !_exploreShowHidden;
   const btn = document.getElementById('explore-hidden-btn');
@@ -9779,6 +9803,9 @@ async function loadExplore(path) {
 }
 function _renderExploreEntries(body, path, data, cacheTs) {
   body.innerHTML = '';
+  body.ondragover = e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; body.classList.add('files-drop-active'); };
+  body.ondragleave = () => body.classList.remove('files-drop-active');
+  body.ondrop = e => { e.preventDefault(); body.classList.remove('files-drop-active'); if (e.dataTransfer.files.length) handleExploreUpload(e.dataTransfer.files); };
   if (cacheTs) {
     const age = Math.round((Date.now() - cacheTs) / 60000);
     const ageStr = age < 60 ? age + 'm ago' : Math.round(age/60) + 'h ago';
