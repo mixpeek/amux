@@ -15765,6 +15765,208 @@ class CCHandler(BaseHTTPRequestHandler):
 
             return self._json({"error": "not found"}, 404)
 
+        # ── Cloud Waitlist ──
+        if path == "/api/waitlist":
+            db = get_db()
+            if method == "POST":
+                body = self._read_body()
+                email = body.get("email", "").strip().lower()
+                if not email or "@" not in email:
+                    return self._json({"error": "invalid email"}, 400)
+                note = body.get("note", "").strip()[:500]
+                try:
+                    db.execute(
+                        "INSERT INTO waitlist (email, note, ts) VALUES (?,?,?)",
+                        (email, note or None, int(time.time()))
+                    )
+                    db.commit()
+                    return self._json({"ok": True})
+                except sqlite3.IntegrityError:
+                    return self._json({"ok": True, "already": True})
+            if method == "GET":
+                rows = db.execute(
+                    "SELECT id, email, note, ts FROM waitlist ORDER BY ts DESC"
+                ).fetchall()
+                return self._json([dict(r) for r in rows])
+
+        # ── Settings env (ANTHROPIC_API_KEY etc.) ─────────────────────────────
+        if path == "/api/settings/env":
+            _allowed_env_keys = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}
+            if method == "GET":
+                result = {}
+                for k in _allowed_env_keys:
+                    v = os.environ.get(k, "")
+                    result[k] = ("*" * (len(v) - 4) + v[-4:]) if len(v) > 8 else ("set" if v else "")
+                return self._json(result)
+            if method == "PATCH":
+                body = self._read_body()
+                updates = {k: v for k, v in body.items() if k in _allowed_env_keys and isinstance(v, str)}
+                if not updates:
+                    return self._json({"error": "no valid keys"}, 400)
+                # Read existing server.env
+                lines = []
+                if _server_env_file.exists():
+                    lines = _server_env_file.read_text().splitlines()
+                for key, val in updates.items():
+                    found = False
+                    for i, line in enumerate(lines):
+                        if line.startswith(key + "=") or line.startswith(key + " ="):
+                            lines[i] = f"{key}={val}"
+                            found = True
+                            break
+                    if not found:
+                        lines.append(f"{key}={val}")
+                    os.environ[key] = val  # live effect
+                _server_env_file.write_text("\n".join(lines) + "\n")
+                return self._json({"ok": True})
+
+        # ── Org / Team / Invites ──────────────────────────────────────────────
+        if path.startswith("/api/org") or path.startswith("/invite/"):
+            import secrets as _sec
+            db = get_db()
+
+            def _get_org():
+                row = db.execute("SELECT * FROM org WHERE id='default'").fetchone()
+                if not row:
+                    db.execute("INSERT INTO org (id, name, created_at) VALUES ('default','My Workspace',?)",
+                               (int(time.time()),))
+                    db.commit()
+                    row = db.execute("SELECT * FROM org WHERE id='default'").fetchone()
+                return dict(row)
+
+            # GET /api/org — org info + member count
+            if method == "GET" and path == "/api/org":
+                org = _get_org()
+                members = db.execute("SELECT COUNT(*) FROM org_members").fetchone()[0]
+                invites = db.execute(
+                    "SELECT COUNT(*) FROM org_invites WHERE used_at IS NULL AND expires_at > ?",
+                    (int(time.time()),)
+                ).fetchone()[0]
+                return self._json({**org, "member_count": members, "invite_count": invites})
+
+            # PATCH /api/org — rename workspace
+            if method == "PATCH" and path == "/api/org":
+                body = self._read_body()
+                name = body.get("name", "").strip()[:80]
+                if not name:
+                    return self._json({"error": "name required"}, 400)
+                _get_org()
+                db.execute("UPDATE org SET name=? WHERE id='default'", (name,))
+                db.commit()
+                return self._json({"ok": True, "name": name})
+
+            # GET /api/org/members
+            if method == "GET" and path == "/api/org/members":
+                rows = db.execute(
+                    "SELECT id, email, name, role, joined_at FROM org_members ORDER BY joined_at"
+                ).fetchall()
+                return self._json([dict(r) for r in rows])
+
+            # DELETE /api/org/members/:id
+            if method == "DELETE" and path.startswith("/api/org/members/"):
+                mid = path[len("/api/org/members/"):]
+                db.execute("DELETE FROM org_members WHERE id=?", (mid,))
+                db.commit()
+                return self._json({"ok": True})
+
+            # GET /api/org/invites — list pending invites
+            if method == "GET" and path == "/api/org/invites":
+                now = int(time.time())
+                rows = db.execute(
+                    "SELECT token, email, created_at, expires_at, used_at, used_by "
+                    "FROM org_invites WHERE used_at IS NULL AND expires_at > ? ORDER BY created_at DESC",
+                    (now,)
+                ).fetchall()
+                host = self.headers.get("Host", "localhost:8822")
+                scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
+                base = f"{scheme}://{host}"
+                return self._json([{**dict(r), "url": f"{base}/invite/{r['token']}"} for r in rows])
+
+            # POST /api/org/invites — create invite
+            if method == "POST" and path == "/api/org/invites":
+                body = self._read_body()
+                email = body.get("email", "").strip().lower() or None
+                token = _sec.token_urlsafe(24)
+                now = int(time.time())
+                expires = now + 7 * 86400  # 7 days
+                db.execute(
+                    "INSERT INTO org_invites (token, email, created_at, expires_at) VALUES (?,?,?,?)",
+                    (token, email, now, expires)
+                )
+                db.commit()
+                host = self.headers.get("Host", "localhost:8822")
+                scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
+                url = f"{scheme}://{host}/invite/{token}"
+                return self._json({"token": token, "url": url, "expires_at": expires}, 201)
+
+            # DELETE /api/org/invites/:token
+            if method == "DELETE" and path.startswith("/api/org/invites/"):
+                tok = path[len("/api/org/invites/"):]
+                db.execute("DELETE FROM org_invites WHERE token=?", (tok,))
+                db.commit()
+                return self._json({"ok": True})
+
+            # GET /invite/:token — landing page
+            if method == "GET" and path.startswith("/invite/"):
+                tok = path[len("/invite/"):]
+                now = int(time.time())
+                row = db.execute(
+                    "SELECT * FROM org_invites WHERE token=? AND used_at IS NULL AND expires_at > ?",
+                    (tok, now)
+                ).fetchone()
+                org = _get_org()
+                if not row:
+                    html = f"""<!doctype html><html><head><meta charset=utf-8><title>Invalid Invite</title>
+<style>body{{font-family:system-ui;background:#0d0d0d;color:#e8e8e8;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}
+.card{{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:32px;max-width:400px;text-align:center}}
+h2{{margin:0 0 12px;color:#f87171}}p{{color:#888;margin:0}}</style></head>
+<body><div class=card><h2>Invite expired or invalid</h2><p>This invite link is no longer valid.</p></div></body></html>"""
+                    return self._html(html, 410)
+                host = self.headers.get("Host", "localhost:8822")
+                scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
+                redirect = f"{scheme}://{host}/"
+                html = f"""<!doctype html><html><head><meta charset=utf-8><title>Join {org['name']}</title>
+<style>body{{font-family:system-ui;background:#0d0d0d;color:#e8e8e8;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}
+.card{{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:40px;max-width:420px;text-align:center;width:100%}}
+h1{{margin:0 0 6px;font-size:1.4rem}}.org{{color:#a78bfa;font-weight:600}}
+p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
+.btn{{background:#a78bfa;color:#000;border:none;border-radius:8px;padding:12px 32px;font-size:1rem;font-weight:600;cursor:pointer;text-decoration:none;display:inline-block}}
+.btn:hover{{background:#c4b5fd}}.note{{font-size:0.75rem;color:#555;margin-top:16px}}</style></head>
+<body><div class=card>
+<h1>You&#39;re invited to join</h1>
+<div class=org>{org['name']}</div>
+<p>Someone has shared their amux workspace with you.<br>Click below to open it.</p>
+<a class=btn href="{redirect}?invite_token={tok}">Accept Invite</a>
+<div class=note>This invite expires in 7 days.</div>
+</div></body></html>"""
+                return self._html(html)
+
+            # POST /invite/:token — mark used (called by frontend after auth)
+            if method == "POST" and path.startswith("/invite/"):
+                tok = path[len("/invite/"):]
+                body = self._read_body()
+                used_by = body.get("email", "").strip() or body.get("name", "").strip() or "anonymous"
+                now = int(time.time())
+                row = db.execute(
+                    "SELECT * FROM org_invites WHERE token=? AND used_at IS NULL AND expires_at > ?",
+                    (tok, now)
+                ).fetchone()
+                if not row:
+                    return self._json({"error": "invalid or expired invite"}, 410)
+                db.execute("UPDATE org_invites SET used_at=?, used_by=? WHERE token=?",
+                           (now, used_by, tok))
+                # Add to members if not already there
+                mid = _sec.token_urlsafe(12)
+                try:
+                    db.execute(
+                        "INSERT INTO org_members (id, email, name, role, joined_at) VALUES (?,?,?,?,?)",
+                        (mid, used_by, body.get("name", "").strip() or None, "member", now)
+                    )
+                except Exception:
+                    pass
+                db.commit()
+                return self._json({"ok": True})
+
         # Session-specific routes: /api/sessions/<name>/<action>[/<subid>]
         m = re.match(r"^/api/sessions/([^/]+)(/([^/]+)(/([^/]+))?)?$", path)
         if not m:
@@ -16124,208 +16326,6 @@ class CCHandler(BaseHTTPRequestHandler):
 
                 return self._json({"error": "nothing to update"}, 400)
             return self._json({"error": "not found"}, 404)
-
-        # ── Cloud Waitlist ──
-        if path == "/api/waitlist":
-            db = get_db()
-            if method == "POST":
-                body = self._read_body()
-                email = body.get("email", "").strip().lower()
-                if not email or "@" not in email:
-                    return self._json({"error": "invalid email"}, 400)
-                note = body.get("note", "").strip()[:500]
-                try:
-                    db.execute(
-                        "INSERT INTO waitlist (email, note, ts) VALUES (?,?,?)",
-                        (email, note or None, int(time.time()))
-                    )
-                    db.commit()
-                    return self._json({"ok": True})
-                except sqlite3.IntegrityError:
-                    return self._json({"ok": True, "already": True})
-            if method == "GET":
-                rows = db.execute(
-                    "SELECT id, email, note, ts FROM waitlist ORDER BY ts DESC"
-                ).fetchall()
-                return self._json([dict(r) for r in rows])
-
-        # ── Settings env (ANTHROPIC_API_KEY etc.) ─────────────────────────────
-        if path == "/api/settings/env":
-            _allowed_env_keys = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}
-            if method == "GET":
-                result = {}
-                for k in _allowed_env_keys:
-                    v = os.environ.get(k, "")
-                    result[k] = ("*" * (len(v) - 4) + v[-4:]) if len(v) > 8 else ("set" if v else "")
-                return self._json(result)
-            if method == "PATCH":
-                body = self._read_body()
-                updates = {k: v for k, v in body.items() if k in _allowed_env_keys and isinstance(v, str)}
-                if not updates:
-                    return self._json({"error": "no valid keys"}, 400)
-                # Read existing server.env
-                lines = []
-                if _server_env_file.exists():
-                    lines = _server_env_file.read_text().splitlines()
-                for key, val in updates.items():
-                    found = False
-                    for i, line in enumerate(lines):
-                        if line.startswith(key + "=") or line.startswith(key + " ="):
-                            lines[i] = f"{key}={val}"
-                            found = True
-                            break
-                    if not found:
-                        lines.append(f"{key}={val}")
-                    os.environ[key] = val  # live effect
-                _server_env_file.write_text("\n".join(lines) + "\n")
-                return self._json({"ok": True})
-
-        # ── Org / Team / Invites ──────────────────────────────────────────────
-        if path.startswith("/api/org") or path.startswith("/invite/"):
-            import secrets as _sec
-            db = get_db()
-
-            def _get_org():
-                row = db.execute("SELECT * FROM org WHERE id='default'").fetchone()
-                if not row:
-                    db.execute("INSERT INTO org (id, name, created_at) VALUES ('default','My Workspace',?)",
-                               (int(time.time()),))
-                    db.commit()
-                    row = db.execute("SELECT * FROM org WHERE id='default'").fetchone()
-                return dict(row)
-
-            # GET /api/org — org info + member count
-            if method == "GET" and path == "/api/org":
-                org = _get_org()
-                members = db.execute("SELECT COUNT(*) FROM org_members").fetchone()[0]
-                invites = db.execute(
-                    "SELECT COUNT(*) FROM org_invites WHERE used_at IS NULL AND expires_at > ?",
-                    (int(time.time()),)
-                ).fetchone()[0]
-                return self._json({**org, "member_count": members, "invite_count": invites})
-
-            # PATCH /api/org — rename workspace
-            if method == "PATCH" and path == "/api/org":
-                body = self._read_body()
-                name = body.get("name", "").strip()[:80]
-                if not name:
-                    return self._json({"error": "name required"}, 400)
-                _get_org()
-                db.execute("UPDATE org SET name=? WHERE id='default'", (name,))
-                db.commit()
-                return self._json({"ok": True, "name": name})
-
-            # GET /api/org/members
-            if method == "GET" and path == "/api/org/members":
-                rows = db.execute(
-                    "SELECT id, email, name, role, joined_at FROM org_members ORDER BY joined_at"
-                ).fetchall()
-                return self._json([dict(r) for r in rows])
-
-            # DELETE /api/org/members/:id
-            if method == "DELETE" and path.startswith("/api/org/members/"):
-                mid = path[len("/api/org/members/"):]
-                db.execute("DELETE FROM org_members WHERE id=?", (mid,))
-                db.commit()
-                return self._json({"ok": True})
-
-            # GET /api/org/invites — list pending invites
-            if method == "GET" and path == "/api/org/invites":
-                now = int(time.time())
-                rows = db.execute(
-                    "SELECT token, email, created_at, expires_at, used_at, used_by "
-                    "FROM org_invites WHERE used_at IS NULL AND expires_at > ? ORDER BY created_at DESC",
-                    (now,)
-                ).fetchall()
-                host = self.headers.get("Host", "localhost:8822")
-                scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
-                base = f"{scheme}://{host}"
-                return self._json([{**dict(r), "url": f"{base}/invite/{r['token']}"} for r in rows])
-
-            # POST /api/org/invites — create invite
-            if method == "POST" and path == "/api/org/invites":
-                body = self._read_body()
-                email = body.get("email", "").strip().lower() or None
-                token = _sec.token_urlsafe(24)
-                now = int(time.time())
-                expires = now + 7 * 86400  # 7 days
-                db.execute(
-                    "INSERT INTO org_invites (token, email, created_at, expires_at) VALUES (?,?,?,?)",
-                    (token, email, now, expires)
-                )
-                db.commit()
-                host = self.headers.get("Host", "localhost:8822")
-                scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
-                url = f"{scheme}://{host}/invite/{token}"
-                return self._json({"token": token, "url": url, "expires_at": expires}, 201)
-
-            # DELETE /api/org/invites/:token
-            if method == "DELETE" and path.startswith("/api/org/invites/"):
-                tok = path[len("/api/org/invites/"):]
-                db.execute("DELETE FROM org_invites WHERE token=?", (tok,))
-                db.commit()
-                return self._json({"ok": True})
-
-            # GET /invite/:token — landing page
-            if method == "GET" and path.startswith("/invite/"):
-                tok = path[len("/invite/"):]
-                now = int(time.time())
-                row = db.execute(
-                    "SELECT * FROM org_invites WHERE token=? AND used_at IS NULL AND expires_at > ?",
-                    (tok, now)
-                ).fetchone()
-                org = _get_org()
-                if not row:
-                    html = f"""<!doctype html><html><head><meta charset=utf-8><title>Invalid Invite</title>
-<style>body{{font-family:system-ui;background:#0d0d0d;color:#e8e8e8;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}
-.card{{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:32px;max-width:400px;text-align:center}}
-h2{{margin:0 0 12px;color:#f87171}}p{{color:#888;margin:0}}</style></head>
-<body><div class=card><h2>Invite expired or invalid</h2><p>This invite link is no longer valid.</p></div></body></html>"""
-                    return self._html(html, 410)
-                host = self.headers.get("Host", "localhost:8822")
-                scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
-                redirect = f"{scheme}://{host}/"
-                html = f"""<!doctype html><html><head><meta charset=utf-8><title>Join {org['name']}</title>
-<style>body{{font-family:system-ui;background:#0d0d0d;color:#e8e8e8;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}
-.card{{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:40px;max-width:420px;text-align:center;width:100%}}
-h1{{margin:0 0 6px;font-size:1.4rem}}.org{{color:#a78bfa;font-weight:600}}
-p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
-.btn{{background:#a78bfa;color:#000;border:none;border-radius:8px;padding:12px 32px;font-size:1rem;font-weight:600;cursor:pointer;text-decoration:none;display:inline-block}}
-.btn:hover{{background:#c4b5fd}}.note{{font-size:0.75rem;color:#555;margin-top:16px}}</style></head>
-<body><div class=card>
-<h1>You&#39;re invited to join</h1>
-<div class=org>{org['name']}</div>
-<p>Someone has shared their amux workspace with you.<br>Click below to open it.</p>
-<a class=btn href="{redirect}?invite_token={tok}">Accept Invite</a>
-<div class=note>This invite expires in 7 days.</div>
-</div></body></html>"""
-                return self._html(html)
-
-            # POST /invite/:token — mark used (called by frontend after auth)
-            if method == "POST" and path.startswith("/invite/"):
-                tok = path[len("/invite/"):]
-                body = self._read_body()
-                used_by = body.get("email", "").strip() or body.get("name", "").strip() or "anonymous"
-                now = int(time.time())
-                row = db.execute(
-                    "SELECT * FROM org_invites WHERE token=? AND used_at IS NULL AND expires_at > ?",
-                    (tok, now)
-                ).fetchone()
-                if not row:
-                    return self._json({"error": "invalid or expired invite"}, 410)
-                db.execute("UPDATE org_invites SET used_at=?, used_by=? WHERE token=?",
-                           (now, used_by, tok))
-                # Add to members if not already there
-                mid = _sec.token_urlsafe(12)
-                try:
-                    db.execute(
-                        "INSERT INTO org_members (id, email, name, role, joined_at) VALUES (?,?,?,?,?)",
-                        (mid, used_by, body.get("name", "").strip() or None, "member", now)
-                    )
-                except Exception:
-                    pass
-                db.commit()
-                return self._json({"ok": True})
 
         return self._json({"error": "method not allowed"}, 405)
 
