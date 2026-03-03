@@ -1098,6 +1098,35 @@ _STRIP_ANSI = re.compile(
 )
 
 
+def _claude_ui_visible(clean_output: str) -> bool:
+    """Return True if Claude's status bar or spinner is present in the terminal output."""
+    lines = [l for l in clean_output.splitlines() if l.strip()]
+    # Check last 3 lines for Claude status bar markers
+    for l in lines[-3:]:
+        ls = l.strip().lower()
+        if "\u23f5\u23f5" in l or "bypass permissions" in ls or "plan mode" in ls:
+            return True
+    # Check last 12 lines for an active spinner (dingbat + ellipsis)
+    for l in lines[-12:]:
+        s = l.strip()
+        if s and "\u2700" <= s[0] <= "\u27bf":
+            return True
+    return False
+
+
+def _at_shell_prompt(clean_output: str) -> bool:
+    """Return True if the terminal looks like a bare shell prompt (no Claude UI)."""
+    if _claude_ui_visible(clean_output):
+        return False
+    lines = [l for l in clean_output.splitlines() if l.strip()]
+    for l in lines[-5:]:
+        ls = l.strip()
+        # Bash/zsh prompt: ends with $ or % (not Claude's ❯ prompt)
+        if re.search(r'[$%]\s*$', ls) and "\u276f" not in ls:
+            return True
+    return False
+
+
 def _snapshot_all_sessions():
     """Capture scrollback for all running sessions and save to disk.
 
@@ -1107,6 +1136,8 @@ def _snapshot_all_sessions():
        and replay the last meaningful user message automatically.
     3. Auto-continue: if CC_AUTO_CONTINUE=1 and session is stuck waiting for user
        input for 2+ consecutive snapshots (~60s), auto-respond to unblock it.
+    4. Auto-restart: if CC_AUTO_CONTINUE=1 and Claude has exited to a shell prompt,
+       restart it automatically (handles context-limit exits mid-task).
     """
     for f in CC_SESSIONS.glob("*.env"):
         name = f.stem
@@ -1159,6 +1190,30 @@ def _snapshot_all_sessions():
 
             # ── 3. Auto-continue: unblock waiting sessions ───────────────────
             status = _detect_claude_status(clean)
+
+            # Track last time Claude UI was visible (used by auto-restart below)
+            if _claude_ui_visible(clean):
+                actions["last_claude_alive"] = now
+
+            # ── 4. Auto-restart: Claude exited to shell prompt ────────────────
+            # Triggered when: CC_AUTO_CONTINUE=1 AND terminal shows a bare shell
+            # prompt (no Claude UI) AND Claude was alive recently (< 10 min ago).
+            # Rate-limited to once per 90s to avoid restart storms.
+            if _at_shell_prompt(clean) and not actions.get("restarting"):
+                cfg_ar = parse_env_file(f)
+                if cfg_ar.get("CC_AUTO_CONTINUE") in ("1", "true", "yes"):
+                    last_alive = actions.get("last_claude_alive", 0)
+                    last_restart = actions.get("last_auto_restart", 0)
+                    if last_alive and now - last_alive < 600 and now - last_restart > 90:
+                        actions["restarting"] = True
+                        actions["last_auto_restart"] = now
+                        def _do_restart(sname=name, _actions=actions):
+                            time.sleep(3)
+                            start_session(sname)
+                            _actions.pop("restarting", None)
+                        threading.Thread(target=_do_restart, daemon=True).start()
+                        _push_alert("auto_restart", name,
+                                    f"Claude exited in '{name}' — auto-restarting")
 
             # ── 3a. Post-compact continuation ──────────────────────────────────
             # After we trigger auto-compact, the session goes idle at the ❯ prompt.
