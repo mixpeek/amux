@@ -317,8 +317,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _serve_login(self):
+    def _serve_login(self, invite_token=""):
         html = _LOGIN_HTML.replace("__CLERK_PK__", CLERK_PUBLISHABLE_KEY)
+        if invite_token:
+            redirect_path = f"/?invite_token={invite_token}"
+            html = html.replace("window.location.replace('/')",
+                                f"window.location.replace('{redirect_path}')")
         body = html.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -394,6 +398,15 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(resp_body)
             return
+
+        # ── Unauthenticated invite links — serve login with redirect ──────────
+        if path.startswith("/invite/") and self.command == "GET":
+            cookies = _parse_cookies(self.headers.get("Cookie", ""))
+            if not cookies.get("amux_session"):
+                accept = self.headers.get("Accept", "")
+                if "text/html" in accept:
+                    invite_token = path[len("/invite/"):]
+                    return self._serve_login(invite_token=invite_token)
 
         # ── Resolve user: Bearer token OR session cookie ──
         user_id = None

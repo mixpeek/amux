@@ -5173,6 +5173,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           </div>
         </div>
         <div class="settings-sep"></div>
+        <div class="settings-section" id="settings-apikeys-section">
+          <div class="settings-section-label">API Keys</div>
+          <div style="font-size:0.72rem;color:var(--dim);margin-bottom:6px;">Anthropic API key for Claude sessions</div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <input id="settings-anthropic-key" type="password" autocomplete="off"
+              class="search-input" placeholder="sk-ant-..."
+              style="flex:1;font-size:0.78rem;padding:5px 8px;box-sizing:border-box;min-width:0;">
+            <button class="btn" style="font-size:0.7rem;padding:3px 10px;white-space:nowrap;"
+              onclick="saveApiKey()">Save</button>
+          </div>
+          <div id="settings-apikey-status" style="font-size:0.7rem;color:var(--dim);margin-top:4px;"></div>
+        </div>
+        <div class="settings-sep"></div>
         <div class="settings-section" id="settings-team-section">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
             <div class="settings-section-label" style="margin:0;">Team</div>
@@ -13316,6 +13329,39 @@ document.addEventListener('click', function(e) {
   if (wrap && !wrap.contains(e.target)) closeSettings();
 });
 
+// ── API Keys ───────────────────────────────────────────────────────────────────
+async function loadApiKeys() {
+  try {
+    const r = await fetch('/api/settings/env');
+    const data = await r.json();
+    const inp = document.getElementById('settings-anthropic-key');
+    const st = document.getElementById('settings-apikey-status');
+    if (!inp) return;
+    inp.placeholder = data.ANTHROPIC_API_KEY ? data.ANTHROPIC_API_KEY : 'sk-ant-...';
+    inp.value = '';
+    if (st) st.textContent = data.ANTHROPIC_API_KEY ? 'Key saved ✓' : 'No key set';
+  } catch(e) {}
+}
+
+async function saveApiKey() {
+  const inp = document.getElementById('settings-anthropic-key');
+  const st = document.getElementById('settings-apikey-status');
+  const val = inp ? inp.value.trim() : '';
+  if (!val) return;
+  st && (st.textContent = 'Saving…');
+  try {
+    const r = await fetch('/api/settings/env', {method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ANTHROPIC_API_KEY: val})});
+    if (r.ok) {
+      if (inp) inp.value = '';
+      if (st) st.textContent = 'Saved ✓';
+      await loadApiKeys();
+    } else {
+      if (st) st.textContent = 'Save failed';
+    }
+  } catch(e) { if (st) st.textContent = 'Error: ' + e.message; }
+}
+
 // ── Team / Org / Invites ──────────────────────────────────────────────────────
 async function loadTeamSection() {
   try {
@@ -13374,12 +13420,15 @@ async function openTeamInvite() {
   setTimeout(() => { try { navigator.clipboard.writeText(data.url); } catch(e) {} }, 100);
 }
 
-// Load team section whenever settings opens
+// Load team + API keys whenever settings opens
 const _origToggleSettings = toggleSettings;
 toggleSettings = function() {
   _origToggleSettings();
   const menu = document.getElementById('settings-menu');
-  if (menu && menu.style.display !== 'none') loadTeamSection();
+  if (menu && menu.style.display !== 'none') {
+    loadTeamSection();
+    loadApiKeys();
+  }
 };
 
 // Accept invite token from URL on page load
@@ -15984,6 +16033,37 @@ class CCHandler(BaseHTTPRequestHandler):
                     "SELECT id, email, note, ts FROM waitlist ORDER BY ts DESC"
                 ).fetchall()
                 return self._json([dict(r) for r in rows])
+
+        # ── Settings env (ANTHROPIC_API_KEY etc.) ─────────────────────────────
+        if path == "/api/settings/env":
+            _allowed_env_keys = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}
+            if method == "GET":
+                result = {}
+                for k in _allowed_env_keys:
+                    v = os.environ.get(k, "")
+                    result[k] = ("*" * (len(v) - 4) + v[-4:]) if len(v) > 8 else ("set" if v else "")
+                return self._json(result)
+            if method == "PATCH":
+                body = self._read_body()
+                updates = {k: v for k, v in body.items() if k in _allowed_env_keys and isinstance(v, str)}
+                if not updates:
+                    return self._json({"error": "no valid keys"}, 400)
+                # Read existing server.env
+                lines = []
+                if _server_env_file.exists():
+                    lines = _server_env_file.read_text().splitlines()
+                for key, val in updates.items():
+                    found = False
+                    for i, line in enumerate(lines):
+                        if line.startswith(key + "=") or line.startswith(key + " ="):
+                            lines[i] = f"{key}={val}"
+                            found = True
+                            break
+                    if not found:
+                        lines.append(f"{key}={val}")
+                    os.environ[key] = val  # live effect
+                _server_env_file.write_text("\n".join(lines) + "\n")
+                return self._json({"ok": True})
 
         # ── Org / Team / Invites ──────────────────────────────────────────────
         if path.startswith("/api/org") or path.startswith("/invite/"):
