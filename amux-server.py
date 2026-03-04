@@ -3039,8 +3039,11 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
         else:
             shell_rc += f"cd {shlex.quote(work_dir)}; "
         # Forward select env vars into the tmux session.
+        # IMPORTANT: Do NOT forward ANTHROPIC_API_KEY — Claude Code manages
+        # its own auth via ~/.claude/ (OAuth/Max). Forwarding a server-level
+        # key overrides the user's login and causes stale-key failures.
         _env_args = []
-        for _ekey in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        for _ekey in ("OPENAI_API_KEY",):
             _eVal = os.environ.get(_ekey, "")
             if _eVal:
                 _env_args += ["-e", f"{_ekey}={_eVal}"]
@@ -16350,18 +16353,6 @@ class CCHandler(BaseHTTPRequestHandler):
                         lines.append(f"{key}={val}")
                     os.environ[key] = val  # live effect
                 _server_env_file.write_text("\n".join(lines) + "\n")
-                # If ANTHROPIC_API_KEY changed, update ~/.claude.json approvals
-                # and tmux global env so new and existing sessions pick it up
-                if "ANTHROPIC_API_KEY" in updates:
-                    _init_claude_config()
-                    try:
-                        subprocess.run(
-                            ["tmux", "set-environment", "-g", "ANTHROPIC_API_KEY",
-                             updates["ANTHROPIC_API_KEY"]],
-                            capture_output=True, timeout=5
-                        )
-                    except Exception:
-                        pass
                 return self._json({"ok": True})
 
         # ── Org / Team / Invites ──────────────────────────────────────────────
