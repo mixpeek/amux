@@ -13937,9 +13937,14 @@ async function loadTeamSection() {
 
     if (_cloudEmail) {
       // Cloud mode: use gateway-level members
-      const [membersRes, invitesRes] = await Promise.all([
-        fetch('/api/gateway/members'), fetch('/api/org/invites')
+      const [membersRes, invitesRes, orgRes] = await Promise.all([
+        fetch('/api/gateway/members'), fetch('/api/org/invites'), fetch('/api/org')
       ]);
+      if (orgRes.ok) {
+        const org = await orgRes.json();
+        const nameEl = document.getElementById('settings-org-name');
+        if (nameEl && nameEl !== document.activeElement) nameEl.value = org.name || '';
+      }
       const members = membersRes.ok ? await membersRes.json() : [];
       const invites = invitesRes.ok ? await invitesRes.json() : [];
       let html = '';
