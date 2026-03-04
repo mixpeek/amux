@@ -5403,19 +5403,49 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .notes-sidebar {
     width: 220px; min-width: 160px; border-right: 1px solid var(--border);
     display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0;
-    background: var(--card);
+    background: var(--card); transition: width 0.2s ease, min-width 0.2s ease, border 0.2s ease;
   }
+  .notes-sidebar.collapsed { width: 0; min-width: 0; border-right: none; }
   .notes-sidebar-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 10px 12px 6px; border-bottom: 1px solid var(--border); flex-shrink: 0;
   }
+  .notes-sidebar-actions { display: flex; gap: 4px; align-items: center; }
+  .notes-toggle-btn {
+    background: transparent; border: none; color: var(--dim); cursor: pointer;
+    font-size: 0.85rem; padding: 2px 5px; border-radius: 4px; line-height: 1;
+  }
+  .notes-toggle-btn:hover { background: rgba(139,148,158,0.12); color: var(--text); }
   .notes-new-btn {
     background: var(--accent); color: #fff; border: none; border-radius: 6px;
     width: 24px; height: 24px; font-size: 1.1rem; cursor: pointer; line-height: 1;
     display: flex; align-items: center; justify-content: center;
   }
+  /* Expand button shown in editor header when sidebar is collapsed */
+  .notes-expand-btn {
+    background: transparent; border: none; color: var(--dim); cursor: pointer;
+    font-size: 0.85rem; padding: 2px 6px; border-radius: 4px; line-height: 1;
+    display: none;
+  }
+  .notes-expand-btn:hover { background: rgba(139,148,158,0.12); color: var(--text); }
+  #notes-view.sidebar-collapsed .notes-expand-btn { display: inline-block; }
   .notes-search-wrap { padding: 6px 8px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
   .notes-list { flex: 1; overflow-y: auto; }
+  /* Mobile: sidebar overlays full width */
+  @media (max-width: 600px) {
+    #notes-view { position: relative; }
+    .notes-sidebar {
+      position: absolute; top: 0; left: 0; bottom: 0; z-index: 10;
+      width: 100% !important; min-width: 0 !important; border-right: none;
+      transition: transform 0.2s ease, opacity 0.2s ease;
+    }
+    .notes-sidebar.collapsed {
+      width: 100% !important; transform: translateX(-110%); opacity: 0; pointer-events: none;
+    }
+    .notes-editor-pane { width: 100%; }
+    .notes-expand-btn { display: inline-block !important; }
+    #notes-view.sidebar-collapsed .notes-expand-btn { display: inline-block; }
+  }
   .notes-list-item {
     padding: 8px 12px; cursor: pointer; border-bottom: 1px solid rgba(139,148,158,0.1);
     font-size: 0.82rem; color: var(--text); line-height: 1.3;
@@ -5915,7 +5945,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="notes-sidebar" id="notes-sidebar">
     <div class="notes-sidebar-header">
       <span style="font-weight:600;font-size:0.85rem;">Notes</span>
-      <button class="notes-new-btn" onclick="_notesNew()" title="New note">+</button>
+      <div class="notes-sidebar-actions">
+        <button class="notes-new-btn" onclick="_notesNew()" title="New note">+</button>
+        <button class="notes-toggle-btn" onclick="_notesToggleSidebar()" title="Collapse sidebar">&#x2039;</button>
+      </div>
     </div>
     <div class="notes-search-wrap">
       <input id="notes-search" type="search" placeholder="Search notes…" oninput="_notesSearchFilter(this.value)" style="width:100%;box-sizing:border-box;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.8rem;outline:none;">
@@ -5925,6 +5958,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <!-- Editor pane -->
   <div class="notes-editor-pane" id="notes-editor-pane">
     <div class="notes-editor-header">
+      <button class="notes-expand-btn" onclick="_notesToggleSidebar()" title="Show notes list">&#x203A;</button>
       <input id="notes-title" type="text" placeholder="Note title…" class="notes-title-input" oninput="_notesTitleChange()" onblur="_notesSaveDebounce()">
       <div style="display:flex;gap:6px;align-items:center;">
         <span id="notes-save-status" style="font-size:0.72rem;color:var(--dim);"></span>
@@ -11659,7 +11693,7 @@ function switchView(view) {
   if (view === 'reports') fetchReports();
   if (view === 'browser') _rbLoadProfiles();
   if (view === 'email') _emailLoad();
-  if (view === 'notes') { _notesInitQuill(); _notesLoad(); }
+  if (view === 'notes') { _notesInitQuill(); _notesApplySidebarState(); _notesLoad(); }
   if (view === 'logs') { fetchLogs(); _startLogsTimer(); } else { _stopLogsTimer(); }
   if (view === 'board') {
     renderBoard();
@@ -14842,6 +14876,26 @@ let _notesActive = null; // { path, title }
 let _notesSaveTimer = null;
 let _notesAllNotes = [];
 let _quill = null;
+let _notesSidebarOpen = localStorage.getItem('amux_notes_sidebar') !== 'closed';
+
+function _notesToggleSidebar() {
+  _notesSidebarOpen = !_notesSidebarOpen;
+  localStorage.setItem('amux_notes_sidebar', _notesSidebarOpen ? 'open' : 'closed');
+  _notesApplySidebarState();
+}
+
+function _notesApplySidebarState() {
+  const view = document.getElementById('notes-view');
+  const sidebar = document.getElementById('notes-sidebar');
+  if (!view || !sidebar) return;
+  if (_notesSidebarOpen) {
+    sidebar.classList.remove('collapsed');
+    view.classList.remove('sidebar-collapsed');
+  } else {
+    sidebar.classList.add('collapsed');
+    view.classList.add('sidebar-collapsed');
+  }
+}
 
 function _notesInitQuill() {
   if (_quill) return;
@@ -14954,6 +15008,11 @@ async function _notesOpen(path) {
   document.getElementById('notes-empty-state').style.display = 'none';
   document.getElementById('notes-quill-wrap').style.display = 'flex';
   _notesRenderList(_notesAllNotes);
+  // On mobile, auto-collapse sidebar after selecting a note
+  if (window.innerWidth <= 600 && _notesSidebarOpen) {
+    _notesSidebarOpen = false;
+    _notesApplySidebarState();
+  }
 }
 
 async function _notesNew() {
@@ -15037,6 +15096,11 @@ function _notesShowEmpty() {
   document.getElementById('notes-quill-wrap').style.display = 'none';
   document.getElementById('notes-title').value = '';
   if (_quill) _quill.setText('');
+  // On mobile, show sidebar when no note is open
+  if (window.innerWidth <= 600 && !_notesSidebarOpen) {
+    _notesSidebarOpen = true;
+    _notesApplySidebarState();
+  }
 }
 
 async function _notesTogglePin(path) {
