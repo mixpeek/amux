@@ -4362,14 +4362,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .dt-info-key { color: #58a6ff; min-width: 160px; flex-shrink: 0; }
   .dt-info-val { color: #c9d1d9; word-break: break-all; }
   .settings-wrap { position: relative; }
-  .logout-btn {
-    height: 40px; border-radius: 8px; padding: 0 12px;
-    border: 1px solid var(--border); background: var(--card); color: var(--dim);
-    cursor: pointer; font-size: 0.82rem; font-weight: 500; white-space: nowrap;
-    -webkit-tap-highlight-color: transparent;
-  }
-  .logout-btn:hover { color: var(--fg); }
-  .settings-btn {
+.settings-btn {
     font-size: 1.1rem; width: 40px; height: 40px; border-radius: 8px;
     border: 1px solid var(--border); background: var(--card); color: var(--dim);
     cursor: pointer; display: flex; align-items: center;
@@ -5317,7 +5310,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
     <div class="settings-wrap">
-      <button class="logout-btn" id="logout-btn" title="Sign out" style="display:none" onclick="window.location='/api/cloud-logout'">&#x2197;&#xFE0E; Sign out</button>
       <button class="settings-btn" id="settings-btn" onclick="event.stopPropagation();toggleSettings()">&#x2699;</button>
       <div class="settings-menu" id="settings-menu">
         <div class="settings-section">
@@ -5398,6 +5390,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           <span style="font-size:0.7rem;color:var(--dim);cursor:pointer;" onclick="openSkills();closeSettings()">&#x26A1; Skills &amp; commands</span>
           <span style="font-size:0.7rem;color:var(--dim);cursor:pointer;" onclick="openAbout();closeSettings()">About amux &amp; token stats</span>
           <span style="font-size:0.7rem;color:var(--dim);cursor:pointer;" onclick="openDevtools();closeSettings()">&#x1F6E0; Developer tools</span>
+          <span id="logout-btn" style="font-size:0.7rem;color:var(--dim);cursor:pointer;display:none;" onclick="window.location='/api/cloud-logout'">&#x2192; Sign out</span>
         </div>
       </div>
     </div>
