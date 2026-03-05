@@ -5626,17 +5626,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .notes-quill-wrap .ql-snow .ql-picker-label { color: var(--dim); }
   .notes-quill-wrap .ql-snow .ql-picker-label:hover,
   .notes-quill-wrap .ql-snow .ql-picker-label.ql-active { color: var(--accent); }
-  /* Pin button in sidebar */
-  .nli-row { display: flex; align-items: center; gap: 4px; }
-  .nli-title { flex: 1; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .nli-pin-btn {
-    background: none; border: none; padding: 0 2px; cursor: pointer; opacity: 0;
-    font-size: 0.75rem; line-height: 1; color: var(--dim); flex-shrink: 0;
-  }
-  .notes-list-item:hover .nli-pin-btn { opacity: 0.5; }
-  .notes-list-item:hover .nli-pin-btn:hover { opacity: 1; color: var(--accent); }
-  .notes-list-item.pinned .nli-pin-btn { opacity: 1; color: var(--accent); }
   .notes-list-item.pinned { border-left: 2px solid var(--accent); }
+  /* Pin button in editor header */
+  .notes-pin-btn {
+    background: none; border: none; padding: 2px 4px; cursor: pointer;
+    font-size: 0.85rem; color: var(--dim); opacity: 0.5; transition: all 0.15s;
+  }
+  .notes-pin-btn:hover { opacity: 1; color: var(--accent); }
+  .notes-pin-btn.pinned { opacity: 1; color: var(--accent); }
   .notes-empty-state {
     position: absolute; inset: 0; display: flex; flex-direction: column;
     align-items: center; justify-content: center;
@@ -6094,6 +6091,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <input id="notes-title" type="text" placeholder="Note title…" class="notes-title-input" oninput="_notesTitleChange()" onblur="_notesSaveDebounce()">
       <div style="display:flex;gap:6px;align-items:center;">
         <span id="notes-save-status" style="font-size:0.72rem;color:var(--dim);"></span>
+        <button id="notes-pin-btn" class="notes-pin-btn" onclick="_notesTogglePinActive()" title="Pin to top">&#x1F4CC;</button>
         <button class="notes-delete-btn" onclick="_notesDelete()" title="Delete note">&#x1F5D1;</button>
       </div>
     </div>
@@ -15015,10 +15013,7 @@ function _notesRenderList(notes) {
     const dt = n.updated ? new Date(n.updated * 1000).toLocaleDateString() : '';
     const displayName = n.name || n.path.replace(/\.md$/, '');
     return `<div class="notes-list-item${active}${pinned}" data-path="${esc(n.path)}" onclick="_notesOpen(this.dataset.path)">
-      <div class="nli-row">
-        <div class="nli-title">${esc(displayName)}</div>
-        <button class="nli-pin-btn" onclick="event.stopPropagation();_notesTogglePin(this.closest('[data-path]').dataset.path)" title="${n.pinned ? 'Unpin' : 'Pin to top'}">📌</button>
-      </div>
+      <div class="nli-title">${esc(displayName)}</div>
       <div class="nli-date">${dt}</div>
     </div>`;
   }).join('');
@@ -15062,6 +15057,7 @@ async function _notesOpen(path) {
   document.getElementById('notes-empty-state').style.display = 'none';
   document.getElementById('notes-quill-wrap').style.display = 'flex';
   _notesRenderList(_notesAllNotes);
+  _notesUpdatePinBtn();
   // On mobile, auto-collapse sidebar after selecting a note
   if (window.innerWidth <= 600 && _notesSidebarOpen) {
     _notesSidebarOpen = false;
@@ -15165,6 +15161,18 @@ function _notesShowEmpty() {
   }
 }
 
+function _notesUpdatePinBtn() {
+  const btn = document.getElementById('notes-pin-btn');
+  if (!btn) return;
+  const entry = _notesActive && _notesAllNotes.find(n => n.path === _notesActive.path);
+  const pinned = entry && entry.pinned;
+  btn.classList.toggle('pinned', !!pinned);
+  btn.title = pinned ? 'Unpin' : 'Pin to top';
+}
+async function _notesTogglePinActive() {
+  if (!_notesActive) return;
+  await _notesTogglePin(_notesActive.path);
+}
 async function _notesTogglePin(path) {
   const r = await apiCall(API + '/api/notes/' + encodeURIComponent(path.replace(/\.md$/, '')) + '/pin', { method: 'POST' });
   if (!r) return;
@@ -15174,6 +15182,7 @@ async function _notesTogglePin(path) {
   // Re-sort: pinned first, then by updated desc
   _notesAllNotes.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.updated - a.updated);
   _notesRenderList(_notesAllNotes);
+  _notesUpdatePinBtn();
 }
 
 // ── Email Events tab ──────────────────────────────────────────────────────────
