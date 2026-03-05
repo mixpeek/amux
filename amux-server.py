@@ -5683,8 +5683,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <span id="org-banner-text"></span>
   <button onclick="_switchOrg('')" style="margin-left:12px;background:#4338ca;color:#e0e7ff;border:none;border-radius:4px;padding:2px 10px;font-size:0.78rem;cursor:pointer;">← My workspace</button>
 </div>
-<div id="org-invite-banner" style="display:none;background:#14532d;border-bottom:1px solid #16a34a;color:#bbf7d0;padding:7px 16px;text-align:center;font-size:0.82rem;z-index:200;position:relative;">
+<div id="org-invite-banner" style="display:none;background:#14532d;border-bottom:1px solid #16a34a;color:#bbf7d0;padding:7px 16px;font-size:0.82rem;z-index:200;position:relative;display:none;align-items:center;justify-content:center;gap:10px;">
   <span id="org-invite-banner-text"></span>
+  <button onclick="_dismissOrgBanner()" style="background:none;border:none;color:#bbf7d0;cursor:pointer;font-size:1rem;line-height:1;opacity:0.7;padding:0 2px;" title="Dismiss">&#x2715;</button>
 </div>
 
 <div class="header-row">
@@ -5694,6 +5695,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <button id="notif-btn" onclick="toggleNotifications()" title="Session notifications" style="background:none;border:none;cursor:pointer;padding:2px 4px;font-size:1rem;opacity:0.5;line-height:1;" aria-label="Toggle notifications">&#x1F514;</button>
   </div>
   <div style="display:flex;gap:8px;align-items:center;">
+    <div id="instance-switcher-wrap" style="display:none;position:relative;">
+      <button id="instance-switcher-btn" onclick="event.stopPropagation();_toggleInstanceDropdown()"
+        style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:3px 10px 3px 8px;font-size:0.72rem;color:var(--fg);cursor:pointer;display:flex;align-items:center;gap:5px;white-space:nowrap;max-width:160px;overflow:hidden;">
+        <span style="font-size:0.6rem;opacity:0.6;">&#x2807;</span>
+        <span id="instance-switcher-label" style="overflow:hidden;text-overflow:ellipsis;flex:1;">amux</span>
+        <span style="flex-shrink:0;">&#x25BE;</span>
+      </button>
+      <div id="instance-switcher-menu" style="display:none;position:absolute;right:0;top:calc(100% + 4px);background:var(--bg2);border:1px solid var(--border);border-radius:8px;min-width:220px;z-index:500;box-shadow:0 4px 16px rgba(0,0,0,0.4);padding:4px;"></div>
+    </div>
     <div id="org-switcher-wrap" style="display:none;position:relative;">
       <button id="org-switcher-btn" onclick="event.stopPropagation();toggleOrgDropdown()"
         style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:3px 10px 3px 8px;font-size:0.72rem;color:var(--fg);cursor:pointer;display:flex;align-items:center;gap:5px;white-space:nowrap;max-width:200px;overflow:hidden;">
@@ -5793,6 +5803,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           <div id="settings-members-list" style="font-size:0.78rem;color:var(--dim);"></div>
         </div>
         <div class="settings-sep"></div>
+        <div class="settings-section" id="settings-connections-section">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <div class="settings-section-label" style="margin:0;">Connections</div>
+            <button onclick="_addConnectionPrompt()" style="background:none;border:1px solid var(--border);border-radius:4px;padding:1px 8px;font-size:0.7rem;color:var(--dim);cursor:pointer;">+ Add</button>
+          </div>
+          <div id="settings-connections-list" style="display:flex;flex-direction:column;gap:4px;"></div>
+        </div>
         <div class="settings-section" style="text-align:center;display:flex;flex-direction:column;gap:8px;">
           <span style="font-size:0.7rem;color:var(--dim);cursor:pointer;" onclick="openSkills();closeSettings()">&#x26A1; Skills &amp; commands</span>
           <span style="font-size:0.7rem;color:var(--dim);cursor:pointer;" onclick="openAbout();closeSettings()">About amux &amp; token stats</span>
@@ -6844,17 +6861,19 @@ function _renderOrgSwitcher() {
   }
 
   // Banner: you have access to other workspaces (but aren't in one yet)
-  if (inviteBanner && inviteBannerText && !inOtherOrg && otherOrgs.length > 0) {
-    const names = otherOrgs.map(o => o.email || o.id).join(', ');
+  const dismissed = JSON.parse(localStorage.getItem('amux_dismissed_org_banners') || '[]');
+  const undismissedOrgs = otherOrgs.filter(o => !dismissed.includes(o.id));
+  if (inviteBanner && inviteBannerText && !inOtherOrg && undismissedOrgs.length > 0) {
+    const names = undismissedOrgs.map(o => o.email || o.id).join(', ');
     inviteBannerText.innerHTML = `You have access to: <strong>${esc(names)}</strong> &nbsp;`;
-    otherOrgs.forEach(o => {
+    undismissedOrgs.forEach(o => {
       const btn = document.createElement('button');
       btn.textContent = `Switch to ${o.email || o.id}`;
       btn.style.cssText = 'background:#16a34a;color:#fff;border:none;border-radius:4px;padding:2px 10px;font-size:0.78rem;cursor:pointer;margin-left:4px;';
       btn.onclick = () => _switchOrg(o.id);
       inviteBannerText.appendChild(btn);
     });
-    inviteBanner.style.display = '';
+    inviteBanner.style.display = 'flex';
   } else if (inviteBanner) {
     inviteBanner.style.display = 'none';
   }
@@ -6891,6 +6910,111 @@ async function _switchOrg(orgId) {
   location.reload();
 }
 
+// ── Org invite banner dismiss ──────────────────────────────────────────────
+function _dismissOrgBanner() {
+  const banner = document.getElementById('org-invite-banner');
+  if (banner) banner.style.display = 'none';
+  // Store dismissed org IDs so banner stays closed
+  const dismissed = JSON.parse(localStorage.getItem('amux_dismissed_org_banners') || '[]');
+  (_gatewayOrgs || []).filter(o => !o.is_own).forEach(o => {
+    if (!dismissed.includes(o.id)) dismissed.push(o.id);
+  });
+  localStorage.setItem('amux_dismissed_org_banners', JSON.stringify(dismissed));
+}
+
+// ── Instance (connection) switcher ─────────────────────────────────────────
+const _CONNECTIONS_KEY = 'amux_connections';
+
+function _loadConnections() {
+  try { return JSON.parse(localStorage.getItem(_CONNECTIONS_KEY) || '[]'); }
+  catch { return []; }
+}
+
+function _saveConnections(list) {
+  localStorage.setItem(_CONNECTIONS_KEY, JSON.stringify(list));
+}
+
+function _renderInstanceSwitcher() {
+  const conns = _loadConnections();
+  const origin = window.location.origin;
+  const wrap = document.getElementById('instance-switcher-wrap');
+  const label = document.getElementById('instance-switcher-label');
+  const menu = document.getElementById('instance-switcher-menu');
+  const list = document.getElementById('settings-connections-list');
+
+  // Find current connection name
+  const current = conns.find(c => c.url.replace(/\/$/, '') === origin.replace(/\/$/, ''));
+
+  // Header switcher: show if more than one connection saved
+  if (wrap) wrap.style.display = conns.length > 1 ? '' : 'none';
+  if (label) label.textContent = current ? current.name : 'amux';
+
+  if (menu) {
+    menu.innerHTML = conns.map((c, i) => {
+      const isCurr = c.url.replace(/\/$/, '') === origin.replace(/\/$/, '');
+      return `<div style="padding:8px 12px;border-radius:6px;cursor:pointer;font-size:0.8rem;${isCurr ? 'background:var(--accent10);font-weight:600;' : ''}display:flex;justify-content:space-between;align-items:center;"
+        onclick="${isCurr ? '' : `_switchInstance(${i})`}"
+        onmouseover="if(!${isCurr})this.style.background='var(--bg3)'"
+        onmouseout="this.style.background='${isCurr ? 'var(--accent10)' : ''}'">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.name)}</span>
+        ${isCurr ? '<span style="color:var(--accent);font-size:0.65rem;">current</span>' : `<span style="color:var(--dim);font-size:0.7rem;">${esc(c.url.replace(/^https?:\/\//, ''))}</span>`}
+      </div>`;
+    }).join('');
+  }
+
+  if (list) {
+    list.innerHTML = conns.length === 0
+      ? `<div style="font-size:0.78rem;color:var(--dim);">No connections saved. Add your local or Tailscale URL.</div>`
+      : conns.map((c, i) => {
+          const isCurr = c.url.replace(/\/$/, '') === origin.replace(/\/$/, '');
+          return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:0.82rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.name)}</div>
+              <div style="font-size:0.7rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.url)}</div>
+            </div>
+            ${isCurr
+              ? '<span style="font-size:0.68rem;color:var(--accent);flex-shrink:0;">current</span>'
+              : `<button onclick="closeSettings();_switchInstance(${i})" style="background:var(--accent);color:#000;border:none;border-radius:4px;padding:2px 8px;font-size:0.72rem;cursor:pointer;flex-shrink:0;">Open</button>`}
+            <button onclick="_removeConnection(${i})" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:0.85rem;padding:0 2px;flex-shrink:0;" title="Remove">&#x2715;</button>
+          </div>`;
+        }).join('');
+  }
+}
+
+function _switchInstance(i) {
+  const conns = _loadConnections();
+  if (conns[i]) window.location.href = conns[i].url;
+}
+
+function _removeConnection(i) {
+  const conns = _loadConnections();
+  conns.splice(i, 1);
+  _saveConnections(conns);
+  _renderInstanceSwitcher();
+}
+
+function _addConnectionPrompt() {
+  const name = prompt('Connection name (e.g. "Cloud", "Local Tailscale"):');
+  if (!name) return;
+  const url = prompt('URL (e.g. https://cloud.amux.io or http://100.x.x.x:8822):');
+  if (!url) return;
+  const conns = _loadConnections();
+  conns.push({ name: name.trim(), url: url.trim().replace(/\/$/, '') });
+  _saveConnections(conns);
+  _renderInstanceSwitcher();
+}
+
+function _toggleInstanceDropdown() {
+  const menu = document.getElementById('instance-switcher-menu');
+  if (!menu) return;
+  const open = menu.style.display === 'none' || !menu.style.display;
+  menu.style.display = open ? '' : 'none';
+  if (open) {
+    const close = () => { menu.style.display = 'none'; document.removeEventListener('click', close); };
+    setTimeout(() => document.addEventListener('click', close), 0);
+  }
+}
+
 function _applyIdentityToSettings() {
   const label = document.getElementById('settings-device-label');
   const row = document.getElementById('settings-device-row');
@@ -6906,6 +7030,7 @@ function _applyIdentityToSettings() {
 }
 
 _initIdentity();
+_renderInstanceSwitcher();
 
 function _getDeviceName() {
   if (_cloudEmail) return _cloudEmail;
@@ -14485,6 +14610,7 @@ function toggleSettings() {
   const menu = document.getElementById('settings-menu');
   const open = menu.classList.toggle('open');
   if (open) {
+    _renderInstanceSwitcher();
     // Apply cloud identity (email) or device name
     _applyIdentityToSettings();
     if (!_cloudEmail) {
