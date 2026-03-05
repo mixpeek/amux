@@ -2967,6 +2967,18 @@ def _git_info(work_dir: str) -> dict:
         return {"branch": "", "repo": ""}
 
 
+def _init_default_sessions():
+    """Create built-in default sessions for new installs (idempotent — skips if already exists)."""
+    CC_SESSIONS.mkdir(parents=True, exist_ok=True)
+    helper_env = CC_SESSIONS / "amux-helper.env"
+    if not helper_env.exists():
+        # Use the directory containing amux-server.py as the repo root.
+        repo_dir = Path(__file__).parent.resolve()
+        # Only create the session if this looks like a real checkout (has .git).
+        if (repo_dir / ".git").exists():
+            _write_env(helper_env, {"CC_DIR": str(repo_dir)})
+
+
 def _migrate_memory_files():
     """Startup migration: copy project-dir-keyed memory files to session-name-keyed.
 
@@ -18214,6 +18226,7 @@ def main():
     # Initialize SQLite and migrate flat-file data on first run
     _init_db()
     _migrate_flat_to_sqlite()
+    _init_default_sessions()
 
     # Pre-configure ~/.claude.json to skip interactive setup wizard
     _init_claude_config()
