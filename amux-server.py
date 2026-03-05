@@ -929,13 +929,14 @@ def tmux_target(session: str) -> str:
 
 
 def is_running(session: str) -> bool:
+    """Check if a tmux session exists by exact name (avoids has-session prefix-match bug)."""
     try:
-        subprocess.run(
-            ["tmux", "has-session", "-t", tmux_target(session)],
-            capture_output=True, check=True,
+        r = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True, text=True,
         )
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        return tmux_name(session) in r.stdout.splitlines()
+    except FileNotFoundError:
         return False
 
 
@@ -4453,6 +4454,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   /* File overlay markdown: slightly larger font for full-width reading */
   .file-overlay-body.markdown.md-content { font-size: 0.92rem; }
+  /* File edit textarea */
+  #file-edit-wrap { display:none; flex:1; overflow:hidden; }
+  .file-edit-ta {
+    width:100%; height:100%; resize:none; border:1px solid var(--border);
+    border-radius:8px; background:var(--bg); color:var(--text);
+    font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.82rem;
+    line-height:1.6; padding:14px; box-sizing:border-box; outline:none;
+    -webkit-overflow-scrolling:touch; tab-size:2;
+  }
+  .file-edit-ta:focus { border-color:var(--accent); }
+  #file-save-btn { font-size:0.72rem; padding:3px 10px; border:1px solid var(--green);
+    border-radius:6px; color:var(--green); background:none; cursor:pointer;
+    white-space:nowrap; flex-shrink:0; transition:all 0.15s; }
+  #file-save-btn:hover { background:var(--green); color:#fff; }
+  #file-save-btn.saving { opacity:0.5; pointer-events:none; }
 
   /* File explorer */
   .explore-breadcrumb { font-size: 0.8rem; overflow-x: auto; white-space: nowrap; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
@@ -6963,13 +6979,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <h2 id="file-title">file</h2>
     <div class="file-view-tabs" id="file-view-tabs" style="display:none;">
       <button class="file-view-tab active" id="file-tab-preview" onclick="setFileViewMode('preview')">Preview</button>
+      <button class="file-view-tab" id="file-tab-edit" onclick="setFileViewMode('edit')" style="display:none;">Edit</button>
       <button class="file-view-tab" id="file-tab-raw" onclick="setFileViewMode('raw')">Raw</button>
       <button class="file-view-tab" id="file-tab-copy" onclick="copyFileContent()" title="Copy to clipboard">Copy</button>
     </div>
+    <button id="file-save-btn" onclick="_fileSave()" style="display:none;">Save</button>
     <a id="file-download-btn" style="display:none;font-size:0.72rem;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--accent);text-decoration:none;white-space:nowrap;flex-shrink:0;">&#x2B07; Download</a>
     <button class="btn" onclick="closeFilePreview()" style="flex-shrink:0;">&#x2715;</button>
   </div>
   <div id="file-body" class="file-overlay-body"></div>
+  <div id="file-edit-wrap"><textarea id="file-edit-ta" class="file-edit-ta" spellcheck="false" onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='s'){event.preventDefault();_fileSave();}"></textarea></div>
 </div>
 
 <!-- File explorer overlay -->
@@ -10182,7 +10201,19 @@ function _renderFileBody(data, mode) {
     body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:32px;"><div style="font-size:2.5rem;">📦</div><div style="font-size:0.95rem;color:var(--muted);">${fname}${sizeMB ? ' · ' + sizeMB : ''}${data.ext ? ' · ' + data.ext : ''}</div><a href="${rawUrl}" download="${fname}" style="padding:8px 18px;background:var(--green);color:#fff;border-radius:6px;font-size:0.85rem;font-weight:600;text-decoration:none;">Download</a></div>`;
     return;
   }
-  // Text files — Raw / Preview
+  // Text files — Raw / Edit / Preview
+  const editWrap = document.getElementById('file-edit-wrap');
+  const editTa = document.getElementById('file-edit-ta');
+  if (mode === 'edit' && data.is_markdown) {
+    body.style.display = 'none';
+    editWrap.style.display = 'flex';
+    editTa.value = data.content;
+    editTa.focus();
+    return;
+  }
+  // hide edit pane for non-edit modes
+  editWrap.style.display = 'none';
+  body.style.display = '';
   if (mode === 'raw') {
     body.className = 'file-overlay-body file-raw';
     body.textContent = data.content;
@@ -10206,6 +10237,9 @@ function setFileViewMode(mode) {
   _fileViewMode = mode;
   document.getElementById('file-tab-preview').classList.toggle('active', mode === 'preview');
   document.getElementById('file-tab-raw').classList.toggle('active', mode === 'raw');
+  const editTab = document.getElementById('file-tab-edit');
+  if (editTab) editTab.classList.toggle('active', mode === 'edit');
+  document.getElementById('file-save-btn').style.display = (mode === 'edit' && _fileData && _fileData.is_markdown) ? '' : 'none';
   if (_fileData) _renderFileBody(_fileData, mode);
 }
 
@@ -10234,6 +10268,8 @@ async function openFilePreview(path) {
     const isTextFile = !data.is_image && !data.is_pdf && !data.is_video && !data.is_audio && !data.is_binary;
     if (isTextFile) {
       document.getElementById('file-view-tabs').style.display = '';
+      // Show Edit tab only for markdown
+      document.getElementById('file-tab-edit').style.display = data.is_markdown ? '' : 'none';
     }
     // Show download button for binary/audio/video/image (not text — they use copy)
     if (!isTextFile) {
@@ -10270,7 +10306,41 @@ function closeFilePreview() {
   if (v) { v.pause(); v.src = ''; }
   document.getElementById('file-overlay').classList.remove('active');
   document.getElementById('file-download-btn').style.display = 'none';
+  document.getElementById('file-save-btn').style.display = 'none';
+  document.getElementById('file-edit-wrap').style.display = 'none';
+  document.getElementById('file-body').style.display = '';
   _fileData = null;
+  _fileViewMode = 'preview';
+}
+
+async function _fileSave() {
+  if (!_fileData || !_fileData.is_markdown) return;
+  const ta = document.getElementById('file-edit-ta');
+  const btn = document.getElementById('file-save-btn');
+  const content = ta.value;
+  btn.classList.add('saving');
+  btn.textContent = 'Saving…';
+  try {
+    const r = await fetch(API + '/api/file', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path: _fileData.path, content})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      _fileData.content = content; // keep in sync
+      btn.textContent = 'Saved!';
+      setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('saving'); }, 1500);
+    } else {
+      btn.textContent = 'Error';
+      btn.classList.remove('saving');
+      setTimeout(() => { btn.textContent = 'Save'; }, 2000);
+    }
+  } catch(e) {
+    btn.textContent = 'Error';
+    btn.classList.remove('saving');
+    setTimeout(() => { btn.textContent = 'Save'; }, 2000);
+  }
 }
 
 async function copyFileContent() {
@@ -17047,6 +17117,26 @@ class CCHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+
+        # PUT /api/file — write text content back to a file (markdown/text only)
+        if method == "PUT" and path == "/api/file":
+            body = self._read_body()
+            fpath = body.get("path", "")
+            if not fpath:
+                return self._json({"error": "missing path"}, 400)
+            p = Path(fpath).expanduser()
+            if not p.is_absolute():
+                return self._json({"error": "absolute path required"}, 400)
+            WRITABLE_EXTS = {".md", ".markdown", ".mdx", ".txt", ".json",
+                             ".yml", ".yaml", ".toml", ".ini", ".cfg",
+                             ".sh", ".py", ".js", ".ts", ".css", ".html", ".htm"}
+            if p.suffix.lower() not in WRITABLE_EXTS:
+                return self._json({"error": "file type not writable"}, 400)
+            try:
+                p.write_text(body.get("content", ""))
+                return self._json({"ok": True, "path": str(p)})
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
 
         # GET /api/file?path=...&cwd=...
         if method == "GET" and path == "/api/file":
