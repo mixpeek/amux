@@ -15069,15 +15069,25 @@ async function _notesOpen(path) {
 }
 
 async function _notesNew() {
-  const ts = Date.now();
-  const path = `note-${ts}.md`;
-  await apiCall(API + '/api/notes/' + path.replace(/\.md$/, ''), {
+  // Pick unique "Untitled" / "Untitled 1" / "Untitled 2" filename
+  const existing = new Set(_notesAllNotes.map(n => n.path));
+  let filename = 'untitled.md';
+  let displayName = 'Untitled';
+  if (existing.has(filename)) {
+    let i = 1;
+    while (existing.has(`untitled-${i}.md`)) i++;
+    filename = `untitled-${i}.md`;
+    displayName = `Untitled ${i}`;
+  }
+  await apiCall(API + '/api/notes/' + filename.replace(/\.md$/, ''), {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ content: '' })
+    body: JSON.stringify({ content: `<h1>${displayName}</h1>` })
   });
   await _notesLoad();
-  await _notesOpen(path);
-  document.getElementById('notes-title').focus();
+  await _notesOpen(filename);
+  const titleEl = document.getElementById('notes-title');
+  titleEl.focus();
+  titleEl.select();
 }
 
 function _notesTitleChange() {
