@@ -5679,6 +5679,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <div id="no-apikey-banner" style="display:none;background:#7c2d12;color:#fed7aa;padding:8px 16px;text-align:center;font-size:0.82rem;z-index:200;position:relative;">
   No Anthropic API key set — Claude sessions won't work. <a href="#" onclick="event.preventDefault();document.getElementById('no-apikey-banner').style.display='none';toggleSettings()" style="color:#fde68a;font-weight:600;text-decoration:underline;">Add key in Settings</a>
 </div>
+<div id="org-banner" style="display:none;background:#1e1b4b;border-bottom:1px solid #4338ca;color:#c7d2fe;padding:7px 16px;text-align:center;font-size:0.82rem;z-index:200;position:relative;display:none;">
+  <span id="org-banner-text"></span>
+  <button onclick="_switchOrg('')" style="margin-left:12px;background:#4338ca;color:#e0e7ff;border:none;border-radius:4px;padding:2px 10px;font-size:0.78rem;cursor:pointer;">← My workspace</button>
+</div>
+<div id="org-invite-banner" style="display:none;background:#14532d;border-bottom:1px solid #16a34a;color:#bbf7d0;padding:7px 16px;text-align:center;font-size:0.82rem;z-index:200;position:relative;">
+  <span id="org-invite-banner-text"></span>
+</div>
 
 <div class="header-row">
   <div style="display:flex;gap:8px;align-items:center;">
@@ -5689,11 +5696,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div style="display:flex;gap:8px;align-items:center;">
     <div id="org-switcher-wrap" style="display:none;position:relative;">
       <button id="org-switcher-btn" onclick="event.stopPropagation();toggleOrgDropdown()"
-        style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:3px 10px 3px 8px;font-size:0.72rem;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:5px;white-space:nowrap;max-width:160px;overflow:hidden;text-overflow:ellipsis;">
-        <span id="org-switcher-label" style="overflow:hidden;text-overflow:ellipsis;">My workspace</span>
+        style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:3px 10px 3px 8px;font-size:0.72rem;color:var(--fg);cursor:pointer;display:flex;align-items:center;gap:5px;white-space:nowrap;max-width:200px;overflow:hidden;">
+        <span id="org-switcher-label" style="overflow:hidden;text-overflow:ellipsis;flex:1;">My workspace</span>
         <span style="flex-shrink:0;">&#x25BE;</span>
       </button>
-      <div id="org-switcher-menu" style="display:none;position:absolute;right:0;top:calc(100% + 4px);background:var(--bg2);border:1px solid var(--border);border-radius:8px;min-width:200px;z-index:500;box-shadow:0 4px 16px rgba(0,0,0,0.4);padding:4px;"></div>
+      <div id="org-switcher-menu" style="display:none;position:absolute;right:0;top:calc(100% + 4px);background:var(--bg2);border:1px solid var(--border);border-radius:8px;min-width:220px;z-index:500;box-shadow:0 4px 16px rgba(0,0,0,0.4);padding:4px;"></div>
     </div>
     <div class="active-wrap">
       <button class="btn-active" id="active-btn" onclick="event.stopPropagation();toggleActiveDropdown()">
@@ -6794,14 +6801,64 @@ function _renderOrgSwitcher() {
   const wrap = document.getElementById('org-switcher-wrap');
   const label = document.getElementById('org-switcher-label');
   const menu = document.getElementById('org-switcher-menu');
+  const orgBanner = document.getElementById('org-banner');
+  const orgBannerText = document.getElementById('org-banner-text');
+  const inviteBanner = document.getElementById('org-invite-banner');
+  const inviteBannerText = document.getElementById('org-invite-banner-text');
   if (!wrap || !_gatewayOrgs.length) return;
-  if (_gatewayOrgs.length <= 1) { wrap.style.display = 'none'; return; }
-  wrap.style.display = '';
-  // Find current org from cookie (or own)
+
+  const otherOrgs = _gatewayOrgs.filter(o => !o.is_own);
   const cookieOrg = document.cookie.split(';').map(c => c.trim())
     .find(c => c.startsWith('amux_org='))?.split('=')[1] || '';
   const current = _gatewayOrgs.find(o => o.id === cookieOrg) || _gatewayOrgs.find(o => o.is_own);
-  if (label) label.textContent = current ? (current.is_own ? 'My workspace' : (current.email || current.id)) : 'My workspace';
+  const inOtherOrg = current && !current.is_own;
+
+  // Hide switcher if only own workspace
+  if (_gatewayOrgs.length <= 1) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+
+  // Highlight button when viewing another workspace
+  const btn = document.getElementById('org-switcher-btn');
+  if (btn) {
+    if (inOtherOrg) {
+      btn.style.borderColor = '#4338ca';
+      btn.style.background = '#1e1b4b';
+      btn.style.color = '#c7d2fe';
+    } else {
+      btn.style.borderColor = '';
+      btn.style.background = '';
+      btn.style.color = '';
+    }
+  }
+
+  if (label) label.textContent = inOtherOrg ? (current.email || current.id) : 'My workspace';
+
+  // Banner: viewing another workspace
+  if (orgBanner && orgBannerText) {
+    if (inOtherOrg) {
+      orgBannerText.textContent = `Viewing ${current.email || current.id}'s workspace`;
+      orgBanner.style.display = '';
+    } else {
+      orgBanner.style.display = 'none';
+    }
+  }
+
+  // Banner: you have access to other workspaces (but aren't in one yet)
+  if (inviteBanner && inviteBannerText && !inOtherOrg && otherOrgs.length > 0) {
+    const names = otherOrgs.map(o => o.email || o.id).join(', ');
+    inviteBannerText.innerHTML = `You have access to: <strong>${esc(names)}</strong> &nbsp;`;
+    otherOrgs.forEach(o => {
+      const btn = document.createElement('button');
+      btn.textContent = `Switch to ${o.email || o.id}`;
+      btn.style.cssText = 'background:#16a34a;color:#fff;border:none;border-radius:4px;padding:2px 10px;font-size:0.78rem;cursor:pointer;margin-left:4px;';
+      btn.onclick = () => _switchOrg(o.id);
+      inviteBannerText.appendChild(btn);
+    });
+    inviteBanner.style.display = '';
+  } else if (inviteBanner) {
+    inviteBanner.style.display = 'none';
+  }
+
   if (menu) {
     menu.innerHTML = _gatewayOrgs.map(o => {
       const isCurrent = current && o.id === current.id;
@@ -6809,9 +6866,7 @@ function _renderOrgSwitcher() {
         <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(o.is_own ? 'My workspace' : (o.email || o.id))}</span>
         ${isCurrent ? '<span style="color:var(--accent);font-size:0.65rem;">current</span>' : ''}
       </div>`;
-    }).join('') + `<div style="border-top:1px solid var(--border);margin-top:4px;padding-top:4px;">
-      <div onclick="_switchOrg('')" style="padding:6px 12px;border-radius:6px;cursor:pointer;font-size:0.75rem;color:var(--dim);" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background=''">&#x2302; Switch to my workspace</div>
-    </div>`;
+    }).join('');
   }
 }
 
