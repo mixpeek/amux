@@ -4280,14 +4280,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .explore-name { font-size: 0.88rem; flex: 1; word-break: break-all; min-width: 0; }
   .explore-size { font-size: 0.72rem; color: var(--dim); flex-shrink: 0; }
   .explore-mtime { font-size: 0.68rem; color: var(--dim); flex-shrink: 0; }
-  .explore-pin-row { display: flex; align-items: center; gap: 10px; padding: 9px 16px; border-bottom: 1px solid var(--border); cursor: pointer; }
-  .explore-pin-row:active { background: var(--hover); }
-  .explore-pin-icon { font-size: 0.75rem; flex-shrink: 0; opacity: 0.7; }
-  .explore-pin-name { font-size: 0.82rem; flex: 1; word-break: break-all; min-width: 0; color: var(--text); }
-  .explore-pin-subpath { font-size: 0.68rem; color: var(--dim); flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .explore-pin-unpin { flex-shrink: 0; background: none; border: none; color: var(--dim); cursor: pointer; font-size: 0.8rem; padding: 2px 4px; opacity: 0; transition: opacity 0.1s; }
-  .explore-pin-row:hover .explore-pin-unpin { opacity: 1; }
-  .explore-pins-label { font-size: 0.65rem; font-weight: 600; letter-spacing: 0.06em; color: var(--dim); padding: 5px 16px 2px; text-transform: uppercase; }
   .explore-menu-btn { flex-shrink: 0; background: none; border: none; color: var(--dim);
     cursor: pointer; font-size: 1rem; padding: 2px 6px; border-radius: 4px; line-height: 1;
     opacity: 0.4; transition: opacity 0.15s; }
@@ -6624,8 +6616,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       style="width:100%;background:var(--input,var(--card));border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:0.82rem;color:var(--text);outline:none;"
       oninput="_exploreSearchFilter(this.value)">
   </div>
-  </div>
-  <div id="explore-pins-section" style="display:none;border-bottom:1px solid var(--border);background:var(--card);"></div>
   <div id="explore-body" class="file-overlay-body" style="padding:0;overflow-y:auto;"></div>
 </div>
 
@@ -10242,39 +10232,8 @@ function _rbTypeKey(event) {
 // ═══════ FILE EXPLORER ═══════
 let _explorePath = '';
 let _exploreShowHidden = false;
-let _explorePins = [];  // pinned paths for current session
 let _exploreLastData = null;  // last loaded dir data (for search re-filter)
 let _filesLastData = null;    // last loaded dir data for Files tab
-
-async function _loadExplorePins(session) {
-  _explorePins = [];
-  if (!session) return;
-  try {
-    const r = await fetch(API + '/api/prefs?key=explore_pins__' + encodeURIComponent(session));
-    const d = await r.json();
-    if (d.value) _explorePins = JSON.parse(d.value);
-  } catch(e) {}
-}
-async function _saveExplorePins(session) {
-  if (!session) return;
-  await fetch(API + '/api/prefs', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({key: 'explore_pins__' + session, value: JSON.stringify(_explorePins)})
-  });
-}
-async function _pinExplorePath(path) {
-  if (!_exploreSession) return;
-  if (!_explorePins.includes(path)) _explorePins.push(path);
-  await _saveExplorePins(_exploreSession);
-  _renderExplorePinnedSection();
-}
-async function _unpinExplorePath(path) {
-  if (!_exploreSession) return;
-  _explorePins = _explorePins.filter(p => p !== path);
-  await _saveExplorePins(_exploreSession);
-  _renderExplorePinnedSection();
-}
-function _isExplorePathPinned(path) { return _explorePins.includes(path); }
 // ═══════ FILES TAB (inline directory browser) ═══════
 let _filesPath = '/';
 let _filesCwd = '/';   // saved working directory (persisted on server)
@@ -10485,11 +10444,10 @@ async function cacheFilesDir(rootPath, maxDepth = 2) {
   setTimeout(() => setStatus(''), 5000);
 }
 
-async function openExplore(startPath, session) {
+function openExplore(startPath, session) {
   _explorePath = startPath || '/';
   _exploreSession = session || null;
   document.getElementById('explore-overlay').classList.add('active');
-  await _loadExplorePins(_exploreSession);
   loadExplore(_explorePath);
 }
 function closeExplore() {
@@ -10535,15 +10493,6 @@ function _showExploreMenu(path, btn, type) {
   document.querySelectorAll('.explore-menu-popup').forEach(el => el.remove());
   const popup = document.createElement('div');
   popup.className = 'explore-menu-popup';
-  // Pin / Unpin (only when opened from a session)
-  if (_exploreSession) {
-    const pinItem = document.createElement('button');
-    pinItem.className = 'explore-menu-item';
-    const pinned = _isExplorePathPinned(path);
-    pinItem.textContent = pinned ? '📌 Unpin' : '📌 Pin to top';
-    pinItem.onclick = () => { popup.remove(); pinned ? _unpinExplorePath(path) : _pinExplorePath(path); };
-    popup.appendChild(pinItem);
-  }
   const copyItem = document.createElement('button');
   copyItem.className = 'explore-menu-item';
   copyItem.textContent = 'Copy path';
@@ -10603,43 +10552,8 @@ function _copyExplorePathFallback(path) {
   try { document.execCommand('copy'); } catch(e) {}
   document.body.removeChild(ta);
 }
-function _renderExplorePinnedSection() {
-  const sec = document.getElementById('explore-pins-section');
-  if (!sec) return;
-  if (!_exploreSession || !_explorePins.length) { sec.style.display = 'none'; sec.innerHTML = ''; return; }
-  sec.style.display = '';
-  let html = '<div class="explore-pins-label">📌 Pinned</div>';
-  for (const pinPath of _explorePins) {
-    const name = pinPath.split('/').filter(Boolean).pop() || pinPath;
-    const isDir = !name.includes('.') || pinPath.endsWith('/');
-    const icon = '📌';
-    // Show path relative to session dir if possible
-    const sessionDir = peekSessionDir || '';
-    const rel = sessionDir && pinPath.startsWith(sessionDir)
-      ? pinPath.slice(sessionDir.length).replace(/^\//, '') : pinPath;
-    const safePath = pinPath.replace(/'/g, "\\'");
-    html += `<div class="explore-pin-row" onclick="_explorePinClick('${safePath}')">
-      <span class="explore-pin-icon">${icon}</span>
-      <span class="explore-pin-name">${esc(name)}</span>
-      <span class="explore-pin-subpath" title="${esc(pinPath)}">${esc(rel !== name ? rel.replace(/\/[^/]+$/, '/') : '')}</span>
-      <button class="explore-pin-unpin" title="Unpin" onclick="event.stopPropagation();_unpinExplorePath('${safePath}')">✕</button>
-    </div>`;
-  }
-  sec.innerHTML = html;
-}
-function _explorePinClick(path) {
-  // Navigate if dir, open preview if file
-  const name = path.split('/').filter(Boolean).pop() || '';
-  if (!name.includes('.') || path.endsWith('/')) {
-    loadExplore(path);
-  } else {
-    openFilePreview(path);
-  }
-}
-
 async function loadExplore(path) {
   const body = document.getElementById('explore-body');
-  _renderExplorePinnedSection();
   body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
   _explorePath = path;
   const srch = document.getElementById('explore-search'); if (srch) srch.value = '';
@@ -15749,7 +15663,7 @@ class CCHandler(BaseHTTPRequestHandler):
 
         # GET /release-notes — standalone SEO-indexable release notes page
         if method == "GET" and path == "/release-notes":
-            return self._html(RELEASE_NOTES_HTML.encode())
+            return self._html(RELEASE_NOTES_HTML)
 
         # GET /api/release-notes — paginated JSON from docs/release-notes/notes.json
         if method == "GET" and path.startswith("/api/release-notes"):
@@ -15759,7 +15673,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 qs = dict(_up.parse_qsl(path.split("?", 1)[1]))
             page = int(qs.get("page", "1"))
             per_page = int(qs.get("per_page", "6"))
-            notes_file = pathlib.Path(__file__).parent / "docs" / "release-notes" / "notes.json"
+            notes_file = Path(__file__).parent / "docs" / "release-notes" / "notes.json"
             if notes_file.exists():
                 all_notes = json.loads(notes_file.read_text())
             else:
