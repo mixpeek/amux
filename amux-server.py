@@ -5585,6 +5585,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   @media (min-width: 769px) { #tab-grid { display: block; } }
 
   /* Notes view */
+  #notes-view { height: calc(100vh - 110px); }
   .notes-sidebar {
     width: 220px; min-width: 160px; border-right: 1px solid var(--border);
     display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0;
@@ -5690,6 +5691,56 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .notes-empty-state {
     position: absolute; inset: 0; display: flex; flex-direction: column;
     align-items: center; justify-content: center;
+  }
+  /* Edit / Preview mode tabs */
+  .notes-mode-tabs {
+    display: flex; gap: 2px; padding: 5px 12px; border-bottom: 1px solid var(--border);
+    flex-shrink: 0; background: var(--card);
+  }
+  .notes-mode-tab {
+    background: none; border: none; padding: 4px 14px; border-radius: 5px;
+    font-size: 0.78rem; cursor: pointer; color: var(--dim); font-weight: 500;
+    transition: background 0.12s, color 0.12s;
+  }
+  .notes-mode-tab.active { background: var(--accent); color: #fff; }
+  .notes-mode-tab:not(.active):hover { background: rgba(139,148,158,0.12); color: var(--text); }
+  /* Preview pane */
+  .notes-preview {
+    flex: 1; overflow-y: auto; padding: 20px 24px; background: var(--bg);
+    display: none; color: var(--text); font-size: 0.9rem; line-height: 1.75;
+    box-sizing: border-box;
+  }
+  .notes-preview.active { display: block; }
+  .notes-preview h1 { font-size: 1.5rem; font-weight: 700; margin: 0 0 14px; }
+  .notes-preview h2 { font-size: 1.15rem; font-weight: 600; margin: 20px 0 8px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+  .notes-preview h3 { font-size: 1rem; font-weight: 600; margin: 14px 0 6px; }
+  .notes-preview blockquote { border-left: 3px solid var(--accent); padding: 2px 0 2px 14px; color: var(--dim); margin: 10px 0; }
+  .notes-preview pre { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; overflow-x: auto; font-size: 0.82rem; margin: 10px 0; }
+  .notes-preview code { background: var(--card); border-radius: 3px; padding: 1px 5px; font-size: 0.85em; }
+  .notes-preview pre code { background: none; padding: 0; }
+  .notes-preview a { color: var(--accent); }
+  .notes-preview ul, .notes-preview ol { padding-left: 22px; margin: 6px 0; }
+  .notes-preview li { margin: 3px 0; }
+  .notes-preview p { margin: 0 0 10px; }
+  .notes-preview p:last-child { margin-bottom: 0; }
+  /* Mobile notes improvements */
+  @media (max-width: 600px) {
+    #notes-view { height: calc(100dvh - 122px); }
+    .notes-mode-tabs { padding: 5px 10px; }
+    .notes-mode-tab { padding: 6px 18px; font-size: 0.82rem; }
+    .notes-editor-header { padding: 10px 12px; min-height: 48px; }
+    .notes-title-input { font-size: 1rem; }
+    .notes-delete-btn { min-width: 40px; min-height: 40px; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; }
+    .notes-pin-btn { min-width: 40px; min-height: 40px; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; }
+    .notes-list-item { padding: 12px 14px; min-height: 52px; }
+    .notes-list-item .nli-title { font-size: 0.88rem; }
+    .notes-list-item .nli-date { font-size: 0.74rem; }
+    .notes-quill-wrap .ql-toolbar.ql-snow { overflow-x: auto; white-space: nowrap; flex-wrap: nowrap; }
+    .notes-quill-wrap .ql-toolbar.ql-snow .ql-formats { display: inline-flex; }
+    .notes-quill-wrap .ql-editor { font-size: 1rem; min-height: 160px; }
+    .notes-preview { padding: 16px; font-size: 0.95rem; }
+    .notes-new-btn { width: 32px; height: 32px; font-size: 1.3rem; }
+    .notes-search-wrap input { font-size: 0.88rem; padding: 7px 10px; }
   }
 </style>
 </head>
@@ -6162,7 +6213,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 </div>
 
 <!-- Notes view -->
-<div id="notes-view" style="display:none;flex-direction:row;height:calc(100vh - 110px);overflow:hidden;">
+<div id="notes-view" style="display:none;flex-direction:row;overflow:hidden;">
   <!-- Sidebar -->
   <div class="notes-sidebar" id="notes-sidebar">
     <div class="notes-sidebar-header">
@@ -6188,9 +6239,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <button class="notes-delete-btn" onclick="_notesDelete()" title="Delete note">&#x1F5D1;</button>
       </div>
     </div>
+    <div class="notes-mode-tabs" id="notes-mode-tabs" style="display:none;">
+      <button class="notes-mode-tab active" id="notes-tab-edit" onclick="_notesSwitchMode('edit')">Edit</button>
+      <button class="notes-mode-tab" id="notes-tab-preview" onclick="_notesSwitchMode('preview')">Preview</button>
+    </div>
     <div class="notes-quill-wrap" id="notes-quill-wrap" style="display:none;">
       <div id="notes-quill"></div>
     </div>
+    <div class="notes-preview" id="notes-preview"></div>
     <div class="notes-empty-state" id="notes-empty-state">
       <div style="font-size:2rem;margin-bottom:8px;">📝</div>
       <div style="color:var(--dim);font-size:0.85rem;">Select a note or create a new one</div>
@@ -15213,6 +15269,23 @@ let _notesAllNotes = [];
 let _quill = null;
 let _notesSidebarOpen = localStorage.getItem('amux_notes_sidebar') !== 'closed';
 let _notesOpenAbort = null; // AbortController for in-flight note fetches
+let _notesMode = 'edit'; // 'edit' | 'preview'
+
+function _notesSwitchMode(mode) {
+  _notesMode = mode;
+  document.getElementById('notes-tab-edit').classList.toggle('active', mode === 'edit');
+  document.getElementById('notes-tab-preview').classList.toggle('active', mode === 'preview');
+  const quillWrap = document.getElementById('notes-quill-wrap');
+  const preview = document.getElementById('notes-preview');
+  if (mode === 'preview') {
+    preview.innerHTML = _quill ? _quill.root.innerHTML : '';
+    preview.classList.add('active');
+    quillWrap.style.display = 'none';
+  } else {
+    preview.classList.remove('active');
+    quillWrap.style.display = 'flex';
+  }
+}
 
 function _notesToggleSidebar() {
   _notesSidebarOpen = !_notesSidebarOpen;
@@ -15388,6 +15461,14 @@ async function _notesOpen(path) {
     _quill.setText(data.content || '');
   }
   document.getElementById('notes-empty-state').style.display = 'none';
+  document.getElementById('notes-mode-tabs').style.display = 'flex';
+  // Reset to edit mode on note switch (don't leave user stuck in preview)
+  if (_notesMode === 'preview') {
+    _notesMode = 'edit';
+    document.getElementById('notes-tab-edit').classList.add('active');
+    document.getElementById('notes-tab-preview').classList.remove('active');
+    document.getElementById('notes-preview').classList.remove('active');
+  }
   document.getElementById('notes-quill-wrap').style.display = 'flex';
   // Fade in new content
   requestAnimationFrame(() => {
@@ -15532,8 +15613,11 @@ async function _notesDelete() {
 function _notesShowEmpty() {
   document.getElementById('notes-empty-state').style.display = 'flex';
   document.getElementById('notes-quill-wrap').style.display = 'none';
+  document.getElementById('notes-mode-tabs').style.display = 'none';
+  document.getElementById('notes-preview').classList.remove('active');
   document.getElementById('notes-title').value = '';
   if (_quill) _quill.setText('');
+  _notesMode = 'edit';
   // On mobile, show sidebar when no note is open
   if (window.innerWidth <= 600 && !_notesSidebarOpen) {
     _notesSidebarOpen = true;
