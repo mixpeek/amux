@@ -15045,6 +15045,9 @@ async function _notesOpen(path) {
   const titleFromPath = path.replace(/\.md$/, '').split('/').pop();
   _notesActive.title = titleFromContent || titleFromPath;
   document.getElementById('notes-title').value = _notesActive.title;
+  // Keep sidebar list name in sync with derived title
+  const listEntry = _notesAllNotes.find(n => n.path === data.path);
+  if (listEntry) listEntry.name = _notesActive.title;
   // Load into Quill
   if (!_quill) _notesInitQuill();
   const isHtml = /<[a-z][\s\S]*>/i.test(data.content);
