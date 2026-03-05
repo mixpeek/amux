@@ -15139,19 +15139,10 @@ async function _notesSave() {
   }
   statusEl.textContent = 'Saved';
   setTimeout(() => { statusEl.textContent = ''; }, 2000);
-  // Refresh list to update timestamps
-  try {
-    // Snapshot all locally-known titles before server fetch overwrites them
-    const knownTitles = new Map(_notesAllNotes.map(n => [n.path, n.name]));
-    const r = await fetch(API + '/api/notes');
-    if (!r.ok) return;
-    _notesAllNotes = await r.json();
-    // Restore local titles — client is authoritative for names it has already seen
-    for (const n of _notesAllNotes) {
-      if (knownTitles.has(n.path)) n.name = knownTitles.get(n.path);
-    }
-    _notesRenderList(_notesAllNotes);
-  } catch(e) { /* offline, list stays as-is */ }
+  // Update timestamp in place — don't re-fetch (avoids reordering and title resets)
+  const saved = _notesAllNotes.find(n => n.path === _notesActive.path);
+  if (saved) { saved.updated = Math.floor(Date.now() / 1000); saved.name = _notesActive.title || saved.name; }
+  _notesRenderList(_notesAllNotes);
 }
 
 async function _notesDelete() {
