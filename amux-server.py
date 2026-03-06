@@ -15499,11 +15499,9 @@ toggleSettings = function() {
 
 // Deep-link: #path=/some/path (or ?path= for backwards compat)
 // Hash-based routing works in PWA mode — SW never strips fragments, no iOS query-param loss
-(async function _bootstrapDeeplink() {
-  // Prefer hash; fall back to query param for old shared links
+async function _handleDeeplink(hash) {
   let dpath = null;
-  const hash = location.hash;
-  if (hash.startsWith('#path=')) {
+  if (hash && hash.startsWith('#path=')) {
     dpath = decodeURIComponent(hash.slice(6));
   } else {
     dpath = new URLSearchParams(location.search).get('path');
@@ -15515,18 +15513,20 @@ toggleSettings = function() {
     const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(dpath));
     const d = await r.json();
     if (d.error === 'not a directory') {
-      // It's a file — navigate to Files tab at parent dir, then open file viewer
       const parent = dpath.split('/').slice(0, -1).join('/') || '/';
       _filesPath = parent;
       switchView('files');
       openFilePreview(dpath);
     } else if (!d.error) {
-      // It's a directory — navigate to Files tab at this path
       _filesPath = dpath;
       switchView('files');
     }
   } catch(e) {}
-})();
+}
+// On page load
+_handleDeeplink(location.hash);
+// On hash change (e.g. paste URL into address bar while app already open — no page reload)
+window.addEventListener('hashchange', () => _handleDeeplink(location.hash));
 
 function forceUpdate() {
   const el = document.getElementById('update-status');
