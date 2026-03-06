@@ -6642,8 +6642,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
     <div class="notes-mode-tabs" id="notes-mode-tabs" style="display:none;">
-      <button class="notes-mode-tab active" id="notes-tab-edit" onclick="_notesSwitchMode('edit')">Edit</button>
-      <button class="notes-mode-tab" id="notes-tab-preview" onclick="_notesSwitchMode('preview')">Preview</button>
+      <button class="notes-mode-tab" id="notes-tab-edit" onclick="_notesSwitchMode('edit')">Edit</button>
+      <button class="notes-mode-tab active" id="notes-tab-preview" onclick="_notesSwitchMode('preview')">Preview</button>
     </div>
     <div class="notes-quill-wrap" id="notes-quill-wrap" style="display:none;">
       <div id="notes-quill"></div>
@@ -15948,7 +15948,7 @@ let _notesAllNotes = [];
 let _quill = null;
 let _notesSidebarOpen = localStorage.getItem('amux_notes_sidebar') !== 'closed';
 let _notesOpenAbort = null; // AbortController for in-flight note fetches
-let _notesMode = 'edit'; // 'edit' | 'preview'
+let _notesMode = 'preview'; // 'edit' | 'preview'
 
 function _notesSwitchMode(mode) {
   _notesMode = mode;
@@ -15957,7 +15957,11 @@ function _notesSwitchMode(mode) {
   const quillWrap = document.getElementById('notes-quill-wrap');
   const preview = document.getElementById('notes-preview');
   if (mode === 'preview') {
-    preview.innerHTML = _quill ? _quill.root.innerHTML : '';
+    if (_quill) {
+      const html = _quill.root.innerHTML;
+      const isHtml = /<[a-z][\s\S]*>/i.test(html);
+      preview.innerHTML = isHtml ? html : (typeof marked !== 'undefined' ? marked.parse(html) : html);
+    }
     preview.classList.add('active');
     quillWrap.style.display = 'none';
   } else {
@@ -16159,20 +16163,15 @@ async function _notesOpen(path) {
   }
   document.getElementById('notes-empty-state').style.display = 'none';
   document.getElementById('notes-mode-tabs').style.display = 'flex';
-  // Reset to edit mode on note switch (don't leave user stuck in preview)
-  if (_notesMode === 'preview') {
-    _notesMode = 'edit';
-    document.getElementById('notes-tab-edit').classList.add('active');
-    document.getElementById('notes-tab-preview').classList.remove('active');
-    document.getElementById('notes-preview').classList.remove('active');
-  }
-  document.getElementById('notes-quill-wrap').style.display = 'flex';
-  // Fade in new content
-  requestAnimationFrame(() => {
-    quillRoot.style.transition = 'opacity 0.12s ease';
-    quillRoot.style.opacity = '1';
-    setTimeout(() => { quillRoot.style.transition = ''; }, 150);
-  });
+  // Always show preview when switching notes; user can click Edit to type
+  _notesMode = 'preview';
+  document.getElementById('notes-tab-edit').classList.remove('active');
+  document.getElementById('notes-tab-preview').classList.add('active');
+  document.getElementById('notes-quill-wrap').style.display = 'none';
+  const previewEl = document.getElementById('notes-preview');
+  previewEl.innerHTML = isHtml ? data.content : (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content);
+  previewEl.classList.add('active');
+  quillRoot.style.opacity = '1';
   _notesSidebarUpdateActive(path);
   _notesUpdatePinBtn();
   document.getElementById('notes-save-status').textContent = '';
