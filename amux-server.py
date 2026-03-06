@@ -11175,10 +11175,10 @@ async function cacheFilesDir(rootPath, maxDepth = 2) {
 }
 
 function openExplore(startPath, session) {
-  _explorePath = startPath || '/';
-  _exploreSession = session || null;
-  document.getElementById('explore-overlay').classList.add('active');
-  loadExplore(_explorePath);
+  const path = startPath || '/';
+  _filesPath = path;
+  closePeek();
+  switchView('files');
 }
 function closeExplore() {
   document.getElementById('explore-overlay').classList.remove('active');
