@@ -12105,11 +12105,18 @@ function _peekOpenLink(e) {
   if (!a) return;
   const href = a.href;
   if (!href || !/^https?:\/\//.test(href)) return;
-  // Use window.open — works in both desktop PWA and mobile PWA (direct user gesture).
-  // target=_blank alone doesn't reliably open in the system browser in Chrome desktop PWA.
   e.preventDefault();
   e.stopPropagation();
-  window.open(href, '_blank', 'noopener,noreferrer');
+  // Programmatically click a temp anchor on document.body — more reliable than
+  // window.open() in Chrome desktop PWA which can be blocked by the popup blocker
+  // even from a user gesture. Native anchor click respects PWA scope rules.
+  const tmp = document.createElement('a');
+  tmp.href = href;
+  tmp.target = '_blank';
+  tmp.rel = 'noopener noreferrer';
+  document.body.appendChild(tmp);
+  tmp.click();
+  document.body.removeChild(tmp);
 }
 document.getElementById('peek-body').addEventListener('click', _peekOpenLink);
 document.getElementById('peek-body').addEventListener('touchend', _peekOpenLink, {passive: false});
