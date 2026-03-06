@@ -10375,47 +10375,34 @@ function clearPeekSearch() {
 }
 
 // ── File preview ──
-function _csvParseLine(line, delim) {
-  const cells = []; let cur = '', inQ = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inQ) {
-      if (ch === '"') {
-        if (line[i+1] === '"') { cur += '"'; i++; } // escaped ""
-        else { inQ = false; }
-      } else { cur += ch; }
-    } else {
-      if (ch === '"') { inQ = true; }
-      else if (ch === delim) { cells.push(cur); cur = ''; }
-      else { cur += ch; }
-    }
-  }
-  cells.push(cur);
-  return cells;
-}
-function _csvEsc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function _csvEsc(s) { return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 let _csvRows = [], _csvSort = { col: -1, asc: true };
 
 function renderCsvTable(csv) {
-  const lines = csv.split('\n').filter(l => l.trim());
-  if (!lines.length) return '<em style="color:var(--dim)">Empty file</em>';
-  // Auto-detect delimiter: tab wins if it appears more than comma in first line
-  const delim = (lines[0].split('\t').length > lines[0].split(',').length) ? '\t' : ',';
-  const header = _csvParseLine(lines[0], delim);
-  const allRows = lines.slice(1).map(l => _csvParseLine(l, delim));
+  if (!csv.trim()) return '<em style="color:var(--dim)">Empty file</em>';
+  // Use Papa Parse for correct RFC 4180 parsing (handles multiline fields,
+  // escaped quotes, BOM, various delimiters, etc.)
+  const parsed = Papa.parse(csv, {
+    header: false,
+    skipEmptyLines: true,
+    dynamicTyping: false,  // keep everything as strings for display
+  });
+  if (!parsed.data.length) return '<em style="color:var(--dim)">Empty file</em>';
+  const header = parsed.data[0];
+  const allRows = parsed.data.slice(1);
   const MAX_ROWS = 2000;
   const truncated = allRows.length > MAX_ROWS;
   _csvRows = truncated ? allRows.slice(0, MAX_ROWS) : allRows;
   _csvSort = { col: -1, asc: true };
+  const delimLabel = parsed.meta.delimiter === '\t' ? ' · TSV' : '';
 
-  const metaText = `${_csvRows.length.toLocaleString()}${truncated ? '+' : ''} rows × ${header.length} cols` +
-    (delim === '\t' ? ' · TSV' : '');
+  const metaText = `${_csvRows.length.toLocaleString()}${truncated ? '+' : ''} rows × ${header.length} cols${delimLabel}`;
   const truncNote = truncated ? `<span class="csv-truncated">⚠ showing first ${MAX_ROWS.toLocaleString()} of ${allRows.length.toLocaleString()} rows</span>` : '';
   const thead = '<tr>' + header.map((h,i) =>
     `<th onclick="_csvSortBy(${i})" title="${_csvEsc(h)}">${_csvEsc(h) || '<span style="opacity:.4">#'+i+'</span>'}</th>`
   ).join('') + '</tr>';
   const tbody = _csvRows.map((r,ri) =>
-    `<tr data-ri="${ri}">` + header.map((_,ci) => `<td title="${_csvEsc(r[ci]??'')}">${_csvEsc(r[ci]??'')}</td>`).join('') + '</tr>'
+    `<tr data-ri="${ri}">` + header.map((_,ci) => `<td title="${_csvEsc(r[ci])}">${_csvEsc(r[ci])}</td>`).join('') + '</tr>'
   ).join('');
 
   return `<div class="csv-toolbar">
@@ -16641,6 +16628,7 @@ async function _emailDismiss(id) {
 }
 </script>
 
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js"></script>
