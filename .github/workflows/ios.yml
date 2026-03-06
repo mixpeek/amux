@@ -21,12 +21,12 @@ jobs:
 
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '3.3'
+          ruby-version: '3.3.6'
           bundler-cache: true
           working-directory: ios
 
       - name: Install xcodegen
-        run: brew install xcodegen
+        run: brew install xcodegen || true
 
       - name: Generate Xcode project
         run: xcodegen generate

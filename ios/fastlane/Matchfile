@@ -1,4 +1,4 @@
-git_url ENV["MATCH_GIT_URL"]
+git_url ENV["MATCH_GIT_URL"] || "git@github.com:esteininger/amux-certs.git"
 storage_mode "git"
 type "appstore"
 app_identifier "io.amux.app"
