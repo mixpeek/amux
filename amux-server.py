@@ -3341,6 +3341,52 @@ def _session_work_dir(name: str) -> str:
     return ""
 
 
+def _auto_create_worktree(name: str, work_dir: str, env_file: "Path") -> str | None:
+    """Auto-create a git worktree sibling for a session if work_dir is a git repo root.
+    Returns the worktree path on success, None if not applicable or failed.
+    Skips silently if: not a git repo, path already exists, branch already exists."""
+    try:
+        # Must be a git repo
+        r = subprocess.run(
+            ["git", "-C", work_dir, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode != 0:
+            return None
+        repo_root = r.stdout.strip()
+        # Don't create if work_dir is already a worktree (not the main checkout)
+        wl = subprocess.run(
+            ["git", "-C", repo_root, "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=3,
+        )
+        wt_paths = [l.replace("worktree ", "") for l in wl.stdout.splitlines() if l.startswith("worktree ")]
+        if work_dir in wt_paths[1:]:  # [0] is always main checkout
+            return None
+        # Worktree path: sibling of repo root using session name
+        wt_path = str(Path(repo_root).parent / name)
+        if Path(wt_path).exists():
+            return None  # don't clobber existing dir
+        # Branch name: session/<name>
+        branch = "session/" + re.sub(r"[^a-zA-Z0-9\-]", "-", name).strip("-")
+        r2 = subprocess.run(
+            ["git", "-C", repo_root, "worktree", "add", "-b", branch, wt_path],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r2.returncode != 0:
+            slog(f"[worktree] auto-create failed for {name}: {r2.stderr.strip()}")
+            return None
+        # Persist new dir + worktree flag
+        cfg = parse_env_file(env_file)
+        cfg["CC_DIR"] = wt_path
+        cfg["CC_WORKTREE"] = "1"
+        _write_env(env_file, cfg)
+        slog(f"[worktree] auto-created {wt_path} on branch {branch}")
+        return wt_path
+    except Exception as e:
+        slog(f"[worktree] auto-create error for {name}: {e}")
+        return None
+
+
 def _git_info(work_dir: str, detail: bool = False) -> dict:
     """Return {branch, repo} for a directory. Returns empty strings if not a git repo.
     With detail=True, also returns ahead commits, status lines, remote URL."""
@@ -3585,6 +3631,12 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
         return True, "already running"
     cfg = parse_env_file(f)
     work_dir = str(Path(cfg.get("CC_DIR", str(Path.home()))).expanduser().resolve())
+    # Auto-create git worktree if dir is a git repo and none exists yet for this session
+    if cfg.get("CC_WORKTREE", "") != "1" and work_dir != str(Path.home()):
+        wt = _auto_create_worktree(name, work_dir, f)
+        if wt:
+            work_dir = wt
+            cfg = parse_env_file(f)  # reload after update
     flags = cfg.get("CC_FLAGS", "")
     # Claude Code v2.1.69+ rejects --dangerously-skip-permissions when running as root.
     # Strip it silently — root already has full privileges.
@@ -7339,7 +7391,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div class="field-group">
       <label class="field-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
         <input type="checkbox" id="create-branch-enabled" onchange="_toggleCreateBranch(this.checked)" style="width:auto;margin:0;">
-        Git branch <span class="field-optional">(optional)</span>
+        Branch name <span class="field-optional">(optional — auto-created for git repos)</span>
       </label>
       <div id="create-branch-wrap" style="display:none;margin-top:8px;">
         <div style="display:flex;gap:6px;align-items:center;">
@@ -7347,13 +7399,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           <button class="btn" id="create-branch-suggest-btn" onclick="_suggestBranch()" title="Ask Claude to suggest branch names" style="flex-shrink:0;font-size:0.9rem;">✨</button>
         </div>
         <div id="create-branch-suggestions" style="display:none;flex-wrap:wrap;gap:6px;margin-top:8px;"></div>
-        <label id="create-worktree-row" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:10px;font-size:0.82rem;">
-          <input type="checkbox" id="create-worktree-enabled" onchange="_onWorktreeToggle(this.checked)" style="width:auto;margin:0;">
-          <span>Use git worktree</span>
-        </label>
-        <div id="create-worktree-path-row" style="display:none;margin-top:6px;padding:6px 9px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:0.75rem;color:var(--dim);font-family:monospace;word-break:break-all;">
-          <span style="color:var(--dim);font-family:sans-serif;font-size:0.72rem;">Worktree path: </span><span id="create-worktree-path-val"></span>
-        </div>
       </div>
     </div>
     <div class="edit-actions">
@@ -12394,8 +12439,6 @@ function openCreate() {
   document.getElementById('create-branch-wrap').style.display = 'none';
   document.getElementById('create-branch-suggestions').style.display = 'none';
   document.getElementById('create-branch-suggestions').innerHTML = '';
-  document.getElementById('create-worktree-enabled').checked = false;
-  document.getElementById('create-worktree-path-row').style.display = 'none';
   document.getElementById('ac-list').innerHTML = '';
   document.getElementById('ac-list').classList.remove('open');
   _createBranchEdited = false;
@@ -12504,37 +12547,13 @@ function _createNameChanged(val) {
     document.getElementById('create-branch').value = slug ? 'session/' + slug : '';
   }
 }
-function _computeWorktreePath() {
-  const dir = document.getElementById('create-dir').value.trim().replace(/\/+$/, '');
-  const name = document.getElementById('create-name').value.trim();
-  if (!dir || !name) return '';
-  // Place worktree as sibling: /path/to/parent/<session-name>
-  const parent = dir.includes('/') ? dir.substring(0, dir.lastIndexOf('/')) : dir;
-  return parent + '/' + name;
-}
-function _onWorktreeToggle(on) {
-  const pathRow = document.getElementById('create-worktree-path-row');
-  if (!pathRow) return;
-  if (on) {
-    const p = _computeWorktreePath();
-    document.getElementById('create-worktree-path-val').textContent = p || '(set name and directory first)';
-    pathRow.style.display = '';
-  } else {
-    pathRow.style.display = 'none';
-  }
-}
 function _onBranchInput(val) {
   _createBranchEdited = true;
-  const cb = document.getElementById('create-worktree-enabled');
-  if (cb && cb.checked) _onWorktreeToggle(true); // refresh path
 }
 function _toggleCreateBranch(on) {
   document.getElementById('create-branch-wrap').style.display = on ? '' : 'none';
   if (!on) {
-    const cb = document.getElementById('create-worktree-enabled');
-    if (cb) { cb.checked = false; }
-    const pathRow = document.getElementById('create-worktree-path-row');
-    if (pathRow) pathRow.style.display = 'none';
+    // nothing extra to reset
   }
   if (on) {
     // Pre-fill if empty
@@ -12579,9 +12598,6 @@ async function submitCreate() {
   const prompt = typedPrompt || (_selectedTemplate && _selectedTemplate.initial_prompt ? _selectedTemplate.initial_prompt : '');
   const branchEnabled = document.getElementById('create-branch-enabled').checked;
   const branch = branchEnabled ? document.getElementById('create-branch').value.trim() : '';
-  const worktreeEnabled = branchEnabled && branch && document.getElementById('create-worktree-enabled').checked;
-  const worktreePath = worktreeEnabled ? _computeWorktreePath() : '';
-  const worktree = worktreeEnabled && worktreePath;
   if (!name) { document.getElementById('create-name').focus({ preventScroll: true }); return; }
   closeCreate();
 
@@ -12611,7 +12627,7 @@ async function submitCreate() {
     if (branch && dir) {
       await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/git', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({branch, create: true, worktree: !!worktree, worktree_path: worktreePath || ''}),
+        body: JSON.stringify({branch, create: true}),
       }).catch(() => {});
     }
     // Always start the session immediately
