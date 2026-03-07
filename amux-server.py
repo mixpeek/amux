@@ -2967,6 +2967,7 @@ def list_sessions() -> list:
             "task_time": task_time,
             "task_name": _doing_tasks.get(name) or pane_title,
             "tokens": tokens,
+            "worktree": cfg.get("CC_WORKTREE", "") == "1",
         })
     status_order = {"active": 0, "waiting": 0, "idle": 1, "": 1}
     sessions.sort(key=lambda s: (not s["pinned"], not s["running"], status_order.get(s["status"], 1), -s["last_activity"]))
@@ -6967,10 +6968,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </label>
       <div id="create-branch-wrap" style="display:none;margin-top:8px;">
         <div style="display:flex;gap:6px;align-items:center;">
-          <input id="create-branch" type="text" placeholder="session/my-project" autocomplete="off" autocorrect="off" style="flex:1;">
+          <input id="create-branch" type="text" placeholder="session/my-project" autocomplete="off" autocorrect="off" style="flex:1;" oninput="_onBranchInput(this.value)">
           <button class="btn" id="create-branch-suggest-btn" onclick="_suggestBranch()" title="Ask Claude to suggest branch names" style="flex-shrink:0;font-size:0.9rem;">✨</button>
         </div>
         <div id="create-branch-suggestions" style="display:none;flex-wrap:wrap;gap:6px;margin-top:8px;"></div>
+        <label id="create-worktree-row" style="display:none;align-items:center;gap:6px;cursor:pointer;margin-top:8px;font-size:0.82rem;color:var(--dim);">
+          <input type="checkbox" id="create-worktree-enabled" style="width:auto;margin:0;">
+          Use git worktree <span style="color:var(--dim);font-size:0.78rem;">(isolated working copy at ~/.amux/worktrees/&lt;name&gt;)</span>
+        </label>
       </div>
     </div>
     <div class="edit-actions">
@@ -8265,7 +8270,7 @@ function render() {
       </div>
       ${s.dir ? `<div class="card-dir"><span class="card-dir-path" onclick="event.stopPropagation();openExplore('${s.dir.replace(/'/g,"\\'")}','${s.name.replace(/'/g,"\\'")}')" style="cursor:pointer;" title="Browse files">${esc(s.dir)}</span></div>` : ''}
       ${s.creator ? `<div class="card-dir" style="font-size:0.72rem;">${esc(s.creator)}</div>` : ''}
-      ${s.dir ? _renderBranchBadge(s.name) : ''}
+      ${s.dir ? _renderBranchBadge(s.name, s.worktree) : ''}
       ${isExp && s.desc ? `<div class="card-desc">${esc(s.desc)}</div>` : ''}
       ${!isExp && s.task_name ? `<div class="card-preview">${esc(s.task_name)}</div>` : ''}
       ${isExp && s.preview ? `<div class="card-preview">${esc(s.preview)}</div>` : ''}
@@ -8452,14 +8457,15 @@ function fmtDuration(sec) {
 // ═══════ GIT BRANCH AWARENESS ═══════
 function _isBranchMain(b) { return !b || b === 'main' || b === 'master' || b === 'dev' || b === 'develop'; }
 
-function _renderBranchBadge(name) {
+function _renderBranchBadge(name, isWorktree) {
   const gi = gitInfo[name];
   if (!gi || !gi.branch) return '';
   const isMain = _isBranchMain(gi.branch);
   const cls = gi._conflict ? 'conflict' : isMain ? 'on-main' : 'on-branch';
-  const tip = gi._conflict ? 'Another session shares this branch — risk of conflicts' : isMain ? 'On main — click to create a session branch' : 'On feature branch';
+  const tip = gi._conflict ? 'Another session shares this branch — risk of conflicts' : isMain ? 'On main — click to create a session branch' : (isWorktree ? 'Git worktree — isolated working copy' : 'On feature branch');
   const conflictWarn = gi._conflict ? ' ⚠' : '';
-  return `<div class="card-dir"><span class="branch-badge ${cls}" onclick="event.stopPropagation();showBranchPopover('${name}',event)" title="${tip}">⎇ ${esc(gi.branch)}${conflictWarn}</span></div>`;
+  const wtIcon = isWorktree ? '⬡ ' : '⎇ ';
+  return `<div class="card-dir"><span class="branch-badge ${cls}" onclick="event.stopPropagation();showBranchPopover('${name}',event)" title="${tip}">${wtIcon}${esc(gi.branch)}${conflictWarn}</span></div>`;
 }
 
 async function _fetchGitBranches(sess) {
@@ -11935,8 +11941,19 @@ function _createNameChanged(val) {
     document.getElementById('create-branch').value = slug ? 'session/' + slug : '';
   }
 }
+function _onBranchInput(val) {
+  _createBranchEdited = true;
+  const row = document.getElementById('create-worktree-row');
+  if (row) row.style.display = val.trim() ? 'flex' : 'none';
+}
 function _toggleCreateBranch(on) {
   document.getElementById('create-branch-wrap').style.display = on ? '' : 'none';
+  if (!on) {
+    const row = document.getElementById('create-worktree-row');
+    if (row) row.style.display = 'none';
+    const cb = document.getElementById('create-worktree-enabled');
+    if (cb) cb.checked = false;
+  }
   if (on) {
     // Pre-fill if empty
     const inp = document.getElementById('create-branch');
@@ -11980,6 +11997,7 @@ async function submitCreate() {
   const prompt = typedPrompt || (_selectedTemplate && _selectedTemplate.initial_prompt ? _selectedTemplate.initial_prompt : '');
   const branchEnabled = document.getElementById('create-branch-enabled').checked;
   const branch = branchEnabled ? document.getElementById('create-branch').value.trim() : '';
+  const worktree = branchEnabled && branch && document.getElementById('create-worktree-enabled').checked;
   if (!name) { document.getElementById('create-name').focus({ preventScroll: true }); return; }
   closeCreate();
 
@@ -12005,11 +12023,11 @@ async function submitCreate() {
         body: JSON.stringify({ template_id: _selectedTemplate.id, dir }),
       }).catch(() => {});
     }
-    // Create branch if requested
+    // Create branch (and optionally worktree) if requested
     if (branch && dir) {
       await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/git', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({branch, create: true}),
+        body: JSON.stringify({branch, create: true, worktree: !!worktree}),
       }).catch(() => {});
     }
     // Always start the session immediately
@@ -19159,6 +19177,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 body = self._read_body()
                 branch = body.get("branch", "").strip()
                 create = bool(body.get("create", False))
+                use_worktree = bool(body.get("worktree", False))
                 wd = _session_work_dir(name)
                 if not wd:
                     return self._json({"error": "session has no directory"}, 400)
@@ -19166,6 +19185,26 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     return self._json({"error": "branch name required"}, 400)
                 if not re.match(r'^[a-zA-Z0-9_./@\-]+$', branch):
                     return self._json({"error": "invalid branch name"}, 400)
+                if use_worktree and create:
+                    # Create a git worktree at ~/.amux/worktrees/<session-name>
+                    wt_dir = str(CC_HOME / "worktrees" / name)
+                    Path(wt_dir).parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        r = subprocess.run(
+                            ["git", "-C", wd, "worktree", "add", "-b", branch, wt_dir],
+                            capture_output=True, text=True, timeout=15,
+                        )
+                        if r.returncode != 0:
+                            return self._json({"ok": False, "error": (r.stderr or r.stdout).strip()}, 400)
+                        # Update session's CC_DIR to the worktree path
+                        env_file = CC_SESSIONS / f"{name}.env"
+                        cfg = parse_env_file(env_file)
+                        cfg["CC_DIR"] = wt_dir
+                        cfg["CC_WORKTREE"] = "1"
+                        _write_env(env_file, cfg)
+                        return self._json({"ok": True, "branch": branch, "worktree": wt_dir})
+                    except Exception as ex:
+                        return self._json({"ok": False, "error": str(ex)}, 500)
                 cmd = ["git", "-C", wd, "checkout"]
                 if create:
                     cmd.append("-b")
@@ -19298,6 +19337,34 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
             if action == "delete":
                 if is_running(name):
                     stop_session(name)
+                # Remove worktree if one was created for this session
+                cfg_del = parse_env_file(env_file) if env_file.exists() else {}
+                if cfg_del.get("CC_WORKTREE") == "1":
+                    wt_path = cfg_del.get("CC_DIR", "")
+                    if wt_path:
+                        try:
+                            # Prune the worktree entry from git
+                            repo_dir = subprocess.run(
+                                ["git", "-C", wt_path, "rev-parse", "--git-dir"],
+                                capture_output=True, text=True, timeout=5,
+                            ).stdout.strip()
+                            # Find the main worktree (parent repo)
+                            main_wt = subprocess.run(
+                                ["git", "worktree", "list", "--porcelain"],
+                                capture_output=True, text=True, timeout=5,
+                                cwd=wt_path,
+                            )
+                            lines = main_wt.stdout.splitlines()
+                            main_path = lines[0].replace("worktree ", "") if lines else ""
+                            if main_path:
+                                subprocess.run(
+                                    ["git", "-C", main_path, "worktree", "remove", "--force", wt_path],
+                                    capture_output=True, timeout=10,
+                                )
+                        except Exception:
+                            import shutil as _sh
+                            try: _sh.rmtree(wt_path, ignore_errors=True)
+                            except Exception: pass
                 env_file.unlink(missing_ok=True)
                 (CC_MEMORY / f"{name}.md").unlink(missing_ok=True)
                 _meta_path(name).unlink(missing_ok=True)
