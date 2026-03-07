@@ -7039,7 +7039,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
     <div id="crm-contact-form" style="display:none;flex-direction:column;overflow:hidden;flex:1;">
       <div class="crm-contact-hdr">
-        <input id="crm-name" class="crm-name-input" placeholder="Name" oninput="_crmDirtied()" onblur="_crmAutoSave()">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <input id="crm-name" class="crm-name-input" placeholder="Name" oninput="_crmDirtied()" onblur="_crmAutoSave()">
+          <button id="crm-delete-btn" class="notes-delete-btn" onclick="_crmDeleteContact()" title="Delete contact"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
+        </div>
         <div class="crm-field-row">
           <div class="crm-field"><span>&#x1F3E2;</span><input id="crm-company" class="crm-field-input" placeholder="Company" oninput="_crmDirtied()" onblur="_crmAutoSave()"></div>
           <div class="crm-field"><span>&#x1F4BC;</span><input id="crm-role" class="crm-field-input" placeholder="Role / Title" oninput="_crmDirtied()" onblur="_crmAutoSave()"></div>
@@ -16960,6 +16963,8 @@ let _crmActiveId = null;
 let _crmDirty = false;
 let _crmSaveTimer = null;
 let _crmQueueOpen = false;
+let _crmOpenAbort = null; // AbortController for in-flight contact fetches
+let _crmActiveTags = []; // tags for active contact (kept in-memory, no extra fetch)
 
 function _crmHealthClass(d) {
   if (!d) return 'never';
@@ -16987,6 +16992,31 @@ async function _crmLoad() {
   _crmContacts = await r.json();
   _crmRenderList(_crmContacts);
   _crmRenderQueue(_crmContacts);
+}
+
+// Patch a single contact in _crmContacts and update its list item in-place (no full re-render)
+function _crmPatchContact(updated) {
+  const idx = _crmContacts.findIndex(c => c.id === updated.id);
+  if (idx !== -1) Object.assign(_crmContacts[idx], updated);
+  // Patch the list card in-place
+  const card = document.querySelector('.crm-contact-item[data-id="' + CSS.escape(updated.id) + '"]');
+  if (!card) return;
+  const sub = [updated.company, updated.role].filter(Boolean).join(' · ');
+  const health = _crmHealthClass(updated.last_date !== undefined ? updated.last_date : (_crmContacts[idx] || {}).last_date);
+  const fu = _crmFuInfo(updated.next_followup !== undefined ? updated.next_followup : (_crmContacts[idx] || {}).next_followup);
+  const nameEl = card.querySelector('.crm-contact-name');
+  if (nameEl) nameEl.innerHTML = '<span class="crm-health ' + health + '"></span>' + esc(updated.name || '');
+  let subEl = card.querySelector('.crm-contact-sub');
+  if (sub) {
+    if (!subEl) { subEl = document.createElement('div'); subEl.className = 'crm-contact-sub'; nameEl?.after(subEl); }
+    subEl.textContent = sub;
+  } else if (subEl) { subEl.remove(); }
+  const metaEl = card.querySelector('.crm-contact-meta');
+  if (metaEl) {
+    const c = _crmContacts[idx] || {};
+    metaEl.innerHTML = '<span class="crm-days-badge">' + _crmDaysText(c.last_date) + '</span>' +
+      (fu ? '<span class="crm-fu-badge' + (fu.overdue ? ' overdue' : '') + '">' + fu.text + '</span>' : '');
+  }
 }
 
 function _crmRenderList(contacts) {
@@ -17032,18 +17062,39 @@ function _crmRenderQueue(contacts) {
 function _crmToggleQueue() { _crmQueueOpen = !_crmQueueOpen; _crmRenderQueue(_crmContacts); }
 
 async function _crmOpenContact(id) {
+  if (id === _crmActiveId) return;
   if (_crmDirty) await _crmFlushSave();
+  // Reset delete button confirm state
+  const delBtn = document.getElementById('crm-delete-btn');
+  if (delBtn) { clearTimeout(delBtn._resetTimer); delBtn.classList.remove('confirming'); delBtn.innerHTML = _CRM_TRASH_SVG; }
   _crmActiveId = id;
+  // Optimistic: highlight immediately, fade editor
   document.querySelectorAll('.crm-contact-item').forEach(el => el.classList.toggle('active', el.dataset.id === id));
-  const r = await fetch(API + '/api/crm/contacts/' + encodeURIComponent(id));
-  if (!r.ok) return;
+  const form = document.getElementById('crm-contact-form');
+  if (form.style.display !== 'none') form.style.opacity = '0.4';
+  // Cancel any in-flight fetch
+  if (_crmOpenAbort) _crmOpenAbort.abort();
+  _crmOpenAbort = new AbortController();
+  let r;
+  try {
+    r = await fetch(API + '/api/crm/contacts/' + encodeURIComponent(id), { signal: _crmOpenAbort.signal });
+  } catch(e) {
+    if (e.name === 'AbortError') return;
+    form.style.opacity = '';
+    return;
+  }
+  if (!r.ok) { form.style.opacity = ''; return; }
+  form.style.opacity = '';
   _crmRenderDetail(await r.json());
 }
+
+const _CRM_TRASH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
 
 function _crmRenderDetail(c) {
   document.getElementById('crm-detail-empty').style.display = 'none';
   const form = document.getElementById('crm-contact-form');
   form.style.display = 'flex';
+  form.style.opacity = '';
   document.getElementById('crm-name').value = c.name || '';
   document.getElementById('crm-company').value = c.company || '';
   document.getElementById('crm-role').value = c.role || '';
@@ -17052,7 +17103,8 @@ function _crmRenderDetail(c) {
   document.getElementById('crm-phone').value = c.phone || '';
   document.getElementById('crm-notes-field').value = c.notes || '';
   _crmDirty = false;
-  _crmRenderTagsRow(c.tags || []);
+  _crmActiveTags = c.tags || [];
+  _crmRenderTagsRow(_crmActiveTags);
   _crmRenderInteractions(c.interactions || []);
 }
 
@@ -17070,42 +17122,34 @@ function _crmStartAddTag() {
   inp.placeholder = 'tag name';
   inp.onkeydown = async (e) => {
     if (e.key === 'Enter') { e.preventDefault(); await _crmAddTag(inp.value.trim()); }
-    if (e.key === 'Escape') { await _crmRefreshTags(); }
+    if (e.key === 'Escape') { _crmRenderTagsRow(_crmActiveTags); }
   };
-  inp.onblur = async () => { if (inp.value.trim()) await _crmAddTag(inp.value.trim()); else await _crmRefreshTags(); };
+  inp.onblur = async () => { if (inp.value.trim()) await _crmAddTag(inp.value.trim()); else _crmRenderTagsRow(_crmActiveTags); };
   const addBtn = el.querySelector('.crm-add-tag');
   if (addBtn) el.replaceChild(inp, addBtn); else el.appendChild(inp);
   inp.focus();
 }
 
-async function _crmRefreshTags() {
-  const r = await fetch(API + '/api/crm/contacts/' + _crmActiveId);
-  const c = await r.json();
-  _crmRenderTagsRow(c.tags || []);
-}
-
 async function _crmAddTag(tag) {
   if (!tag || !_crmActiveId) return;
-  const r = await fetch(API + '/api/crm/contacts/' + _crmActiveId);
-  const c = await r.json();
-  const tags = [...new Set([...(c.tags || []), tag])];
+  const tags = [...new Set([..._crmActiveTags, tag])];
+  _crmActiveTags = tags;
+  _crmRenderTagsRow(tags); // optimistic
   await apiCall(API + '/api/crm/contacts/' + _crmActiveId, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tags })
   });
-  _crmRenderTagsRow(tags);
 }
 
 async function _crmRemoveTag(tag) {
   if (!_crmActiveId) return;
-  const r = await fetch(API + '/api/crm/contacts/' + _crmActiveId);
-  const c = await r.json();
-  const tags = (c.tags || []).filter(t => t !== tag);
+  const tags = _crmActiveTags.filter(t => t !== tag);
+  _crmActiveTags = tags;
+  _crmRenderTagsRow(tags); // optimistic
   await apiCall(API + '/api/crm/contacts/' + _crmActiveId, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tags })
   });
-  _crmRenderTagsRow(tags);
 }
 
 function _crmRenderInteractions(interactions) {
@@ -17158,22 +17202,46 @@ async function _crmFlushSave() {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   });
-  const c = _crmContacts.find(c => c.id === _crmActiveId);
-  if (c) Object.assign(c, data);
-  _crmRenderList(_crmContacts);
-  document.querySelectorAll('.crm-contact-item').forEach(el => el.classList.toggle('active', el.dataset.id === _crmActiveId));
+  _crmPatchContact({ id: _crmActiveId, ...data });
 }
 
 async function _crmNew() {
+  if (_crmDirty) await _crmFlushSave();
   const r = await apiCall(API + '/api/crm/contacts', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: 'New Contact' })
   });
   if (!r) return;
   const d = await r.json();
-  await _crmLoad();
+  // Add optimistically to top of list
+  _crmContacts.unshift({ id: d.id, name: 'New Contact', company: '', role: '', last_date: null, next_followup: null, tags: [] });
+  _crmRenderList(_crmContacts);
   await _crmOpenContact(d.id);
   setTimeout(() => { const ni = document.getElementById('crm-name'); ni.focus(); ni.select(); }, 50);
+}
+
+async function _crmDeleteContact() {
+  if (!_crmActiveId) return;
+  const btn = document.getElementById('crm-delete-btn');
+  if (btn && !btn.classList.contains('confirming')) {
+    btn.classList.add('confirming');
+    btn.textContent = 'Delete?';
+    const reset = () => { btn.classList.remove('confirming'); btn.innerHTML = _CRM_TRASH_SVG; };
+    btn._resetTimer = setTimeout(reset, 3000);
+    return;
+  }
+  if (btn) { clearTimeout(btn._resetTimer); btn.classList.remove('confirming'); btn.innerHTML = _CRM_TRASH_SVG; }
+  const id = _crmActiveId;
+  // Optimistic: remove from list and reset detail immediately
+  _crmContacts = _crmContacts.filter(c => c.id !== id);
+  _crmActiveId = null;
+  _crmRenderList(_crmContacts);
+  _crmRenderQueue(_crmContacts);
+  document.getElementById('crm-contact-form').style.display = 'none';
+  document.getElementById('crm-detail-empty').style.display = '';
+  // Auto-open next contact if any
+  if (_crmContacts.length > 0) await _crmOpenContact(_crmContacts[0].id);
+  apiCall(API + '/api/crm/contacts/' + id, { method: 'DELETE' }); // fire-and-forget
 }
 
 function _crmOpenLog() {
@@ -17189,29 +17257,47 @@ function _crmCloseLog() { document.getElementById('crm-log-modal').classList.rem
 
 async function _crmSubmitLog() {
   if (!_crmActiveId) return;
-  await apiCall(API + '/api/crm/contacts/' + _crmActiveId + '/interactions', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      date: document.getElementById('crm-log-date').value,
-      type: document.getElementById('crm-log-type').value,
-      notes: document.getElementById('crm-log-notes').value.trim(),
-      follow_up_date: document.getElementById('crm-log-followup').value || null,
-      follow_up_note: document.getElementById('crm-log-followup-note').value.trim(),
-    })
-  });
+  const payload = {
+    date: document.getElementById('crm-log-date').value,
+    type: document.getElementById('crm-log-type').value,
+    notes: document.getElementById('crm-log-notes').value.trim(),
+    follow_up_date: document.getElementById('crm-log-followup').value || null,
+    follow_up_note: document.getElementById('crm-log-followup-note').value.trim(),
+  };
   _crmCloseLog();
+  const res = await apiCall(API + '/api/crm/contacts/' + _crmActiveId + '/interactions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res) return;
+  // Refresh this contact's detail + update list entry in-place
   const c = await fetch(API + '/api/crm/contacts/' + _crmActiveId).then(r => r.json());
   _crmRenderDetail(c);
-  await _crmLoad();
-  document.querySelectorAll('.crm-contact-item').forEach(el => el.classList.toggle('active', el.dataset.id === _crmActiveId));
+  // Update list card with new last_date / follow-up
+  const listEntry = _crmContacts.find(e => e.id === _crmActiveId);
+  if (listEntry) {
+    if (!listEntry.last_date || payload.date > listEntry.last_date) listEntry.last_date = payload.date;
+    if (payload.follow_up_date) { listEntry.next_followup = payload.follow_up_date; listEntry.next_followup_note = payload.follow_up_note; }
+    _crmPatchContact(listEntry);
+    _crmRenderQueue(_crmContacts);
+  }
 }
 
 async function _crmDeleteIx(id) {
+  // Optimistic: remove the item from the DOM immediately
+  document.querySelector('.crm-ix-item:has(.crm-ix-del[onclick*="' + id + '"])')?.remove();
   await apiCall(API + '/api/crm/interactions/' + id, { method: 'DELETE' });
+  // Refresh detail to get correct state (follow-up, last_date may change)
   const c = await fetch(API + '/api/crm/contacts/' + _crmActiveId).then(r => r.json());
   _crmRenderDetail(c);
-  await _crmLoad();
-  document.querySelectorAll('.crm-contact-item').forEach(el => el.classList.toggle('active', el.dataset.id === _crmActiveId));
+  const listEntry = _crmContacts.find(e => e.id === _crmActiveId);
+  if (listEntry) {
+    listEntry.last_date = c.interactions?.length ? c.interactions[0].date : null;
+    listEntry.next_followup = c.interactions?.find(i => i.follow_up_date)?.follow_up_date || null;
+    listEntry.next_followup_note = c.interactions?.find(i => i.follow_up_date)?.follow_up_note || '';
+    _crmPatchContact(listEntry);
+    _crmRenderQueue(_crmContacts);
+  }
 }
 
 function _crmSearch(q) {
