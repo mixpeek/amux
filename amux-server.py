@@ -3428,6 +3428,22 @@ def _git_info(work_dir: str, detail: bool = False) -> dict:
         )
         result["status"] = [l for l in rs.stdout.strip().splitlines() if l] if rs.returncode == 0 else []
         result["dirty"] = bool(result["status"])
+        # Per-file diff stats (for diff viewer)
+        def _parse_numstat(out: str) -> list:
+            files = []
+            for line in out.strip().splitlines():
+                parts = line.split("\t", 2)
+                if len(parts) == 3:
+                    try:
+                        files.append({"file": parts[2], "added": int(parts[0]) if parts[0] != "-" else 0,
+                                      "deleted": int(parts[1]) if parts[1] != "-" else 0})
+                    except ValueError:
+                        pass
+            return files
+        rn_u = subprocess.run(["git", "-C", work_dir, "diff", "--numstat"], capture_output=True, text=True, timeout=5)
+        rn_s = subprocess.run(["git", "-C", work_dir, "diff", "--cached", "--numstat"], capture_output=True, text=True, timeout=5)
+        result["files_unstaged"] = _parse_numstat(rn_u.stdout) if rn_u.returncode == 0 else []
+        result["files_staged"] = _parse_numstat(rn_s.stdout) if rn_s.returncode == 0 else []
         # Remote origin URL (for PR link construction)
         rurl = subprocess.run(
             ["git", "-C", work_dir, "remote", "get-url", "origin"],
@@ -5450,6 +5466,25 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .peek-memory-editor.active { display: flex; }
   .peek-git-panel { display: none; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
   .peek-git-panel.active { display: flex; }
+  .git-panel-header { display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--border);flex-shrink:0;flex-wrap:wrap; }
+  .git-panel-body { display:flex;flex:1;min-height:0;overflow:hidden; }
+  .git-files-list { width:220px;flex-shrink:0;border-right:1px solid var(--border);overflow-y:auto;padding:6px 0; }
+  .git-file-item { display:flex;align-items:center;gap:6px;padding:5px 10px;cursor:pointer;border-radius:4px;margin:0 4px;font-size:0.78rem;transition:background 0.1s; }
+  .git-file-item:hover { background:var(--hover); }
+  .git-file-item.active { background:rgba(99,102,241,0.12); }
+  .git-file-name { flex:1;font-family:monospace;font-size:0.76rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text); }
+  .git-file-staged-dot { width:6px;height:6px;border-radius:50%;background:#818cf8;flex-shrink:0; }
+  .git-stat-added { color:#4ade80;font-size:0.72rem;font-family:monospace;flex-shrink:0; }
+  .git-stat-deleted { color:#f87171;font-size:0.72rem;font-family:monospace;flex-shrink:0; }
+  .git-diff-viewer { flex:1;overflow:auto;padding:0;font-family:monospace;font-size:0.78rem;line-height:1.55; }
+  .git-diff-empty { display:flex;align-items:center;justify-content:center;flex:1;color:var(--dim);font-size:0.85rem; }
+  .git-diff-hunk { display:block;color:#a78bfa;padding:2px 10px;background:rgba(139,92,246,0.07); }
+  .git-diff-add { display:block;color:#4ade80;background:rgba(74,222,128,0.07);padding:0 10px; }
+  .git-diff-del { display:block;color:#f87171;background:rgba(248,113,113,0.07);padding:0 10px; }
+  .git-diff-ctx { display:block;color:var(--text);padding:0 10px;opacity:0.7; }
+  .git-diff-hdr { display:block;color:var(--dim);padding:2px 10px;font-weight:600;border-bottom:1px solid var(--border);background:var(--bg2); }
+  .git-section-label { font-size:0.68rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--dim);padding:8px 10px 3px;font-weight:600; }
+  .git-no-changes { padding:20px 14px;color:var(--dim);font-size:0.82rem; }
   .peek-memory-textarea { flex: 1; width: 100%; font-size: 0.88rem; line-height: 1.65;
     font-family: "SF Mono","Fira Code",monospace; background: var(--bg);
     border: 1px solid var(--border); border-radius: 8px; color: var(--text);
@@ -7529,31 +7564,28 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <!-- Git panel -->
   <div id="peek-git-panel" class="peek-git-panel">
     <div id="peek-git-loading" style="color:var(--dim);font-size:0.85rem;padding:20px 16px;">Loading git info…</div>
-    <div id="peek-git-content" style="display:none;flex-direction:column;gap:0;flex:1;min-height:0;overflow-y:auto;padding:14px 16px;">
-      <!-- Branch + worktree row -->
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
-        <span id="peek-git-branch" style="font-family:monospace;font-size:0.9rem;font-weight:600;"></span>
-        <span id="peek-git-worktree-badge" style="display:none;font-size:0.72rem;background:rgba(99,102,241,0.15);color:#818cf8;border-radius:4px;padding:2px 7px;">worktree</span>
-        <span id="peek-git-dirty-badge" style="display:none;font-size:0.72rem;background:rgba(220,38,38,0.12);color:#f87171;border-radius:4px;padding:2px 7px;">uncommitted changes</span>
+    <div id="peek-git-content" style="display:none;flex-direction:column;flex:1;min-height:0;">
+      <!-- Header: branch + actions -->
+      <div class="git-panel-header">
+        <span id="peek-git-branch" style="font-family:monospace;font-size:0.88rem;font-weight:600;"></span>
+        <span id="peek-git-worktree-badge" style="display:none;font-size:0.7rem;background:rgba(99,102,241,0.15);color:#818cf8;border-radius:4px;padding:2px 7px;">worktree</span>
         <span style="flex:1;"></span>
-        <button class="btn" id="peek-git-push-btn" onclick="peekGitPush()" style="font-size:0.78rem;padding:4px 10px;">Push</button>
-        <button class="btn" id="peek-git-pr-btn" onclick="peekGitOpenPR()" style="font-size:0.78rem;padding:4px 10px;" title="Open pull request">PR ↗</button>
+        <button class="btn" id="peek-git-push-btn" onclick="peekGitPush()" style="font-size:0.75rem;padding:3px 9px;">Push</button>
+        <button class="btn" id="peek-git-pr-btn" onclick="peekGitOpenPR()" style="font-size:0.75rem;padding:3px 9px;" title="Open pull request">PR ↗</button>
       </div>
-      <!-- Commits ahead -->
-      <div id="peek-git-ahead-section" style="margin-bottom:14px;">
-        <div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--dim);margin-bottom:6px;" id="peek-git-ahead-label"></div>
-        <div id="peek-git-ahead-list" style="font-family:monospace;font-size:0.8rem;line-height:1.7;color:var(--text);"></div>
+      <!-- Two-panel body -->
+      <div class="git-panel-body">
+        <!-- Left: file list -->
+        <div class="git-files-list" id="peek-git-files-list">
+          <div class="git-no-changes" id="peek-git-no-changes" style="display:none;">No changes</div>
+        </div>
+        <!-- Right: diff viewer -->
+        <div id="peek-git-diff-viewer" class="git-diff-viewer">
+          <div class="git-diff-empty" id="peek-git-diff-empty">Select a file to view diff</div>
+          <pre id="peek-git-diff-pre" style="display:none;margin:0;white-space:pre;"></pre>
+        </div>
       </div>
-      <!-- Status (uncommitted) -->
-      <div id="peek-git-status-section" style="display:none;margin-bottom:14px;">
-        <div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--dim);margin-bottom:6px;">Uncommitted changes</div>
-        <div id="peek-git-status-list" style="font-family:monospace;font-size:0.8rem;line-height:1.7;color:var(--text);"></div>
-      </div>
-      <!-- Worktree path -->
-      <div id="peek-git-wt-path-section" style="display:none;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:0.75rem;color:var(--dim);">
-        <span style="font-family:sans-serif;font-size:0.7rem;">Worktree: </span><span id="peek-git-wt-path" style="font-family:monospace;"></span>
-      </div>
-      <div id="peek-git-empty" style="display:none;color:var(--dim);font-size:0.85rem;">No git repository found for this session.</div>
+      <div id="peek-git-empty" style="display:none;color:var(--dim);font-size:0.85rem;padding:20px 16px;">No git repository found for this session.</div>
     </div>
   </div>
 </div>
@@ -9770,68 +9802,122 @@ function _renderPeekGit(d) {
   content.style.display = 'flex';
 
   const empty = document.getElementById('peek-git-empty');
-  if (!d.branch) { empty.style.display = ''; return; }
+  if (!d.branch) { empty.style.display = ''; content.style.display = 'none'; return; }
   empty.style.display = 'none';
 
   // Branch
   const icon = d.worktree ? '⬡' : '⎇';
   document.getElementById('peek-git-branch').textContent = icon + ' ' + d.branch;
-
-  // Badges
   document.getElementById('peek-git-worktree-badge').style.display = d.worktree ? '' : 'none';
-  document.getElementById('peek-git-dirty-badge').style.display = d.dirty ? '' : 'none';
 
   // Push/PR buttons
   const unpushed = d.unpushed || 0;
   const pushBtn = document.getElementById('peek-git-push-btn');
   pushBtn.textContent = unpushed ? `Push (${unpushed})` : 'Push';
-  pushBtn.style.display = d.branch ? '' : 'none';
 
   const prBtn = document.getElementById('peek-git-pr-btn');
   const prUrl = _buildPRUrl(d.remote_url, d.branch);
   prBtn.style.display = prUrl ? '' : 'none';
   prBtn.dataset.url = prUrl;
 
+  // Build unified file list from staged + unstaged
+  const fileMap = {};
+  (d.files_staged || []).forEach(f => { fileMap[f.file] = {file: f.file, added: f.added, deleted: f.deleted, staged: true}; });
+  (d.files_unstaged || []).forEach(f => {
+    if (fileMap[f.file]) { fileMap[f.file].added += f.added; fileMap[f.file].deleted += f.deleted; fileMap[f.file].mixed = true; }
+    else { fileMap[f.file] = {file: f.file, added: f.added, deleted: f.deleted, staged: false}; }
+  });
+  (d.status || []).forEach(l => {
+    const flag = l.slice(0,2).trim();
+    const file = l.slice(3);
+    if (!fileMap[file]) fileMap[file] = {file, added: 0, deleted: 0, staged: false, statusFlag: flag};
+    else fileMap[file].statusFlag = flag;
+  });
+  const files = Object.values(fileMap);
+
+  // Render file list
+  const listEl = document.getElementById('peek-git-files-list');
+  listEl.innerHTML = '';
+  document.getElementById('peek-git-no-changes').style.display = 'none';
+
   // Commits ahead
-  const aheadSection = document.getElementById('peek-git-ahead-section');
   const ahead = d.ahead || [];
   if (ahead.length) {
-    document.getElementById('peek-git-ahead-label').textContent =
-      ahead.length + ' commit' + (ahead.length === 1 ? '' : 's') + ' ahead of ' + (d.ahead_base || 'main');
-    document.getElementById('peek-git-ahead-list').innerHTML =
-      ahead.map(l => {
-        const [hash, ...rest] = l.split(' ');
-        return `<div><span style="color:var(--dim);margin-right:8px;">${esc(hash)}</span>${esc(rest.join(' '))}</div>`;
-      }).join('');
-    aheadSection.style.display = '';
-  } else {
-    aheadSection.style.display = 'none';
+    const lbl = document.createElement('div');
+    lbl.className = 'git-section-label';
+    lbl.textContent = ahead.length + ' commit' + (ahead.length===1?'':'s') + ' ahead of ' + (d.ahead_base||'main');
+    listEl.appendChild(lbl);
+    ahead.slice(0, 8).forEach(l => {
+      const [hash, ...rest] = l.split(' ');
+      const el = document.createElement('div');
+      el.className = 'git-file-item';
+      el.style.cursor = 'default';
+      el.innerHTML = `<span style="color:var(--dim);font-size:0.7rem;flex-shrink:0;">${esc(hash.slice(0,7))}</span><span class="git-file-name" style="opacity:0.85;">${esc(rest.join(' '))}</span>`;
+      listEl.appendChild(el);
+    });
   }
 
-  // Uncommitted status
-  const statusSection = document.getElementById('peek-git-status-section');
-  const status = d.status || [];
-  if (status.length) {
-    document.getElementById('peek-git-status-list').innerHTML =
-      status.map(l => {
-        const flag = l.slice(0, 2).trim();
-        const file = esc(l.slice(3));
-        const color = flag === '??' ? 'var(--dim)' : flag.includes('M') ? '#60a5fa' : flag.includes('D') ? '#f87171' : 'var(--text)';
-        return `<div><span style="color:${color};margin-right:10px;">${esc(flag||'?')}</span>${file}</div>`;
-      }).join('');
-    statusSection.style.display = '';
-  } else {
-    statusSection.style.display = 'none';
+  if (files.length) {
+    const lbl2 = document.createElement('div');
+    lbl2.className = 'git-section-label';
+    lbl2.textContent = 'Changed files (' + files.length + ')';
+    listEl.appendChild(lbl2);
+    files.forEach(f => {
+      const el = document.createElement('div');
+      el.className = 'git-file-item';
+      el.dataset.file = f.file;
+      el.onclick = () => peekGitSelectFile(el, f.file, f.staged && !f.mixed);
+      const shortName = f.file.split('/').pop();
+      const dirPart = f.file.includes('/') ? f.file.slice(0, f.file.lastIndexOf('/') + 1) : '';
+      const addStr = f.added ? `+${f.added}` : '';
+      const delStr = f.deleted ? `-${f.deleted}` : '';
+      el.innerHTML = (f.staged && !f.mixed ? `<span class="git-file-staged-dot" title="staged"></span>` : '') +
+        `<span class="git-file-name" title="${esc(f.file)}"><span style="opacity:0.5;font-size:0.7rem;">${esc(dirPart)}</span>${esc(shortName)}</span>` +
+        (addStr ? `<span class="git-stat-added">${esc(addStr)}</span>` : '') +
+        (delStr ? `<span class="git-stat-deleted">${esc(delStr)}</span>` : '');
+      listEl.appendChild(el);
+    });
+  } else if (!ahead.length) {
+    document.getElementById('peek-git-no-changes').style.display = '';
   }
 
-  // Worktree path
-  const wtPathSection = document.getElementById('peek-git-wt-path-section');
-  if (d.worktree && peekSessionDir) {
-    document.getElementById('peek-git-wt-path').textContent = peekSessionDir;
-    wtPathSection.style.display = '';
-  } else {
-    wtPathSection.style.display = 'none';
+  // Reset diff panel
+  document.getElementById('peek-git-diff-pre').style.display = 'none';
+  document.getElementById('peek-git-diff-empty').style.display = 'flex';
+  document.getElementById('peek-git-diff-empty').textContent = files.length ? 'Select a file to view diff' : 'No changes';
+}
+
+async function peekGitSelectFile(el, file, staged) {
+  document.querySelectorAll('#peek-git-files-list .git-file-item').forEach(e => e.classList.remove('active'));
+  el.classList.add('active');
+  const diffPre = document.getElementById('peek-git-diff-pre');
+  const diffEmpty = document.getElementById('peek-git-diff-empty');
+  diffPre.style.display = 'none';
+  diffEmpty.style.display = 'flex';
+  diffEmpty.textContent = 'Loading diff…';
+  try {
+    const url = API + '/api/sessions/' + encodeURIComponent(peekSession) + '/git/diff?file=' +
+      encodeURIComponent(file) + (staged ? '&staged=1' : '');
+    const r = await fetch(url);
+    const d = await r.json();
+    if (!d.diff) { diffEmpty.textContent = 'No diff available.'; return; }
+    diffPre.innerHTML = _renderDiff(d.diff);
+    diffPre.style.display = 'block';
+    diffEmpty.style.display = 'none';
+    diffPre.parentElement.scrollTop = 0;
+  } catch(e) {
+    diffEmpty.textContent = 'Failed to load diff.';
   }
+}
+
+function _renderDiff(raw) {
+  return raw.split('\n').map(line => {
+    if (line.startsWith('+++') || line.startsWith('---')) return `<span class="git-diff-hdr">${esc(line)}</span>`;
+    if (line.startsWith('@@')) return `<span class="git-diff-hunk">${esc(line)}</span>`;
+    if (line.startsWith('+')) return `<span class="git-diff-add">${esc(line)}</span>`;
+    if (line.startsWith('-')) return `<span class="git-diff-del">${esc(line)}</span>`;
+    return `<span class="git-diff-ctx">${esc(line)}</span>`;
+  }).join('');
 }
 
 function _buildPRUrl(remoteUrl, branch) {
@@ -20229,6 +20315,16 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 return self._json(stats)
             if action == "git":
                 wd = _session_work_dir(name)
+                if action_subid == "diff":
+                    file_path = qs.get("file", [""])[0]
+                    staged = qs.get("staged", ["0"])[0] == "1"
+                    cmd = ["git", "-C", wd, "diff"]
+                    if staged:
+                        cmd.append("--cached")
+                    if file_path:
+                        cmd.extend(["--", file_path])
+                    rd = subprocess.run(cmd, capture_output=True, text=True, timeout=10, errors="replace")
+                    return self._json({"diff": rd.stdout, "file": file_path})
                 detail = qs.get("detail", ["0"])[0] == "1"
                 cfg_g = parse_env_file(env_file)
                 info = _git_info(wd, detail=detail)
