@@ -8654,7 +8654,6 @@ let lastSessionsJSON = '';
 const _prevSessionState = {};  // name → {status, running}
 let _notifsEnabled = localStorage.getItem('amux_notifs') === '1';
 let _notesDirty = false;  // set by SSE invalidate when not on notes tab
-let _crmDirty   = false;  // set by SSE invalidate when not on crm tab
 
 function _updateNotifBtn() {
   const btn = document.getElementById('notif-btn');
