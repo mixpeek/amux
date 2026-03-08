@@ -5468,22 +5468,22 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .peek-git-panel.active { display: flex; }
   .git-panel-header { display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--border);flex-shrink:0;flex-wrap:wrap; }
   .git-panel-body { display:flex;flex:1;min-height:0;overflow:hidden;position:relative; }
-  /* Left: dir tree */
-  .git-tree-panel { width:160px;flex-shrink:0;border-right:1px solid var(--border);overflow-y:auto;padding:4px 0;background:var(--card); }
-  .git-tree-dir { display:flex;align-items:center;gap:5px;padding:4px 8px;font-size:0.73rem;color:var(--dim);font-weight:600;cursor:pointer;user-select:none;letter-spacing:0.02em; }
+  /* Left: collapsible dir tree (sidebar) */
+  .git-tree-panel { width:200px;flex-shrink:0;border-right:1px solid var(--border);overflow-y:auto;padding:4px 0;background:var(--card);transition:transform 0.2s ease,opacity 0.2s ease; }
+  .git-tree-dir { display:flex;align-items:center;gap:5px;padding:5px 10px;font-size:0.75rem;color:var(--dim);font-weight:600;cursor:pointer;user-select:none; }
   .git-tree-dir:hover { color:var(--text); }
   .git-tree-dir-chevron { font-size:0.55rem;transition:transform 0.12s;flex-shrink:0; }
   .git-tree-dir-chevron.open { transform:rotate(90deg); }
   .git-tree-dir-files { overflow:hidden; }
-  .git-tree-file { display:flex;align-items:center;gap:5px;padding:3px 8px 3px 18px;font-size:0.73rem;font-family:monospace;color:var(--text);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-radius:3px;margin:0 3px; }
+  .git-tree-file { display:flex;align-items:center;gap:6px;padding:4px 10px 4px 20px;font-size:0.76rem;font-family:monospace;color:var(--text);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-radius:3px;margin:0 4px;transition:background 0.1s; }
   .git-tree-file:hover { background:var(--hover); }
   .git-tree-file.active { background:rgba(99,102,241,0.12); }
   .git-tree-flag { font-size:0.65rem;font-weight:700;flex-shrink:0;width:10px; }
-  .git-tree-flag.M { color:#60a5fa; }
-  .git-tree-flag.A { color:#4ade80; }
-  .git-tree-flag.D { color:#f87171; }
-  .git-tree-flag.uu { color:#fb923c; }
-  /* Center: diff viewer */
+  .git-tree-flag.M { color:#60a5fa; } .git-tree-flag.A { color:#4ade80; }
+  .git-tree-flag.D { color:#f87171; } .git-tree-flag.uu { color:#fb923c; }
+  .git-section-label { font-size:0.67rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--dim);padding:8px 10px 3px;font-weight:600; }
+  .git-no-changes { padding:16px 10px;color:var(--dim);font-size:0.8rem; }
+  /* Right: diff viewer */
   .git-diff-viewer { flex:1;overflow:hidden;padding:0;font-family:monospace;font-size:0.78rem;line-height:1.55;display:flex;flex-direction:column;min-width:0; }
   .git-diff-file-hdr { padding:5px 12px;font-size:0.73rem;font-family:monospace;color:var(--dim);border-bottom:1px solid var(--border);background:var(--bg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0; }
   .git-diff-scroll { flex:1;overflow:auto; }
@@ -5493,28 +5493,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .git-diff-del { display:block;color:#f87171;background:rgba(248,113,113,0.07);padding:0 12px; }
   .git-diff-ctx { display:block;color:var(--text);padding:0 12px;opacity:0.7; }
   .git-diff-hdr { display:block;color:var(--dim);padding:2px 12px;font-weight:600;border-bottom:1px solid var(--border);background:var(--bg2); }
-  /* Right: changed files */
-  .git-files-list { width:200px;flex-shrink:0;border-left:1px solid var(--border);overflow-y:auto;padding:4px 0;background:var(--card); }
-  .git-section-label { font-size:0.67rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--dim);padding:8px 10px 3px;font-weight:600; }
-  .git-file-item { display:flex;align-items:center;gap:5px;padding:4px 8px;cursor:pointer;font-size:0.74rem;transition:background 0.1s;margin:0 3px;border-radius:3px; }
-  .git-file-item:hover { background:var(--hover); }
-  .git-file-item.active { background:rgba(99,102,241,0.12); }
-  .git-file-name { flex:1;font-family:monospace;font-size:0.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text); }
-  .git-file-staged-dot { width:5px;height:5px;border-radius:50%;background:#818cf8;flex-shrink:0; }
-  .git-stat-added { color:#4ade80;font-size:0.7rem;font-family:monospace;flex-shrink:0; }
-  .git-stat-deleted { color:#f87171;font-size:0.7rem;font-family:monospace;flex-shrink:0; }
-  .git-no-changes { padding:16px 10px;color:var(--dim);font-size:0.8rem; }
   .git-diff-back-btn { display:none;align-items:center;gap:6px;padding:7px 12px;border-bottom:1px solid var(--border);font-size:0.8rem;color:var(--dim);cursor:pointer;flex-shrink:0;background:var(--card);user-select:none; }
   .git-diff-back-btn:hover { color:var(--text); }
   @media (max-width: 600px) {
-    .git-tree-panel { display: none; }
-    .git-files-list {
-      position: absolute; top: 0; right: 0; bottom: 0; z-index: 5;
-      width: 100% !important; border-left: none; background: var(--card);
-      transition: transform 0.2s ease, opacity 0.2s ease;
+    .git-tree-panel {
+      position: absolute; top: 0; left: 0; bottom: 0; z-index: 5;
+      width: 100% !important; border-right: none;
     }
-    .git-files-list.diff-open {
-      transform: translateX(110%); opacity: 0; pointer-events: none;
+    .git-tree-panel.collapsed {
+      transform: translateX(-110%); opacity: 0; pointer-events: none;
     }
     .git-diff-viewer { width: 100%; }
     .git-diff-back-btn { display: flex !important; }
@@ -7624,11 +7611,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <button class="btn" id="peek-git-push-btn" onclick="peekGitPush()" style="font-size:0.75rem;padding:3px 9px;">Push</button>
         <button class="btn" id="peek-git-pr-btn" onclick="peekGitOpenPR()" style="font-size:0.75rem;padding:3px 9px;" title="Open pull request">PR ↗</button>
       </div>
-      <!-- Three-panel body -->
+      <!-- Two-panel body -->
       <div class="git-panel-body">
-        <!-- Left: dir tree nav -->
+        <!-- Left: dir tree nav (collapsible sidebar) -->
         <div class="git-tree-panel" id="peek-git-tree-panel"></div>
-        <!-- Center: diff viewer -->
+        <!-- Right: diff viewer -->
         <div id="peek-git-diff-viewer" class="git-diff-viewer">
           <div class="git-diff-back-btn" onclick="_gitDiffBack()">&#8592; Files</div>
           <div class="git-diff-file-hdr" id="peek-git-diff-file-hdr" style="display:none;"></div>
@@ -7637,8 +7624,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
             <pre id="peek-git-diff-pre" style="margin:0;white-space:pre;"></pre>
           </div>
         </div>
-        <!-- Right: changed files list -->
-        <div class="git-files-list" id="peek-git-files-list"></div>
       </div>
       <div id="peek-git-empty" style="display:none;color:var(--dim);font-size:0.85rem;padding:20px 16px;">No git repository found for this session.</div>
     </div>
@@ -9889,35 +9874,6 @@ function _renderPeekGit(d) {
   // LEFT: dir tree panel
   _renderGitTreePanel(files, d.ahead || [], d.ahead_base || 'main');
 
-  // RIGHT: changed files list
-  const listEl = document.getElementById('peek-git-files-list');
-  listEl.innerHTML = '';
-  if (files.length) {
-    const lbl = document.createElement('div');
-    lbl.className = 'git-section-label';
-    lbl.textContent = files.length + ' changed file' + (files.length === 1 ? '' : 's');
-    listEl.appendChild(lbl);
-    files.forEach(f => {
-      const el = document.createElement('div');
-      el.className = 'git-file-item';
-      el.dataset.file = f.file;
-      el.onclick = () => peekGitSelectFile(f.file, f.staged && !f.mixed);
-      const addStr = f.added ? `+${f.added}` : '';
-      const delStr = f.deleted ? `-${f.deleted}` : '';
-      const shortName = f.file.split('/').pop();
-      el.innerHTML = (f.staged && !f.mixed ? `<span class="git-file-staged-dot" title="staged"></span>` : '') +
-        `<span class="git-file-name" title="${esc(f.file)}">${esc(shortName)}</span>` +
-        (addStr ? `<span class="git-stat-added">${esc(addStr)}</span>` : '') +
-        (delStr ? `<span class="git-stat-deleted">${esc(delStr)}</span>` : '');
-      listEl.appendChild(el);
-    });
-  } else {
-    const nc = document.createElement('div');
-    nc.className = 'git-no-changes';
-    nc.textContent = 'No changes';
-    listEl.appendChild(nc);
-  }
-
   // Reset diff panel
   document.getElementById('peek-git-diff-file-hdr').style.display = 'none';
   document.getElementById('peek-git-diff-scroll').style.display = 'none';
@@ -10006,15 +9962,15 @@ function _gitActiveFile(file) {
 }
 
 function _gitDiffBack() {
-  const filesList = document.getElementById('peek-git-files-list');
-  if (filesList) filesList.classList.remove('diff-open');
+  const treePanel = document.getElementById('peek-git-tree-panel');
+  if (treePanel) treePanel.classList.remove('collapsed');
 }
 
 async function peekGitSelectFile(file, staged) {
   _gitActiveFile(file);
-  // Mobile: slide file list right to show diff
-  const filesList = document.getElementById('peek-git-files-list');
-  if (filesList && window.innerWidth <= 600) filesList.classList.add('diff-open');
+  // Mobile: collapse tree panel to show diff
+  const treePanel = document.getElementById('peek-git-tree-panel');
+  if (treePanel && window.innerWidth <= 600) treePanel.classList.add('collapsed');
   const diffScroll = document.getElementById('peek-git-diff-scroll');
   const diffEmpty = document.getElementById('peek-git-diff-empty');
   const fileHdr = document.getElementById('peek-git-diff-file-hdr');
@@ -10227,8 +10183,8 @@ function openPeek(name, opts) {
   peekSessionDir = (sessions.find(s => s.name === name) || {}).dir || '';
   // Reset to terminal tab
   _peekGitData = null;
-  const _gfl = document.getElementById('peek-git-files-list');
-  if (_gfl) _gfl.classList.remove('diff-open');
+  const _gtp = document.getElementById('peek-git-tree-panel');
+  if (_gtp) _gtp.classList.remove('collapsed');
   if (_peekTab !== 'terminal') setPeekTab('terminal');
   document.getElementById('peek-terminal-panel').style.display = '';
   document.getElementById('peek-memory-panel').classList.remove('active');
