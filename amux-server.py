@@ -8681,6 +8681,28 @@ function _fireSessionNotif(name, title, body) {
   n.onclick = () => { window.focus(); openPeek(name); n.close(); };
 }
 
+// Alert type → human-readable title/body for native notifications
+const _ALERT_LABELS = {
+  scheduler:      (a) => ({ title: '⏰ Scheduler ran', body: a.message.replace(/^Ran schedule: /, '') + (a.session ? ' · ' + a.session : '') }),
+  auto_compact:   (a) => ({ title: '📦 Context compacted', body: a.session }),
+  auto_restart:   (a) => ({ title: '🔄 Agent restarted', body: a.session + ' — ' + a.message }),
+  thinking_reset: (a) => ({ title: '🔄 Thinking reset', body: a.session }),
+  auto_continue:  (a) => ({ title: '▶ Agent continued', body: a.session }),
+};
+
+function _fireAmuxAlert(a) {
+  if (!_notifsEnabled || Notification.permission !== 'granted') return;
+  const fn = _ALERT_LABELS[a.type];
+  if (!fn) return;
+  const { title, body } = fn(a);
+  const n = new Notification(title, {
+    body, icon: '/icon.png',
+    tag: 'amux-alert-' + a.type + '-' + (a.session || ''),
+    renotify: true, silent: false,
+  });
+  n.onclick = () => { window.focus(); if (a.session) openPeek(a.session); n.close(); };
+}
+
 function _checkSessionTransitions(newData) {
   if (_initialLoad) return;  // skip initial load to avoid flood
   for (const s of newData) {
@@ -15928,6 +15950,10 @@ function connectSSE() {
           if (_logsEvents.length > 2000) _logsEvents = _logsEvents.slice(0, 2000);
           if (activeView === 'logs') renderActivity();
         }
+      } else if (msg.type === 'alerts') {
+        for (const a of (msg.payload || [])) {
+          _fireAmuxAlert(a);
+        }
       }
     } catch(err) { console.error('SSE parse:', err); }
   };
@@ -18203,6 +18229,7 @@ class CCHandler(BaseHTTPRequestHandler):
         last_board_json = ""
         heartbeat_counter = 0
         log_cursor = len(_event_log)  # start from current position
+        alert_cursor = len(_sse_alerts)  # start from current position
 
         try:
             while True:
@@ -18240,6 +18267,14 @@ class CCHandler(BaseHTTPRequestHandler):
                         new_events = list(_event_log)[log_cursor:]
                     log_cursor = ring_len
                     self.wfile.write(f"data: {json.dumps({'type': 'logs', 'payload': new_events})}\n\n".encode())
+                    self.wfile.flush()
+
+                # Alerts (scheduler runs, auto-restart, etc.) — push to PWA notifications
+                with _sse_alert_lock:
+                    new_alerts = list(_sse_alerts)[alert_cursor:]
+                    alert_cursor = len(_sse_alerts)
+                if new_alerts:
+                    self.wfile.write(f"data: {json.dumps({'type': 'alerts', 'payload': new_alerts})}\n\n".encode())
                     self.wfile.flush()
 
                 # Heartbeat every 15s (7-8 iterations at 2s sleep)
