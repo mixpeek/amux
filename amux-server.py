@@ -7531,7 +7531,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <button class="peek-tab active" id="peek-tab-terminal" onclick="setPeekTab('terminal')">Terminal</button>
     <button class="peek-tab" id="peek-tab-issues" onclick="setPeekTab('issues')">Issues</button>
     <button class="peek-tab" id="peek-tab-memory" onclick="setPeekTab('memory')">Memory</button>
-    <button class="peek-tab" id="peek-tab-git" onclick="setPeekTab('git')">Git</button>
+    <button class="peek-tab" id="peek-tab-git" onclick="setPeekTab('git')">Corktree</button>
   </div>
   <!-- Working directory bar -->
   <div class="peek-dir-bar">
