@@ -7577,18 +7577,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <button class="peek-cmd-toggle" id="peek-cmd-toggle" onclick="togglePeekCmd()">&#x25BC; Send command</button>
       <div class="peek-cmd-row open" id="peek-cmd-row" style="flex-wrap:wrap;">
         <div class="chips" style="width:100%;margin:0;">
-          <div class="chip" onclick="peekQuickKeys('C-c')">Ctrl-C</div>
           <div class="chip" onclick="peekQuickSend('continue')">continue</div>
           <div class="chip" onclick="peekQuickKeys('Enter')">Enter</div>
-          <div class="chip" onclick="peekQuickKeys('Escape')">Esc</div>
           <div class="chip" onclick="peekQuickKeys('Up')">&#x2191;</div>
           <div class="chip" onclick="peekQuickKeys('Down')">&#x2193;</div>
           <div class="chip" onclick="peekQuickSend('/status')">/status</div>
-          <div class="chip" onclick="peekQuickSend('/cost')">/cost</div>
+          <div class="chip" onclick="peekQuickSend('/model')">/model</div>
           <div class="chip" onclick="peekQuickSend('/mcp')">/mcp</div>
-          <div class="chip" onclick="peekQuickSend('commit and push')">commit</div>
-          <div class="chip danger" onclick="peekQuickSend('/clear')">/clear</div>
-          <div class="chip danger" onclick="peekQuickSend('/compact')">/compact</div>
+          <div class="chip danger" onclick="peekQuickKeys('C-c')">Ctrl+C</div>
+          <div class="chip" onclick="peekQuickSend('/clear')">/clear</div>
+          <div class="chip" onclick="peekQuickSend('/compact')">/compact</div>
         </div>
         <!-- Attachment chips -->
         <div class="peek-attach-bar" id="peek-attach-bar"></div>
@@ -8918,18 +8916,16 @@ function render() {
         <div class="card-stats" id="stats-${s.name}"></div>
         ${s.running ? `
         <div class="chips">
-          <div class="chip" onclick="doKeys('${s.name}','C-c')">Ctrl-C</div>
           <div class="chip" onclick="doSend('${s.name}','continue')">continue</div>
           <div class="chip" onclick="doKeys('${s.name}','Enter')">Enter</div>
-          <div class="chip" onclick="doKeys('${s.name}','Escape')">Esc</div>
           <div class="chip" onclick="doKeys('${s.name}','Up')">&#x2191;</div>
           <div class="chip" onclick="doKeys('${s.name}','Down')">&#x2193;</div>
           <div class="chip" onclick="chipToInput('${s.name}','/status')">/status</div>
-          <div class="chip" onclick="chipToInput('${s.name}','/cost')">/cost</div>
+          <div class="chip" onclick="chipToInput('${s.name}','/model')">/model</div>
           <div class="chip" onclick="chipToInput('${s.name}','/mcp')">/mcp</div>
-          <div class="chip" onclick="doSend('${s.name}','commit and push')">commit</div>
-          <div class="chip danger" onclick="chipToInput('${s.name}','/clear')">/clear</div>
-          <div class="chip danger" onclick="chipToInput('${s.name}','/compact')">/compact</div>
+          <div class="chip danger" onclick="doKeys('${s.name}','C-c')">Ctrl+C</div>
+          <div class="chip" onclick="chipToInput('${s.name}','/clear')">/clear</div>
+          <div class="chip" onclick="chipToInput('${s.name}','/compact')">/compact</div>
         </div>
         <div class="send-row" style="position:relative;">
           <div id="card-ac-${s.name}" class="ac-list slash-ac"></div>
@@ -15519,16 +15515,16 @@ function addGridPane(name, x, y, w, h) {
     '<div class="gp-body overlay-body" id="' + sid + '-body" onclick="_lastActivePane=\'' + safeName + '\'">Loading\u2026</div>' +
     '<div class="gp-send">' +
       '<div class="chips">' +
-        '<div class="chip" onclick="gpDoKeys(\'' + safeName + '\',\'C-c\')">Ctrl-C</div>' +
+        '<div class="chip" onclick="doSend(\'' + safeName + '\',\'continue\')">continue</div>' +
+        '<div class="chip" onclick="gpDoKeys(\'' + safeName + '\',\'Enter\')">Enter</div>' +
         '<div class="chip" onclick="gpDoKeys(\'' + safeName + '\',\'Up\')">&#x2191;</div>' +
         '<div class="chip" onclick="gpDoKeys(\'' + safeName + '\',\'Down\')">&#x2193;</div>' +
-        '<div class="chip" onclick="gpDoKeys(\'' + safeName + '\',\'Enter\')">Enter</div>' +
-        '<div class="chip" onclick="gpDoKeys(\'' + safeName + '\',\'Escape\')">Esc</div>' +
         '<div class="chip" onclick="gpChipToInput(\'' + safeName + '\',\'/status\')">/status</div>' +
-        '<div class="chip" onclick="gpChipToInput(\'' + safeName + '\',\'/cost\')">/cost</div>' +
-        '<div class="chip" onclick="doSend(\'' + safeName + '\',\'continue\')">continue</div>' +
-        '<div class="chip danger" onclick="gpChipToInput(\'' + safeName + '\',\'/compact\')">/compact</div>' +
-        '<div class="chip danger" onclick="gpChipToInput(\'' + safeName + '\',\'/clear\')">/clear</div>' +
+        '<div class="chip" onclick="gpChipToInput(\'' + safeName + '\',\'/model\')">/model</div>' +
+        '<div class="chip" onclick="gpChipToInput(\'' + safeName + '\',\'/mcp\')">/mcp</div>' +
+        '<div class="chip danger" onclick="gpDoKeys(\'' + safeName + '\',\'C-c\')">Ctrl+C</div>' +
+        '<div class="chip" onclick="gpChipToInput(\'' + safeName + '\',\'/clear\')">/clear</div>' +
+        '<div class="chip" onclick="gpChipToInput(\'' + safeName + '\',\'/compact\')">/compact</div>' +
       '</div>' +
       '<div class="send-row">' +
         '<textarea class="send-input" id="' + sid + '-input" rows="1" placeholder="Send\u2026"' +
