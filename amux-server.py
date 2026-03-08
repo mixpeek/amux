@@ -9906,7 +9906,8 @@ function _renderPeekGit(d) {
   });
   (d.status || []).forEach(l => {
     const flag = l.slice(0,2).trim();
-    const file = l.slice(3);
+    if (flag === '??') return; // skip untracked files
+    const file = l.slice(2).trimStart();
     if (!fileMap[file]) fileMap[file] = {file, added: 0, deleted: 0, staged: false, statusFlag: flag};
     else fileMap[file].statusFlag = flag;
   });
