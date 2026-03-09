@@ -6663,6 +6663,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--accent);
     border-radius: 5px; padding: 5px 8px; font-size: 0.8rem; color: var(--text); outline: none;
   }
+  /* Drag-and-drop */
+  .notes-list-item .nli-drag { width: 12px; flex-shrink: 0; color: transparent; display: flex; align-items: center; cursor: grab; }
+  .notes-list-item:hover .nli-drag { color: var(--dim); }
+  body.notes-dragging, body.notes-dragging * { cursor: grabbing !important; user-select: none !important; -webkit-user-select: none !important; }
+  .notes-list-item.notes-item-dragging { opacity: 0.35; background: rgba(88,166,255,0.06) !important; }
+  .notes-folder-hdr.notes-drop-target { background: rgba(88,166,255,0.13); border-radius: 6px; color: var(--accent); outline: 2px dashed var(--accent); outline-offset: -2px; }
+  .notes-root-drop { min-height: 6px; transition: min-height 0.15s, background 0.15s; border-radius: 5px; margin: 2px 6px; }
+  .notes-root-drop.notes-drop-target { min-height: 32px; background: rgba(88,166,255,0.1); outline: 2px dashed var(--accent); outline-offset: -2px; display: flex; align-items: center; justify-content: center; font-size: 0.72rem; color: var(--accent); }
+  .notes-root-drop.notes-drop-target::after { content: "Move to root"; }
   .notes-editor-pane {
     flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative;
   }
@@ -18644,6 +18653,93 @@ function _notesFolderInputKey(e) {
   if (e.key === 'Enter') { e.preventDefault(); _notesFolderConfirm(e.target.value); }
   else if (e.key === 'Escape') { e.preventDefault(); _notesFolderCancel(); }
 }
+
+// ── Notes drag-and-drop ──
+let _notesDraggingPath = null;
+
+function _notesDragStart(e, el) {
+  _notesDraggingPath = el.dataset.path;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', _notesDraggingPath);
+  el.classList.add('notes-item-dragging');
+  document.body.classList.add('notes-dragging');
+  // Show root-drop zone only if note is inside a folder
+  const isInFolder = _notesDraggingPath && _notesDraggingPath.includes('/');
+  const rootDrop = document.getElementById('notes-root-drop');
+  if (rootDrop) rootDrop.style.display = isInFolder ? '' : 'none';
+}
+function _notesDragEnd(e) {
+  _notesDraggingPath = null;
+  document.body.classList.remove('notes-dragging');
+  document.querySelectorAll('.notes-item-dragging').forEach(el => el.classList.remove('notes-item-dragging'));
+  document.querySelectorAll('.notes-drop-target').forEach(el => el.classList.remove('notes-drop-target'));
+  const rootDrop = document.getElementById('notes-root-drop');
+  if (rootDrop) rootDrop.style.display = 'none';
+}
+function _notesDragOverFolder(e, el) {
+  if (!_notesDraggingPath) return;
+  const folder = el.dataset.folder;
+  // Don't highlight if note is already in this folder
+  const parts = _notesDraggingPath.split('/');
+  if (parts.length > 1 && parts[0] === folder) return;
+  e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+  el.classList.add('notes-drop-target');
+}
+function _notesDragOverRoot(e, el) {
+  if (!_notesDraggingPath || !_notesDraggingPath.includes('/')) return;
+  e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+  el.classList.add('notes-drop-target');
+}
+function _notesDragLeave(e, el) {
+  if (!e.relatedTarget || !el.contains(e.relatedTarget)) el.classList.remove('notes-drop-target');
+}
+async function _notesDropOnFolder(e, el) {
+  e.preventDefault();
+  el.classList.remove('notes-drop-target');
+  const path = e.dataTransfer.getData('text/plain') || _notesDraggingPath;
+  const folder = el.dataset.folder;
+  if (!path || !folder) return;
+  const parts = path.split('/');
+  if (parts.length > 1 && parts[0] === folder) return; // already there
+  const filename = parts[parts.length - 1];
+  const newPath = folder + '/' + filename;
+  await _notesMoveNote(path, newPath);
+}
+async function _notesDropOnRoot(e, el) {
+  e.preventDefault();
+  el.classList.remove('notes-drop-target');
+  const path = e.dataTransfer.getData('text/plain') || _notesDraggingPath;
+  if (!path || !path.includes('/')) return;
+  const filename = path.split('/').pop();
+  await _notesMoveNote(path, filename);
+}
+async function _notesMoveNote(oldPath, newPath) {
+  if (oldPath === newPath) return;
+  // Resolve name collision
+  const existing = new Set(_notesAllNotes.map(n => n.path));
+  if (existing.has(newPath)) {
+    const base = newPath.replace(/\.md$/, '');
+    let i = 1;
+    while (existing.has(`${base}-${i}.md`)) i++;
+    newPath = `${base}-${i}.md`;
+  }
+  const urlOld = oldPath.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/');
+  const r = await apiCall(API + '/api/notes/' + urlOld, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ move_to: newPath.replace(/\.md$/, '') })
+  });
+  if (!r || !r.ok) return;
+  // Update in-memory list
+  const entry = _notesAllNotes.find(n => n.path === oldPath);
+  if (entry) entry.path = newPath;
+  if (_notesActive?.path === oldPath) _notesActive.path = newPath;
+  localStorage.setItem('amux_last_note', newPath);
+  // Open the new folder if needed
+  const newFolder = newPath.includes('/') ? newPath.split('/')[0] : null;
+  if (newFolder) _notesFolderSetOpen(newFolder, true);
+  _notesRenderList(_notesCurrentNotes.map(n => n.path === oldPath ? {...n, path: newPath} : n));
+  _notesAllNotes = _notesCurrentNotes; // keep in sync
+}
 function _notesItemHtml(n) {
   const active = _notesActive && _notesActive.path === n.path ? ' active' : '';
   const pinned = n.pinned ? ' pinned' : '';
@@ -18651,9 +18747,14 @@ function _notesItemHtml(n) {
   const stem = n.path.replace(/\.md$/, '').split('/').pop();
   const rawName = n.name || stem;
   const displayName = /^untitled(-\d+)?$/.test(rawName) ? 'Untitled' : rawName;
-  return `<div class="notes-list-item${active}${pinned}" data-path="${esc(n.path)}" onclick="_notesOpen(this.dataset.path)">
-    <div class="nli-title">${esc(displayName)}</div>
-    <div class="nli-date">${dt}</div>
+  return `<div class="notes-list-item${active}${pinned}" data-path="${esc(n.path)}" draggable="true"
+    ondragstart="_notesDragStart(event,this)" ondragend="_notesDragEnd(event)"
+    onclick="_notesOpen(this.dataset.path)" style="display:flex;align-items:center;gap:4px;">
+    <span class="nli-drag"><svg width="8" height="12" viewBox="0 0 8 12" fill="currentColor"><circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/><circle cx="2" cy="6" r="1.2"/><circle cx="6" cy="6" r="1.2"/><circle cx="2" cy="10" r="1.2"/><circle cx="6" cy="10" r="1.2"/></svg></span>
+    <div style="flex:1;min-width:0;">
+      <div class="nli-title">${esc(displayName)}</div>
+      <div class="nli-date">${dt}</div>
+    </div>
   </div>`;
 }
 function _notesRenderList(notes) {
@@ -18673,7 +18774,8 @@ function _notesRenderList(notes) {
   for (const [folder, items] of Object.entries(folders).sort()) {
     const open = _notesFolderOpen(folder);
     html += `<div class="notes-folder-section">
-      <div class="notes-folder-hdr" onclick="_notesFolderToggle('${esc(folder)}')">
+      <div class="notes-folder-hdr" data-folder="${esc(folder)}" onclick="_notesFolderToggle('${esc(folder)}')"
+        ondragover="_notesDragOverFolder(event,this)" ondragleave="_notesDragLeave(event,this)" ondrop="_notesDropOnFolder(event,this)">
         <svg class="notes-folder-chevron${open?' open':''}" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 3h3.5l1.5 1.5H11v5.5H1V3Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
         <span class="notes-folder-name">${esc(folder)}</span>
@@ -18683,6 +18785,9 @@ function _notesRenderList(notes) {
       ${open ? `<div class="notes-folder-items">${items.map(_notesItemHtml).join('')}</div>` : ''}
     </div>`;
   }
+  // Root drop zone (only visible while dragging a note that's inside a folder)
+  html += `<div class="notes-root-drop" id="notes-root-drop"
+    ondragover="_notesDragOverRoot(event,this)" ondragleave="_notesDragLeave(event,this)" ondrop="_notesDropOnRoot(event,this)"></div>`;
   html += root.map(_notesItemHtml).join('');
   el.innerHTML = html || (!_notesFolderCreating ? '<div class="notes-list-empty">No notes yet</div>' : '');
 }
@@ -20085,6 +20190,28 @@ class CCHandler(BaseHTTPRequestHandler):
                 note_path.write_text(content)
                 _notes_version += 1
                 return self._json({"ok": True, "path": note_rel})
+            if method == "PATCH":
+                global _notes_version
+                body = self._read_body()
+                new_rel = body.get("move_to", "").strip()
+                if not new_rel or ".." in new_rel:
+                    return self._json({"error": "invalid"}, 400)
+                if not new_rel.endswith(".md"):
+                    new_rel += ".md"
+                new_path = CC_NOTES / new_rel
+                if new_path != note_path and note_path.exists():
+                    new_path.parent.mkdir(parents=True, exist_ok=True)
+                    note_path.rename(new_path)
+                    if CC_NOTES_PINS.exists():
+                        try:
+                            pins = set(json.loads(CC_NOTES_PINS.read_text()))
+                            if note_rel in pins:
+                                pins.discard(note_rel)
+                                pins.add(new_rel)
+                                CC_NOTES_PINS.write_text(json.dumps(list(pins)))
+                        except Exception: pass
+                    _notes_version += 1
+                return self._json({"ok": True, "path": new_rel})
             if method == "DELETE":
                 if note_path.exists():
                     trash_dir = CC_NOTES / ".trash"
