@@ -7330,20 +7330,29 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <button class="fe-tb-btn" onclick="loadFiles(_filesCwd)" title="Go to working directory">
       <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1 6.5 6.5 1 12 6.5M2.5 5v6.5h3V8.5h2v3h3V5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
     </button>
-    <button class="fe-tb-btn" onclick="setFilesCwd()" title="Set as working directory (CWD)">
-      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.4"/><circle cx="6.5" cy="6.5" r="2" fill="currentColor"/></svg>
+    <button class="fe-tb-btn" id="files-setcwd-btn" onclick="setFilesCwd()" title="Set as working directory">
+      <!-- pin icon -->
+      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M8.5 1.5 11.5 4.5 8 7l-1.5 3.5L5 9 4 8 .5 6.5 4 5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M5 8 2 11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
     </button>
-    <button class="fe-tb-btn" id="files-hidden-btn" onclick="toggleFilesHidden()" title="Show hidden files">.*</button>
+    <button class="fe-tb-btn" id="files-hidden-btn" onclick="toggleFilesHidden()" title="Show hidden files">
+      <!-- eye icon -->
+      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1 6.5C1 6.5 3 3 6.5 3S12 6.5 12 6.5 10 10 6.5 10 1 6.5 1 6.5Z" stroke="currentColor" stroke-width="1.3"/><circle cx="6.5" cy="6.5" r="1.5" stroke="currentColor" stroke-width="1.3"/></svg>
+    </button>
     <button class="fe-tb-btn" onclick="triggerFilesUpload()" title="Upload files">
       <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 9V3M3.5 5.5l3-3 3 3M2 10.5h9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
     <input type="file" id="files-upload-input" multiple style="display:none;" onchange="handleFilesUpload(this.files)">
-    <button class="fe-tb-btn" onclick="cacheFilesDir(_filesPath)" title="Cache for offline">
-      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1v8M4 6.5l2.5 2.5L9 6.5M2 10.5h9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <button class="fe-tb-btn" onclick="cacheFilesDir(_filesPath)" title="Save for offline">
+      <!-- floppy disk icon -->
+      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="1" y="1" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/><rect x="3.5" y="1" width="5" height="3.5" rx="0.5" stroke="currentColor" stroke-width="1.2"/><rect x="2.5" y="6.5" width="8" height="4.5" rx="0.5" stroke="currentColor" stroke-width="1.2"/></svg>
     </button>
     <span id="files-cache-status" style="font-size:0.7rem;color:var(--dim);white-space:nowrap;flex-shrink:0;"></span>
     <button class="fe-tb-btn" onclick="loadFiles(_filesPath)" title="Refresh">
       <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M11 6.5A4.5 4.5 0 1 1 8 2.3M11 2v4H7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+    </button>
+    <button class="fe-tb-btn" id="files-set-session-btn" onclick="setFilesSessionDir()" title="Set as session working directory" style="display:none;gap:4px;align-items:center;font-size:0.72rem;padding:3px 7px;border-radius:5px;background:var(--accent);color:#000;font-weight:600;white-space:nowrap;">
+      <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="flex-shrink:0"><path d="M5.5 1 10 5.5 5.5 10 1 5.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+      <span id="files-set-session-label">Set dir</span>
     </button>
   </div>
   <!-- Search -->
@@ -12898,8 +12907,35 @@ async function cacheFilesDir(rootPath, maxDepth = 2) {
 function openExplore(startPath, session) {
   const path = startPath || '/';
   _filesPath = path;
+  _exploreSession = session || null;
   closePeek();
   switchView('files');
+  _updateFilesSessionBtn();
+}
+function _updateFilesSessionBtn() {
+  const btn = document.getElementById('files-set-session-btn');
+  const lbl = document.getElementById('files-set-session-label');
+  if (!btn) return;
+  if (_exploreSession) {
+    btn.style.display = 'inline-flex';
+    if (lbl) lbl.textContent = 'Set dir for ' + _exploreSession;
+  } else {
+    btn.style.display = 'none';
+  }
+}
+async function setFilesSessionDir() {
+  if (!_exploreSession) return;
+  const dir = _filesPath;
+  try {
+    await fetch(API + '/api/sessions/' + encodeURIComponent(_exploreSession) + '/config', {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ dir })
+    });
+    const btn = document.getElementById('files-set-session-btn');
+    const lbl = document.getElementById('files-set-session-label');
+    if (lbl) { lbl.textContent = '✓ Set!'; setTimeout(() => { if (lbl) lbl.textContent = 'Set dir for ' + _exploreSession; }, 2000); }
+    await fetchSessions();
+  } catch(e) { console.error('setFilesSessionDir:', e); }
 }
 function closeExplore() {
   document.getElementById('explore-overlay').classList.remove('active');
