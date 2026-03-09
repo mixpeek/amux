@@ -7057,6 +7057,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .map-geocoder-result-save:hover { opacity: 0.85; }
   .map-geocoder-loading { padding: 10px 14px; font-size: 0.82rem; color: var(--dim); text-align: center; }
   .map-geocoder-attribution { padding: 4px 14px; font-size: 0.7rem; color: var(--dim); text-align: right; border-top: 1px solid var(--border); }
+  .map-geocoder-preview { width: 72px; height: 52px; object-fit: cover; border-radius: 6px; flex-shrink: 0; border: 1px solid var(--border); }
+  .map-geocoder-gmaps-link { font-size: 0.7rem; color: var(--accent); text-decoration: none; display: inline-block; margin-top: 2px; }
+  .map-geocoder-gmaps-link:hover { text-decoration: underline; }
   @media (max-width: 600px) {
     #map-view { height: calc(100dvh - 122px); background: var(--bg); }
     .map-sidebar { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 1005; width: 100% !important; min-width: 0 !important; box-shadow: none; overflow: hidden; }
@@ -14489,6 +14492,7 @@ let _map = null;
 let _mapPins = [];
 let _mapTags = [];
 let _mapSettings = { defaultZoom: 12, defaultLat: 40.7128, defaultLng: -74.0060, sidebarOpen: true };
+let _mapGoogleKey = '';
 let _mapFilterTags = new Set();
 let _mapSearchQ = '';
 let _mapMarkers = {};
@@ -14503,6 +14507,7 @@ function _mapLoad() {
     _mapPins = data.pins || [];
     _mapTags = data.tags || [];
     _mapSettings = Object.assign(_mapSettings, data.settings || {});
+    _mapGoogleKey = (data.settings || {}).googleMapsKey || '';
     _mapRenderTags();
     _mapRenderPins();
     _mapRenderMarkers();
@@ -14894,6 +14899,17 @@ function _mapGeoTypeIcon(r) {
   return '&#x1F4CD;';
 }
 
+function _mapGeoStaticUrl(lat, lon, size) {
+  if (!_mapGoogleKey) return '';
+  return 'https://maps.googleapis.com/maps/api/staticmap?center=' + lat + ',' + lon +
+    '&zoom=15&size=' + (size || '120x80') + '&scale=2&markers=color:red|' + lat + ',' + lon +
+    '&key=' + _mapGoogleKey;
+}
+
+function _mapGeoMapsUrl(lat, lon, name) {
+  return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent((name || '') + ' ' + lat + ',' + lon).trim();
+}
+
 function _mapGeoRenderResults(data) {
   var results = document.getElementById('map-geocoder-results');
   if (!results) return;
@@ -14901,11 +14917,17 @@ function _mapGeoRenderResults(data) {
   var isGoogle = data.length > 0 && data[0].source === 'google';
   results.innerHTML = data.map(function(r, i) {
     var name = (r.name && r.name.length > 0) ? r.name : r.display_name.split(',')[0];
+    var staticUrl = _mapGeoStaticUrl(r.lat, r.lon);
+    var mapsUrl = _mapGeoMapsUrl(r.lat, r.lon, name);
+    var preview = staticUrl
+      ? '<img class="map-geocoder-preview" src="' + staticUrl + '" alt="" onerror="this.style.display=\'none\'">'
+      : '<span class="map-geocoder-result-icon">' + _mapGeoTypeIcon(r) + '</span>';
     return '<div class="map-geocoder-result" onclick="_mapGeoSelect(' + i + ')">' +
-      '<span class="map-geocoder-result-icon">' + _mapGeoTypeIcon(r) + '</span>' +
+      preview +
       '<div class="map-geocoder-result-text">' +
         '<div class="map-geocoder-result-name">' + escHtml(name) + '</div>' +
         '<div class="map-geocoder-result-addr">' + escHtml(r.display_name) + '</div>' +
+        '<a class="map-geocoder-gmaps-link" href="' + mapsUrl + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">View on Google Maps ↗</a>' +
       '</div>' +
       '<button class="map-geocoder-result-save" onclick="event.stopPropagation();_mapGeoSavePin(' + i + ')">+ Pin</button>' +
     '</div>';
@@ -14920,12 +14942,17 @@ function _mapGeoSelect(idx) {
   _map.flyTo([lat, lng], 16, { duration: 1 });
   if (window._mapGeoTempMarker) window._mapGeoTempMarker.remove();
   var name = (r.name && r.name.length > 0) ? r.name : r.display_name.split(',')[0];
+  var mapsUrl = _mapGeoMapsUrl(lat, lng, name);
+  var staticUrl = _mapGeoStaticUrl(lat, lng, '240x120');
   window._mapGeoTempMarker = L.marker([lat, lng]).addTo(_map).bindPopup(
-    '<div style="min-width:160px;font-family:inherit;font-size:13px">' +
+    '<div style="min-width:200px;font-family:inherit;font-size:13px">' +
+    (staticUrl ? '<img src="' + staticUrl + '" style="width:100%;border-radius:6px;margin-bottom:6px;display:block" onerror="this.style.display=\'none\'">' : '') +
     '<strong>' + escHtml(name) + '</strong><br>' +
     '<span style="font-size:11px;color:#888">' + escHtml(r.display_name) + '</span><br>' +
-    '<button onclick="_mapGeoSavePin(' + idx + ')" style="margin-top:6px;padding:3px 10px;font-size:12px;cursor:pointer;background:var(--accent,#58a6ff);color:#fff;border:none;border-radius:6px;font-family:inherit">+ Save as Pin</button>' +
-    '</div>'
+    '<div style="margin-top:6px;display:flex;gap:6px;align-items:center">' +
+    '<button onclick="_mapGeoSavePin(' + idx + ')" style="padding:3px 10px;font-size:12px;cursor:pointer;background:var(--accent,#58a6ff);color:#fff;border:none;border-radius:6px;font-family:inherit">+ Save as Pin</button>' +
+    '<a href="' + mapsUrl + '" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent,#58a6ff);text-decoration:none">View on Google Maps ↗</a>' +
+    '</div></div>'
   ).openPopup();
   var results = document.getElementById('map-geocoder-results');
   if (results) results.style.display = 'none';
@@ -20092,6 +20119,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 if CC_MAP.exists():
                     try: data = json.loads(CC_MAP.read_text())
                     except Exception: pass
+                data.setdefault("settings", {})["googleMapsKey"] = os.environ.get("GOOGLE_MAPS_API_KEY", "")
                 return self._json(data)
             if method == "POST":
                 body = json.loads(self._read_body())
@@ -22875,6 +22903,11 @@ def _watch_self(server):
                 t = threading.Thread(target=server.shutdown, daemon=True)
                 t.start()
                 t.join(timeout=3)
+                # Close the listening socket so the new process can bind immediately
+                try:
+                    server.server_close()
+                except Exception:
+                    pass
                 os.execv(sys.executable, [sys.executable] + sys.argv)
         except Exception:
             pass
@@ -23115,7 +23148,16 @@ def main():
                 def log_message(self, *a): pass
             class IPv4HTTPServer(HTTPServer):
                 address_family = socket.AF_INET
-            IPv4HTTPServer(("0.0.0.0", port + 1), H).serve_forever()
+                allow_reuse_address = True
+                allow_reuse_port = True
+            for _att in range(10):
+                try:
+                    IPv4HTTPServer(("0.0.0.0", port + 1), H).serve_forever()
+                    break
+                except OSError:
+                    if _att < 9:
+                        time.sleep(2)
+                    # silently give up after retries — cert server is optional
         threading.Thread(target=_cert_server, args=(port,), daemon=True).start()
         print(f"  Cert:    http://{lan_ip}:{port + 1}/api/cert")
 
