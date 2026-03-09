@@ -19628,6 +19628,16 @@ class CCHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
+        # Cap SSE connection lifetime to avoid thread accumulation.
+        # Browser EventSource auto-reconnects, so this is transparent.
+        _sse_max_lifetime = 300  # 5 minutes
+        _sse_start = time.time()
+        # Set socket timeout so dead connections are detected quickly
+        try:
+            self.connection.settimeout(10)
+        except Exception:
+            pass
+
         last_sessions_json = ""
         last_board_json = ""
         heartbeat_counter = 0
@@ -19639,6 +19649,12 @@ class CCHandler(BaseHTTPRequestHandler):
         try:
             while True:
                 now = time.time()
+
+                # Exit after max lifetime to prevent thread accumulation
+                if now - _sse_start > _sse_max_lifetime:
+                    self.wfile.write(b"event: reconnect\ndata: {}\n\n")
+                    self.wfile.flush()
+                    break
 
                 # Sessions — use shared cache to avoid redundant subprocess calls
                 sc = _sse_cache["sessions"]
