@@ -1,0 +1,39 @@
+name: iOS — Setup Certs (one-time)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create-certs:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3.6'
+          bundler-cache: true
+          working-directory: ios
+
+      - name: Set up SSH for match
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$MATCH_SSH_KEY" > ~/.ssh/match_key
+          chmod 600 ~/.ssh/match_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          git config --global core.sshCommand "ssh -i ~/.ssh/match_key"
+        env:
+          MATCH_SSH_KEY: ${{ secrets.MATCH_SSH_KEY }}
+
+      - name: Create certs & provisioning profiles
+        run: bundle exec fastlane create_certs
+        env:
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
