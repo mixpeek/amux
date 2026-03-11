@@ -51,5 +51,6 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         NSFaceIDUsageDescription: "Used to protect access to your amux dashboard"
         ITSAppUsesNonExemptEncryption: false
+        CFBundleIconName: AppIcon
     entitlements:
       path: AmuxApp/AmuxApp.entitlements
