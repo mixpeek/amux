@@ -14886,7 +14886,7 @@ function _mapRenderMarkers() {
         '<div style="font-weight:600;margin-bottom:4px">' + escHtml(pin.name||'Unnamed') + '</div>' +
         (pin.desc ? '<div style="font-size:12px;color:#888;margin-bottom:4px">' + escHtml(pin.desc) + '</div>' : '') +
         (tagChips ? '<div style="margin-bottom:4px">' + tagChips + '</div>' : '') +
-        '<div style="font-size:11px;color:#999;margin-bottom:6px">' + parseFloat(pin.lat).toFixed(5) + ', ' + parseFloat(pin.lng).toFixed(5) + ' \u2022 <a href="https://www.google.com/maps?q=' + parseFloat(pin.lat).toFixed(6) + ',' + parseFloat(pin.lng).toFixed(6) + '" target="_blank" rel="noopener" style="color:var(--accent,#58a6ff);text-decoration:none">Google Maps \u2197</a></div>' +
+        '<div style="font-size:11px;color:#999;margin-bottom:6px">' + parseFloat(pin.lat).toFixed(5) + ', ' + parseFloat(pin.lng).toFixed(5) + ' \u2022 <a href="' + _mapGeoMapsUrl(pin.lat, pin.lng, pin.name) + '" target="_blank" rel="noopener" style="color:var(--accent,#58a6ff);text-decoration:none">Google Maps \u2197</a></div>' +
         '<button onclick="_mapOpenPinModal(\x27' + pin.id + '\x27)" style="padding:2px 8px;font-size:12px;cursor:pointer;border:1px solid #aaa;border-radius:4px;background:transparent;color:inherit">Edit</button>' +
       '</div>'
     );
