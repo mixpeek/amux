@@ -18,6 +18,9 @@ R2_ENDPOINT           = f"https://{CF_ACCOUNT_ID}.r2.cloudflarestorage.com"
 R2_BUCKET             = "amux-cloud-users"
 COOKIE_SECRET         = os.environ.get("COOKIE_SECRET", "change-me")
 ANTHROPIC_API_KEY     = os.environ.get("ANTHROPIC_API_KEY", "")
+STRIPE_SECRET_KEY     = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRO_PRICE_ID   = os.environ.get("STRIPE_PRO_PRICE_ID", "")
 
 PORT          = int(os.environ.get("GATEWAY_PORT", "8080"))
 COMPOSE_TPL   = os.path.join(os.path.dirname(__file__), "../docker/docker-compose.template.yml")
@@ -173,8 +176,19 @@ def get_db():
             plan        TEXT NOT NULL DEFAULT 'free',
             port        INTEGER UNIQUE,
             created_at  INTEGER NOT NULL,
-            last_seen   INTEGER NOT NULL
+            last_seen   INTEGER NOT NULL,
+            stripe_customer_id TEXT,
+            stripe_subscription_id TEXT
         );
+    """)
+    # Migrate: add stripe columns if missing
+    try:
+        conn.execute("SELECT stripe_customer_id FROM users LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT")
+        conn.execute("ALTER TABLE users ADD COLUMN stripe_subscription_id TEXT")
+        conn.commit()
+    conn.executescript("""
         CREATE TABLE IF NOT EXISTS waitlist (
             id    INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT NOT NULL UNIQUE,
@@ -616,6 +630,53 @@ class Handler(BaseHTTPRequestHandler):
             except sqlite3.IntegrityError:
                 return self._json({"ok": True, "already": True})
 
+        # ── Public: Stripe webhook (signature-verified, no auth cookie needed) ──
+        if path == "/api/stripe/webhook" and self.command == "POST":
+            if not STRIPE_SECRET_KEY:
+                return self._json({"error": "stripe not configured"}, 503)
+            length = int(self.headers.get("Content-Length", 0))
+            payload = self.rfile.read(length)
+            sig = self.headers.get("Stripe-Signature", "")
+            try:
+                import stripe
+                stripe.api_key = STRIPE_SECRET_KEY
+                event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+            except Exception as e:
+                return self._json({"error": f"webhook verify failed: {e}"}, 400)
+            db = get_db()
+            etype = event["type"]
+            obj = event["data"]["object"]
+            if etype == "checkout.session.completed":
+                cust_id = obj.get("customer")
+                clerk_uid = obj.get("client_reference_id")
+                sub_id = obj.get("subscription")
+                if clerk_uid and cust_id:
+                    with _db_lock:
+                        db.execute(
+                            "UPDATE users SET plan='pro', stripe_customer_id=?, stripe_subscription_id=? WHERE id=?",
+                            (cust_id, sub_id, clerk_uid))
+                        db.commit()
+                    print(f"[stripe] activated pro for {clerk_uid} cust={cust_id}", flush=True)
+            elif etype == "invoice.paid":
+                cust_id = obj.get("customer")
+                if cust_id:
+                    with _db_lock:
+                        db.execute("UPDATE users SET plan='pro' WHERE stripe_customer_id=?", (cust_id,))
+                        db.commit()
+            elif etype in ("customer.subscription.deleted", "customer.subscription.paused"):
+                cust_id = obj.get("customer")
+                if cust_id:
+                    with _db_lock:
+                        db.execute(
+                            "UPDATE users SET plan='free', stripe_subscription_id=NULL WHERE stripe_customer_id=?",
+                            (cust_id,))
+                        db.commit()
+                    print(f"[stripe] downgraded {cust_id} to free", flush=True)
+            elif etype == "invoice.payment_failed":
+                cust_id = obj.get("customer")
+                print(f"[stripe] payment failed for {cust_id}", flush=True)
+            return self._json({"ok": True})
+
         # ── Public: exchange Clerk JWT for session cookie ──
         if path == "/api/cloud-logout" and self.command in ("GET", "POST"):
             sec = self._secure_cookie_flags()
@@ -858,6 +919,48 @@ class Handler(BaseHTTPRequestHandler):
             db.execute("DELETE FROM org_members WHERE owner_id=? AND member_id=?", (user_id, mid))
             db.commit()
             return self._json({"ok": True})
+
+        # ── Stripe billing (authenticated) ────────────────────────────────────
+        if path == "/api/stripe/checkout" and self.command == "POST":
+            if not STRIPE_SECRET_KEY or not STRIPE_PRO_PRICE_ID:
+                return self._json({"error": "billing not configured"}, 503)
+            import stripe
+            stripe.api_key = STRIPE_SECRET_KEY
+            base = self._base_url()
+            session = stripe.checkout.Session.create(
+                mode="subscription",
+                line_items=[{"price": STRIPE_PRO_PRICE_ID, "quantity": 1}],
+                client_reference_id=user_id,
+                customer_email=user_email,
+                success_url=base + "/?billing=success",
+                cancel_url=base + "/?billing=cancel",
+                allow_promotion_codes=True,
+            )
+            return self._json({"url": session.url})
+
+        if path == "/api/stripe/portal" and self.command == "POST":
+            if not STRIPE_SECRET_KEY:
+                return self._json({"error": "billing not configured"}, 503)
+            row_u = db.execute("SELECT stripe_customer_id FROM users WHERE id=?", (user_id,)).fetchone()
+            cust_id = row_u["stripe_customer_id"] if row_u else None
+            if not cust_id:
+                return self._json({"error": "no billing account"}, 404)
+            import stripe
+            stripe.api_key = STRIPE_SECRET_KEY
+            base = self._base_url()
+            ps = stripe.billing_portal.Session.create(
+                customer=cust_id,
+                return_url=base + "/",
+            )
+            return self._json({"url": ps.url})
+
+        if path == "/api/stripe/status" and self.command == "GET":
+            row_u = db.execute("SELECT plan, stripe_customer_id FROM users WHERE id=?", (user_id,)).fetchone()
+            return self._json({
+                "plan": row_u["plan"] if row_u else "free",
+                "has_billing": bool(row_u and row_u["stripe_customer_id"]),
+                "stripe_configured": bool(STRIPE_SECRET_KEY),
+            })
 
         # ── Determine target container ─────────────────────────────────────────
         # Org members always share the owner's container — no separate workspace.

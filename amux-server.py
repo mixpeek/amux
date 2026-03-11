@@ -7084,6 +7084,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           <div id="settings-apikey-status" style="font-size:0.7rem;color:var(--dim);margin-top:4px;"></div>
         </div>
         <div class="settings-sep"></div>
+        <div class="settings-section" id="settings-billing-section" style="display:none;">
+          <div class="settings-section-label">Plan &amp; Billing</div>
+          <div id="settings-billing-info" style="font-size:0.78rem;color:var(--dim);">Loading…</div>
+        </div>
+        <div class="settings-sep" id="settings-billing-sep" style="display:none;"></div>
         <div class="settings-section" id="settings-team-section">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
             <div class="settings-section-label" style="margin:0;">Team</div>
@@ -17248,7 +17253,53 @@ async function openTeamInvite() {
   setTimeout(() => { try { navigator.clipboard.writeText(data.url); } catch(e) {} }, 100);
 }
 
-// Load team + API keys whenever settings opens
+// ── Billing ─────────────────────────────────────────────────────────────────
+async function loadBillingSection() {
+  const sec = document.getElementById('settings-billing-section');
+  const sep = document.getElementById('settings-billing-sep');
+  const info = document.getElementById('settings-billing-info');
+  if (!sec || !info) return;
+  try {
+    const r = await fetch('/api/stripe/status');
+    if (!r.ok) { sec.style.display = 'none'; if (sep) sep.style.display = 'none'; return; }
+    const d = await r.json();
+    if (!d.stripe_configured) { sec.style.display = 'none'; if (sep) sep.style.display = 'none'; return; }
+    sec.style.display = '';
+    if (sep) sep.style.display = '';
+    if (d.plan === 'pro') {
+      info.innerHTML = '<div style="display:flex;align-items:center;gap:8px;">' +
+        '<span style="background:var(--accent);color:#000;border-radius:4px;padding:1px 8px;font-size:0.72rem;font-weight:600;">PRO</span>' +
+        '<span>Active subscription</span></div>' +
+        (d.has_billing ? '<button class="btn" style="font-size:0.7rem;padding:3px 10px;margin-top:8px;" onclick="openBillingPortal()">Manage billing</button>' : '');
+    } else {
+      info.innerHTML = '<div style="margin-bottom:8px;">Free plan — 1 session, idle timeout after 10 min</div>' +
+        '<div style="margin-bottom:6px;font-weight:600;color:var(--text);">Pro — $20/mo</div>' +
+        '<div style="font-size:0.72rem;color:var(--dim);margin-bottom:8px;">Unlimited sessions · No idle timeout · Team workspaces</div>' +
+        '<button class="btn primary" style="font-size:0.78rem;padding:5px 16px;" onclick="startCheckout()">Upgrade to Pro</button>' +
+        (d.has_billing ? '<button class="btn" style="font-size:0.7rem;padding:3px 10px;margin-left:8px;" onclick="openBillingPortal()">Manage billing</button>' : '');
+    }
+  } catch(e) { sec.style.display = 'none'; if (sep) sep.style.display = 'none'; }
+}
+
+async function startCheckout() {
+  try {
+    const r = await fetch('/api/stripe/checkout', { method: 'POST' });
+    const d = await r.json();
+    if (d.url) location.href = d.url;
+    else alert(d.error || 'Failed to start checkout');
+  } catch(e) { alert('Connection error'); }
+}
+
+async function openBillingPortal() {
+  try {
+    const r = await fetch('/api/stripe/portal', { method: 'POST' });
+    const d = await r.json();
+    if (d.url) location.href = d.url;
+    else alert(d.error || 'No billing account');
+  } catch(e) { alert('Connection error'); }
+}
+
+// Load team + API keys + billing whenever settings opens
 const _origToggleSettings = toggleSettings;
 toggleSettings = function() {
   _origToggleSettings();
@@ -17256,6 +17307,7 @@ toggleSettings = function() {
   if (menu && menu.style.display !== 'none') {
     loadTeamSection();
     loadApiKeys();
+    loadBillingSection();
   }
 };
 
