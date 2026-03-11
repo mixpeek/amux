@@ -17725,12 +17725,8 @@ function _switchServerUrl(idx, evt) {
     deviceName: localStorage.getItem('amux_device_name') || ''
   }));
   const url = s.url.replace(/\/+$/, '') + '/?_sync=' + encodeURIComponent(payload);
-  const isPWA = navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
-  if (isPWA) {
-    window.open(url, '_blank');
-  } else {
-    location.href = url;
-  }
+  // Always navigate in the same window — avoid opening a new browser instance in PWA
+  location.href = url;
 }
 
 function switchServer(idx) {
@@ -17748,16 +17744,8 @@ function switchServer(idx) {
     deviceName: localStorage.getItem('amux_device_name') || ''
   }));
   const url = s.url + '/?_sync=' + encodeURIComponent(payload);
-  // Use <a> element click — more reliable than location.href in PWA standalone mode
-  // (location.href to a different origin is silently ignored on some iOS PWA builds)
-  const isPWA = navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
-  const a = document.createElement('a');
-  a.href = url;
-  if (isPWA) a.target = '_blank'; // opens in-app browser on iOS PWA
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  // Navigate in same window — never open a new browser instance
+  location.href = url;
 }
 
 // ═══════ SETTINGS DROPDOWN ═══════
