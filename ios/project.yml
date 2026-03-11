@@ -16,6 +16,14 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: "16.0"
     TARGETED_DEVICE_FAMILY: "1,2"  # iPhone + iPad
     SWIFT_STRICT_CONCURRENCY: minimal
+    CODE_SIGN_STYLE: Manual
+  configs:
+    Debug:
+      CODE_SIGN_IDENTITY: "Apple Development"
+      PROVISIONING_PROFILE_SPECIFIER: ""
+    Release:
+      CODE_SIGN_IDENTITY: "Apple Distribution"
+      PROVISIONING_PROFILE_SPECIFIER: "match AppStore com.EthanSteininger.nextup"
 
 targets:
   AmuxApp:
