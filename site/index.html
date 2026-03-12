@@ -594,6 +594,37 @@ html[data-theme="dark"] .cta-pill-primary:hover { opacity: 0.85; }
 .cta-section p a { color: var(--dim); text-decoration: underline; transition: color 0.15s; }
 .cta-section p a:hover { color: var(--text); }
 
+/* ── INLINE VIDEO PLAYER ── */
+.demo-video-section {
+  max-width: 820px; margin: 0 auto;
+  padding: 0 2rem 5rem;
+}
+.demo-video-wrap {
+  position: relative; border-radius: 12px; overflow: hidden;
+  background: #000; cursor: pointer;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+  aspect-ratio: 16/9;
+}
+.demo-video-wrap video {
+  width: 100%; height: 100%; display: block; object-fit: cover;
+}
+.demo-play-btn {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.35); transition: background 0.2s;
+  pointer-events: none;
+}
+.demo-video-wrap.playing .demo-play-btn { opacity: 0; }
+.demo-play-icon {
+  width: 64px; height: 64px; border-radius: 50%;
+  background: rgba(255,255,255,0.92);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+  transition: transform 0.15s, background 0.15s;
+}
+.demo-video-wrap:hover .demo-play-icon { transform: scale(1.08); background: #fff; }
+.demo-play-icon svg { margin-left: 4px; }
+
 /* ── LIGHTBOX ── */
 #demo-lightbox {
   display: none; position: fixed; inset: 0; z-index: 999;
@@ -720,6 +751,25 @@ html[data-theme="dark"] .cta-pill-primary:hover { opacity: 0.85; }
   </div>
 </div>
 
+<!-- INLINE DEMO VIDEO -->
+<div class="demo-video-section">
+  <div class="demo-video-wrap" id="inline-video-wrap">
+    <video id="inline-video"
+      src="https://ethan-personal.s3.us-east-2.amazonaws.com/amux/videos/amux-demo.mp4"
+      preload="none"
+      poster="https://ethan-personal.s3.us-east-2.amazonaws.com/amux/screenshots/sessions-overview.jpg"
+      playsinline
+      controls
+      loop
+      muted></video>
+    <div class="demo-play-btn" id="inline-play-btn">
+      <div class="demo-play-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="#0a0a0a" aria-hidden="true"><polygon points="5,3 19,12 5,21"/></svg>
+      </div>
+    </div>
+  </div>
+</div>
+
 <hr class="divider">
 
 <!-- PROBLEMS -->
@@ -759,14 +809,14 @@ html[data-theme="dark"] .cta-pill-primary:hover { opacity: 0.85; }
   <div class="section-title">Your fleet at a glance</div>
   <div class="section-desc">Session cards, live terminal peek, kanban board, and a mobile PWA — all in one place.</div>
   <div class="slides-frame" id="slides-frame">
-    <img src="screenshots/sessions-overview.jpg" alt="Session Dashboard" class="active">
-    <img src="screenshots/session-expanded.jpg" alt="Session Card">
-    <img src="screenshots/search-and-send.jpg" alt="Search and Send">
-    <img src="screenshots/live-terminal.jpg" alt="Live Terminal">
-    <img src="screenshots/file-explorer.jpg" alt="File Explorer">
-    <img src="screenshots/session-memory.jpg" alt="Session Memory">
-    <img src="screenshots/kanban-board.jpg" alt="Kanban Board">
-    <img src="screenshots/calendar.jpg" alt="Calendar">
+    <img src="https://ethan-personal.s3.us-east-2.amazonaws.com/amux/screenshots/sessions-overview.jpg" alt="Session Dashboard" class="active" loading="lazy">
+    <img src="https://ethan-personal.s3.us-east-2.amazonaws.com/amux/screenshots/session-expanded.jpg" alt="Session Card" loading="lazy">
+    <img src="https://ethan-personal.s3.us-east-2.amazonaws.com/amux/screenshots/search-and-send.jpg" alt="Search and Send" loading="lazy">
+    <img src="https://ethan-personal.s3.us-east-2.amazonaws.com/amux/screenshots/live-terminal.jpg" alt="Live Terminal" loading="lazy">
+    <img src="https://ethan-personal.s3.us-east-2.amazonaws.com/amux/screenshots/file-explorer.jpg" alt="File Explorer" loading="lazy">
+    <img src="https://ethan-personal.s3.us-east-2.amazonaws.com/amux/screenshots/session-memory.jpg" alt="Session Memory" loading="lazy">
+    <img src="https://ethan-personal.s3.us-east-2.amazonaws.com/amux/screenshots/kanban-board.jpg" alt="Kanban Board" loading="lazy">
+    <img src="https://ethan-personal.s3.us-east-2.amazonaws.com/amux/screenshots/calendar.jpg" alt="Calendar" loading="lazy">
     <div class="slides-nav">
       <button id="slides-prev" aria-label="Previous">&#8249;</button>
       <button id="slides-next" aria-label="Next">&#8250;</button>
@@ -915,7 +965,7 @@ html[data-theme="dark"] .cta-pill-primary:hover { opacity: 0.85; }
 <!-- Video lightbox -->
 <div id="demo-lightbox" onclick="closeLightbox()">
   <button id="demo-lightbox-close" onclick="closeLightbox()" aria-label="Close">x</button>
-  <video id="demo-video" src="amux.mp4" width="920" loop muted playsinline controls onclick="event.stopPropagation()"></video>
+  <video id="demo-video" src="https://ethan-personal.s3.us-east-2.amazonaws.com/amux/videos/amux-demo.mp4" preload="none" width="920" loop muted playsinline controls onclick="event.stopPropagation()"></video>
 </div>
 
 <script>
@@ -928,15 +978,16 @@ var _ro = new IntersectionObserver(function(entries) {
 document.querySelectorAll('.reveal').forEach(function(el) { _ro.observe(el); });
 
 // Slideshow
+var CDN = 'https://ethan-personal.s3.us-east-2.amazonaws.com/amux/screenshots/';
 var slides = [
-  { img: 'screenshots/sessions-overview.jpg',  label: 'Session Dashboard',     desc: 'All running agents at a glance -- live status, token spend, model, and current task.' },
-  { img: 'screenshots/session-expanded.jpg',   label: 'Expanded Session Card', desc: 'Inline live output with quick-action chips and a send bar, without leaving the sessions list.' },
-  { img: 'screenshots/search-and-send.jpg',    label: 'Search & Send',         desc: 'Full-text search across all session output. Click a match to jump to it and send commands inline.' },
-  { img: 'screenshots/live-terminal.jpg',      label: 'Live Terminal Peek',    desc: 'Full scrollback with search, file previews, and syntax-highlighted diffs. No terminal attachment needed.' },
-  { img: 'screenshots/file-explorer.jpg',      label: 'File Explorer',         desc: "Browse the agent's working directory from the dashboard. Click any file to preview it." },
-  { img: 'screenshots/session-memory.jpg',     label: 'Session Memory',        desc: 'Per-session markdown context that persists across restarts. Global memory shared across all agents.' },
-  { img: 'screenshots/kanban-board.jpg',       label: 'Kanban Board',          desc: 'SQLite-backed board with auto-generated issue keys, tags, per-agent ownership, and custom columns.' },
-  { img: 'screenshots/calendar.jpg',           label: 'Calendar & Scheduler',  desc: 'Board items with due dates appear as calendar events. Built-in cron for recurring agent commands.' }
+  { img: CDN+'sessions-overview.jpg',  label: 'Session Dashboard',     desc: 'All running agents at a glance -- live status, token spend, model, and current task.' },
+  { img: CDN+'session-expanded.jpg',   label: 'Expanded Session Card', desc: 'Inline live output with quick-action chips and a send bar, without leaving the sessions list.' },
+  { img: CDN+'search-and-send.jpg',    label: 'Search & Send',         desc: 'Full-text search across all session output. Click a match to jump to it and send commands inline.' },
+  { img: CDN+'live-terminal.jpg',      label: 'Live Terminal Peek',    desc: 'Full scrollback with search, file previews, and syntax-highlighted diffs. No terminal attachment needed.' },
+  { img: CDN+'file-explorer.jpg',      label: 'File Explorer',         desc: "Browse the agent's working directory from the dashboard. Click any file to preview it." },
+  { img: CDN+'session-memory.jpg',     label: 'Session Memory',        desc: 'Per-session markdown context that persists across restarts. Global memory shared across all agents.' },
+  { img: CDN+'kanban-board.jpg',       label: 'Kanban Board',          desc: 'SQLite-backed board with auto-generated issue keys, tags, per-agent ownership, and custom columns.' },
+  { img: CDN+'calendar.jpg',           label: 'Calendar & Scheduler',  desc: 'Board items with due dates appear as calendar events. Built-in cron for recurring agent commands.' }
 ];
 var si = 0, stimer;
 var imgs = document.querySelectorAll('#slides-frame img');
@@ -961,6 +1012,23 @@ function resetTimer() { clearInterval(stimer); stimer = setInterval(function() {
 document.getElementById('slides-prev').addEventListener('click', function(e) { e.stopPropagation(); goTo(si - 1); resetTimer(); });
 document.getElementById('slides-next').addEventListener('click', function(e) { e.stopPropagation(); goTo(si + 1); resetTimer(); });
 resetTimer();
+
+// Inline video play button
+var inlineWrap = document.getElementById('inline-video-wrap');
+var inlineVid = document.getElementById('inline-video');
+var inlinePlayBtn = document.getElementById('inline-play-btn');
+inlineWrap.addEventListener('click', function() {
+  if (inlineVid.paused) {
+    inlineVid.play();
+    inlineWrap.classList.add('playing');
+  } else {
+    inlineVid.pause();
+    inlineWrap.classList.remove('playing');
+  }
+});
+inlineVid.addEventListener('ended', function() { inlineWrap.classList.remove('playing'); });
+inlineVid.addEventListener('pause', function() { inlineWrap.classList.remove('playing'); });
+inlineVid.addEventListener('play', function() { inlineWrap.classList.add('playing'); });
 
 // Video lightbox
 var lb = document.getElementById('demo-lightbox');
