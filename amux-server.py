@@ -99,42 +99,6 @@ def slog(*args):
     except Exception:
         pass
 
-# ── Browser automation state ──────────────────────────────────────────────────
-_browser_lock = threading.Lock()
-_browser_state: dict = {"pw": None, "ctx": None, "page": None}
-
-def _pw_screenshot_dir():
-    d = _amux_home / "browser-screenshots"
-    d.mkdir(exist_ok=True)
-    return d
-
-def _pw_profile_path(profile_name: str) -> str:
-    if not profile_name or profile_name == "default":
-        return str(_amux_home / "playwright-auth" / "profile")
-    return str(_amux_home / "playwright-auth" / "profiles" / profile_name)
-
-def _pw_list_profiles() -> list:
-    profiles_dir = _amux_home / "playwright-auth" / "profiles"
-    if not profiles_dir.exists():
-        return []
-    return sorted(p.name for p in profiles_dir.iterdir() if p.is_dir())
-
-def _pw_stop_session():
-    """Stop the active browser session (call while holding _browser_lock)."""
-    if _browser_state["ctx"]:
-        try:
-            _browser_state["ctx"].close()
-        except Exception:
-            pass
-        _browser_state["ctx"] = None
-    if _browser_state["pw"]:
-        try:
-            _browser_state["pw"].stop()
-        except Exception:
-            pass
-        _browser_state["pw"] = None
-    _browser_state["page"] = None
-
 # SSE shared cache — avoids redundant subprocess calls when multiple tabs connect
 _sse_cache = {
     "sessions": {"data": None, "json": "", "time": 0},
@@ -11475,7 +11439,6 @@ const SLASH_COMMANDS = [
   { cmd: '/config', desc: 'Open config panel' },
   { cmd: '/amux', desc: 'Interact with amux — board, memory, sessions' },
   { cmd: '/amux-board', desc: 'Add a task or note to the board' },
-  { cmd: '/pw-test', desc: 'Run Playwright UI tests or investigate issues' },
 ];
 let slashAcItems = [];
 let slashAcSelected = -1;
@@ -22010,66 +21973,6 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 return self._json([dict(r) for r in rows])
 
             return self._json({"error": "not found"}, 404)
-
-        # ── Browser automation (/api/browser/*) ───────────────────────────────
-        # Delegates to ~/.amux/browser-helper.js via Node.js subprocess
-        if path.startswith("/api/browser"):
-            _BROWSER_HELPER = _amux_home / "browser-helper.js"
-            _NODE = shutil.which("node") or "/usr/local/bin/node"
-
-            def _browser_call(cmd: dict, timeout_s: int = 30) -> dict:
-                """Run a browser-helper.js command and return parsed JSON result."""
-                r = subprocess.run(
-                    [_NODE, str(_BROWSER_HELPER)],
-                    input=json.dumps(cmd),
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_s,
-                )
-                if r.returncode != 0 and not r.stdout.strip():
-                    return {"error": r.stderr.strip() or f"node exited {r.returncode}"}
-                try:
-                    return json.loads(r.stdout.strip())
-                except Exception:
-                    return {"error": f"bad JSON from helper: {r.stdout[:200]}"}
-
-            # GET /api/browser/profiles
-            if method == "GET" and path == "/api/browser/profiles":
-                return self._json({"profiles": _pw_list_profiles()})
-
-            # GET /api/browser/search?q=...&profile=google
-            if method == "GET" and path == "/api/browser/search":
-                q = qs.get("q", [""])[0] if isinstance(qs.get("q"), list) else qs.get("q", "")
-                profile_name = qs.get("profile", ["google"])[0] if isinstance(qs.get("profile"), list) else qs.get("profile", "google")
-                if not q:
-                    return self._json({"error": "q required"}, 400)
-                result = _browser_call({"cmd": "search", "q": q, "profile": profile_name}, timeout_s=45)
-                return self._json(result, 429 if result.get("error", "").startswith("CAPTCHA") else 200)
-
-            # POST /api/browser/login  {"url":"...","username":"...","password":"...","profile":"name-to-save"}
-            if method == "POST" and path == "/api/browser/login":
-                body = self._body()
-                login_url = body.get("url")
-                save_as = body.get("profile")
-                if not login_url or not save_as:
-                    return self._json({"error": "url and profile are required"}, 400)
-                result = _browser_call({
-                    "cmd": "login",
-                    "url": login_url,
-                    "username": body.get("username", ""),
-                    "password": body.get("password", ""),
-                    "profile": save_as,
-                }, timeout_s=45)
-                return self._json(result)
-
-            # GET /api/browser/screenshot?profile=NAME&url=https://...
-            if method == "GET" and path == "/api/browser/screenshot":
-                profile_name = qs.get("profile", ["default"])[0] if isinstance(qs.get("profile"), list) else qs.get("profile", "default")
-                nav_url = qs.get("url", [""])[0] if isinstance(qs.get("url"), list) else qs.get("url", "")
-                result = _browser_call({"cmd": "screenshot", "profile": profile_name, "url": nav_url or None}, timeout_s=30)
-                return self._json(result)
-
-            return self._json({"error": "browser route not found"}, 404)
 
         # Session-specific routes: /api/sessions/<name>/<action>[/<subid>]
         m = re.match(r"^/api/sessions/([^/]+)(/([^/]+)(/([^/]+))?)?$", path)

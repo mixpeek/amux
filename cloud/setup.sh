@@ -75,13 +75,6 @@ if ! command -v claude &>/dev/null; then
   npm install -g @anthropic-ai/claude-code 2>&1 | tail -3 || true
 fi
 
-# ── Playwright MCP (headless browser with persistent auth profile) ──
-log "Installing Playwright MCP..."
-npm install -g @playwright/mcp playwright 2>&1 | tail -3 || true
-# Install chromium + system deps for headless operation
-npx playwright install chromium --with-deps 2>&1 | tail -5 || true
-mkdir -p "$AMUX_DATA/playwright-auth/profile"
-
 # ── tmux config ──
 cat > /root/.tmux.conf <<'TMUX'
 set -g mouse on
