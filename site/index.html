@@ -709,7 +709,7 @@ body { overflow-x: hidden; }
     <div class="problem-card">
       <div class="problem-card-label">Can't coordinate</div>
       <div class="problem-pain">Agents are isolated. No way for one to delegate to or check on another.</div>
-      <div class="problem-fix">REST API with <code>$AMUX_URL</code> injected at startup. Agents send tasks and peek output via curl.</div>
+      <div class="problem-fix">REST API injected at startup via $AMUX_URL. Agents send tasks and peek each other's output with a single curl call.</div>
     </div>
   </div>
 </div>
