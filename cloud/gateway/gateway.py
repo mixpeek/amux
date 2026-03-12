@@ -30,7 +30,7 @@ DB_PATH       = os.environ.get("GATEWAY_DB", "/var/amux/gateway.db")
 IDLE_SECONDS  = int(os.environ.get("IDLE_TIMEOUT", "3600"))
 PORT_BASE     = 9000
 COOKIE_MAX_AGE = 86400 * 7  # 7 days
-SIGNUP_PASSCODE = os.environ.get("SIGNUP_PASSCODE", "Mixpeek")
+SIGNUP_PASSCODE = os.environ.get("SIGNUP_PASSCODE", "")
 
 # ── Login HTML ─────────────────────────────────────────────────────────────────
 _LOGIN_HTML = """<!DOCTYPE html>
