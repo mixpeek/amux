@@ -97,50 +97,70 @@ html[data-theme="dark"] .waitlist-btn { background: #e8e8e8; color: #0a0a0a; }
 /* ── NAV ── */
 .site-header {
   position: sticky; top: 0; z-index: 100;
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 2rem; height: 56px;
+  display: flex; align-items: center;
+  padding: 0 2.5rem; height: 58px;
   background: var(--nav-bg);
   backdrop-filter: blur(20px);
   border-bottom: 1px solid var(--border);
+  gap: 2.5rem;
 }
 .site-header a.logo {
   font-size: 0.95rem; font-weight: 700; color: var(--text);
   text-decoration: none; letter-spacing: -0.02em;
-  font-family: var(--sans);
+  font-family: var(--sans); flex-shrink: 0;
 }
-.site-header nav {
-  display: flex; align-items: center; gap: 1.75rem;
+.nav-links {
+  display: flex; align-items: center; gap: 1.75rem; flex: 1;
 }
-.site-header nav a {
-  font-size: 0.82rem; color: var(--dim); text-decoration: none;
+.nav-links a {
+  font-size: 0.84rem; color: var(--dim); text-decoration: none;
+  font-family: var(--sans); transition: color 0.15s; white-space: nowrap;
+}
+.nav-links a:hover { color: var(--text); }
+.nav-right {
+  display: flex; align-items: center; gap: 1rem; margin-left: auto; flex-shrink: 0;
+}
+.nav-gh {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  font-size: 0.84rem; color: var(--dim); text-decoration: none;
   font-family: var(--sans); transition: color 0.15s;
 }
-.site-header nav a:hover { color: var(--text); }
-.site-header nav a.nav-cta {
-  background: var(--accent); color: #fff;
-  padding: 0.4rem 1rem; border-radius: 6px;
-  font-weight: 600; transition: opacity 0.15s;
+.nav-gh:hover { color: var(--text); }
+.nav-gh-stars {
+  font-size: 0.78rem; font-weight: 600; color: var(--dim);
+  font-family: var(--sans);
 }
-.site-header nav a.nav-cta:hover { opacity: 0.8; color: #fff; }
+.nav-cta-pill {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  font-size: 0.84rem; font-weight: 600; padding: 0.45rem 1.1rem;
+  border-radius: 999px; text-decoration: none; font-family: var(--sans);
+  background: var(--accent); color: #fff; border: none;
+  transition: opacity 0.15s; white-space: nowrap; cursor: pointer;
+}
+.nav-cta-pill:hover { opacity: 0.85; }
+html[data-theme="dark"] .nav-cta-pill { background: #e8e8e8; color: #0a0a0a; }
 .theme-toggle {
-  background: none; border: 1px solid var(--border); border-radius: 6px;
-  cursor: pointer; padding: 0.35rem 0.5rem; line-height: 1;
-  font-size: 0.85rem; color: var(--dim); transition: border-color 0.15s, color 0.15s;
+  background: none; border: none; border-radius: 6px;
+  cursor: pointer; padding: 0.3rem; line-height: 1;
+  font-size: 0.95rem; color: var(--dim); transition: color 0.15s;
   display: flex; align-items: center;
 }
-.theme-toggle:hover { border-color: var(--border-bright); color: var(--text); }
+.theme-toggle:hover { color: var(--text); }
 .theme-toggle .icon-sun, .theme-toggle .icon-moon { display: none; }
 html:not([data-theme="dark"]) .theme-toggle .icon-moon { display: inline; }
 html[data-theme="dark"] .theme-toggle .icon-sun { display: inline; }
 body { overflow-x: hidden; }
 @media (max-width: 768px) {
-  .site-header { padding: 0 1rem; }
-  .site-header nav { gap: 1rem; }
-  .site-header nav a.hide-mobile { display: none; }
+  .site-header { padding: 0 1rem; gap: 1rem; }
+  .nav-links a.hide-mobile { display: none; }
   .section-wide, .section { padding-left: 1rem; padding-right: 1rem; }
   .api-path { word-break: break-all; }
   .terminal-body { font-size: 0.72rem; }
   code { word-break: break-all; }
+}
+@media (max-width: 540px) {
+  .nav-gh-stars { display: none; }
+  .nav-links { display: none; }
 }
 
 /* ── HERO ── */
@@ -700,17 +720,23 @@ html[data-theme="dark"] .cta-pill-primary:hover { opacity: 0.85; }
 
 <header class="site-header">
   <a class="logo" href="/">amux</a>
-  <nav>
-    <a href="/guides/" class="hide-mobile">guides</a>
-    <a href="/compare/" class="hide-mobile">compare</a>
-    <a href="/blog/" class="hide-mobile">blog</a>
-    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"><span class="icon-sun">&#9788;</span><span class="icon-moon">&#9790;</span></button>
-    <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta gh-nav-btn">
+  <div class="nav-links">
+    <a href="/guides/" class="hide-mobile">Guides</a>
+    <a href="/blog/" class="hide-mobile">Blog</a>
+    <a href="/changelog/" class="hide-mobile">Changelog</a>
+    <a href="/compare/" class="hide-mobile">Compare</a>
+  </div>
+  <div class="nav-right">
+    <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-gh">
       <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-      GitHub
+      <span class="nav-gh-stars" id="nav-star-count">GitHub</span>
     </a>
-    <iframe src="https://ghbtns.com/github-btn.html?user=mixpeek&repo=amux&type=star&count=true" frameborder="0" scrolling="0" width="90" height="20" title="GitHub Stars" class="gh-iframe-nav"></iframe>
-  </nav>
+    <a href="#ios" class="nav-cta-pill">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
+      Get iOS App
+    </a>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"><span class="icon-sun">&#9788;</span><span class="icon-moon">&#9790;</span></button>
+  </div>
 </header>
 
 <!-- HERO -->
@@ -1074,6 +1100,25 @@ function submitWaitlist() {
       btn.disabled = false;
     });
 }
+
+// Nav star count
+(function() {
+  var KEY = 'gh_stars_amux', TS = 'gh_stars_ts', TTL = 3600000;
+  var el = document.getElementById('nav-star-count');
+  if (!el) return;
+  function set(n) {
+    var label = n >= 1000 ? (n/1000).toFixed(1).replace(/\.0$/,'')+'k' : String(n);
+    el.textContent = label;
+  }
+  var c = localStorage.getItem(KEY), t = parseInt(localStorage.getItem(TS)||'0',10);
+  if (c && Date.now()-t < TTL) { set(parseInt(c,10)); return; }
+  fetch('https://api.github.com/repos/mixpeek/amux')
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var s=d.stargazers_count||0;
+      localStorage.setItem(KEY,String(s)); localStorage.setItem(TS,String(Date.now())); set(s);
+    }).catch(function(){});
+})();
 
 // Theme toggle
 document.getElementById('theme-toggle').addEventListener('click', function() {
