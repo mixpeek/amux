@@ -22619,6 +22619,80 @@ def _cleanup_old_transcripts():
         slog(f"[cleanup] removed {cleaned} old transcripts, freed {freed / 2**20:.0f} MB")
 
 
+_LOG_MAX_SIZE = 50_000_000       # 50 MB per log file
+_LOG_MAX_AGE_DAYS = 7            # remove logs older than 7 days
+_RECORDING_MAX_AGE_DAYS = 7      # remove recordings older than 7 days
+
+def _cleanup_logs():
+    """Rotate logs: truncate files >50 MB, remove files >7 days old."""
+    logs_dir = _amux_home / "logs"
+    if not logs_dir.is_dir():
+        return
+    cutoff = time.time() - _LOG_MAX_AGE_DAYS * 86400
+    cleaned = 0
+    freed = 0
+    for f in logs_dir.iterdir():
+        try:
+            st = f.stat()
+            # Remove old log files (but keep server.log — just truncate it)
+            if st.st_mtime < cutoff and f.name != "server.log":
+                freed += st.st_size
+                f.unlink(missing_ok=True)
+                cleaned += 1
+                continue
+            # Truncate oversized files: keep last 10k lines
+            if st.st_size > _LOG_MAX_SIZE:
+                try:
+                    lines = f.read_text(errors="replace").splitlines()
+                    keep = lines[-10000:]
+                    freed += st.st_size - len("\n".join(keep))
+                    f.write_text("\n".join(keep) + "\n")
+                    cleaned += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    if cleaned:
+        slog(f"[cleanup] log rotation: {cleaned} files, freed {freed / 2**20:.0f} MB")
+
+
+def _cleanup_recordings():
+    """Remove old recordings, screenshots, and browser videos."""
+    freed = 0
+    cleaned = 0
+    cutoff = time.time() - _RECORDING_MAX_AGE_DAYS * 86400
+    for subdir in ("recordings", "browser-screenshots", "browser-videos"):
+        d = _amux_home / subdir
+        if not d.is_dir():
+            continue
+        for f in d.iterdir():
+            try:
+                st = f.stat()
+                if st.st_mtime < cutoff:
+                    freed += st.st_size
+                    if f.is_dir():
+                        import shutil
+                        shutil.rmtree(f, ignore_errors=True)
+                    else:
+                        f.unlink(missing_ok=True)
+                    cleaned += 1
+            except Exception:
+                pass
+    if cleaned:
+        slog(f"[cleanup] removed {cleaned} old recordings/screenshots, freed {freed / 2**20:.0f} MB")
+
+
+def _db_maintenance():
+    """Periodic database maintenance: WAL checkpoint and optimize."""
+    try:
+        conn = _get_db()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA optimize")
+        slog("[cleanup] database maintenance: WAL checkpoint + optimize")
+    except Exception as e:
+        slog(f"[cleanup] db maintenance error: {e}")
+
+
 def _auto_update_check(_state: dict = {}):
     """Scheduled job: poll GitHub for changes and overwrite self if newer.
     Uses mutable default dict to carry last_sha across ticks."""
@@ -22995,6 +23069,9 @@ def main():
     schedule_job(_cleanup_tmp,           interval=1800,                 name="tmp_cleanup", initial_delay=60)
     schedule_job(_auto_archive_idle,     interval=3600,                 name="auto_archive", initial_delay=300)
     schedule_job(_cleanup_old_transcripts, interval=86400,              name="transcript_cleanup", initial_delay=600)
+    schedule_job(_cleanup_logs,             interval=86400,              name="log_rotation",       initial_delay=120)
+    schedule_job(_cleanup_recordings,       interval=86400,              name="recording_cleanup",  initial_delay=180)
+    schedule_job(_db_maintenance,           interval=86400,              name="db_maintenance",     initial_delay=240)
     if _AUTO_UPDATE_REPO:
         slog(f"[auto-update] watching {_AUTO_UPDATE_REPO}@{_AUTO_UPDATE_BRANCH} every {_AUTO_UPDATE_INTERVAL}s")
         schedule_job(_auto_update_check, interval=_AUTO_UPDATE_INTERVAL, name="auto_update", initial_delay=_AUTO_UPDATE_INTERVAL)
