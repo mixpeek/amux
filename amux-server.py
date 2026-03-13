@@ -10601,7 +10601,13 @@ async function loadPeekGit() {
     ]);
     const d = await r.json();
     const td = await tr.json();
-    _peekTrackedFiles = (td.files && td.files.length) ? new Set(td.files) : null;
+    if (td.files && td.files.length) {
+      // Normalize tracked files to relative paths (tracked-files returns absolute, git diff returns relative)
+      const prefix = d.repo ? d.repo.replace(/\/$/, '') + '/' : '';
+      _peekTrackedFiles = new Set(td.files.map(f => prefix && f.startsWith(prefix) ? f.slice(prefix.length) : f));
+    } else {
+      _peekTrackedFiles = null;
+    }
     // Merge session branch from sessions list if not in git response
     const sess = sessions.find(s => s.name === peekSession);
     if (sess && sess.branch && !d.session_branch) d.session_branch = sess.branch;
