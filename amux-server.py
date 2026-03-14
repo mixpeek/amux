@@ -14291,13 +14291,27 @@ function _mapLoad() {
   // Load from server; fall back to localStorage for offline resilience
   fetch(API + '/api/map').then(function(r) { return r.ok ? r.json() : null; }).then(function(data) {
     if (!data) return;
-    _mapPins = data.pins || [];
+    const firstLoad = _mapPins.length === 0;
+    var needsSave = false;
+    _mapPins = (data.pins || []).map(function(pin, i) {
+      if (!pin.id) { pin.id = 'pin_' + Date.now() + '_' + i; needsSave = true; }
+      return pin;
+    });
+    if (needsSave) _mapSave();
     _mapTags = data.tags || [];
     _mapSettings = Object.assign(_mapSettings, data.settings || {});
     _mapGoogleKey = (data.settings || {}).googleMapsKey || '';
     _mapRenderTags();
     _mapRenderPins();
     _mapRenderMarkers();
+    // On first load with pins, fit map to show all of them
+    if (firstLoad && _map && _mapPins.length > 0) {
+      var coords = _mapPins.filter(function(p) {
+        return !isNaN(parseFloat(p.lat)) && !isNaN(parseFloat(p.lng));
+      }).map(function(p) { return [parseFloat(p.lat), parseFloat(p.lng)]; });
+      if (coords.length === 1) { _map.setView(coords[0], 14); }
+      else if (coords.length > 1) { _map.fitBounds(coords, { padding: [40, 40], maxZoom: 15 }); }
+    }
   }).catch(function() {
     // offline fallback
     try { _mapPins = JSON.parse(localStorage.getItem('amux_map_pins') || '[]'); } catch(e) { _mapPins = []; }
