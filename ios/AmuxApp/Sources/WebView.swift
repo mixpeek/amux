@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import AuthenticationServices
 
 struct WebView: UIViewRepresentable {
     let url: URL
@@ -42,13 +43,22 @@ struct WebView: UIViewRepresentable {
     }
 
     // MARK: - Coordinator
-    class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, ASWebAuthenticationPresentationContextProviding {
         var parent: WebView
         weak var webView: WKWebView?
         var refreshControl: UIRefreshControl?
+        var authSession: ASWebAuthenticationSession?
 
         init(_ parent: WebView) {
             self.parent = parent
+        }
+
+        // ASWebAuthenticationPresentationContextProviding
+        func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+            UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .flatMap { $0.windows }
+                .first(where: { $0.isKeyWindow }) ?? ASPresentationAnchor()
         }
 
         // Accept self-signed certs (Tailscale local installs)
@@ -60,7 +70,6 @@ struct WebView: UIViewRepresentable {
                 completionHandler(.performDefaultHandling, nil)
                 return
             }
-            // Only bypass cert check for known local/tailscale patterns
             let host = challenge.protectionSpace.host
             let isTailscale = host.contains(".ts.net") || host.hasSuffix(".local") || host == "localhost"
             if isTailscale {
@@ -72,7 +81,40 @@ struct WebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            // Intercept Apple OAuth redirects and use ASWebAuthenticationSession
+            if let url = navigationAction.request.url,
+               let host = url.host,
+               host.contains("appleid.apple.com") {
+                decisionHandler(.cancel)
+                startAuthSession(url: url, webView: webView)
+                return
+            }
             decisionHandler(parent.onNavigationAction(navigationAction))
+        }
+
+        private func startAuthSession(url: URL, webView: WKWebView) {
+            // Determine the callback scheme from the server URL
+            let callbackScheme = "https"
+            let serverHost = parent.url.host ?? "cloud.amux.io"
+
+            let session = ASWebAuthenticationSession(
+                url: url,
+                callbackURLScheme: callbackScheme
+            ) { [weak self] callbackURL, error in
+                self?.authSession = nil
+                if let callbackURL = callbackURL {
+                    // Load the callback URL back in the WebView to complete the OAuth flow
+                    webView.load(URLRequest(url: callbackURL))
+                } else if let error = error as? ASWebAuthenticationSessionError,
+                          error.code == .canceledLogin {
+                    // User cancelled — reload the sign-in page
+                    webView.load(URLRequest(url: self?.parent.url ?? url))
+                }
+            }
+            session.presentationContextProvider = self
+            session.prefersEphemeralWebBrowserSession = false
+            authSession = session
+            session.start()
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
