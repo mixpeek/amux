@@ -6702,6 +6702,43 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     -webkit-overflow-scrolling: touch; color: #c9d1d9;
     user-select: text; -webkit-user-select: text; cursor: text;
   }
+  /* Note pane overrides */
+  .gp-note-body {
+    flex: 1; overflow: auto; padding: 0; display: flex; flex-direction: column;
+    background: var(--card); white-space: normal;
+  }
+  .gp-note-body .ql-toolbar {
+    border: none; border-bottom: 1px solid var(--border); padding: 4px 6px;
+    background: var(--card); flex-shrink: 0;
+  }
+  .gp-note-body .ql-toolbar .ql-stroke { stroke: var(--dim); }
+  .gp-note-body .ql-toolbar .ql-fill { fill: var(--dim); }
+  .gp-note-body .ql-toolbar .ql-picker-label { color: var(--dim); }
+  .gp-note-body .ql-container {
+    border: none; flex: 1; overflow: auto; font-family: "Geist","Inter",sans-serif;
+    font-size: 0.82rem; color: var(--text);
+  }
+  .gp-note-body .ql-editor { padding: 12px 14px; min-height: 100%; }
+  .gp-note-body .ql-editor.ql-blank::before { color: var(--dim); }
+  .gp-note-status { font-size: 0.68rem; color: var(--dim); padding: 4px 10px; border-top: 1px solid var(--border); background: var(--card); flex-shrink: 0; }
+  /* Override dark terminal bg for note panes */
+  .grid-stack-item:has(.gp-note-body) .grid-stack-item-content { background: var(--card); }
+  /* Note picker dropdown */
+  .ws-note-dropdown { position: relative; }
+  .ws-note-menu {
+    display: none; position: absolute; top: 100%; left: 0; z-index: 999;
+    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    min-width: 220px; max-height: 300px; overflow-y: auto; padding: 4px 0;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4); margin-top: 4px;
+  }
+  .ws-note-menu.open { display: block; }
+  .ws-note-menu button {
+    display: block; width: 100%; text-align: left; padding: 7px 12px;
+    background: none; border: none; color: var(--text); font-size: 0.78rem;
+    cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ws-note-menu button:hover { background: rgba(88,166,255,0.1); }
+  .ws-note-menu .ws-note-menu-new { color: var(--accent); font-weight: 500; border-bottom: 1px solid var(--border); }
   #gridstack-container .grid-stack-item-content {
     border: 1px solid var(--border); border-radius: 6px;
     overflow: hidden; display: flex; flex-direction: column;
@@ -16650,6 +16687,11 @@ function exitGridMode() {
   // Save current layout, then pause timers — keep grid alive to avoid re-init bugs
   _gridSaveLayout();
   Object.values(_gridPanes).forEach(p => { if (p.timer) { clearInterval(p.timer); p.timer = null; } });
+  // Flush pending note saves
+  Object.keys(_notePanes).forEach(nid => {
+    const pane = _notePanes[nid];
+    if (pane.saveTimer) { clearTimeout(pane.saveTimer); pane.saveTimer = null; _saveNotePaneContent(nid); }
+  });
   document.getElementById('grid-view').classList.remove('active');
   document.getElementById('tab-grid').classList.remove('active');
   document.getElementById('tab-' + (activeView || 'sessions')).classList.add('active');
@@ -16754,8 +16796,13 @@ function _gridRestoreLayout() {
   try {
     const saved = JSON.parse(localStorage.getItem('amux_grid_layout') || '[]');
     saved.forEach(item => {
-      if (item.id && (sessions || []).find(s => s.name === item.id))
+      if (!item.id) return;
+      const notePath = _notePathFromId(item.id);
+      if (notePath) {
+        wsAddNotePane(notePath, item.x, item.y, item.w, item.h);
+      } else if ((sessions || []).find(s => s.name === item.id)) {
         addGridPane(item.id, item.x, item.y, item.w, item.h);
+      }
     });
   } catch(e) {}
 }
@@ -16828,18 +16875,28 @@ function wsSaveProfileConfirm() {
 
 function wsClearWorkspace() {
   Object.keys(_gridPanes).slice().forEach(n => removeGridPane(n));
+  Object.keys(_notePanes).slice().forEach(nid => {
+    const path = _notePathFromId(nid);
+    if (path) wsRemoveNotePane(path);
+  });
 }
 
 function wsLoadProfile(name) {
   const profiles = _wsLoadProfiles();
   const layout = profiles[name];
   if (!layout) return;
-  // Clear current panes
+  // Clear current panes (sessions + notes)
   Object.keys(_gridPanes).forEach(n => removeGridPane(n));
+  Object.keys(_notePanes).slice().forEach(nid => { const p = _notePathFromId(nid); if (p) wsRemoveNotePane(p); });
   // Load profile panes
   layout.forEach(item => {
-    if (item.id && (sessions || []).find(s => s.name === item.id))
+    if (!item.id) return;
+    const notePath = _notePathFromId(item.id);
+    if (notePath) {
+      wsAddNotePane(notePath, item.x, item.y, item.w, item.h);
+    } else if ((sessions || []).find(s => s.name === item.id)) {
       addGridPane(item.id, item.x, item.y, item.w, item.h);
+    }
   });
   _wsRenderProfileBar();
 }
@@ -16885,14 +16942,14 @@ function _wsClosePresetMenu(e) {
 function wsApplyPreset(preset) {
   document.getElementById('ws-preset-menu')?.classList.remove('open');
   if (!_grid) return;
-  // Get active pane names (or all sessions if none open)
+  // Get active session pane names (or all sessions if none open)
   let names = Object.keys(_gridPanes);
   if (!names.length) {
     names = (sessions || []).map(s => s.name);
   }
   if (!names.length) return;
 
-  // Clear existing panes
+  // Clear existing session panes (keep note panes)
   Object.keys(_gridPanes).slice().forEach(n => removeGridPane(n));
 
   // Calculate layout positions
@@ -16954,6 +17011,202 @@ function _wsCalcPreset(preset, count) {
         items.push({ x: (i % 2) * 6, y: Math.floor(i / 2) * 7, w: 6, h: 7 });
   }
   return items;
+}
+
+// ═══════ NOTE PANES IN WORKSPACE ═══════
+let _notePanes = {}; // "note:path" → { widget, quill, path, saveTimer }
+
+function _noteIdFromPath(path) {
+  return 'note:' + path;
+}
+
+function _notePathFromId(id) {
+  return id.startsWith('note:') ? id.slice(5) : null;
+}
+
+async function wsToggleNoteMenu() {
+  const menu = document.getElementById('ws-note-menu');
+  if (menu.classList.contains('open')) { menu.classList.remove('open'); return; }
+  // Fetch notes list
+  let notes = [];
+  try {
+    notes = await fetch(API + '/api/notes').then(r => r.json());
+  } catch(e) {
+    // Try cache
+    try { notes = JSON.parse(localStorage.getItem('amux_notes_cache') || '[]'); } catch(e2) {}
+  }
+  let html = '<button class="ws-note-menu-new" onclick="wsAddNewNotePane()">+ New note</button>';
+  notes.forEach(n => {
+    const p = n.path || n.name;
+    const title = n.name || p.replace(/\.md$/, '').split('/').pop();
+    const nid = _noteIdFromPath(p);
+    const already = !!_notePanes[nid];
+    html += '<button onclick="wsAddNotePane(\'' + p.replace(/'/g, "\\'") + '\')"' +
+      (already ? ' style="opacity:0.4;" disabled' : '') + '>' + esc(title) + '</button>';
+  });
+  menu.innerHTML = html;
+  menu.classList.add('open');
+  // Close on outside click
+  setTimeout(() => document.addEventListener('click', _wsCloseNoteMenu, { once: true }), 0);
+}
+
+function _wsCloseNoteMenu(e) {
+  const menu = document.getElementById('ws-note-menu');
+  if (menu) menu.classList.remove('open');
+}
+
+async function wsAddNewNotePane() {
+  document.getElementById('ws-note-menu')?.classList.remove('open');
+  // Create a new note via API
+  const ts = Date.now();
+  const slug = 'note-' + ts;
+  try {
+    await fetch(API + '/api/notes/' + slug, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ content: '<h1>Untitled</h1><p><br></p>' })
+    });
+  } catch(e) {}
+  wsAddNotePane(slug + '.md');
+}
+
+function wsAddNotePane(path, x, y, w, h) {
+  if (!_grid) return;
+  const nid = _noteIdFromPath(path);
+  if (_notePanes[nid]) return;
+  const sid = _gpSafeId(nid);
+  const title = path.replace(/\.md$/, '').split('/').pop();
+  const safePath = path.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
+  const content =
+    '<div class="gp-header" style="background:var(--card);">' +
+      '<span style="font-size:0.75rem;margin-right:4px;">&#x1F4DD;</span>' +
+      '<span class="gp-title" id="' + sid + '-title">' + esc(title) + '</span>' +
+      '<button class="gp-peek-btn" onclick="wsOpenNoteInTab(\'' + safePath + '\');event.stopPropagation();" title="Open in Notes tab">&#x2197;</button>' +
+      '<button class="gp-close" onclick="wsRemoveNotePane(\'' + safePath + '\')">&#x2715;</button>' +
+    '</div>' +
+    '<div class="gp-note-body" id="' + sid + '-body">' +
+      '<div id="' + sid + '-editor"></div>' +
+    '</div>' +
+    '<div class="gp-note-status" id="' + sid + '-status"></div>';
+
+  const widget = _grid.addWidget({ id: nid, x, y, w: w || 4, h: h || 7, content });
+  _notePanes[nid] = { widget, quill: null, path, saveTimer: null };
+
+  // Init Quill in the pane
+  setTimeout(() => _initNotePaneQuill(nid), 50);
+  _gridSaveLayout();
+}
+
+function _initNotePaneQuill(nid) {
+  const pane = _notePanes[nid];
+  if (!pane) return;
+  const sid = _gpSafeId(nid);
+  const editorEl = document.getElementById(sid + '-editor');
+  if (!editorEl) return;
+
+  const q = new Quill('#' + sid + '-editor', {
+    theme: 'snow',
+    modules: {
+      toolbar: [
+        [{ header: [1, 2, 3, false] }],
+        ['bold', 'italic', 'underline', 'strike'],
+        ['blockquote', 'code-block'],
+        [{ list: 'ordered' }, { list: 'bullet' }, { list: 'check' }],
+        ['link'], ['clean']
+      ]
+    },
+    placeholder: 'Write your note\u2026'
+  });
+  pane.quill = q;
+
+  // Load content
+  _loadNotePaneContent(nid);
+
+  // Auto-save on edit
+  q.on('text-change', (delta, old, source) => {
+    if (source === 'api') return;
+    // Update title from H1
+    const first = q.root.firstElementChild;
+    if (first && first.tagName === 'H1') {
+      const titleEl = document.getElementById(sid + '-title');
+      if (titleEl) titleEl.textContent = first.textContent.trim() || 'Untitled';
+    }
+    // Debounced save
+    if (pane.saveTimer) clearTimeout(pane.saveTimer);
+    pane.saveTimer = setTimeout(() => _saveNotePaneContent(nid), 800);
+  });
+}
+
+async function _loadNotePaneContent(nid) {
+  const pane = _notePanes[nid];
+  if (!pane || !pane.quill) return;
+  const sid = _gpSafeId(nid);
+  const statusEl = document.getElementById(sid + '-status');
+  const pathKey = pane.path.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/');
+
+  let data;
+  try {
+    data = await fetch(API + '/api/notes/' + pathKey).then(r => r.json());
+    // Cache
+    _idb.set('amux_note_' + pane.path, JSON.stringify(data));
+  } catch(e) {
+    // Try IDB cache
+    try {
+      const cached = await _idb.get('amux_note_' + pane.path);
+      if (cached) data = JSON.parse(cached);
+    } catch(e2) {}
+  }
+  if (!data) { if (statusEl) statusEl.textContent = 'Could not load note'; return; }
+
+  const isHtml = /<[a-z][\s\S]*>/i.test(data.content);
+  if (isHtml) {
+    pane.quill.root.innerHTML = data.content || '';
+  } else {
+    pane.quill.setText(data.content || '');
+  }
+  // Update title
+  const first = pane.quill.root.firstElementChild;
+  if (first && first.tagName === 'H1') {
+    const titleEl = document.getElementById(sid + '-title');
+    if (titleEl) titleEl.textContent = first.textContent.trim() || 'Untitled';
+  }
+}
+
+async function _saveNotePaneContent(nid) {
+  const pane = _notePanes[nid];
+  if (!pane || !pane.quill) return;
+  const sid = _gpSafeId(nid);
+  const statusEl = document.getElementById(sid + '-status');
+  const content = pane.quill.root.innerHTML === '<p><br></p>' ? '' : pane.quill.root.innerHTML;
+  const pathKey = pane.path.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/');
+
+  const result = await apiCall(API + '/api/notes/' + pathKey, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ content })
+  });
+  if (statusEl) {
+    statusEl.textContent = result ? '\u2713 Saved' : 'Queued';
+    setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 1500);
+  }
+  // Update IDB cache
+  _idb.set('amux_note_' + pane.path, JSON.stringify({ path: pane.path, content }));
+}
+
+function wsRemoveNotePane(path) {
+  const nid = _noteIdFromPath(path);
+  const pane = _notePanes[nid];
+  if (!pane || !_grid) return;
+  // Flush pending save
+  if (pane.saveTimer) { clearTimeout(pane.saveTimer); _saveNotePaneContent(nid); }
+  try { _grid.removeWidget(pane.widget); } catch(e) {}
+  delete _notePanes[nid];
+  _gridSaveLayout();
+}
+
+function wsOpenNoteInTab(path) {
+  // Switch to notes tab and open this note
+  switchView('notes');
+  setTimeout(() => _notesOpen(path), 200);
 }
 
 function gpDoKeys(name, keys) { doKeys(name, keys); }
@@ -20537,6 +20790,10 @@ async function _gmailSubmitCode(account) {
         onkeydown="if(event.key==='Enter'){wsSaveProfileConfirm();event.preventDefault();}if(event.key==='Escape'){wsHideSaveInput();}">
       <button id="ws-save-btn" class="btn" onclick="wsShowSaveInput()" style="font-size:0.75rem;padding:4px 10px;" title="Save current layout as a profile">&#x2B; Save</button>
       <button id="ws-save-ok" class="btn" onclick="wsSaveProfileConfirm()" style="display:none;font-size:0.75rem;padding:4px 10px;background:var(--green);color:#fff;border-color:var(--green);">&#x2713;</button>
+    </div>
+    <div class="ws-note-dropdown" id="ws-note-dropdown">
+      <button class="ws-preset-btn" onclick="wsToggleNoteMenu()" title="Add a note pane">&#x1F4DD; Note</button>
+      <div class="ws-note-menu" id="ws-note-menu"></div>
     </div>
     <div class="ws-preset-dropdown" id="ws-preset-dropdown">
       <button class="ws-preset-btn" onclick="wsTogglePresetMenu()" title="Apply a layout preset">&#x25A6; Layout</button>
