@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Complete Guide to Agentic Coding in 2026 — amux</title>
+  <script>(function(){var t=localStorage.getItem('theme');if(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.setAttribute('data-theme','dark')})()</script>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Agentic coding is transforming software development. This guide covers the full spectrum from copilot to autonomous agents, including task decomposition, oversight patterns, error recovery, and multi-agent orchestration.">
+  <meta name="keywords" content="agentic coding, agentic development, autonomous coding agent, agentic software development, ai coding agents, multi-agent development">
+  <link rel="canonical" href="https://amux.io/blog/agentic-coding-guide/">
+  <meta property="og:title" content="The Complete Guide to Agentic Coding in 2026 — amux">
+  <meta property="og:description" content="Agentic coding is transforming software development. This guide covers the full spectrum from copilot to autonomous agents, including task decomposition, oversight patterns, error recovery, and multi-agent orchestration.">
+  <meta property="og:url" content="https://amux.io/blog/agentic-coding-guide/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Blog","item":"https://amux.io/blog/"},{"@type":"ListItem","position":3,"name":"The Complete Guide to Agentic Coding","item":"https://amux.io/blog/agentic-coding-guide/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"The Complete Guide to Agentic Coding in 2026","description":"Agentic coding is transforming software development. This guide covers the full spectrum from copilot to autonomous agents, including task decomposition, oversight patterns, error recovery, and multi-agent orchestration.","author":{"@type":"Organization","name":"amux"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io"},"datePublished":"2026-03-17","dateModified":"2026-03-17","mainEntityOfPage":"https://amux.io/blog/agentic-coding-guide/","image":"https://amux.io/og-image.png"}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"><span class="icon-sun">&#9788;</span><span class="icon-moon">&#9790;</span></button>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">sign up</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/blog/">Blog</a> <span class="sep">&rsaquo;</span> <span>The Complete Guide to Agentic Coding</span></div>
+    <h1>The Complete Guide to Agentic Coding in 2026</h1>
+    <p class="subtitle">From autocomplete to autonomous agents: how agentic coding is reshaping software development, and how to actually do it well.</p>
+
+    <h2>What is agentic coding?</h2>
+    <p>Agentic coding is a software development approach where AI agents autonomously write, test, debug, and deploy code with minimal human intervention. Unlike copilot-style tools that suggest the next line, agentic systems take a high-level task description and execute a multi-step plan: reading existing code, planning changes, writing implementations, running tests, fixing failures, and committing results.</p>
+    <p>The "agentic" part refers to the agent's ability to act independently, make decisions, use tools, and recover from errors. An agentic coding system does not wait for you to accept each suggestion. It works through the problem end-to-end, much like a junior developer would after receiving a ticket.</p>
+    <p>This is not science fiction or a research demo. Tools like Claude Code, launched by Anthropic in 2025, demonstrated that frontier language models could reliably operate as autonomous coding agents in real repositories. By early 2026, thousands of engineering teams are using agentic coding daily.</p>
+
+    <h2>The autonomy spectrum</h2>
+    <p>Not all AI coding tools are equally agentic. It helps to think of a spectrum from fully manual to fully autonomous:</p>
+
+    <table>
+      <thead><tr><th>Level</th><th>Description</th><th>Examples</th><th>Human role</th></tr></thead>
+      <tbody>
+        <tr><td><strong>L0: Autocomplete</strong></td><td>Predicts the next few tokens as you type</td><td>Early Copilot, TabNine</td><td>Accept/reject every suggestion</td></tr>
+        <tr><td><strong>L1: Chat assistant</strong></td><td>Answers questions, generates snippets on request</td><td>ChatGPT, Copilot Chat</td><td>Copy-paste code, manual integration</td></tr>
+        <tr><td><strong>L2: Inline editor</strong></td><td>Edits code in-place within your editor</td><td>Cursor Composer, Copilot Edits</td><td>Review diffs, accept/reject per file</td></tr>
+        <tr><td><strong>L3: Single agent</strong></td><td>Reads codebase, plans, implements, tests autonomously</td><td>Claude Code, Aider, Devin</td><td>Define task, review final output</td></tr>
+        <tr><td><strong>L4: Multi-agent</strong></td><td>Multiple agents work in parallel on decomposed subtasks</td><td>amux + Claude Code</td><td>Technical lead: decompose, delegate, review</td></tr>
+        <tr><td><strong>L5: Self-directed</strong></td><td>Agent identifies work to be done and executes proactively</td><td>Emerging (amux cron + board)</td><td>Set goals, monitor outcomes</td></tr>
+      </tbody>
+    </table>
+
+    <p>Most teams today operate at L3, with early adopters pushing into L4. The jump from L2 to L3 is the most significant, because it changes the developer's role from "person who writes code with AI help" to "person who directs AI agents that write code."</p>
+
+    <h2>Task decomposition for agents</h2>
+    <p>The single most important skill in agentic coding is task decomposition: breaking a large objective into agent-sized pieces. Agents perform best when given focused, well-scoped tasks with clear success criteria.</p>
+    <p>Good agent tasks share these properties:</p>
+    <ul>
+      <li><strong>Bounded scope:</strong> The agent should be able to complete the task by modifying a known set of files. "Add pagination to the /users endpoint" is good. "Improve the codebase" is not.</li>
+      <li><strong>Testable:</strong> There should be a concrete way to verify the work. "Write a function that passes these tests" is ideal.</li>
+      <li><strong>Independent:</strong> The task should not require coordination with other in-flight work. If two tasks modify the same file, one should be completed before the other starts.</li>
+      <li><strong>Context-light:</strong> The agent should not need to understand the entire codebase. Point it at the relevant files and interfaces.</li>
+    </ul>
+    <p>Here is an example of decomposing a feature into agent tasks:</p>
+    <pre><code># Feature: Add user notifications
+
+# Task 1: Database schema and model (agent: db)
+amux start myapp/db --prompt "Add a notifications table with columns:
+  id, user_id (FK to users), type (enum: info/warning/error),
+  title, body, read_at (nullable timestamp), created_at.
+  Create the SQLAlchemy model and Alembic migration."
+
+# Task 2: API endpoints (agent: api, depends on task 1)
+amux start myapp/api --prompt "Add REST endpoints for notifications:
+  GET /api/notifications (list, paginated, filter by read/unread),
+  PATCH /api/notifications/:id/read (mark as read),
+  DELETE /api/notifications/:id.
+  Use the Notification model from models/notification.py."
+
+# Task 3: Frontend component (agent: ui, can run in parallel with task 2)
+amux start myapp/ui --prompt "Build a NotificationBell React component
+  that shows unread count, opens a dropdown with notification list,
+  and supports mark-as-read and dismiss. Mock the API for now."
+
+# Task 4: Integration tests (agent: test, depends on tasks 1-2)
+amux start myapp/test --prompt "Write integration tests for the
+  notifications API. Test: list empty, create notification via
+  factory, list with pagination, mark as read, delete, filter by
+  read/unread status."</code></pre>
+
+    <h2>The human developer as technical lead</h2>
+    <p>In an agentic coding workflow, the developer's role shifts from individual contributor to technical lead. This is a genuine change in how you spend your time:</p>
+    <ul>
+      <li><strong>Architecture decisions:</strong> You decide the overall approach, data model, and API design. Agents implement your decisions.</li>
+      <li><strong>Task breakdown:</strong> You decompose features into agent-sized work items and assign them.</li>
+      <li><strong>Quality review:</strong> You review agent output for correctness, security, performance, and style.</li>
+      <li><strong>Conflict resolution:</strong> When agents produce incompatible implementations, you decide which approach to keep.</li>
+      <li><strong>Edge case handling:</strong> Agents handle the 80% case well. You handle the 20% that requires deep domain knowledge.</li>
+    </ul>
+    <p>This is not about being "replaced" by AI. It is about leverage. A developer who can effectively direct 10 agents produces the output of a small team, but with a single person's salary and communication overhead.</p>
+
+    <h2>Monitoring and oversight patterns</h2>
+    <p>Trust but verify. Agentic coding requires robust monitoring to catch mistakes early. The key patterns:</p>
+    <p><strong>Real-time output streaming.</strong> Watch what each agent is doing as it works. amux provides a web dashboard that streams each agent's terminal output in real-time, so you can spot problems without waiting for the agent to finish.</p>
+    <p><strong>Token spend tracking.</strong> Agents that get stuck in loops burn through tokens. Monitor per-session spend and set budget limits to catch runaway agents:</p>
+    <pre><code># Check token spend across all sessions
+curl -sk https://localhost:8822/api/sessions | \
+  python3 -c "import json,sys
+for s in json.load(sys.stdin):
+  print(f\"{s['name']:20s} \${s.get('cost_usd',0):.2f}  {s.get('status','')}\")"</code></pre>
+    <p><strong>Git diff review.</strong> Before merging agent work, review the actual changes. Agents sometimes make unnecessary modifications, add debug logging, or change unrelated code:</p>
+    <pre><code># Review what each agent has changed
+git diff --stat  # overview
+git diff -- src/api/  # agent-specific scope</code></pre>
+    <p><strong>Test gates.</strong> Require all tests to pass before accepting agent work. This is the single most effective oversight mechanism. If the agent's code passes your existing test suite plus the tests it wrote, it is almost certainly correct.</p>
+
+    <h2>Error recovery</h2>
+    <p>Agents fail. Models hallucinate, APIs time out, and agents sometimes get stuck pursuing a bad approach. Effective agentic coding requires planned error recovery:</p>
+    <ul>
+      <li><strong>Auto-compaction:</strong> When an agent hits its context limit, amux automatically triggers conversation compaction, summarizing the work so far and continuing with a fresh context window.</li>
+      <li><strong>Retry with feedback:</strong> If tests fail after an agent finishes, send the failure output back to the agent: <code>amux send myapp/api "Tests failed. Here's the output: [paste]. Fix the issues."</code></li>
+      <li><strong>Rollback and restart:</strong> If an agent goes down a bad path, reset its changes and restart with a refined prompt: <code>git checkout -- src/api/ && amux restart myapp/api --prompt "..."</code></li>
+      <li><strong>Escalation:</strong> Some problems genuinely require human intervention. A well-configured agent should recognize when it is stuck and say so, rather than thrashing indefinitely.</li>
+    </ul>
+
+    <h2>When agents should stop and ask</h2>
+    <p>One of the most underrated aspects of agentic coding is knowing when the agent should <em>not</em> act autonomously. Good agent behavior includes stopping to ask when:</p>
+    <ul>
+      <li>The task is ambiguous and multiple interpretations are plausible</li>
+      <li>The change would affect a security-sensitive area (auth, payments, PII handling)</li>
+      <li>The agent discovers that the task requires modifying a shared interface that other agents depend on</li>
+      <li>Test failures suggest a misunderstanding of the requirements, not a bug in the implementation</li>
+      <li>The estimated scope significantly exceeds the original task description</li>
+    </ul>
+    <p>In amux, agents can post questions to the shared board, and the developer can respond asynchronously. This preserves the autonomous workflow while maintaining human oversight on critical decisions.</p>
+
+    <h2>Multi-agent orchestration</h2>
+    <p>At the multi-agent level (L4), you need coordination mechanisms. amux provides several:</p>
+    <pre><code># The board API enables task-based coordination
+# A lead agent decomposes work and creates tasks
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Implement user model","session":"worker-1","status":"todo"}' \
+  https://localhost:8822/api/board
+
+# Worker agents claim and complete tasks
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"session":"worker-1"}' \
+  https://localhost:8822/api/board/TASK-ID/claim
+
+# Inter-agent messaging for direct coordination
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"text":"The User model is ready at models/user.py. You can import it now."}' \
+  https://localhost:8822/api/sessions/worker-2/send</code></pre>
+    <p>The most effective orchestration pattern is "hub and spoke": one lead agent (or the human developer) creates and assigns tasks via the board, and worker agents pull tasks, execute them, and report back. This avoids the complexity of agents negotiating directly with each other.</p>
+
+    <h2>The future of agentic development</h2>
+    <p>Agentic coding in 2026 is roughly where cloud computing was in 2008. The core technology works, early adopters are getting enormous value, but the tooling, patterns, and best practices are still being established.</p>
+    <p>Several trends are converging:</p>
+    <ul>
+      <li><strong>Longer context windows</strong> mean agents can hold more of a codebase in memory, reducing errors caused by incomplete understanding.</li>
+      <li><strong>Better tool use</strong> means agents can interact with databases, APIs, browsers, and deployment pipelines natively.</li>
+      <li><strong>Lower costs</strong> make it practical to run more agents for longer, shifting the bottleneck from compute cost to task decomposition quality.</li>
+      <li><strong>Standardized agent protocols</strong> (like MCP) make it easier to plug agents into existing development workflows.</li>
+    </ul>
+    <p>The developers who will thrive in this environment are the ones who learn to think at the task-decomposition level: understanding system architecture well enough to break work into independent, testable units that agents can execute reliably. This is, at its core, the same skill that makes someone a good engineering manager. Agentic coding is making that skill relevant at the individual contributor level.</p>
+
+    <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+  </main>
+  <footer>
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source agent multiplexer for Claude Code.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/mixpeek/amux/issues">Issues</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>
+document.getElementById('theme-toggle').addEventListener('click', function() {
+  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (isDark) {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('theme', 'light');
+  } else {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    localStorage.setItem('theme', 'dark');
+  }
+});
+</script>
+</body>
+</html>

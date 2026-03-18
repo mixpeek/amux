@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Pair Programming at Scale — amux</title>
+  <script>(function(){var t=localStorage.getItem('theme');if(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.setAttribute('data-theme','dark')})()</script>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Go beyond single-agent autocomplete. Learn how AI pair programming with multiple agents lets you parallelize implementation, testing, and review across your entire codebase.">
+  <meta name="keywords" content="ai pair programming, ai pair programming tools, pair programming with ai, multi-agent programming, claude code pair programming">
+  <link rel="canonical" href="https://amux.io/guides/ai-pair-programming/">
+  <meta property="og:title" content="AI Pair Programming at Scale — amux">
+  <meta property="og:description" content="Go beyond single-agent autocomplete. Learn how AI pair programming with multiple agents lets you parallelize implementation, testing, and review across your entire codebase.">
+  <meta property="og:url" content="https://amux.io/guides/ai-pair-programming/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Pair Programming","item":"https://amux.io/guides/ai-pair-programming/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Pair Programming at Scale","description":"Go beyond single-agent autocomplete. Learn how AI pair programming with multiple agents lets you parallelize implementation, testing, and review across your entire codebase.","author":{"@type":"Organization","name":"amux"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io"},"datePublished":"2026-03-17","dateModified":"2026-03-17","mainEntityOfPage":"https://amux.io/guides/ai-pair-programming/"}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"><span class="icon-sun">&#9788;</span><span class="icon-moon">&#9790;</span></button>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">sign up</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>AI Pair Programming</span></div>
+    <h1>AI Pair Programming at Scale</h1>
+    <p class="subtitle">Pair programming used to mean one human and one human. Then it became one human and one AI. Now it means one human and a fleet of AI agents working in parallel across your codebase.</p>
+
+    <h2>What AI pair programming actually means in 2026</h2>
+    <p>The phrase "AI pair programming" has evolved dramatically. In 2023, it meant tab-completing lines of code with GitHub Copilot. In 2024, it meant chatting with an AI assistant inside your IDE. In 2026, it means something fundamentally different: working alongside autonomous coding agents that can read your entire codebase, run tests, commit code, and coordinate with each other.</p>
+    <p>The shift happened when models became capable enough to hold multi-file context and execute multi-step plans reliably. An AI pair programmer is no longer a fancy autocomplete engine. It is a junior developer that can be given a task description, pointed at a repository, and trusted to produce a working implementation, including tests, within minutes.</p>
+    <p>This changes the economics of pair programming entirely. Traditional pair programming has a well-documented productivity trade-off: two developers produce higher-quality code, but at roughly 1.5x the throughput of a single developer, not 2x. With AI agents, the cost of the "pair" drops to pennies per hour of compute, and the parallelism scales to dozens of simultaneous pairs.</p>
+
+    <h2>Single-agent vs. multi-agent pair programming</h2>
+    <p>Most AI pair programming tools give you a single agent. You describe a task, the agent works on it, and you review the output. This is effective for focused, sequential work, but it creates a bottleneck: while the agent is implementing feature A, nothing is happening on features B through F.</p>
+    <p>Multi-agent pair programming removes that bottleneck. Instead of one conversation with one agent, you run multiple agents in parallel, each working on a different part of the problem. The human developer shifts from "co-driver" to "technical lead", setting direction, reviewing work, and resolving conflicts.</p>
+
+    <table>
+      <thead><tr><th>Dimension</th><th>Single-agent</th><th>Multi-agent (amux)</th></tr></thead>
+      <tbody>
+        <tr><td>Parallelism</td><td>1 task at a time</td><td>10-50+ tasks simultaneously</td></tr>
+        <tr><td>Human role</td><td>Co-driver, line-by-line</td><td>Technical lead, task-level review</td></tr>
+        <tr><td>Throughput</td><td>Limited by conversation speed</td><td>Limited by API rate limits</td></tr>
+        <tr><td>Context switching</td><td>Agent switches between files</td><td>Each agent owns its scope</td></tr>
+        <tr><td>Error blast radius</td><td>One bad generation blocks everything</td><td>One stuck agent, others continue</td></tr>
+        <tr><td>Cost per hour</td><td>$2-8 (one model session)</td><td>$20-80 (many sessions, but 10-50x output)</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Pair programming with a fleet</h2>
+    <p>The core idea behind amux is that AI pair programming should not be a 1:1 relationship. When you have a feature that touches the API layer, the frontend, the database schema, and the test suite, why wait for a single agent to work through each layer sequentially?</p>
+    <p>With amux, you register a project once and then spin up as many sessions as you need:</p>
+    <pre><code># Register the project
+amux register webapp --dir ~/Dev/webapp --yolo
+
+# Start parallel agents, each with a focused task
+amux start webapp --sessions 4
+
+# Or start them individually with specific prompts
+amux start webapp/api --prompt "Add pagination to the /users endpoint"
+amux start webapp/frontend --prompt "Build the user list page with infinite scroll"
+amux start webapp/tests --prompt "Write integration tests for the /users endpoint"
+amux start webapp/docs --prompt "Update the API docs for the /users endpoint"</code></pre>
+    <p>Each session is an independent Claude Code instance running in its own tmux pane, with full access to the repository. The amux dashboard at <code>https://localhost:8822</code> gives you a real-time view of what every agent is doing, including live terminal output, token spend, and git diffs.</p>
+
+    <h2>Pattern: test writer + implementer</h2>
+    <p>One of the most effective multi-agent pair programming patterns is running a test-writing agent alongside an implementation agent. This mirrors the test-driven development (TDD) workflow, but with actual parallelism:</p>
+    <pre><code># Agent 1: write tests first (TDD style)
+amux start myapp/tests --prompt "Write comprehensive unit tests for a
+  UserService class that handles: create user with email validation,
+  update user profile, deactivate user account, list users with
+  pagination. Use pytest. Write the tests against the interface,
+  not the implementation."
+
+# Agent 2: implement the service
+amux start myapp/impl --prompt "Implement a UserService class in
+  src/services/user_service.py. Methods: create_user, update_profile,
+  deactivate_user, list_users (with offset/limit pagination).
+  Use SQLAlchemy for persistence. Include input validation."</code></pre>
+    <p>Both agents work simultaneously. When they finish, you have tests and an implementation that were developed with the same specification in mind. Run the tests, fix any mismatches, and you have a well-tested feature in a fraction of the time.</p>
+
+    <h2>Pattern: frontend + backend</h2>
+    <p>Full-stack features are a natural fit for multi-agent pair programming. The API contract serves as the coordination point:</p>
+    <pre><code># Define the contract first (you can do this manually or have an agent do it)
+amux start myapp/contract --prompt "Create an OpenAPI spec for a
+  notifications API: GET /notifications (list, paginated),
+  POST /notifications/:id/read (mark as read),
+  DELETE /notifications/:id (dismiss). Save to docs/api/notifications.yaml"
+
+# Once the contract exists, parallelize frontend and backend
+amux start myapp/backend --prompt "Implement the notifications API
+  from docs/api/notifications.yaml. Use FastAPI. Include DB migrations."
+
+amux start myapp/frontend --prompt "Build a notifications dropdown
+  component in React. Fetch from the API defined in
+  docs/api/notifications.yaml. Include optimistic updates for
+  mark-as-read."</code></pre>
+
+    <h2>Pattern: refactor + migrate</h2>
+    <p>Large refactoring tasks benefit enormously from parallelism. Instead of one agent grinding through hundreds of files, you can split the work by module or by file pattern:</p>
+    <pre><code># Split a large migration across agents by directory
+amux start myapp/refactor-api --prompt "Migrate all files in src/api/
+  from CommonJS require() to ES module import/export syntax"
+
+amux start myapp/refactor-utils --prompt "Migrate all files in src/utils/
+  from CommonJS require() to ES module import/export syntax"
+
+amux start myapp/refactor-tests --prompt "Update all test files in tests/
+  to use ES module imports matching the new src/ import style"</code></pre>
+
+    <h2>Coordinating agents with the board</h2>
+    <p>When agents need to coordinate, amux provides a built-in kanban board backed by SQLite. Agents can post tasks, claim work, and mark items done via a REST API. This is especially useful for orchestration patterns where a "lead" agent breaks down a large task and delegates subtasks:</p>
+    <pre><code># A lead agent can create subtasks for other agents
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Implement user model","session":"worker-1","status":"todo"}' \
+  https://localhost:8822/api/board
+
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Write API endpoints","session":"worker-2","status":"todo"}' \
+  https://localhost:8822/api/board
+
+# Worker agents poll for their tasks and claim them atomically
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"session":"worker-1"}' \
+  https://localhost:8822/api/board/TASK-ID/claim</code></pre>
+
+    <h2>Managing git with multiple agents</h2>
+    <p>The biggest practical challenge with multi-agent pair programming is git. When multiple agents are writing code in the same repository, merge conflicts are inevitable without guardrails.</p>
+    <p>amux addresses this with several mechanisms:</p>
+    <ul>
+      <li><strong>File-level conflict detection:</strong> The dashboard shows which files each agent has modified, highlighting overlaps before they become conflicts.</li>
+      <li><strong>Scope isolation by convention:</strong> Give each agent a clear directory or file scope in its prompt. An agent working on <code>src/api/</code> should not touch <code>src/frontend/</code>.</li>
+      <li><strong>Sequential commit strategy:</strong> For agents working in overlapping areas, configure them to pull and rebase before committing.</li>
+      <li><strong>Branch-per-agent:</strong> For maximum isolation, each agent can work on its own branch, with merges handled by the human lead or a dedicated merge agent.</li>
+    </ul>
+
+    <h2>When to use multi-agent vs. single-agent</h2>
+    <p>Multi-agent pair programming is not always the right choice. Use a single agent when:</p>
+    <ul>
+      <li>The task is tightly coupled and requires sequential reasoning across many files</li>
+      <li>You need to iterate interactively, refining the approach in real-time</li>
+      <li>The change is small enough that parallelism adds no benefit</li>
+    </ul>
+    <p>Use multiple agents when:</p>
+    <ul>
+      <li>The work can be decomposed into independent or loosely coupled tasks</li>
+      <li>You are building a feature that spans multiple layers (API, frontend, tests, docs)</li>
+      <li>You are doing a large refactor or migration across many files</li>
+      <li>You want one agent to write tests while another writes implementation</li>
+      <li>You are exploring multiple approaches to the same problem simultaneously</li>
+    </ul>
+
+    <h2>Getting started</h2>
+    <p>If you are already using Claude Code, adding multi-agent pair programming with amux takes about two minutes:</p>
+    <pre><code># Install amux
+git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+
+# Register your project
+amux register myproject --dir ~/Dev/myproject --yolo
+
+# Start 4 parallel agents
+amux start myproject --sessions 4
+
+# Open the dashboard to see all agents working
+amux serve  # https://localhost:8822</code></pre>
+    <p>From the dashboard, you can watch each agent's terminal output in real-time, see token spend per session, review git diffs, and send messages to individual agents. The shift from single-agent to multi-agent pair programming is less a new tool and more a new way of thinking about your role as a developer: less typing, more directing.</p>
+
+    <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+  </main>
+  <footer>
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source agent multiplexer for Claude Code.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/mixpeek/amux/issues">Issues</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>
+document.getElementById('theme-toggle').addEventListener('click', function() {
+  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (isDark) {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('theme', 'light');
+  } else {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    localStorage.setItem('theme', 'dark');
+  }
+});
+</script>
+</body>
+</html>

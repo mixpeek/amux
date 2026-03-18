@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vibe Coding Tools: The Complete Guide to AI-First Development — amux</title>
+  <script>(function(){var t=localStorage.getItem('theme');if(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.setAttribute('data-theme','dark')})()</script>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Complete guide to vibe coding tools and setup. Learn what vibe coding is, the best tools (Claude Code, Cursor, Bolt, Replit, v0), and how amux enables vibe coding at scale with parallel AI agents.">
+  <meta name="keywords" content="vibe coding tools, best vibe coding tool, vibe coding setup, vibe coding guide, ai coding workflow, vibe coding 2026">
+  <link rel="canonical" href="https://amux.io/guides/vibe-coding-tools/">
+  <meta property="og:title" content="Vibe Coding Tools: The Complete Guide to AI-First Development — amux">
+  <meta property="og:description" content="Complete guide to vibe coding tools. Learn what vibe coding is, the best tools, and how to scale it with parallel AI agents.">
+  <meta property="og:url" content="https://amux.io/guides/vibe-coding-tools/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/" },
+      { "@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/" },
+      { "@type": "ListItem", "position": 3, "name": "Vibe Coding Tools", "item": "https://amux.io/guides/vibe-coding-tools/" }
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Vibe Coding Tools: The Complete Guide to AI-First Development",
+    "description": "Complete guide to vibe coding tools and setup, covering the best tools and how to scale vibe coding with parallel AI agents.",
+    "author": { "@type": "Organization", "name": "amux" },
+    "publisher": { "@type": "Organization", "name": "amux", "url": "https://amux.io" },
+    "datePublished": "2026-03-17",
+    "dateModified": "2026-03-17"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"><span class="icon-sun">&#9788;</span><span class="icon-moon">&#9790;</span></button>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">sign up</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> &rsaquo; <a href="/guides/">Guides</a> &rsaquo; Vibe Coding Tools</div>
+    <h1>Vibe Coding Tools: The Complete Guide to AI-First Development</h1>
+    <p class="subtitle">Vibe coding is the practice of describing what you want in natural language and letting AI agents write the code. Here's how to set up the ultimate vibe coding environment — and how to scale it with parallel agents.</p>
+
+    <h2>What is vibe coding?</h2>
+    <p>Vibe coding is a term coined by Andrej Karpathy in early 2025 to describe a new way of programming: instead of writing code line by line, you describe the "vibe" of what you want and let AI tools generate the implementation. You focus on direction, architecture, and intent. The AI handles syntax, boilerplate, and implementation details.</p>
+    <p>This is not the same as "no-code" or "low-code." Vibe coding produces real, production-quality code in real programming languages. You still need to understand your codebase, review the output, and make architectural decisions. The difference is that you spend your time on the high-level decisions instead of the low-level keystrokes.</p>
+    <p>In 2026, vibe coding has gone from a Twitter meme to a legitimate workflow used by professional developers at startups and major tech companies. The tooling has matured enough that a single developer can ship features at the rate of a small team — and with amux, they can go even faster by running multiple AI agents in parallel.</p>
+
+    <h2>Why vibe coding is trending</h2>
+    <p>Several converging factors have made vibe coding practical:</p>
+    <ul>
+      <li><strong>Models got good enough</strong> — Claude, GPT-4, and Gemini now produce code that compiles, passes tests, and follows conventions on the first try, most of the time. The quality gap between AI-written and human-written code has narrowed to the point where it's often indistinguishable.</li>
+      <li><strong>Agent capabilities matured</strong> — Modern AI coding tools don't just suggest code. They read your codebase, plan multi-step changes, run tests, fix errors, and commit. They're agents, not autocomplete engines.</li>
+      <li><strong>Context windows grew</strong> — With 200K+ token context windows, agents can hold an entire codebase in memory. They understand how your files relate to each other, which makes cross-file edits reliable.</li>
+      <li><strong>Developer expectations shifted</strong> — Developers who grew up with AI tools expect to work at a higher abstraction level. Writing boilerplate by hand feels like writing assembly when you have a compiler.</li>
+    </ul>
+
+    <h2>The best vibe coding tools in 2026</h2>
+
+    <h3>Claude Code — best for serious projects</h3>
+    <p>Claude Code is a terminal-based coding agent from Anthropic. You describe what you want, and it reads your codebase, writes code, runs tests, and iterates until everything works. It operates as a true agent: it can execute shell commands, navigate your file system, and interact with your development tools.</p>
+    <p>Why it's the best vibe coding tool for production work:</p>
+    <ul>
+      <li>Reads and understands your entire codebase, not just the open file</li>
+      <li>Runs your test suite and fixes failures automatically</li>
+      <li>Works with any language, framework, or build system</li>
+      <li>Supports CLAUDE.md files for persistent project context</li>
+      <li>Can be run in YOLO mode for fully unattended operation</li>
+    </ul>
+    <pre><code># Vibe coding with Claude Code
+cd ~/Dev/my-saas
+claude
+
+&gt; I want to add a Stripe billing portal. Users should be able to view their
+&gt; current plan, upgrade/downgrade, and see invoice history. Use the existing
+&gt; auth system and follow the patterns in src/api/ for the backend routes.
+&gt; Write tests.</code></pre>
+    <p>Claude Code will implement the entire feature — models, routes, UI components, and tests — while following your existing patterns.</p>
+
+    <h3>Cursor — best for visual, interactive vibe coding</h3>
+    <p>Cursor is a VS Code fork with AI integrated into every interaction. Its Composer mode approaches agent-level capability: you describe a change in natural language, and it edits multiple files with a visual diff you can review.</p>
+    <p>Cursor is ideal for developers who want to vibe code but still see every change as it happens. The visual diff view gives you confidence that the AI is doing the right thing. Tab completion fills in the gaps as you work, creating a flow state where you're describing intent and the AI is writing implementation.</p>
+
+    <h3>Bolt — best for rapid prototyping</h3>
+    <p>Bolt (by StackBlitz) runs entirely in the browser. Describe an app in natural language, and Bolt generates a working prototype with a live preview. It excels at frontend work — landing pages, dashboards, CRUD apps — where you want to go from idea to working demo in minutes.</p>
+    <p>The tradeoff: Bolt is designed for new projects, not existing codebases. It's a prototyping tool, not a production development environment. Use it to validate ideas quickly, then port the results to a proper project for Claude Code or Cursor to refine.</p>
+
+    <h3>Replit — best for beginners and quick experiments</h3>
+    <p>Replit's AI agent can build full-stack apps from a text description. It sets up the environment, installs dependencies, writes code, and deploys — all in the browser. No local setup required.</p>
+    <p>Replit is the most accessible entry point for vibe coding. If you've never coded before, you can describe an app and have something running in minutes. For experienced developers, it's useful for quick experiments and throwaway projects where you don't want to set up a local environment.</p>
+
+    <h3>v0 by Vercel — best for UI components</h3>
+    <p>v0 generates React components from text descriptions or screenshots. It's specialized for UI work: describe a component, and v0 generates production-quality React + Tailwind code. You can iterate on the design through conversation, then copy the component into your project.</p>
+    <p>v0 is a point tool, not a general-purpose agent. Use it when you need a specific UI component and don't want to build it from scratch. It integrates well into a broader vibe coding workflow — generate the component in v0, then use Claude Code to integrate it into your app.</p>
+
+    <h2>Comparison: vibe coding tools at a glance</h2>
+    <table>
+      <thead>
+        <tr><th>Tool</th><th>Environment</th><th>Best for</th><th>Codebase support</th><th>Parallel agents</th><th>Price</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Claude Code</td><td>Terminal</td><td>Production features</td><td>Any existing codebase</td><td>Via amux</td><td>Usage-based</td></tr>
+        <tr><td>Cursor</td><td>IDE</td><td>Interactive edits</td><td>Any existing codebase</td><td>No</td><td>$20-40/mo</td></tr>
+        <tr><td>Bolt</td><td>Browser</td><td>Rapid prototypes</td><td>New projects only</td><td>No</td><td>Free tier + paid</td></tr>
+        <tr><td>Replit</td><td>Browser</td><td>Beginners, experiments</td><td>New projects only</td><td>No</td><td>Free tier + paid</td></tr>
+        <tr><td>v0</td><td>Browser</td><td>UI components</td><td>Component-level</td><td>No</td><td>Free tier + paid</td></tr>
+        <tr><td>amux</td><td>Terminal + Web</td><td>Parallel vibe coding</td><td>Any existing codebase</td><td>Yes (native)</td><td>Free (open source)</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Setting up a vibe coding environment</h2>
+    <p>Here's the setup we recommend for professional vibe coding. This gives you the full spectrum: quick prototyping, interactive editing, autonomous agents, and parallel workflows.</p>
+
+    <h3>Step 1: Install the core tools</h3>
+    <pre><code># Claude Code — your primary coding agent
+npm install -g @anthropic-ai/claude-code
+
+# amux — parallel agent orchestration
+git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+
+# Cursor (download from cursor.com) — for interactive, visual work
+# v0 (use at v0.dev) — for UI component generation</code></pre>
+
+    <h3>Step 2: Set up your project for vibe coding</h3>
+    <p>Create a CLAUDE.md in your project root. This is the single most important file for effective vibe coding — it tells the AI agent everything it needs to know about your project without wasting time exploring.</p>
+    <pre><code># CLAUDE.md
+
+## Architecture
+- Next.js 14 app router in src/app/
+- tRPC API layer in src/server/
+- PostgreSQL via Prisma ORM
+- Tailwind CSS + shadcn/ui components
+
+## Conventions
+- All API routes use tRPC procedures in src/server/routers/
+- UI components in src/components/, page components in src/app/
+- Tests use Vitest, located next to source files as *.test.ts
+- Conventional commits required
+
+## Current state
+- Auth: complete (NextAuth with GitHub + Google)
+- Billing: not started
+- Dashboard: basic layout done, needs charts and data tables</code></pre>
+
+    <h3>Step 3: Register with amux for parallel workflows</h3>
+    <pre><code># Register your project
+amux register myproject --dir ~/Dev/myproject --yolo
+
+# Start the dashboard
+amux serve</code></pre>
+
+    <h3>Step 4: Start vibe coding</h3>
+    <p>Now you're ready. The workflow looks like this:</p>
+    <pre><code># Morning: plan your day's work as tasks
+amux board add "Add Stripe billing integration"
+amux board add "Build analytics dashboard with charts"
+amux board add "Write API integration tests"
+amux board add "Add email notification system"
+
+# Assign tasks to sessions and let them work
+amux send billing "Implement Stripe billing with subscription management..."
+amux send analytics "Build the analytics dashboard using Recharts..."
+amux send tests "Write integration tests for all API endpoints..."
+amux send email "Add email notifications using Resend..."
+
+# Monitor from the dashboard at https://localhost:8822
+# Or from your phone — the dashboard is a responsive web app
+
+# Afternoon: review and merge completed branches
+# Each agent worked on its own branch via git worktrees
+git merge feature/billing
+git merge feature/analytics
+git merge feature/tests
+git merge feature/email</code></pre>
+
+    <h2>Vibe coding at scale: the amux advantage</h2>
+    <p>The fundamental limitation of every vibe coding tool except amux is that they run one agent at a time. Cursor, Bolt, Replit, and even Claude Code by itself — they're all single-threaded. You describe one thing, wait for it to finish, then describe the next thing.</p>
+    <p>amux removes this bottleneck. By running multiple Claude Code sessions in parallel, each in its own git worktree, you can vibe code across your entire project simultaneously. The math is straightforward: if one agent completes a feature in 20 minutes, five parallel agents complete five features in 20 minutes.</p>
+    <p>This changes the developer's role fundamentally. Instead of being an individual contributor who happens to use AI, you become a technical lead managing a team of AI agents. Your job is:</p>
+    <ul>
+      <li><strong>Decompose work</strong> — Break features into independent, parallelizable tasks</li>
+      <li><strong>Write specs</strong> — Each task needs a clear prompt with scope, constraints, and acceptance criteria</li>
+      <li><strong>Monitor progress</strong> — Use the amux dashboard to track agents, catch stuck sessions, and redirect effort</li>
+      <li><strong>Review output</strong> — Every branch gets a code review before merging, just like with human contributors</li>
+      <li><strong>Resolve conflicts</strong> — When agents edit overlapping code, you decide how to merge</li>
+    </ul>
+    <p>This is vibe coding at its most powerful: you're focused entirely on the "what" and "why," and the AI handles all of the "how."</p>
+
+    <h2>Common vibe coding pitfalls</h2>
+    <ul>
+      <li><strong>Skipping code review</strong> — AI-generated code needs the same review as human-generated code. It can introduce subtle bugs, security issues, or architectural problems. Never merge without reviewing the diff.</li>
+      <li><strong>Vague prompts</strong> — "Make it better" is not a vibe. Be specific about what you want, even if you're being high-level. "Improve the dashboard performance by lazy-loading the charts and adding pagination to the data table" is a good vibe.</li>
+      <li><strong>Ignoring test failures</strong> — When the AI's code fails tests, don't just disable the tests. The tests are telling you something. Fix the code, or update the tests if the requirements genuinely changed.</li>
+      <li><strong>Over-relying on one tool</strong> — Use the right tool for the task. v0 for UI mockups, Cursor for quick interactive edits, Claude Code for complex features, amux for parallel workloads. No single tool is best at everything.</li>
+      <li><strong>Not maintaining CLAUDE.md</strong> — Your project context file needs to evolve with the project. Stale context leads to agents making wrong assumptions. Update it weekly.</li>
+    </ul>
+
+    <h2>The future of vibe coding</h2>
+    <p>Vibe coding is still early. The tools are improving rapidly, and the workflows are still being figured out. But the direction is clear: developers are moving up the abstraction stack. Just as we moved from assembly to C to Python, we're now moving from writing code to directing agents that write code.</p>
+    <p>The developers who thrive in this world will be those who can decompose complex systems into clear, implementable tasks — and who can review AI-generated code critically. The tools will keep getting better. The skill that matters is knowing what to build and how to verify it works.</p>
+
+    <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+  </main>
+  <footer>
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source agent multiplexer for Claude Code.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/mixpeek/amux/issues">Issues</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>
+document.getElementById('theme-toggle').addEventListener('click', function() {
+  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (isDark) {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('theme', 'light');
+  } else {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    localStorage.setItem('theme', 'dark');
+  }
+});
+</script>
+</body>
+</html>

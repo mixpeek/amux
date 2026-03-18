@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Code Best Practices: Tips for Faster, Cheaper, Better Results — amux</title>
+  <script>(function(){var t=localStorage.getItem('theme');if(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.setAttribute('data-theme','dark')})()</script>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Expert best practices for Claude Code: task decomposition, prompt engineering, context management, cost optimization, YOLO mode safety, and parallel workflows with amux.">
+  <meta name="keywords" content="claude code best practices, claude code tips, claude code workflow, claude code prompt engineering, claude code cost optimization">
+  <link rel="canonical" href="https://amux.io/guides/claude-code-best-practices/">
+  <meta property="og:title" content="Claude Code Best Practices: Tips for Faster, Cheaper, Better Results — amux">
+  <meta property="og:description" content="Expert best practices for Claude Code: task decomposition, prompt engineering, context management, cost optimization, and parallel workflows.">
+  <meta property="og:url" content="https://amux.io/guides/claude-code-best-practices/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/" },
+      { "@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/" },
+      { "@type": "ListItem", "position": 3, "name": "Claude Code Best Practices", "item": "https://amux.io/guides/claude-code-best-practices/" }
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Claude Code Best Practices: Tips for Faster, Cheaper, Better Results",
+    "description": "Expert best practices for Claude Code covering task decomposition, prompt engineering, context management, cost optimization, and parallel workflows.",
+    "author": { "@type": "Organization", "name": "amux" },
+    "publisher": { "@type": "Organization", "name": "amux", "url": "https://amux.io" },
+    "datePublished": "2026-03-17",
+    "dateModified": "2026-03-17"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"><span class="icon-sun">&#9788;</span><span class="icon-moon">&#9790;</span></button>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">sign up</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> &rsaquo; <a href="/guides/">Guides</a> &rsaquo; Claude Code Best Practices</div>
+    <h1>Claude Code Best Practices: Tips for Faster, Cheaper, Better Results</h1>
+    <p class="subtitle">Battle-tested patterns from teams running hundreds of Claude Code sessions per week. Learn how to decompose tasks, write effective prompts, manage context, optimize costs, and scale with parallel agents.</p>
+
+    <h2>1. Task decomposition: the single most important skill</h2>
+    <p>The biggest mistake people make with Claude Code is giving it tasks that are too large. "Build the entire checkout flow" will produce worse results than five focused tasks, even if Claude Code could theoretically handle it in one shot. Here's why:</p>
+    <ul>
+      <li><strong>Context pressure</strong> — Large tasks fill the context window with intermediate state, leaving less room for reasoning about the current step</li>
+      <li><strong>Error compounding</strong> — A wrong decision in step 2 of 10 cascades through the remaining 8 steps</li>
+      <li><strong>Review difficulty</strong> — A 2,000-line diff is much harder to review than five 400-line diffs</li>
+      <li><strong>Parallelization</strong> — Small tasks can run simultaneously across multiple agents</li>
+    </ul>
+    <p>A good decomposition for "build the checkout flow" looks like:</p>
+    <pre><code># Task 1: Cart data model and API
+"Create the CartItem and Cart models in src/models/. Add REST endpoints
+for add-to-cart, remove-from-cart, and get-cart. Write unit tests."
+
+# Task 2: Stripe integration
+"Create src/services/stripe.ts with functions for creating payment intents,
+confirming payments, and handling webhook events. Write tests using Stripe
+test mode."
+
+# Task 3: Checkout UI
+"Build the checkout page at src/pages/Checkout.tsx. Three steps: cart review,
+shipping address, payment. Use the existing DesignSystem components."
+
+# Task 4: Order confirmation
+"After successful payment, create an Order record, send confirmation email
+via the existing EmailService, and redirect to /orders/:id."
+
+# Task 5: Integration tests
+"Write end-to-end tests for the full checkout flow using Playwright.
+Cover: happy path, card declined, empty cart, and expired session."</code></pre>
+    <p>Each task has a clear scope, a clear deliverable, and can be verified independently.</p>
+
+    <h2>2. Prompt engineering for coding agents</h2>
+    <p>Prompting a coding agent is different from prompting a chatbot. You're not having a conversation — you're writing a specification. The best prompts share these characteristics:</p>
+    <h3>Be specific about location</h3>
+    <pre><code># Bad
+"Add logging to the app"
+
+# Good
+"Add structured JSON logging to all route handlers in src/api/routes/.
+Use the existing logger from src/lib/logger.ts. Log request method, path,
+status code, and duration. Don't add logging to middleware — that's already handled."</code></pre>
+    <h3>Specify the testing strategy</h3>
+    <pre><code># Bad
+"Write tests"
+
+# Good
+"Write unit tests for src/services/billing.ts. Mock the Stripe client.
+Test: successful charge, card declined, idempotency key collision,
+and network timeout. Use the existing test helpers in tests/helpers/."</code></pre>
+    <h3>Reference existing patterns</h3>
+    <pre><code># Bad
+"Create a new API endpoint"
+
+# Good
+"Create a GET /api/invoices endpoint following the same pattern as
+the existing /api/orders endpoint in src/api/orders.ts. Use the same
+auth middleware, pagination, and error handling approach."</code></pre>
+    <h3>State constraints explicitly</h3>
+    <p>If there are things the agent should not do, say so. Claude Code is helpful by default, which means it might "improve" things you didn't ask it to touch.</p>
+    <pre><code>"Fix the date parsing bug in utils/date.ts line 42. The timezone offset
+is being applied twice. Do NOT refactor the rest of the file — only fix
+the specific bug."</code></pre>
+
+    <h2>3. Context window management</h2>
+    <p>Claude Code's context window is large but finite. Every file it reads, every command output, and every conversation turn consumes context. When it fills up, the agent starts forgetting earlier instructions. Active management is essential:</p>
+    <table>
+      <thead><tr><th>Technique</th><th>When to use</th><th>Impact</th></tr></thead>
+      <tbody>
+        <tr><td><code>/compact</code></td><td>Every 15-20 turns or when context is 60%+ full</td><td>Summarizes conversation, frees 40-70% of context</td></tr>
+        <tr><td>CLAUDE.md</td><td>Always — place in project root</td><td>Provides persistent context without using conversation turns</td></tr>
+        <tr><td>Scoped prompts</td><td>Always</td><td>Agent reads fewer files, leaving more room for reasoning</td></tr>
+        <tr><td>Fresh sessions</td><td>When switching to unrelated task</td><td>Clean context, no leftover state</td></tr>
+        <tr><td>.claudeignore</td><td>For repos with large generated files</td><td>Prevents agent from reading build artifacts, vendor dirs</td></tr>
+      </tbody>
+    </table>
+    <p>A strong CLAUDE.md reduces the need for <code>/compact</code> because the agent doesn't waste turns exploring your codebase — it already knows the layout, conventions, and current priorities.</p>
+
+    <h2>4. Git worktree isolation</h2>
+    <p>Never run multiple Claude Code sessions in the same working directory. They will step on each other's changes, create merge conflicts mid-task, and produce broken commits. Git worktrees solve this elegantly:</p>
+    <pre><code># Create isolated worktrees for each task
+git worktree add ../myproject-auth feature/auth
+git worktree add ../myproject-api feature/api-rate-limiting
+git worktree add ../myproject-tests feature/payment-tests
+
+# Each Claude Code session works in its own worktree
+cd ../myproject-auth &amp;&amp; claude
+cd ../myproject-api &amp;&amp; claude
+cd ../myproject-tests &amp;&amp; claude</code></pre>
+    <p>amux handles worktree creation automatically when you register a project. Each session gets its own branch and working directory:</p>
+    <pre><code>amux register myproject --dir ~/Dev/myproject --yolo
+# amux creates worktrees at ~/Dev/myproject-worktrees/session-name/</code></pre>
+
+    <h2>5. When to use YOLO mode vs. interactive</h2>
+    <p>YOLO mode (auto-approve all actions) is not an all-or-nothing decision. Use it strategically:</p>
+    <table>
+      <thead><tr><th>Scenario</th><th>Mode</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>Writing new tests</td><td>YOLO</td><td>Low risk — tests can't break production code</td></tr>
+        <tr><td>Implementing a well-spec'd feature on a branch</td><td>YOLO</td><td>Worktree isolation limits blast radius</td></tr>
+        <tr><td>Refactoring with existing test coverage</td><td>YOLO</td><td>Tests catch regressions automatically</td></tr>
+        <tr><td>Database migrations</td><td>Interactive</td><td>Destructive and hard to reverse</td></tr>
+        <tr><td>Modifying CI/CD config</td><td>Interactive</td><td>Mistakes can affect the entire team</td></tr>
+        <tr><td>Working directly on main branch</td><td>Interactive</td><td>No branch isolation safety net</td></tr>
+        <tr><td>Deleting or renaming files</td><td>Interactive</td><td>Review to prevent accidental data loss</td></tr>
+      </tbody>
+    </table>
+    <p>The pattern: use YOLO mode when changes are isolated and verifiable, interactive mode when changes are destructive or shared.</p>
+
+    <h2>6. Cost optimization</h2>
+    <p>Claude Code bills by token usage. Parallel agents multiply your token consumption. Here are proven strategies to keep costs under control:</p>
+    <ul>
+      <li><strong>Write detailed CLAUDE.md files</strong> — Every token the agent spends exploring your codebase is a token you pay for. A good CLAUDE.md eliminates exploratory reads.</li>
+      <li><strong>Use <code>/compact</code> before context is full</strong> — Compacting at 60% is cheaper than letting the context fill up and having the agent re-read files.</li>
+      <li><strong>Scope tasks tightly</strong> — "Fix the bug in utils/date.ts line 42" costs 5-10x less than "find and fix date handling bugs across the codebase."</li>
+      <li><strong>Kill stuck sessions</strong> — An agent retrying a failing approach burns tokens. If you see a session looping, kill it and start fresh with better instructions.</li>
+      <li><strong>Batch related changes</strong> — "Add input validation to all 5 form components" is cheaper as one task than five separate tasks, because the agent only reads the shared code once.</li>
+    </ul>
+    <p>Typical cost per task (as of March 2026):</p>
+    <table>
+      <thead><tr><th>Task complexity</th><th>Tokens</th><th>Approximate cost</th></tr></thead>
+      <tbody>
+        <tr><td>Simple bug fix</td><td>10K-30K</td><td>$0.10-$0.30</td></tr>
+        <tr><td>New feature (focused)</td><td>50K-150K</td><td>$0.50-$1.50</td></tr>
+        <tr><td>Complex refactor</td><td>150K-500K</td><td>$1.50-$5.00</td></tr>
+        <tr><td>Full module implementation</td><td>500K-2M</td><td>$5.00-$20.00</td></tr>
+      </tbody>
+    </table>
+
+    <h2>7. Error handling patterns</h2>
+    <p>Claude Code sometimes gets stuck. Recognizing failure modes early saves time and tokens:</p>
+    <ul>
+      <li><strong>Retry loops</strong> — The agent keeps trying the same approach and getting the same error. Fix: kill the session, analyze the error yourself, and restart with explicit instructions about the correct approach.</li>
+      <li><strong>Scope creep</strong> — The agent starts "improving" code you didn't ask it to touch. Fix: add explicit boundaries in your prompt ("only modify files in src/auth/").</li>
+      <li><strong>Hallucinated APIs</strong> — The agent calls a function or endpoint that doesn't exist. Fix: include the actual API surface in your CLAUDE.md or reference the correct file ("use the client exported from src/lib/api.ts").</li>
+      <li><strong>Test-fitting</strong> — The agent modifies tests to pass instead of fixing the code. Fix: state explicitly "do not modify existing tests — fix the implementation to make them pass."</li>
+    </ul>
+
+    <h2>8. Scaling with amux</h2>
+    <p>The practices above become critical when you scale from one session to many. amux codifies them:</p>
+    <pre><code># Register with best-practice defaults
+amux register myproject --dir ~/Dev/myproject --yolo
+
+# amux automatically:
+# - Creates git worktrees for each session
+# - Adds CLAUDE.md to each worktree
+# - Runs sessions in isolated tmux panes
+# - Provides a dashboard for monitoring all sessions
+# - Tracks tasks on a shared kanban board
+
+# Start the dashboard
+amux serve
+
+# Assign tasks via the board
+amux board add "Implement user search API" --session api-worker
+amux board add "Write search UI component" --session frontend-worker
+amux board add "Add search integration tests" --session test-worker</code></pre>
+    <p>The dashboard at <code>https://localhost:8822</code> gives you real-time visibility into all sessions. You can see output, send messages, and manage tasks from your browser or phone.</p>
+
+    <h2>Quick reference: the rules</h2>
+    <ul>
+      <li>One task per session. One branch per session. One worktree per session.</li>
+      <li>Write a CLAUDE.md before you start. Update it as the project evolves.</li>
+      <li>Use <code>/compact</code> at 60% context, not at 100%.</li>
+      <li>YOLO mode for isolated, verifiable work. Interactive mode for destructive operations.</li>
+      <li>Kill and restart stuck sessions. Don't let them loop.</li>
+      <li>Review every diff before merging, regardless of mode.</li>
+      <li>Scope prompts tightly. Specify files, functions, and constraints.</li>
+    </ul>
+
+    <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+  </main>
+  <footer>
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source agent multiplexer for Claude Code.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/mixpeek/amux/issues">Issues</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>
+document.getElementById('theme-toggle').addEventListener('click', function() {
+  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (isDark) {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('theme', 'light');
+  } else {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    localStorage.setItem('theme', 'dark');
+  }
+});
+</script>
+</body>
+</html>

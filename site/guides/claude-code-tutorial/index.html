@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Code Tutorial: Complete Setup &amp; Workflow Guide — amux</title>
+  <script>(function(){var t=localStorage.getItem('theme');if(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.setAttribute('data-theme','dark')})()</script>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Step-by-step Claude Code tutorial covering installation, first session, multi-agent workflows, YOLO mode, context management, and mobile monitoring with amux.">
+  <meta name="keywords" content="claude code tutorial, how to use claude code, claude code setup, claude code guide, claude code install, claude code workflow">
+  <link rel="canonical" href="https://amux.io/guides/claude-code-tutorial/">
+  <meta property="og:title" content="Claude Code Tutorial: Complete Setup & Workflow Guide — amux">
+  <meta property="og:description" content="Step-by-step Claude Code tutorial covering installation, first session, multi-agent workflows, YOLO mode, context management, and mobile monitoring with amux.">
+  <meta property="og:url" content="https://amux.io/guides/claude-code-tutorial/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/" },
+      { "@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/" },
+      { "@type": "ListItem", "position": 3, "name": "Claude Code Tutorial", "item": "https://amux.io/guides/claude-code-tutorial/" }
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Claude Code Tutorial: Complete Setup & Workflow Guide",
+    "description": "Step-by-step Claude Code tutorial covering installation, first session, multi-agent workflows, YOLO mode, context management, and mobile monitoring.",
+    "author": { "@type": "Organization", "name": "amux" },
+    "publisher": { "@type": "Organization", "name": "amux", "url": "https://amux.io" },
+    "datePublished": "2026-03-17",
+    "dateModified": "2026-03-17"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"><span class="icon-sun">&#9788;</span><span class="icon-moon">&#9790;</span></button>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">sign up</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> &rsaquo; <a href="/guides/">Guides</a> &rsaquo; Claude Code Tutorial</div>
+    <h1>Claude Code Tutorial: Complete Setup &amp; Workflow Guide</h1>
+    <p class="subtitle">Everything you need to go from zero to running parallel AI coding agents. Covers installation, your first session, advanced workflows, and scaling with amux.</p>
+
+    <h2>What is Claude Code?</h2>
+    <p>Claude Code is Anthropic's command-line coding agent. Unlike IDE-based assistants that suggest completions, Claude Code operates as an autonomous agent: you describe what you want, and it reads your codebase, writes code, runs tests, and commits changes. It runs in your terminal, uses your local tools (git, npm, pip, etc.), and works with any language or framework.</p>
+    <p>What makes Claude Code different from other AI coding tools is the depth of its reasoning. It can hold an entire codebase in context, plan multi-step refactors, and execute them without hand-holding. The tradeoff is that it runs one session at a time by default. That's where amux comes in — but first, let's get Claude Code itself set up properly.</p>
+
+    <h2>Prerequisites</h2>
+    <ul>
+      <li><strong>Node.js 18+</strong> — Claude Code is distributed as an npm package</li>
+      <li><strong>An Anthropic API key</strong> — or a Claude Pro/Teams subscription</li>
+      <li><strong>A terminal</strong> — macOS Terminal, iTerm2, Alacritty, Windows Terminal, or any Linux terminal</li>
+      <li><strong>Git</strong> — Claude Code works best in git repositories where it can commit changes</li>
+    </ul>
+
+    <h2>Step 1: Install Claude Code</h2>
+    <p>Install Claude Code globally via npm:</p>
+    <pre><code>npm install -g @anthropic-ai/claude-code</code></pre>
+    <p>Verify the installation:</p>
+    <pre><code>claude --version</code></pre>
+    <p>If you're using the API directly, set your key:</p>
+    <pre><code>export ANTHROPIC_API_KEY=sk-ant-...</code></pre>
+    <p>For Claude Pro or Teams subscribers, run <code>claude</code> and follow the OAuth login flow — no API key required.</p>
+
+    <h2>Step 2: Your first session</h2>
+    <p>Navigate to any project directory and start Claude Code:</p>
+    <pre><code>cd ~/Dev/my-project
+claude</code></pre>
+    <p>You'll see an interactive prompt. Try a simple task first:</p>
+    <pre><code>&gt; Explain the structure of this project and list the main entry points.</code></pre>
+    <p>Claude Code will read your files, analyze the codebase, and give you a structured overview. From here you can ask it to make changes:</p>
+    <pre><code>&gt; Add input validation to the signup form. Email must be valid, password must be 8+ chars.
+&gt; Write tests for the new validation logic.</code></pre>
+    <p>Claude Code will edit files, run your test suite, and iterate until the tests pass. Every file change requires your approval by default — you'll see a diff and can accept or reject each edit.</p>
+
+    <h2>Step 3: Understanding the approval flow</h2>
+    <p>By default, Claude Code asks permission before every file write and every command execution. This is the safe way to work when you're learning. The approval categories are:</p>
+    <table>
+      <thead><tr><th>Action</th><th>Default</th><th>YOLO mode</th></tr></thead>
+      <tbody>
+        <tr><td>Read files</td><td>Auto-approved</td><td>Auto-approved</td></tr>
+        <tr><td>Write/edit files</td><td>Requires approval</td><td>Auto-approved</td></tr>
+        <tr><td>Run shell commands</td><td>Requires approval</td><td>Auto-approved</td></tr>
+        <tr><td>Git operations</td><td>Requires approval</td><td>Auto-approved</td></tr>
+        <tr><td>Network requests</td><td>Requires approval</td><td>Auto-approved</td></tr>
+      </tbody>
+    </table>
+    <p>Once you're comfortable, you can enable YOLO mode (more on that in Step 6) to let Claude Code run unattended.</p>
+
+    <h2>Step 4: Context management</h2>
+    <p>Claude Code has a context window limit. For large codebases, you need to manage what's in context. Key techniques:</p>
+    <ul>
+      <li><strong>CLAUDE.md files</strong> — Place a <code>CLAUDE.md</code> in your project root with architecture notes, conventions, and instructions. Claude Code reads this automatically at the start of every session.</li>
+      <li><strong>The <code>/compact</code> command</strong> — When your context gets full, type <code>/compact</code> to summarize the conversation and free up space. Do this proactively before hitting the limit.</li>
+      <li><strong>Focused prompts</strong> — Instead of "refactor the entire app," say "refactor the authentication module in src/auth/." Narrower scope means better results.</li>
+      <li><strong>Git worktrees</strong> — Each Claude Code session should work on its own branch. Git worktrees let multiple sessions work on the same repo without conflicts.</li>
+    </ul>
+    <p>A good CLAUDE.md looks like this:</p>
+    <pre><code># My Project
+
+## Architecture
+- Express.js API in src/api/
+- React frontend in src/web/
+- PostgreSQL database, migrations in db/migrations/
+
+## Conventions
+- Use TypeScript strict mode
+- All API routes must have integration tests
+- Commit messages follow conventional commits
+
+## Current sprint
+- AUTH-42: Add OAuth2 Google login
+- API-99: Rate limiting on public endpoints</code></pre>
+
+    <h2>Step 5: Multi-session workflows with amux</h2>
+    <p>A single Claude Code session is powerful, but real projects have dozens of tasks. amux lets you run many Claude Code sessions in parallel, each in its own tmux pane with its own git worktree.</p>
+    <pre><code># Install amux
+git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+
+# Register your project
+amux register myproject --dir ~/Dev/myproject
+
+# Start sessions
+amux start myproject</code></pre>
+    <p>Now you can assign tasks to individual sessions. Each session gets its own branch, its own working directory, and its own Claude Code instance. The amux dashboard (at <code>https://localhost:8822</code>) shows all sessions, their output, and their status in real time.</p>
+    <p>A typical multi-session workflow:</p>
+    <pre><code># Session 1: working on auth
+amux send auth "Implement Google OAuth2 login flow"
+
+# Session 2: working on API
+amux send api "Add rate limiting middleware to all public routes"
+
+# Session 3: writing tests
+amux send tests "Write integration tests for the payment module"
+
+# Session 4: fixing bugs
+amux send bugfix "Fix the race condition in the websocket handler (issue #142)"</code></pre>
+    <p>All four agents work simultaneously. You monitor progress from the dashboard and merge completed branches when ready.</p>
+
+    <h2>Step 6: YOLO mode for unattended work</h2>
+    <p>YOLO mode removes all approval prompts. Claude Code reads, writes, runs commands, and commits without asking. This is essential for parallel workflows — you can't approve prompts for 10 sessions at once.</p>
+    <pre><code># Register with YOLO mode enabled
+amux register myproject --dir ~/Dev/myproject --yolo</code></pre>
+    <p>Safety considerations for YOLO mode:</p>
+    <ul>
+      <li><strong>Always use git worktrees</strong> — each session works on its own branch, so a bad change can't corrupt your main branch</li>
+      <li><strong>Set up CI checks</strong> — require passing tests before merging any agent-generated branch</li>
+      <li><strong>Review diffs before merging</strong> — YOLO mode means the agent runs unattended, but you still review the output</li>
+      <li><strong>Use CLAUDE.md guardrails</strong> — add rules like "never delete migration files" or "never modify production config"</li>
+    </ul>
+
+    <h2>Step 7: Mobile monitoring</h2>
+    <p>The amux dashboard is a web app, which means you can monitor your agents from your phone. Start the server and access it from any device on your network:</p>
+    <pre><code>amux serve
+# Dashboard available at https://localhost:8822
+# Or on your local network: https://192.168.x.x:8822</code></pre>
+    <p>From the mobile dashboard you can:</p>
+    <ul>
+      <li>See real-time output from all sessions</li>
+      <li>Check which tasks are in progress, done, or blocked</li>
+      <li>Send messages to individual sessions</li>
+      <li>View the kanban board of all tasks</li>
+    </ul>
+    <p>This lets you kick off a batch of tasks, close your laptop, and check progress from your phone while you're away from your desk.</p>
+
+    <h2>Step 8: Advanced patterns</h2>
+    <h3>Task decomposition</h3>
+    <p>Break large features into small, independently testable tasks. Instead of "build the payment system," create five tasks: "create the Stripe webhook handler," "build the subscription model," "add the billing page UI," "write payment integration tests," "add invoice PDF generation." Each task goes to a separate Claude Code session.</p>
+    <h3>Chain-of-agents</h3>
+    <p>Use the amux board to create dependency chains. An agent can mark its task as done and create follow-up tasks for other agents. For example, after the API agent finishes the new endpoint, it creates a task for the frontend agent to build the UI.</p>
+    <h3>Cost optimization</h3>
+    <p>Claude Code uses tokens, and parallel sessions use tokens in parallel. To optimize costs:</p>
+    <ul>
+      <li>Use <code>/compact</code> aggressively — shorter contexts mean fewer input tokens</li>
+      <li>Write detailed CLAUDE.md files so the agent doesn't waste tokens exploring your codebase</li>
+      <li>Scope tasks tightly — "fix the bug in utils/date.ts line 42" is cheaper than "find and fix date bugs"</li>
+      <li>Use the amux dashboard to kill stuck sessions early</li>
+    </ul>
+
+    <h2>Common pitfalls and how to avoid them</h2>
+    <ul>
+      <li><strong>Context overflow</strong> — If Claude Code starts forgetting earlier instructions, use <code>/compact</code> or start a new session. Don't keep pushing more information into a full context.</li>
+      <li><strong>Merge conflicts</strong> — When multiple agents edit similar files, conflicts are inevitable. Assign agents to different parts of the codebase, or use a sequential workflow where one agent finishes before the next starts on related code.</li>
+      <li><strong>Runaway commands</strong> — In YOLO mode, an agent might run an infinite loop or a destructive command. Use amux's session monitoring to catch this early, and add guardrails in CLAUDE.md.</li>
+      <li><strong>Stale branches</strong> — Agents work on worktree branches that can drift from main. Rebase frequently, or use short-lived branches that merge quickly.</li>
+    </ul>
+
+    <h2>Next steps</h2>
+    <p>You now have a complete Claude Code setup with parallel agent capabilities. From here:</p>
+    <ul>
+      <li>Read the <a href="/guides/claude-code-best-practices/">Claude Code Best Practices</a> guide for expert-level tips</li>
+      <li>Check out the <a href="/guides/vibe-coding-tools/">Vibe Coding Tools</a> guide to build a complete AI-native dev environment</li>
+      <li>Browse the <a href="/demos/">demos</a> to see amux in action on real projects</li>
+    </ul>
+
+    <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+  </main>
+  <footer>
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source agent multiplexer for Claude Code.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/mixpeek/amux/issues">Issues</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>
+document.getElementById('theme-toggle').addEventListener('click', function() {
+  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (isDark) {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('theme', 'light');
+  } else {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    localStorage.setItem('theme', 'dark');
+  }
+});
+</script>
+</body>
+</html>
