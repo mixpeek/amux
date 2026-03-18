@@ -1295,6 +1295,12 @@ CREATE TABLE IF NOT EXISTS share_tokens (
     expires_at INTEGER,
     label      TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS layout_presets (
+    name       TEXT PRIMARY KEY,
+    hidden     TEXT NOT NULL DEFAULT '[]',
+    tab_order  TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL
+);
 """
 
 
@@ -10136,23 +10142,44 @@ function _renderTabCustomizerMenu() {
   if (!menu) return;
   // Render in tabOrder order
   const orderedTabs = tabOrder.map(id => ALL_TABS.find(t => t.id === id)).filter(Boolean);
-  menu.innerHTML = orderedTabs.map(t => {
+  let html = orderedTabs.map(t => {
     const checked = !hiddenTabs.has(t.id);
     const req = t.required ? ' required' : '';
     const disabled = t.required ? ' disabled' : '';
     return `<label class="tab-customizer-item${req}" data-tab-id="${t.id}" onclick="event.stopPropagation()">
-      <span class="tab-drag-handle" title="Drag to reorder" style="cursor:grab;color:var(--dim);padding:0 4px 0 0;font-size:0.8rem;">⠿</span>
+      <span class="tab-drag-handle" title="Drag to reorder" style="cursor:grab;color:var(--dim);padding:0 4px 0 0;font-size:0.8rem;">&#x2807;</span>
       <input type="checkbox" ${checked ? 'checked' : ''}${disabled} onchange="toggleTabVisibility('${t.id}',this.checked)">
       ${t.label}
     </label>`;
   }).join('');
-  // Init Sortable on menu for drag-to-reorder
+  // Presets section
+  html += '<div class="tab-preset-section" onclick="event.stopPropagation()" style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;">';
+  html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 0;">';
+  html += '<span style="font-size:0.75rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">Presets</span>';
+  html += '<button onclick="saveLayoutPreset()" style="font-size:0.75rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:2px 4px;">+ Save current</button>';
+  html += '</div>';
+  html += '<div id="preset-list" style="font-size:0.82rem;"></div>';
+  html += '</div>';
+  menu.innerHTML = html;
+  // Load presets
+  fetch('/api/layout-presets').then(r=>r.json()).then(presets => {
+    const list = document.getElementById('preset-list');
+    if (!list) return;
+    if (!presets.length) { list.innerHTML = '<div style="color:var(--muted);font-size:0.78rem;padding:4px 0;">No saved presets</div>'; return; }
+    list.innerHTML = presets.map(p => `<div style="display:flex;align-items:center;gap:4px;padding:3px 0;">
+      <button onclick="loadLayoutPreset('${p.name.replace(/'/g,"\\'")}')" style="flex:1;text-align:left;background:none;border:none;cursor:pointer;color:var(--text);font-size:0.82rem;padding:2px 0;">${p.name}</button>
+      <button onclick="shareLayoutPreset('${p.name.replace(/'/g,"\\'")}')" title="Copy share link" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.72rem;padding:2px;">&#x1F517;</button>
+      <button onclick="deleteLayoutPreset('${p.name.replace(/'/g,"\\'")}')" title="Delete" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.72rem;padding:2px;">&times;</button>
+    </div>`).join('');
+  }).catch(()=>{});
+  // Init Sortable on menu for drag-to-reorder (only on tab items, not preset section)
   if (window.Sortable) {
     Sortable.create(menu, {
       handle: '.tab-drag-handle',
+      draggable: '.tab-customizer-item',
       animation: 100,
       onEnd(evt) {
-        const ids = [...menu.querySelectorAll('[data-tab-id]')].map(el => el.dataset.tabId);
+        const ids = [...menu.querySelectorAll('.tab-customizer-item[data-tab-id]')].map(el => el.dataset.tabId);
         tabOrder = ids;
         _saveTabOrder();
         _applyTabVisibility();
@@ -10176,6 +10203,67 @@ function toggleTabVisibility(id, show) {
   _applyTabVisibility();
   _renderTabCustomizerMenu();
 }
+
+// ── Layout presets (save/load/share tab configuration) ──
+async function saveLayoutPreset() {
+  const name = prompt('Preset name:');
+  if (!name) return;
+  await fetch('/api/layout-presets', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, hidden: [...hiddenTabs], tab_order: tabOrder})
+  });
+  _renderTabCustomizerMenu();
+}
+
+async function loadLayoutPreset(name) {
+  const r = await fetch('/api/layout-presets');
+  const presets = await r.json();
+  const p = presets.find(x => x.name === name);
+  if (!p) return;
+  hiddenTabs = new Set(p.hidden);
+  tabOrder = p.tab_order.length ? p.tab_order : ALL_TABS.map(t => t.id);
+  _saveHiddenTabs();
+  _saveTabOrder();
+  _applyTabVisibility();
+  _renderTabCustomizerMenu();
+}
+
+async function deleteLayoutPreset(name) {
+  if (!confirm('Delete preset "' + name + '"?')) return;
+  await fetch('/api/layout-presets/' + encodeURIComponent(name), {method:'DELETE'});
+  _renderTabCustomizerMenu();
+}
+
+async function shareLayoutPreset(name) {
+  const r = await fetch('/api/layout-presets');
+  const presets = await r.json();
+  const p = presets.find(x => x.name === name);
+  if (!p) return;
+  const data = btoa(JSON.stringify({hidden: p.hidden, tab_order: p.tab_order}));
+  const url = location.origin + '/?layout=' + data;
+  await navigator.clipboard.writeText(url);
+  showToast('Layout link copied to clipboard');
+}
+
+// Apply layout from URL parameter on load
+(function() {
+  const params = new URLSearchParams(location.search);
+  const layoutData = params.get('layout');
+  if (layoutData) {
+    try {
+      const p = JSON.parse(atob(layoutData));
+      if (p.hidden) hiddenTabs = new Set(p.hidden);
+      if (p.tab_order) tabOrder = p.tab_order;
+      _saveHiddenTabs();
+      _saveTabOrder();
+      // Clean URL
+      const url = new URL(location);
+      url.searchParams.delete('layout');
+      history.replaceState(null, '', url);
+    } catch(e) {}
+  }
+})();
 
 function toggleArchived() {
   archivedExpanded = !archivedExpanded;
@@ -23200,6 +23288,33 @@ end tell
                             has_key_in_env = True
                         break
             return self._json({"email": email, "is_cloud": bool(email), "has_api_key": has_key_in_env})
+
+        # ── Layout presets ────────────────────────────────────────────────────
+        if path == "/api/layout-presets":
+            db = get_db()
+            if method == "GET":
+                rows = db.execute("SELECT name, hidden, tab_order, created_at FROM layout_presets ORDER BY created_at DESC").fetchall()
+                return self._json([{"name": r["name"], "hidden": json.loads(r["hidden"]), "tab_order": json.loads(r["tab_order"]), "created_at": r["created_at"]} for r in rows])
+            if method == "POST":
+                body = self._read_body()
+                name = body.get("name", "").strip()
+                if not name:
+                    return self._json({"error": "name is required"}, 400)
+                hidden = json.dumps(body.get("hidden", []))
+                tab_order = json.dumps(body.get("tab_order", []))
+                db.execute(
+                    "INSERT OR REPLACE INTO layout_presets (name, hidden, tab_order, created_at) VALUES (?,?,?,?)",
+                    (name, hidden, tab_order, int(time.time())))
+                db.commit()
+                return self._json({"ok": True, "name": name}, 201)
+        if path.startswith("/api/layout-presets/") and method == "DELETE":
+            name = path[len("/api/layout-presets/"):]
+            from urllib.parse import unquote
+            name = unquote(name)
+            db = get_db()
+            db.execute("DELETE FROM layout_presets WHERE name=?", (name,))
+            db.commit()
+            return self._json({"ok": True})
 
         # ── Settings env (ANTHROPIC_API_KEY etc.) ─────────────────────────────
         if path == "/api/settings/env":
