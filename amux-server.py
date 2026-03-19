@@ -8351,6 +8351,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div style="display:flex;align-items:center;gap:10px;min-width:0;">
       <h2 id="peek-title" style="margin:0;font-size:1.05rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">peek</h2>
       <span id="peek-session-status"></span>
+      <span id="peek-model-badge" style="font-size:0.75rem;padding:2px 8px;border-radius:9999px;background:rgba(255,255,255,0.06);color:var(--dim);border:1px solid var(--border);white-space:nowrap;"></span>
     </div>
     <div style="display:flex;gap:8px;align-items:center;">
       <div class="peek-find-wrap" id="peek-search-wrap">
@@ -9586,6 +9587,13 @@ function updatePeekStatus() {
   else if (s.status === 'idle')    badge = '<span class="status-badge idle">idle</span>';
   else if (!s.running)             badge = '<span class="status-badge" style="background:rgba(255,255,255,0.06);color:var(--dim);border:1px solid var(--border);">stopped</span>';
   el.innerHTML = badge;
+  // Model badge
+  const mb = document.getElementById('peek-model-badge');
+  if (mb) {
+    const flagModel = (s.flags || '').match(/--model\s+(\S+)/);
+    const model = s.active_model || (flagModel ? flagModel[1] : '') || 'sonnet';
+    mb.textContent = model;
+  }
 }
 
 function render() {
@@ -15758,7 +15766,10 @@ function _renderBoardBySession(visible, container) {
   container.innerHTML = html;
 }
 
+let _boardRenderPending = false;
 function renderBoard() {
+  // Skip re-render while a drag is in progress — queue it for when drag ends
+  if (document.body.classList.contains('board-dragging')) { _boardRenderPending = true; return; }
   renderBoardFilters();
   const container = document.getElementById('board-columns');
 
@@ -15868,9 +15879,12 @@ function renderBoard() {
           document.body.classList.remove('board-dragging');
           const id = evt.item.dataset.id;
           const newStatus = evt.to.dataset.col;
-          if (!id || !newStatus) return;
-          const item = boardItems.find(i => i.id === id);
-          if (item && item.status !== newStatus) moveBoardItem(id, newStatus);
+          if (id && newStatus) {
+            const item = boardItems.find(i => i.id === id);
+            if (item && item.status !== newStatus) moveBoardItem(id, newStatus);
+          }
+          // Flush any renderBoard() calls that were deferred during the drag
+          if (_boardRenderPending) { _boardRenderPending = false; renderBoard(); }
         }
       }));
     });
