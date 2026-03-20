@@ -7610,22 +7610,22 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 </div>
 <!-- API key setup modal — shown on cloud when no user key is configured (dismissible) -->
 <div id="apikey-setup-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:none;align-items:center;justify-content:center;">
-  <div style="background:var(--surface,#1a1a2e);border:1px solid var(--border,#333);border-radius:12px;padding:32px;max-width:440px;width:90%;box-shadow:0 24px 64px rgba(0,0,0,0.6);position:relative;">
-    <button onclick="document.getElementById('apikey-setup-modal').style.display='none'" style="position:absolute;top:12px;right:14px;background:none;border:none;color:var(--dim,#888);font-size:1.2rem;cursor:pointer;padding:4px;" title="Close">&#x2715;</button>
-    <div style="font-size:1.4rem;font-weight:700;margin-bottom:8px;color:var(--text,#e8e8e8);">Set your API key</div>
-    <div style="font-size:0.85rem;color:var(--dim,#888);margin-bottom:24px;line-height:1.5;">
+  <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:32px;max-width:440px;width:90%;box-shadow:0 24px 64px rgba(0,0,0,0.6);position:relative;color:#e8e8e8;">
+    <button onclick="document.getElementById('apikey-setup-modal').style.display='none'" style="position:absolute;top:12px;right:14px;background:none;border:none;color:#aaa;font-size:1.2rem;cursor:pointer;padding:4px;" title="Close">&#x2715;</button>
+    <div style="font-size:1.4rem;font-weight:700;margin-bottom:8px;color:#fff;">Set your API key</div>
+    <div style="font-size:0.85rem;color:#aaa;margin-bottom:24px;line-height:1.5;">
       Enter your Anthropic API key to start using Claude sessions. Your key is stored privately in your container — amux never has access to it.<br><br>
-      <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:var(--accent,#7c6fcd);">Get a key at console.anthropic.com &rarr;</a>
+      <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:#a78bfa;">Get a key at console.anthropic.com &rarr;</a>
     </div>
     <input id="apikey-setup-input" type="password" placeholder="sk-ant-api03-..." autocomplete="off" spellcheck="false"
-      style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:7px;border:1px solid var(--border,#333);background:var(--bg,#111);color:var(--text,#e8e8e8);font-size:0.92rem;font-family:monospace;margin-bottom:8px;"
+      style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:7px;border:1px solid #444;background:#111;color:#e8e8e8;font-size:0.92rem;font-family:monospace;margin-bottom:8px;"
       onkeydown="if(event.key==='Enter')apikeySetupSave()">
     <div id="apikey-setup-err" style="color:#f87171;font-size:0.8rem;min-height:18px;margin-bottom:12px;"></div>
     <button id="apikey-setup-btn" onclick="apikeySetupSave()"
-      style="width:100%;padding:11px;border-radius:7px;border:none;background:var(--accent,#7c6fcd);color:#fff;font-size:0.95rem;font-weight:600;cursor:pointer;">
+      style="width:100%;padding:11px;border-radius:7px;border:none;background:#7c6fcd;color:#fff;font-size:0.95rem;font-weight:600;cursor:pointer;">
       Save &amp; continue
     </button>
-    <div style="text-align:center;margin-top:10px;font-size:0.78rem;color:var(--dim,#666);">You can add this later in Settings</div>
+    <div style="text-align:center;margin-top:10px;font-size:0.78rem;color:#888;">You can add this later in Settings</div>
   </div>
 </div>
 <div id="org-banner" style="display:none;background:#1e1b4b;border-bottom:1px solid #4338ca;color:#c7d2fe;padding:7px 16px;text-align:center;font-size:0.82rem;z-index:200;position:relative;display:none;">
