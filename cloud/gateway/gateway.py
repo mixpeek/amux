@@ -447,8 +447,12 @@ def start_container(user_id, port):
     except Exception as e:
         print(f"[org] failed to inject API key for {user_id}: {e}", flush=True)
     d = _compose_dir(user_id)
-    subprocess.run(["docker", "compose", "up", "-d"], cwd=d,
-                   capture_output=True, check=True)
+    r = subprocess.run(["docker", "compose", "up", "-d"], cwd=d,
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "unknown error").strip()
+        print(f"[docker] compose up failed for {user_id}: {err}", flush=True)
+        raise subprocess.CalledProcessError(r.returncode, r.args, r.stdout, r.stderr)
     # Wait for healthy (amux-server.py ready), not just running
     for _ in range(40):
         time.sleep(1)
@@ -457,7 +461,8 @@ def start_container(user_id, port):
 
 def stop_container(user_id):
     d = _compose_dir(user_id)
-    subprocess.run(["docker", "compose", "stop"], cwd=d, capture_output=True)
+    if os.path.isdir(d):
+        subprocess.run(["docker", "compose", "down"], cwd=d, capture_output=True)
 
 def _migrate_and_stop_member_container(member_id, owner_id):
     """Migrate session/memory files from member's container to owner's, then stop member's."""
@@ -1262,9 +1267,12 @@ class Handler(BaseHTTPRequestHandler):
             org = db.execute("SELECT port FROM orgs WHERE id=?", (org_id,)).fetchone()
             if org:
                 try:
-                    stop_container(org_id)
-                except Exception:
-                    pass
+                    d = _compose_dir(org_id)
+                    if os.path.isdir(d):
+                        subprocess.run(["docker", "compose", "down", "--remove-orphans", "-v"],
+                                       cwd=d, capture_output=True, timeout=30)
+                except Exception as e:
+                    print(f"[docker] failed to tear down {org_id}: {e}", flush=True)
                 with _db_lock:
                     db.execute("DELETE FROM org_memberships WHERE org_id=?", (org_id,))
                     db.execute("DELETE FROM org_invites WHERE org_id=?", (org_id,))
@@ -1397,6 +1405,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "billing not configured"}, 503)
             body = self._read_body()
             target_org = body.get("org_id", "") or _active_org_id()
+            if not _has_role(target_org, "owner", "admin"):
+                return self._json({"error": "must be owner or admin to manage billing"}, 403)
             org_row = db.execute("SELECT stripe_customer_id FROM orgs WHERE id=?", (target_org,)).fetchone()
             cust_id = org_row["stripe_customer_id"] if org_row else None
             if not cust_id:
