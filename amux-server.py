@@ -10480,6 +10480,7 @@ const ALL_TABS = [
   { id: 'map',           label: 'Map' },
   { id: 'metrics',       label: 'Metrics' },
   { id: 'torrents',      label: 'Torrents' },
+  { id: 'terminal',      label: 'Terminal' },
 ];
 
 let hiddenTabs = (function() {
@@ -10488,7 +10489,7 @@ let hiddenTabs = (function() {
     if (s !== null) return new Set(JSON.parse(s));
   } catch(e) {}
   // Default visible tabs: sessions, files, scheduler, board, workspace, notes
-  return new Set(['logs','browser','metrics','crm','torrents']);
+  return new Set(['logs','browser','metrics','crm','torrents','terminal']);
 })();
 
 let tabOrder = (function() {
@@ -20033,7 +20034,14 @@ function _termInit() {
   // Load saved font size
   const savedSize = localStorage.getItem('amux_term_fontsize');
   if (savedSize) document.getElementById('term-fontsize').value = savedSize;
-  // Load saved hosts
+  // Set default host to amux connection hostname (for SSH)
+  const hostInput = document.getElementById('term-host');
+  const h = location.hostname;
+  if (h && h !== 'localhost' && h !== '127.0.0.1') {
+    hostInput.placeholder = h;
+    hostInput.value = h;
+  }
+  // Load saved hosts into dropdown
   const savedHosts = JSON.parse(localStorage.getItem('amux_term_hosts') || '[]');
   const sel = document.getElementById('term-profile');
   savedHosts.forEach(h => {
