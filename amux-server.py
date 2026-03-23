@@ -60,6 +60,33 @@ CC_NOTIFICATIONS = CC_HOME / "notifications.json"
 CC_TRANSCRIPTS = CC_HOME / "transcripts"  # per-session JSONL backups
 CC_GMAIL = CC_HOME / "gmail-tokens"        # per-account Gmail OAuth tokens
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+# ── Authentication ───────────────────────────────────────────────────────────
+# Auto-generated bearer token stored in ~/.amux/auth_token.
+# Set AMUX_AUTH_TOKEN env var to override. Set to "none" to disable auth.
+_AUTH_TOKEN_FILE = _amux_home / "auth_token"
+def _load_or_create_auth_token() -> str:
+    env_token = os.environ.get("AMUX_AUTH_TOKEN", "")
+    if env_token:
+        return "" if env_token.lower() == "none" else env_token
+    if _AUTH_TOKEN_FILE.exists():
+        token = _AUTH_TOKEN_FILE.read_text().strip()
+        if token:
+            return token
+    import secrets as _secrets
+    token = _secrets.token_urlsafe(32)
+    _amux_home.mkdir(parents=True, exist_ok=True)
+    _AUTH_TOKEN_FILE.write_text(token + "\n")
+    os.chmod(str(_AUTH_TOKEN_FILE), 0o600)
+    return token
+
+AUTH_TOKEN = _load_or_create_auth_token()
+
+# Paths that don't require auth (public assets, share links, health check)
+_PUBLIC_PATHS = frozenset({"/", "/manifest.json", "/sw.js", "/icon.svg", "/icon.png",
+                           "/icon-192.png", "/icon-512.png", "/ca", "/release-notes",
+                           "/api/release-notes"})
+_PUBLIC_PREFIXES = ("/s/", "/api/share/", "/invite/")
 CC_LOGS.mkdir(parents=True, exist_ok=True)
 CC_MEMORY.mkdir(parents=True, exist_ok=True)
 CC_BOARD_DIR.mkdir(parents=True, exist_ok=True)
@@ -9601,6 +9628,32 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+// ── Auth token injection ──
+const _authToken = window._AMUX_AUTH_TOKEN || '';
+function _authHeaders(headers) {
+  const h = headers ? { ...headers } : {};
+  if (_authToken) h['Authorization'] = 'Bearer ' + _authToken;
+  return h;
+}
+function _authUrl(url) {
+  // For EventSource URLs that can't set headers
+  if (!_authToken) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return url + sep + '_token=' + encodeURIComponent(_authToken);
+}
+// Override global fetch to auto-inject auth on same-origin API requests
+if (_authToken) {
+  const _origFetchForAuth = window.fetch;
+  window.fetch = function(input, init) {
+    const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : '');
+    if (url.startsWith('/') || url.startsWith(location.origin)) {
+      init = init || {};
+      init.headers = _authHeaders(init.headers instanceof Headers ? Object.fromEntries(init.headers) : init.headers);
+    }
+    return _origFetchForAuth.call(this, input, init);
+  };
+}
+
 // apiCall — wraps mutation fetches; queues when offline or server unreachable
 async function apiCall(url, options) {
   if (!online) {
@@ -9608,6 +9661,8 @@ async function apiCall(url, options) {
     return null;
   }
   try {
+    options = options || {};
+    options.headers = _authHeaders(options.headers);
     const r = await fetch(url, options);
     if (!r.ok) {
       showToast('Error: ' + r.status);
@@ -17925,7 +17980,7 @@ let _pollTimer = null;
 
 function connectSSE() {
   if (_sseFallback || _sse) return;
-  _sse = new EventSource(API + '/api/events');
+  _sse = new EventSource(_authUrl(API + '/api/events'));
 
   _sse.onmessage = function(e) {
     const wasOffline = !_liveSSE;
@@ -21986,14 +22041,45 @@ class CCHandler(BaseHTTPRequestHandler):
                     _req_tl.event = None
                 _emit_event(etype, action, target, session, detail, self._resp_status, ip)
 
+    def _check_auth(self, method: str, path: str) -> bool:
+        """Return True if request is authorized. Sends 401 and returns False if not."""
+        if not AUTH_TOKEN:
+            return True  # auth disabled
+        if path in _PUBLIC_PATHS or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+            return True
+        # Static assets (CSS/JS/images served from /)
+        # Exclude sensitive non-API paths that need auth
+        _AUTH_REQUIRED_PATHS = frozenset({"/ca"})
+        if method == "GET" and not path.startswith("/api/") and not path.startswith("/proxy/") \
+                and path not in _AUTH_REQUIRED_PATHS:
+            return True
+        # Check Authorization header
+        auth = self.headers.get("Authorization", "")
+        if auth == f"Bearer {AUTH_TOKEN}":
+            return True
+        # Check query param fallback (for EventSource/SSE which can't set headers)
+        token_qs = parse_qs(urlparse(self.path).query).get("_token", [""])[0]
+        if token_qs == AUTH_TOKEN:
+            return True
+        self.send_response(401)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"error": "unauthorized"}).encode())
+        return False
+
     def _route_inner(self, method: str, path: str, qs: dict):
+
+        # ── Auth gate ──
+        if not self._check_auth(method, path):
+            return
 
         # GET /
         if method == "GET" and path == "/":
             import json as _json
             page = DASHBOARD_HTML.replace(
                 "</head>",
-                f'<script>window._AMUX_S3_ICAL_URL={_json.dumps(_S3_CAL_URL)};</script></head>',
+                f'<script>window._AMUX_S3_ICAL_URL={_json.dumps(_S3_CAL_URL)};'
+                f'window._AMUX_AUTH_TOKEN={_json.dumps(AUTH_TOKEN)};</script></head>',
                 1,
             )
             return self._html(page)
@@ -25696,6 +25782,10 @@ def main():
             print(f"\033[32m  ✓ HTTPS enabled — service worker & offline mode will work\033[0m")
     else:
         print(f"\033[33m  ⚠ HTTP only — offline mode requires HTTPS on non-localhost\033[0m")
+    if AUTH_TOKEN:
+        print(f"\033[32m  ✓ Auth enabled — token in {_AUTH_TOKEN_FILE}\033[0m")
+    else:
+        print(f"\033[33m  ⚠ Auth DISABLED — all endpoints are public\033[0m")
     print(f"\033[2m  Auto-reload active — editing amux-server.py will restart\033[0m")
     print(f"\n\033[2mPress Ctrl-C to stop\033[0m")
 
