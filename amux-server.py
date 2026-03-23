@@ -3963,9 +3963,23 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
             return False, "timeout sending text"
 
 
+# Allowed tmux key names for send_keys (control sequences, not arbitrary text)
+_ALLOWED_TMUX_KEYS = frozenset({
+    "Enter", "Escape", "Tab", "BTab", "Space", "BSpace",
+    "Up", "Down", "Left", "Right", "Home", "End",
+    "PageUp", "PageDown", "IC", "DC",  # Insert, Delete
+    "C-c", "C-d", "C-z", "C-l", "C-a", "C-e", "C-k", "C-u",
+    "C-r", "C-p", "C-n", "C-b", "C-f", "C-w",
+    "M-b", "M-f", "M-d",  # Alt/Meta combos
+    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+    "y", "n", "q",  # common single-char confirmations
+})
+
 def send_keys(name: str, keys: str) -> tuple[bool, str]:
     if not is_running(name):
         return False, "not running"
+    if keys not in _ALLOWED_TMUX_KEYS:
+        return False, f"key '{keys}' not in allowed set"
     lock = _get_send_lock(name)
     with lock:
         try:
