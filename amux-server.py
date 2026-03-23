@@ -2974,10 +2974,13 @@ def _build_system_metrics() -> dict:
     except Exception:
         tokens_by_name = {}
 
-    # Build session data list
+    # Build session data list (skip archived sessions)
     if CC_SESSIONS.exists():
         for env_file in sorted(CC_SESSIONS.glob("*.env")):
             name = env_file.stem
+            cfg = parse_env_file(env_file)
+            if cfg.get("CC_ARCHIVED") == "1":
+                continue
             s_data: dict = {
                 "name": name,
                 "pids": [],
