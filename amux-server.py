@@ -21648,9 +21648,21 @@ class CCHandler(BaseHTTPRequestHandler):
         super().send_response(code, message)
 
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        origin = self.headers.get("Origin", "")
+        if origin:
+            from urllib.parse import urlparse as _up
+            parsed = _up(origin)
+            host = parsed.hostname or ""
+            # Allow same-machine origins (localhost, LAN IP, Tailscale hostname)
+            allowed = host in ("localhost", "127.0.0.1", "0.0.0.0") or \
+                      host == get_lan_ip() or \
+                      host.endswith(".ts.net")
+            if allowed:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+            # Else: no ACAO header → browser blocks the request
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "SAMEORIGIN")
@@ -21839,7 +21851,7 @@ class CCHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.send_header("X-Accel-Buffering", "no")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._cors()
         self.end_headers()
 
         # Cap SSE connection lifetime to avoid thread accumulation.
