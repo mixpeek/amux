@@ -599,6 +599,7 @@ html[data-theme="dark"] .cta-pill-primary:hover { opacity: 0.85; }
   border-radius: 10px; overflow: hidden; margin-top: 2.5rem; text-align: left;
 }
 @media (max-width: 640px) { .waitlist-features { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { #white-label [style*="grid-template-columns"] { grid-template-columns: 1fr !important; } }
 .wf-item { background: var(--bg); padding: 1.2rem; }
 .wf-label { font-size: 0.65rem; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 0.3rem; font-family: var(--sans); }
 .wf-val { font-size: 0.9rem; color: var(--text); font-weight: 600; font-family: var(--sans); }
@@ -886,6 +887,38 @@ html[data-theme="dark"] .cta-pill-primary:hover { opacity: 0.85; }
 
 <hr class="divider">
 
+<!-- WHITE-LABEL -->
+<div class="section reveal" id="white-label">
+  <div class="section-label" style="color:var(--green);">New</div>
+  <div class="section-title">White-label it. Make it yours.</div>
+  <div class="section-desc">Replace every trace of amux with your own brand &mdash; name, icon, logo, and accent color. One click, server-side, synced to every connected client.</div>
+  <div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-top:1.5rem;">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;">
+      <div style="padding:1.5rem 1.8rem;border-right:1px solid var(--border);border-bottom:1px solid var(--border);">
+        <div style="font-weight:600;font-size:0.92rem;margin-bottom:0.4rem;">Custom name &amp; tagline</div>
+        <div style="color:var(--dim);font-size:0.84rem;line-height:1.5;">Replace &ldquo;amux&rdquo; everywhere &mdash; header, page title, PWA manifest, About panel. Your team sees your brand, not ours.</div>
+      </div>
+      <div style="padding:1.5rem 1.8rem;border-bottom:1px solid var(--border);">
+        <div style="font-weight:600;font-size:0.92rem;margin-bottom:0.4rem;">Icon &amp; logo upload</div>
+        <div style="color:var(--dim);font-size:0.84rem;line-height:1.5;">Upload a square icon (favicon, PWA, home screen) and a wide logo (About panel). Drag-and-drop or file picker. PNG, JPEG, SVG, WebP.</div>
+      </div>
+      <div style="padding:1.5rem 1.8rem;border-right:1px solid var(--border);">
+        <div style="font-weight:600;font-size:0.92rem;margin-bottom:0.4rem;">Accent color</div>
+        <div style="color:var(--dim);font-size:0.84rem;line-height:1.5;">Pick any color &mdash; buttons, tags, status indicators, and the entire UI theme update instantly across all tabs and devices.</div>
+      </div>
+      <div style="padding:1.5rem 1.8rem;">
+        <div style="font-weight:600;font-size:0.92rem;margin-bottom:0.4rem;">Server-side, synced everywhere</div>
+        <div style="color:var(--dim);font-size:0.84rem;line-height:1.5;">Branding is stored on the server and served to every client &mdash; desktop browser, mobile PWA, iOS app. Set it once, done.</div>
+      </div>
+    </div>
+  </div>
+  <div style="text-align:center;margin-top:1rem;">
+    <span style="font-family:var(--mono);font-size:0.78rem;color:var(--dim);">API: <code style="background:var(--surface);padding:2px 8px;border-radius:4px;border:1px solid var(--border);font-size:0.82em;">GET/POST/DELETE /api/branding</code></span>
+  </div>
+</div>
+
+<hr class="divider">
+
 <!-- FEATURES -->
 <div class="section reveal" id="features">
   <div class="section-label">How it works</div>
@@ -898,6 +931,7 @@ html[data-theme="dark"] .cta-pill-primary:hover { opacity: 0.85; }
     <div class="feat-item"><strong>Mobile PWA</strong> <span>&mdash; installable on iOS and Android. Background Sync replays queued commands on reconnect. Manage your fleet from your phone.</span></div>
     <div class="feat-item"><strong>Single Python file, zero build step</strong> <span>&mdash; server + full dashboard as inline HTML/CSS/JS. Edit it; it restarts via <code>os.execv</code> on save. Only deps: <code>python3</code> and <code>tmux</code>.</span></div>
     <div class="feat-item"><strong>Status without hooks or patches</strong> <span>&mdash; parses ANSI-stripped tmux output to detect working / waiting / idle. No modifications to Claude Code.</span></div>
+    <div class="feat-item"><strong>White-label branding</strong> <span>&mdash; replace the name, icon, logo, and accent color. Stored server-side, synced to every connected client. <a href="#white-label" style="color:var(--green);">See details &uarr;</a></span></div>
   </div>
 </div>
 
@@ -923,6 +957,7 @@ html[data-theme="dark"] .cta-pill-primary:hover { opacity: 0.85; }
       <tr><td class="row-label">Self-healing</td><td class="has">Watchdog auto-compacts + replays</td><td class="no">Crashes on context overflow</td><td class="partial">Basic restart only</td></tr>
       <tr><td class="row-label">Mobile management</td><td class="has">Native iOS app + PWA</td><td class="no">Terminal only</td><td class="no">Not available</td></tr>
       <tr><td class="row-label">Agent coordination</td><td class="has">REST API + atomic task claiming</td><td class="no">None</td><td class="partial">Shared filesystem at best</td></tr>
+      <tr><td class="row-label">White-label</td><td class="has">Full branding: name, icon, logo, colors</td><td class="no">Not available</td><td class="no">Not available</td></tr>
       <tr><td class="row-label">Setup</td><td class="has">git clone + ./install.sh, 0 deps</td><td class="has">pip install</td><td class="partial">Docker, config, API keys</td></tr>
     </tbody>
   </table>

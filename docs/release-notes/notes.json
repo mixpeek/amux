@@ -1,5 +1,14 @@
 [
   {
+    "hash": "fcc5ab340bade7c6a6ea28b0684638c05b2e92fe",
+    "short": "fcc5ab3",
+    "title": "White-label branding — custom name, icon, logo, and accent color",
+    "date": "2026-03-24",
+    "type": "feat",
+    "tags": ["branding", "white-label", "customization"],
+    "description": "Click the logo in the top-left to open the branding editor. Customize the app name, tagline, square icon, wide logo, and accent color. Images accept drag-and-drop or file picker. Everything is stored server-side (SQLite prefs + ~/.amux/branding/) so all connected clients — desktop, mobile, phone — see the same branding. The PWA manifest, page title, favicon, and all icon endpoints dynamically serve custom assets. Reset to defaults with one click. API: GET/POST/DELETE /api/branding."
+  },
+  {
     "hash": "7ff860a6d55b9cd955b9a16d8593164829d90bf8",
     "short": "7ff860a",
     "title": "People tab — contact CRM with interaction log and follow-up queue",
