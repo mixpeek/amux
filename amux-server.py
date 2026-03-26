@@ -7960,7 +7960,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .graph-controls { position: absolute; top: 8px; left: 8px; display: flex; flex-direction: column; gap: 3px; z-index: 15; background: var(--bg); border-radius: 8px; border: 1px solid var(--border); padding: 4px; }
   .graph-controls button { width: 32px; height: 32px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--fg); font-size: 1rem; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   .graph-controls button:hover { background: var(--hover); }
-  .graph-node { position: absolute; padding: 8px 14px; border-radius: 8px; font-size: 0.78rem; font-weight: 500; cursor: grab; user-select: none; border: 1.5px solid transparent; transition: box-shadow 0.15s, opacity 0.2s; white-space: nowrap; z-index: 2; }
+  .graph-node { position: absolute; padding: 10px 16px; border-radius: 10px; font-size: 0.85rem; font-weight: 600; cursor: grab; user-select: none; border: 1.5px solid transparent; transition: box-shadow 0.15s, opacity 0.2s; white-space: nowrap; z-index: 2; }
   .graph-node:hover { box-shadow: 0 0 12px rgba(255,255,255,0.1); z-index: 5; }
   .graph-node.dragging { cursor: grabbing; z-index: 10; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
   .graph-node.dimmed { opacity: 0.15; }
@@ -8796,10 +8796,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <button onclick="_graphZoom(1.2)" title="Zoom in">+</button>
       <button onclick="_graphZoom(0.8)" title="Zoom out">&minus;</button>
       <button onclick="_graphResetLayout()" title="Reset layout">&#x21bb;</button>
-      <button id="graph-edges-toggle" onclick="_graphToggleAllEdges()" title="Toggle all connections">&#x2731;</button>
+      <button id="graph-edges-toggle" class="active" style="background:var(--accent);color:#fff" onclick="_graphToggleAllEdges()" title="Toggle all connections">&#x2731;</button>
     </div>
     <div class="graph-canvas" id="graph-canvas">
-      <svg id="graph-svg" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;">
+      <svg id="graph-svg" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible;">
         <defs>
           <marker id="graph-arrow" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
             <path d="M0,0 L10,3 L0,6 Z" fill="context-stroke" opacity="0.6"/>
@@ -22466,7 +22466,7 @@ async function _gmailSubmitCode(account) {
 let _graphData = { nodes: [], edges: [] };
 let _graphInited = false;
 let _graphTransform = { x: 0, y: 0, scale: 1 };
-let _graphShowAllEdges = false;
+let _graphShowAllEdges = true;
 let _graphSelectedNode = null;
 let _graphHoveredNode = null;
 let _graphActiveFilters = new Set();
@@ -22551,7 +22551,14 @@ async function _graphLoad() {
     _graphBuildFilters();
     _graphUpdateStats();
     _graphRenderNodeList();
-    if (!_graphData.nodes.some(n => n.pinned)) _graphRunForce();
+    // Delay force sim to ensure canvas has rendered and has dimensions
+    if (!_graphData.nodes.some(n => n.pinned)) {
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      _graphRunForce();
+    } else {
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      _graphFitView();
+    }
   } catch(e) { console.error('graph load', e); }
 }
 
@@ -22584,19 +22591,32 @@ function _graphBuildFilters() {
   const el = document.getElementById('graph-filters');
   const folders = [...new Set(_graphData.nodes.map(n => n.folder))].sort();
   _graphActiveFilters = new Set(folders);
+  // Auto-assign colors for unknown folders
+  const palette = ['#C97B3A','#4A6FA5','#A54A4A','#4A9A6F','#7A4AA5','#6B8E8A','#B5651D','#8B5CF6','#EC4899','#10B981','#F59E0B','#6366F1'];
+  let pi = 0;
+  folders.forEach(f => {
+    if (!_GRAPH_FOLDER_COLORS[f]) _GRAPH_FOLDER_COLORS[f] = palette[pi++ % palette.length];
+  });
   el.innerHTML = folders.map(f => {
     const c = _GRAPH_FOLDER_COLORS[f] || '#888';
-    return `<button class="graph-filter-btn active" data-folder="${f}" onclick="_graphToggleFilter('${f}',this)" style="border-color:${c};">${f}</button>`;
+    return `<button class="graph-filter-btn active" data-folder="${f}" onclick="_graphToggleFilter('${f}',this)" style="background:${c};color:#fff;border-color:transparent;">${f}</button>`;
   }).join('');
 }
 
 function _graphToggleFilter(folder, btn) {
+  const c = _GRAPH_FOLDER_COLORS[folder] || '#888';
   if (_graphActiveFilters.has(folder)) {
     _graphActiveFilters.delete(folder);
     btn.classList.remove('active');
+    btn.style.background = 'var(--surface)';
+    btn.style.color = 'var(--dim)';
+    btn.style.borderColor = 'var(--border)';
   } else {
     _graphActiveFilters.add(folder);
     btn.classList.add('active');
+    btn.style.background = c;
+    btn.style.color = '#fff';
+    btn.style.borderColor = 'transparent';
   }
   _graphApplyVisibility();
 }
@@ -22609,6 +22629,10 @@ function _graphApplyVisibility() {
   _graphRenderEdges();
 }
 
+function _lightenColor(hex, amt) {
+  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+  return `rgb(${Math.min(255,r+Math.round((255-r)*amt))},${Math.min(255,g+Math.round((255-g)*amt))},${Math.min(255,b+Math.round((255-b)*amt))})`;
+}
 function _graphRender() {
   const container = document.getElementById('graph-nodes-container');
   container.innerHTML = '';
@@ -22617,10 +22641,11 @@ function _graphRender() {
     el.className = 'graph-node';
     el.dataset.id = n.id;
     el.dataset.folder = n.folder;
-    const c = _GRAPH_FOLDER_COLORS[n.folder] || '#888';
-    el.style.background = c + '18';
-    el.style.color = c;
-    el.style.borderColor = c + '40';
+    const c = _GRAPH_FOLDER_COLORS[n.folder] || _GRAPH_FOLDER_COLORS[n.color] || '#888';
+    const isLight = document.body.classList.contains('light');
+    el.style.background = c + (isLight ? '20' : '30');
+    el.style.color = isLight ? c : _lightenColor(c, 0.3);
+    el.style.borderColor = c + '60';
     // Size by connection count
     const linkCount = _graphData.edges.filter(e => e.source === n.id || e.target === n.id).length;
     const scale = 0.85 + Math.min(linkCount, 8) * 0.06;
@@ -22829,55 +22854,56 @@ function _graphRunForce() {
   const edges = _graphData.edges;
   // Init positions for unpositioned nodes
   const canvas = document.getElementById('graph-canvas');
-  const rect = canvas ? canvas.getBoundingClientRect() : { width: 800, height: 600 };
-  const cx = rect.width / 2, cy = rect.height / 2;
+  const rect = canvas ? canvas.getBoundingClientRect() : { width: 0, height: 0 };
+  const w = rect.width > 50 ? rect.width : 1000;
+  const h = rect.height > 50 ? rect.height : 700;
+  const cx = w / 2, cy = h / 2;
   nodes.forEach((n, i) => {
-    if (n.x == null) { n.x = cx + (Math.random()-0.5)*900; n.y = cy + (Math.random()-0.5)*700; }
+    if (n.x == null) { n.x = cx + (Math.random()-0.5)*w*0.9; n.y = cy + (Math.random()-0.5)*h*0.9; }
     n.vx = 0; n.vy = 0;
   });
   const nodeMap = {}; nodes.forEach(n => nodeMap[n.id] = n);
-  let iter = 0, maxIter = 300, alpha = 1;
+  let iter = 0, maxIter = 350, alpha = 1;
   function tick() {
     if (iter++ >= maxIter || alpha < 0.005) { _graphSimRunning = false; _graphSavePositions(); _graphFitView(); return; }
     alpha *= 0.97;
-    // Repulsion — Barnes-Hut–style with minimum distance
+    // Repulsion — moderate Coulomb force, capped at close range
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i+1; j < nodes.length; j++) {
         const a = nodes[i], b = nodes[j];
         let dx = (b.x||0) - (a.x||0), dy = (b.y||0) - (a.y||0);
         let dist = Math.sqrt(dx*dx + dy*dy);
         if (dist < 10) { dist = 10; dx = (Math.random()-0.5)*20; dy = (Math.random()-0.5)*20; }
-        // Push apart: constant force at close range, 1/dist at long range
-        const f = alpha * Math.max(50/dist, 2000/(dist*dist));
+        // Balanced repulsion: spread nodes while keeping graph readable
+        const f = alpha * 4000/(dist*dist);
         const fx = (dx/dist) * f, fy = (dy/dist) * f;
         if (!a.pinned) { a.vx -= fx; a.vy -= fy; }
         if (!b.pinned) { b.vx += fx; b.vy += fy; }
       }
     }
-    // Attraction (links) — pull connected nodes together
+    // Attraction (links) — spring toward ideal distance
     edges.forEach(e => {
       const a = nodeMap[e.source], b = nodeMap[e.target];
       if (!a || !b) return;
       let dx = (b.x||0) - (a.x||0), dy = (b.y||0) - (a.y||0);
       let dist = Math.sqrt(dx*dx + dy*dy) || 1;
-      const idealLen = 180;
-      const force = (dist - idealLen) * 0.05 * alpha;
+      const idealLen = 200;
+      const force = (dist - idealLen) * 0.04 * alpha;
       const fx = dx/dist * force, fy = dy/dist * force;
       if (!a.pinned) { a.vx += fx; a.vy += fy; }
       if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
     });
-    // Center gravity (very mild)
+    // Center gravity — pulls toward center, prevents scatter but allows spread
     nodes.forEach(n => {
       if (n.pinned) return;
-      n.vx += (cx - (n.x||0)) * 0.0005 * alpha;
-      n.vy += (cy - (n.y||0)) * 0.0005 * alpha;
+      n.vx += (cx - (n.x||0)) * 0.002 * alpha;
+      n.vy += (cy - (n.y||0)) * 0.002 * alpha;
     });
-    // Apply velocity
+    // Apply velocity with damping
     nodes.forEach(n => {
       if (n.pinned) return;
-      n.vx *= 0.5; n.vy *= 0.5;
-      // Clamp velocity to prevent explosion
-      const maxV = 50;
+      n.vx *= 0.55; n.vy *= 0.55;
+      const maxV = 60;
       if (n.vx > maxV) n.vx = maxV; if (n.vx < -maxV) n.vx = -maxV;
       if (n.vy > maxV) n.vy = maxV; if (n.vy < -maxV) n.vy = -maxV;
       n.x = (n.x||0) + n.vx;
