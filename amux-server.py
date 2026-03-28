@@ -5530,6 +5530,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .chip-picker-item { padding: 8px 16px; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text); }
   .chip-picker-item:hover { background: rgba(88,166,255,0.1); }
   .chip-picker-item .cpd { color: var(--dim); font-size: 0.75rem; flex: 1; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* ── Persistent audio player bar ── */
+  .amux-audio-bar { position: fixed; bottom: 0; left: 0; right: 0; z-index: 1500; background: var(--card); border-top: 1px solid var(--border); padding: 8px 14px; display: none; align-items: center; gap: 10px; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+  .amux-audio-bar.visible { display: flex; }
+  .amux-audio-bar .ab-info { flex: 1; min-width: 0; }
+  .amux-audio-bar .ab-title { font-size: 0.8rem; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .amux-audio-bar .ab-time { font-size: 0.68rem; color: var(--dim); }
+  .amux-audio-bar .ab-btn { background: none; border: none; color: var(--text); font-size: 1.3rem; cursor: pointer; padding: 2px 6px; line-height: 1; }
+  .amux-audio-bar .ab-btn:hover { color: var(--accent); }
+  .amux-audio-bar .ab-progress { flex: 2; min-width: 80px; }
+  .amux-audio-bar .ab-progress input[type=range] { width: 100%; height: 4px; -webkit-appearance: none; appearance: none; background: var(--border); border-radius: 2px; outline: none; cursor: pointer; }
+  .amux-audio-bar .ab-progress input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); cursor: pointer; }
+  .amux-audio-bar .ab-speed { font-size: 0.7rem; color: var(--dim); cursor: pointer; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; background: none; }
+  @media (max-width: 600px) { .amux-audio-bar { padding: 6px 10px; padding-bottom: max(6px, env(safe-area-inset-bottom)); } .amux-audio-bar .ab-progress { flex: 1; } }
+
   .tts-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 2000; display: flex; align-items: center; justify-content: center; }
   .tts-dialog { background: var(--card); border: 1px solid var(--border); border-radius: 14px; width: 420px; max-width: 92vw; max-height: 80vh; display: flex; flex-direction: column; overflow: hidden; }
   .tts-header { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
@@ -9428,6 +9442,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div id="sync-items"></div>
 </div>
 
+<!-- Persistent audio player bar -->
+<div class="amux-audio-bar" id="amux-audio-bar">
+  <button class="ab-btn" id="ab-play-btn" onclick="_abTogglePlay()">&#x25B6;</button>
+  <div class="ab-info">
+    <div class="ab-title" id="ab-title">—</div>
+    <div class="ab-time"><span id="ab-cur">0:00</span> / <span id="ab-dur">0:00</span></div>
+  </div>
+  <div class="ab-progress"><input type="range" id="ab-seek" min="0" max="100" value="0" oninput="_abSeek(this.value)"></div>
+  <button class="ab-speed" id="ab-speed" onclick="_abCycleSpeed()">1x</button>
+  <button class="ab-btn" onclick="_abClose()" title="Close player">&times;</button>
+</div>
+<audio id="amux-audio" preload="auto"></audio>
+
 <!-- Toast -->
 <div id="toast" class="toast"></div>
 
@@ -13119,6 +13146,132 @@ function saveCustomChip() {
   showToast('Added "' + label + '" button');
 }
 
+// ── Persistent audio player ──
+let _abCurrentFile = '';
+const _abAudio = document.getElementById('amux-audio');
+const _abSpeeds = [0.75, 1, 1.25, 1.5, 1.75, 2];
+let _abSpeedIdx = 1;
+
+function _abPlay(url, title) {
+  const bar = document.getElementById('amux-audio-bar');
+  const audio = _abAudio;
+  // If same file, just show bar and resume
+  if (_abCurrentFile === url && audio.src) {
+    bar.classList.add('visible');
+    if (audio.paused) audio.play();
+    return;
+  }
+  _abCurrentFile = url;
+  document.getElementById('ab-title').textContent = title || url.split('/').pop();
+  // Check for saved position
+  const saved = _abLoadPos(url);
+  audio.src = url;
+  audio.playbackRate = _abSpeeds[_abSpeedIdx];
+  audio.load();
+  audio.addEventListener('loadedmetadata', function onMeta() {
+    audio.removeEventListener('loadedmetadata', onMeta);
+    if (saved > 0 && saved < audio.duration - 1) audio.currentTime = saved;
+    audio.play();
+  });
+  bar.classList.add('visible');
+  _abUpdateMediaSession(title);
+}
+
+function _abTogglePlay() {
+  const audio = _abAudio;
+  if (!audio.src) return;
+  if (audio.paused) { audio.play(); } else { audio.pause(); }
+}
+
+function _abClose() {
+  const audio = _abAudio;
+  _abSavePos();
+  audio.pause();
+  document.getElementById('amux-audio-bar').classList.remove('visible');
+}
+
+function _abSeek(val) {
+  const audio = _abAudio;
+  if (audio.duration) audio.currentTime = (val / 100) * audio.duration;
+}
+
+function _abCycleSpeed() {
+  _abSpeedIdx = (_abSpeedIdx + 1) % _abSpeeds.length;
+  const speed = _abSpeeds[_abSpeedIdx];
+  _abAudio.playbackRate = speed;
+  document.getElementById('ab-speed').textContent = speed + 'x';
+}
+
+function _abFmtTime(s) {
+  if (!s || !isFinite(s)) return '0:00';
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return m + ':' + (sec < 10 ? '0' : '') + sec;
+}
+
+function _abSavePos() {
+  if (_abCurrentFile && _abAudio.currentTime > 0) {
+    try {
+      const store = JSON.parse(localStorage.getItem('amux_audio_pos') || '{}');
+      store[_abCurrentFile] = _abAudio.currentTime;
+      localStorage.setItem('amux_audio_pos', JSON.stringify(store));
+    } catch(e) {}
+  }
+}
+
+function _abLoadPos(url) {
+  try {
+    const store = JSON.parse(localStorage.getItem('amux_audio_pos') || '{}');
+    return store[url] || 0;
+  } catch(e) { return 0; }
+}
+
+function _abUpdateMediaSession(title) {
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: title || 'Amux Audio',
+      artist: 'Amux',
+      album: '',
+    });
+    navigator.mediaSession.setActionHandler('play', () => _abAudio.play());
+    navigator.mediaSession.setActionHandler('pause', () => _abAudio.pause());
+    navigator.mediaSession.setActionHandler('seekbackward', () => { _abAudio.currentTime = Math.max(0, _abAudio.currentTime - 15); });
+    navigator.mediaSession.setActionHandler('seekforward', () => { _abAudio.currentTime = Math.min(_abAudio.duration, _abAudio.currentTime + 30); });
+    navigator.mediaSession.setActionHandler('seekto', (d) => { if (d.seekTime != null) _abAudio.currentTime = d.seekTime; });
+  }
+}
+
+// Update UI during playback
+if (_abAudio) {
+  _abAudio.addEventListener('timeupdate', () => {
+    document.getElementById('ab-cur').textContent = _abFmtTime(_abAudio.currentTime);
+    const seek = document.getElementById('ab-seek');
+    if (_abAudio.duration) seek.value = (_abAudio.currentTime / _abAudio.duration) * 100;
+    // Save position every 5 seconds
+    if (Math.floor(_abAudio.currentTime) % 5 === 0) _abSavePos();
+  });
+  _abAudio.addEventListener('loadedmetadata', () => {
+    document.getElementById('ab-dur').textContent = _abFmtTime(_abAudio.duration);
+  });
+  _abAudio.addEventListener('play', () => {
+    document.getElementById('ab-play-btn').innerHTML = '&#x23F8;';
+  });
+  _abAudio.addEventListener('pause', () => {
+    document.getElementById('ab-play-btn').innerHTML = '&#x25B6;';
+    _abSavePos();
+  });
+  _abAudio.addEventListener('ended', () => {
+    document.getElementById('ab-play-btn').innerHTML = '&#x25B6;';
+    // Clear saved position on completion
+    try {
+      const store = JSON.parse(localStorage.getItem('amux_audio_pos') || '{}');
+      delete store[_abCurrentFile];
+      localStorage.setItem('amux_audio_pos', JSON.stringify(store));
+    } catch(e) {}
+  });
+  // Save position before page unload
+  window.addEventListener('beforeunload', _abSavePos);
+}
+
 // ── Text-to-Speech (ElevenLabs) ──
 let _ttsVoices = null;
 let _ttsSelectedVoice = '';
@@ -13673,11 +13826,19 @@ function _renderFileBody(data, mode) {
     return;
   }
   if (data.is_audio) {
-    body.className = 'file-overlay-body file-image';
     const rawUrl = API + '/api/file/raw?path=' + encodeURIComponent(data.path) + (peekSessionDir ? '&cwd=' + encodeURIComponent(peekSessionDir) : '');
     const fname = data.path.split('/').pop();
+    // Use persistent player — plays in background, survives overlay close
+    _abPlay(rawUrl, fname);
+    // Show info in overlay too
+    body.className = 'file-overlay-body file-image';
     const sizeMB = data.size ? (data.size / 1048576).toFixed(1) + ' MB' : '';
-    body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:16px;padding:32px;"><div style="font-size:2.5rem;">🎵</div><div style="font-size:0.95rem;color:var(--muted);">${fname}${sizeMB ? ' · ' + sizeMB : ''}</div><audio controls style="width:100%;max-width:480px;" src="${rawUrl}"></audio></div>`;
+    body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:24px;padding:40px;">
+      <div style="font-size:3rem;">🎵</div>
+      <div style="font-size:1.05rem;color:var(--text);font-weight:600;">${esc(fname)}</div>
+      <div style="font-size:0.85rem;color:var(--muted);">${sizeMB || ''}</div>
+      <div style="font-size:0.8rem;color:var(--dim);text-align:center;">Playing in persistent player below.<br>Close this overlay — audio keeps playing.</div>
+    </div>`;
     return;
   }
   if (data.is_binary) {
