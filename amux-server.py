@@ -13165,7 +13165,7 @@ function _abPlay(url, title) {
   document.getElementById('ab-title').textContent = title || url.split('/').pop();
   // Check for saved position
   const saved = _abLoadPos(url);
-  audio.src = url;
+  audio.src = _authUrl(url);
   audio.playbackRate = _abSpeeds[_abSpeedIdx];
   audio.load();
   audio.addEventListener('loadedmetadata', function onMeta() {
@@ -20832,7 +20832,7 @@ function _playVideoUrl(url, title) {
   const v = document.getElementById('video-player');
   const status = document.getElementById('vp-status');
 
-  v.src = url;
+  v.src = _authUrl(url);
   v._vpUrl = url;
 
   document.getElementById('vp-title').textContent = title || url.split('/').pop();
