@@ -8,6 +8,8 @@ struct ContentView: View {
     @State private var canGoForward = false
     @State private var showSettings = false
     @State private var webViewRef: WKWebView?
+    @State private var loadError: String?
+    @State private var webViewId = UUID()  // force recreation on retry
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -17,8 +19,10 @@ struct ContentView: View {
                     isLoading: $isLoading,
                     canGoBack: $canGoBack,
                     canGoForward: $canGoForward,
+                    loadError: $loadError,
                     onNavigationAction: handleNavigation
                 )
+                .id(webViewId)
                 .ignoresSafeArea()
             }
 
@@ -27,6 +31,43 @@ struct ContentView: View {
                     .progressViewStyle(.linear)
                     .frame(maxWidth: .infinity)
                     .tint(Color.accentColor)
+            }
+
+            // Error overlay — shown when navigation fails
+            if let error = loadError {
+                VStack(spacing: 20) {
+                    Spacer()
+                    Image(systemName: "wifi.exclamationmark")
+                        .font(.system(size: 48))
+                        .foregroundColor(.secondary)
+                    Text("Can't reach server")
+                        .font(.title3.bold())
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                    if let url = serverManager.serverURL {
+                        Text(url.absoluteString)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    HStack(spacing: 16) {
+                        Button("Retry") {
+                            loadError = nil
+                            webViewId = UUID()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Button("Switch Server") {
+                            showSettings = true
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(.top, 8)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(uiColor: .systemBackground))
             }
         }
         .gesture(

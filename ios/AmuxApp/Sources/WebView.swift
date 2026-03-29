@@ -9,6 +9,7 @@ struct WebView: UIViewRepresentable {
     @Binding var isLoading: Bool
     @Binding var canGoBack: Bool
     @Binding var canGoForward: Bool
+    @Binding var loadError: String?
     let onNavigationAction: (WKNavigationAction) -> WKNavigationActionPolicy
 
     func makeCoordinator() -> Coordinator {
@@ -92,7 +93,8 @@ struct WebView: UIViewRepresentable {
             }
         }
 
-        // Accept self-signed certs (Tailscale local installs)
+        // Accept self-signed certs for self-hosted servers
+        // (Tailscale, LAN, custom domains — anything that isn't a well-known public CA)
         func webView(_ webView: WKWebView,
                      didReceive challenge: URLAuthenticationChallenge,
                      completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
@@ -102,8 +104,10 @@ struct WebView: UIViewRepresentable {
                 return
             }
             let host = challenge.protectionSpace.host
-            let isTailscale = host.contains(".ts.net") || host.hasSuffix(".local") || host == "localhost"
-            if isTailscale {
+            // Trust self-signed certs for: Tailscale (.ts.net), local networks,
+            // private IPs, and any non-cloud.amux.io host (user-configured servers)
+            let isPublicAmux = host.hasSuffix("amux.io")
+            if !isPublicAmux {
                 completionHandler(.useCredential, URLCredential(trust: serverTrust))
             } else {
                 completionHandler(.performDefaultHandling, nil)
@@ -128,11 +132,13 @@ struct WebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             parent.isLoading = true
+            parent.loadError = nil
             logger.debug("Navigation started: \(webView.url?.absoluteString ?? "nil")")
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             parent.isLoading = false
+            parent.loadError = nil
             parent.canGoBack = webView.canGoBack
             parent.canGoForward = webView.canGoForward
             refreshControl?.endRefreshing()
@@ -142,12 +148,21 @@ struct WebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             parent.isLoading = false
             refreshControl?.endRefreshing()
+            let nsError = error as NSError
+            // Don't show cancellation errors (e.g. user tapped a link before page loaded)
+            if nsError.code != NSURLErrorCancelled {
+                parent.loadError = error.localizedDescription
+            }
             logger.error("Navigation failed: \(error.localizedDescription)")
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             parent.isLoading = false
             refreshControl?.endRefreshing()
+            let nsError = error as NSError
+            if nsError.code != NSURLErrorCancelled {
+                parent.loadError = error.localizedDescription
+            }
             logger.error("Provisional navigation failed: \(error.localizedDescription) url=\(webView.url?.absoluteString ?? "nil")")
         }
 
