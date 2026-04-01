@@ -13467,7 +13467,7 @@ async function _voiceStart() {
         }] },
         tools: [{ functionDeclarations: [{
           name: 'send_to_session',
-          description: 'Send a text message or command to the user\\'s active terminal session. Use this when the user asks you to run a command, type something, or send input to their session.',
+          description: 'Send a text message or command to the active terminal session. Use this when the user asks you to run a command, type something, or send input to their session.',
           parameters: { type: 'OBJECT', properties: {
             message: { type: 'STRING', description: 'The text/command to send to the session' }
           }, required: ['message'] }
