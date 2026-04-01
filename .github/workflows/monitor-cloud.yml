@@ -1,0 +1,113 @@
+name: Monitor cloud.amux.io
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'  # every 10 minutes
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Health check — HTTPS endpoint
+        id: health
+        run: |
+          STATUS=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 15 https://cloud.amux.io/ 2>/dev/null || echo "000")
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = "302" ] || [ "$STATUS" = "200" ]; then
+            echo "✅ cloud.amux.io is up (HTTP $STATUS)"
+          else
+            echo "❌ cloud.amux.io returned HTTP $STATUS"
+          fi
+
+      - name: Health check — API endpoint
+        id: api
+        run: |
+          STATUS=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 15 https://cloud.amux.io/api/cloud-health 2>/dev/null || echo "000")
+          BODY=$(curl -sk --max-time 15 https://cloud.amux.io/api/cloud-health 2>/dev/null || echo "{}")
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "body=$BODY" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = "200" ]; then
+            echo "✅ API health OK: $BODY"
+          else
+            echo "❌ API health failed (HTTP $STATUS): $BODY"
+          fi
+
+      - name: Set up SSH (only if unhealthy)
+        if: steps.health.outputs.status != '302' && steps.health.outputs.status != '200'
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.CLOUD_SSH_KEY }}" > ~/.ssh/amux_cloud
+          chmod 600 ~/.ssh/amux_cloud
+          ssh-keyscan -H 34.121.177.76 >> ~/.ssh/known_hosts 2>/dev/null
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Auto-fix — restart services
+        if: steps.health.outputs.status != '302' && steps.health.outputs.status != '200'
+        run: |
+          echo "🔧 Attempting auto-fix..."
+          ssh -o ConnectTimeout=15 -i ~/.ssh/amux_cloud root@34.121.177.76 'bash -s' << 'ENDSSH'
+            set -x
+
+            # 1. Check and restart nginx if down
+            if ! systemctl is-active --quiet nginx; then
+              echo "nginx is down — restarting"
+              systemctl restart nginx
+            fi
+
+            # 2. Check and restart gateway if down
+            if ! systemctl is-active --quiet amux-gateway; then
+              echo "gateway is down — restarting"
+              systemctl restart amux-gateway
+            fi
+
+            # 3. If gateway is running but not responding, restart it
+            GW_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:8080/api/cloud-health 2>/dev/null || echo "000")
+            if [ "$GW_STATUS" != "200" ]; then
+              echo "gateway not responding (HTTP $GW_STATUS) — restarting"
+              systemctl restart amux-gateway
+              sleep 3
+            fi
+
+            # 4. Check TLS cert validity
+            CERT_EXPIRY=$(openssl x509 -enddate -noout -in /etc/letsencrypt/live/cloud.amux.io/fullchain.pem 2>/dev/null | cut -d= -f2)
+            if [ -n "$CERT_EXPIRY" ]; then
+              EXPIRY_EPOCH=$(date -d "$CERT_EXPIRY" +%s 2>/dev/null || echo 0)
+              NOW_EPOCH=$(date +%s)
+              DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
+              if [ "$DAYS_LEFT" -lt 14 ]; then
+                echo "TLS cert expires in $DAYS_LEFT days — renewing"
+                certbot renew --quiet
+                systemctl reload nginx
+              fi
+            fi
+
+            # 5. Check disk space — clean docker if >85% full
+            DISK_PCT=$(df / --output=pcent | tail -1 | tr -d ' %')
+            if [ "$DISK_PCT" -gt 85 ]; then
+              echo "disk at ${DISK_PCT}% — pruning docker"
+              docker system prune -f --volumes 2>/dev/null
+            fi
+
+            # Final check
+            sleep 2
+            FINAL=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 https://localhost/ 2>/dev/null || echo "000")
+            echo "Post-fix status: HTTP $FINAL"
+          ENDSSH
+
+      - name: Verify fix
+        if: steps.health.outputs.status != '302' && steps.health.outputs.status != '200'
+        id: verify
+        run: |
+          sleep 5
+          STATUS=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 15 https://cloud.amux.io/ 2>/dev/null || echo "000")
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = "302" ] || [ "$STATUS" = "200" ]; then
+            echo "✅ Auto-fix succeeded — cloud.amux.io is back up"
+          else
+            echo "❌ Auto-fix failed — cloud.amux.io still returning HTTP $STATUS"
+            echo "Manual intervention required"
+            exit 1
+          fi
