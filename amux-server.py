@@ -14635,7 +14635,7 @@ function _filesNewFile() {
   const ta = document.getElementById('file-edit-ta');
   const wrap = document.getElementById('file-edit-wrap');
   ta.value = '';
-  wrap.style.display = '';
+  wrap.style.display = 'flex';
   document.getElementById('file-overlay').classList.add('active');
   setTimeout(() => ta.focus(), 100);
 }
@@ -28928,6 +28928,9 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
 
     def do_PATCH(self):
         self._route("PATCH")
+
+    def do_PUT(self):
+        self._route("PUT")
 
     def do_DELETE(self):
         self._route("DELETE")
