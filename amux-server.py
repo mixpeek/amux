@@ -8489,20 +8489,33 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <div id="apikey-setup-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:none;align-items:center;justify-content:center;">
   <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:32px;max-width:440px;width:90%;box-shadow:0 24px 64px rgba(0,0,0,0.6);position:relative;color:#e8e8e8;">
     <button onclick="document.getElementById('apikey-setup-modal').style.display='none'" style="position:absolute;top:12px;right:14px;background:none;border:none;color:#aaa;font-size:1.2rem;cursor:pointer;padding:4px;" title="Close">&#x2715;</button>
-    <div style="font-size:1.4rem;font-weight:700;margin-bottom:8px;color:#fff;">Set your API key</div>
-    <div style="font-size:0.85rem;color:#aaa;margin-bottom:24px;line-height:1.5;">
-      Enter your Anthropic API key to start using Claude sessions. Your key is stored privately in your container — amux never has access to it.<br><br>
-      <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:#a78bfa;">Get a key at console.anthropic.com &rarr;</a>
+    <div style="font-size:1.4rem;font-weight:700;margin-bottom:8px;color:#fff;">Get started</div>
+    <div style="font-size:0.85rem;color:#aaa;margin-bottom:20px;line-height:1.5;">
+      Choose how to authenticate with Claude:
+    </div>
+    <button id="apikey-login-btn" onclick="apikeySetupLogin()"
+      style="width:100%;padding:12px;border-radius:7px;border:1px solid #4338ca;background:#1e1b4b;color:#c7d2fe;font-size:0.95rem;font-weight:600;cursor:pointer;margin-bottom:10px;display:flex;align-items:center;justify-content:center;gap:8px;">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v6m0 0l2.5-2.5M8 7L5.5 4.5M2 10v2a2 2 0 002 2h8a2 2 0 002-2v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Log in with Claude account
+    </button>
+    <div style="font-size:0.78rem;color:#888;text-align:center;margin-bottom:16px;">Recommended — uses your Claude.ai account (Pro, Max, or Team)</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+      <div style="flex:1;height:1px;background:#333;"></div>
+      <span style="font-size:0.75rem;color:#666;">or use an API key</span>
+      <div style="flex:1;height:1px;background:#333;"></div>
     </div>
     <input id="apikey-setup-input" type="password" placeholder="sk-ant-api03-..." autocomplete="off" spellcheck="false"
       style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:7px;border:1px solid #444;background:#111;color:#e8e8e8;font-size:0.92rem;font-family:monospace;margin-bottom:8px;"
       onkeydown="if(event.key==='Enter')apikeySetupSave()">
     <div id="apikey-setup-err" style="color:#f87171;font-size:0.8rem;min-height:18px;margin-bottom:12px;"></div>
     <button id="apikey-setup-btn" onclick="apikeySetupSave()"
-      style="width:100%;padding:11px;border-radius:7px;border:none;background:#7c6fcd;color:#fff;font-size:0.95rem;font-weight:600;cursor:pointer;">
-      Save &amp; continue
+      style="width:100%;padding:11px;border-radius:7px;border:none;background:#333;color:#ccc;font-size:0.88rem;font-weight:500;cursor:pointer;">
+      Save API key
     </button>
-    <div style="text-align:center;margin-top:10px;font-size:0.78rem;color:#888;">You can add this later in Settings</div>
+    <div style="text-align:center;margin-top:8px;">
+      <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:#a78bfa;font-size:0.78rem;">Get a key at console.anthropic.com &rarr;</a>
+    </div>
+    <div style="text-align:center;margin-top:8px;font-size:0.78rem;color:#888;">You can change this later in Settings</div>
   </div>
 </div>
 <div id="org-banner" style="display:none;background:#1e1b4b;border-bottom:1px solid #4338ca;color:#c7d2fe;padding:7px 16px;text-align:center;font-size:0.82rem;z-index:200;position:relative;display:none;">
@@ -10128,6 +10141,57 @@ async function _initIdentity() {
       _loadGatewayOrgs();
     }
   } catch(e) {}
+}
+
+async function apikeySetupLogin() {
+  // Dismiss the modal
+  const m = document.getElementById('apikey-setup-modal');
+  if (m) m.style.display = 'none';
+  // Create a temporary login session and send /login
+  try {
+    const r = await fetch(API + '/api/sessions', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name: 'login', desc: 'Claude account login' })
+    });
+    if (!r.ok) {
+      // Session might already exist — that's fine
+    }
+    // Send /login to the session
+    await fetch(API + '/api/sessions/login/send', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ text: '/login' })
+    });
+    // Open the peek view so the user can see the login flow
+    showToast('Opening login session — follow the URL to authenticate');
+    setTimeout(() => { openPeek('login'); }, 500);
+    // Poll for OAuth completion
+    _pollForOAuth();
+  } catch(e) {
+    showToast('Failed to start login session');
+    console.error('login setup error:', e);
+  }
+}
+
+let _oauthPollTimer = null;
+function _pollForOAuth() {
+  if (_oauthPollTimer) clearInterval(_oauthPollTimer);
+  let checks = 0;
+  _oauthPollTimer = setInterval(async () => {
+    checks++;
+    if (checks > 60) { clearInterval(_oauthPollTimer); return; } // give up after 5 min
+    try {
+      const r = await fetch(API + '/api/identity');
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d.has_oauth) {
+        clearInterval(_oauthPollTimer);
+        showToast('Logged in successfully! Sessions will use your Claude account.');
+        // Hide banner if visible
+        const banner = document.getElementById('no-apikey-banner');
+        if (banner) banner.style.display = 'none';
+      }
+    } catch(e) {}
+  }, 5000);
 }
 
 async function apikeySetupSave() {
@@ -28203,7 +28267,17 @@ end tell
                         if _val.startswith("sk-ant-"):
                             has_key_in_env = True
                         break
-            return self._json({"email": email, "is_cloud": bool(email), "has_api_key": has_key_in_env})
+            # Also check for OAuth login in ~/.claude.json
+            has_oauth = False
+            try:
+                _cj = Path.home() / ".claude.json"
+                if _cj.exists():
+                    has_oauth = bool(json.loads(_cj.read_text()).get("oauthAccount"))
+            except Exception:
+                pass
+            return self._json({"email": email, "is_cloud": bool(email),
+                               "has_api_key": has_key_in_env or has_oauth,
+                               "has_oauth": has_oauth})
 
         # ── Layout presets ────────────────────────────────────────────────────
         if path == "/api/layout-presets":
