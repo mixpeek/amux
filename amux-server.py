@@ -29823,6 +29823,22 @@ def _auto_archive_idle():
         slog(f"[auto-archive] archived {len(archived)} idle sessions: {', '.join(archived)}")
 
 
+def _enforce_archived_stopped():
+    """Stop any archived sessions that still have running tmux processes."""
+    stopped = []
+    for env_file in sorted(CC_SESSIONS.glob("*.env")):
+        name = env_file.stem
+        cfg = parse_env_file(env_file)
+        if cfg.get("CC_ARCHIVED") == "1" and is_running(name):
+            try:
+                stop_session(name)
+                stopped.append(name)
+            except Exception:
+                pass
+    if stopped:
+        slog(f"[cleanup] stopped {len(stopped)} archived sessions still running: {', '.join(stopped)}")
+
+
 def _cleanup_old_transcripts():
     """Remove conversation transcripts older than 7 days and larger than 50 MB."""
     projects_dir = Path.home() / ".claude" / "projects"
@@ -30311,6 +30327,7 @@ def main():
     schedule_job(_email_sync_job,        interval=_EMAIL_SYNC_INTERVAL, name="email_sync",  initial_delay=20)
     schedule_job(_cleanup_tmp,           interval=1800,                 name="tmp_cleanup", initial_delay=60)
     schedule_job(_auto_archive_idle,     interval=3600,                 name="auto_archive", initial_delay=300)
+    schedule_job(_enforce_archived_stopped, interval=600,                name="archive_enforce", initial_delay=30)
     schedule_job(_cleanup_old_transcripts, interval=86400,              name="transcript_cleanup", initial_delay=600)
     schedule_job(_cleanup_logs,             interval=86400,              name="log_rotation",       initial_delay=120)
     schedule_job(_cleanup_recordings,       interval=86400,              name="recording_cleanup",  initial_delay=180)
