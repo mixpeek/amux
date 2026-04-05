@@ -9385,7 +9385,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="peek-tabs">
     <button class="peek-tab active" id="peek-tab-terminal" onclick="setPeekTab('terminal')">Terminal</button>
     <button class="peek-tab" id="peek-tab-issues" onclick="setPeekTab('issues')">Issues</button>
-    <button class="peek-tab" id="peek-tab-memory" onclick="setPeekTab('memory')">Memory</button>
     <button class="peek-tab" id="peek-tab-git" onclick="setPeekTab('git')">Worktree</button>
     <button class="peek-tab" id="peek-tab-commits" onclick="setPeekTab('commits')">Commits</button>
   </div>
@@ -11985,16 +11984,12 @@ function setPeekTab(tab) {
   _peekTab = tab;
   document.getElementById('peek-tab-terminal').classList.toggle('active', tab === 'terminal');
   document.getElementById('peek-tab-issues').classList.toggle('active', tab === 'issues');
-  document.getElementById('peek-tab-memory').classList.toggle('active', tab === 'memory');
   document.getElementById('peek-tab-git').classList.toggle('active', tab === 'git');
   document.getElementById('peek-tab-commits').classList.toggle('active', tab === 'commits');
   document.getElementById('peek-terminal-panel').style.display = tab === 'terminal' ? '' : 'none';
   const issues = document.getElementById('peek-issues-panel');
   if (tab === 'issues') { issues.classList.add('active'); renderPeekIssues(); }
   else { issues.classList.remove('active'); }
-  const mem = document.getElementById('peek-memory-panel');
-  if (tab === 'memory') { mem.classList.add('active'); loadPeekMemory(); }
-  else { mem.classList.remove('active'); }
   const git = document.getElementById('peek-git-panel');
   if (tab === 'git') { git.classList.add('active'); loadPeekGit(); }
   else { git.classList.remove('active'); }
