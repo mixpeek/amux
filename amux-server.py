@@ -6183,14 +6183,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   #fc-container .fc .fc-daygrid-day-frame { min-height: 80px; }
   #fc-container .fc-subscribe-button { font-size: 0.78rem !important; padding: 4px 10px !important; }
   @media (max-width: 600px) {
-    #fc-container .fc .fc-toolbar { flex-direction: column; align-items: stretch; padding: 6px 2px; gap: 4px; }
+    #fc-container .fc .fc-toolbar { flex-direction: column; align-items: stretch; padding: 6px 4px; gap: 4px; }
     #fc-container .fc .fc-toolbar-chunk { display: flex; justify-content: center; }
-    #fc-container .fc .fc-toolbar-title { font-size: 0.92rem; }
-    #fc-container .fc .fc-button { font-size: 0.75rem; padding: 4px 8px; }
-    #fc-container .fc .fc-daygrid-day-frame { min-height: 50px; }
-    #fc-container .fc .fc-daygrid-day-number { font-size: 0.72rem; padding: 2px 4px; }
-    #fc-container .fc .fc-event { font-size: 0.68rem; padding: 0 2px; }
-    #fc-container .fc .fc-col-header-cell { font-size: 0.65rem; padding: 6px 0; }
+    #fc-container .fc .fc-toolbar-title { font-size: 0.95rem; }
+    #fc-container .fc .fc-button { font-size: 0.78rem; padding: 6px 10px; min-height: 34px; }
+    #fc-container .fc .fc-daygrid-day-frame { min-height: 48px; }
+    #fc-container .fc .fc-daygrid-day-number { font-size: 0.75rem; padding: 3px 5px; }
+    #fc-container .fc .fc-event { font-size: 0.72rem; padding: 2px 4px; min-height: 22px; line-height: 1.3; }
+    #fc-container .fc .fc-col-header-cell { font-size: 0.68rem; padding: 6px 0; }
+    #fc-container .fc .fc-timegrid-slot { height: 3em; }
+    #fc-container .fc .fc-scrollgrid { border: none; }
+    #fc-container .fc .fc-subscribe-button { display: none; }
   }
   /* Board collapse */
   .board-col-collapse { background: none; border: none; cursor: pointer; color: var(--dim);
@@ -8697,8 +8700,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="board-columns" id="board-columns"></div>
 </div>
 <!-- Calendar view -->
-<div id="calendar-view" style="display:none;">
-  <div id="fc-container" style="padding:4px 8px;"></div>
+<div id="calendar-view" style="display:none;flex-direction:column;width:100%;">
+  <div id="fc-container" style="width:100%;padding:0;"></div>
 </div>
 <!-- Scheduler view -->
 <div id="scheduler-view" style="display:none;">
@@ -18891,9 +18894,14 @@ function _fcInit() {
   if (_viewMap[savedView]) savedView = _viewMap[savedView];
   if (!['dayGridMonth','timeGridWeek','timeGridDay'].includes(savedView)) savedView = 'dayGridMonth';
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark' || (!document.body.classList.contains('light'));
+  const isMobile = window.innerWidth <= 600;
   _fcInstance = new FullCalendar.Calendar(el, {
-    initialView: savedView,
-    headerToolbar: {
+    initialView: isMobile ? 'timeGridDay' : savedView,
+    headerToolbar: isMobile ? {
+      left: 'prev,next today',
+      center: 'title',
+      right: 'dayGridMonth,timeGridWeek,timeGridDay',
+    } : {
       left: 'prev,today,next',
       center: 'title',
       right: 'dayGridMonth,timeGridWeek,timeGridDay subscribe',
@@ -18905,7 +18913,7 @@ function _fcInit() {
       },
     },
     events: function(info, successCallback) { successCallback(_fcGetEvents()); },
-    height: window.innerHeight - el.getBoundingClientRect().top - 16,
+    height: window.innerHeight - el.getBoundingClientRect().top,
     nowIndicator: true,
     navLinks: true,
     editable: false,
@@ -18946,7 +18954,7 @@ function _fcInit() {
   setTimeout(() => { if (_fcInstance) _fcInstance.updateSize(); }, 50);
   // Resize handler
   if (!window._fcResizeHandler) {
-    window._fcResizeHandler = () => { if (_fcInstance && activeView === 'calendar') { const c = document.getElementById('fc-container'); if (c) _fcInstance.setOption('height', window.innerHeight - c.getBoundingClientRect().top - 16); } };
+    window._fcResizeHandler = () => { if (_fcInstance && activeView === 'calendar') { const c = document.getElementById('fc-container'); if (c) _fcInstance.setOption('height', window.innerHeight - c.getBoundingClientRect().top); } };
     window.addEventListener('resize', window._fcResizeHandler);
   }
 }
