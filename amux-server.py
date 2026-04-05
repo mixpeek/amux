@@ -5954,15 +5954,38 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .csv-search { flex:0 0 auto;padding:3px 8px;background:var(--input,var(--card));border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.78rem;width:160px;outline:none; }
   .csv-search:focus { border-color:var(--accent); }
   .csv-truncated { font-size:0.73rem;color:var(--yellow,#fbbf24);margin-left:4px; }
-  .csv-wrap { overflow:auto;flex:1;min-height:0; }
-  .csv-table { border-collapse:collapse;font-size:0.78rem;width:max-content;min-width:100%; }
-  .csv-table th,.csv-table td { border:1px solid var(--border);padding:4px 10px;text-align:left;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis; }
-  .csv-table th { background:var(--card);font-weight:600;position:sticky;top:0;z-index:1;cursor:pointer;user-select:none; }
+  .csv-wrap { overflow:auto;flex:1;min-height:0;-webkit-overflow-scrolling:touch; }
+  .csv-table { border-collapse:collapse;font-size:0.78rem;table-layout:fixed; }
+  .csv-table th,.csv-table td { border:1px solid var(--border);padding:6px 10px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative; }
+  .csv-table th { background:var(--card);font-weight:600;position:sticky;top:0;z-index:2;user-select:none; }
+  .csv-table th .csv-th-text { cursor:pointer;display:block;overflow:hidden;text-overflow:ellipsis; }
   .csv-table th:hover { background:var(--hover,rgba(255,255,255,0.06)); }
-  .csv-table th.sort-asc::after { content:' ▲';font-size:0.65rem;opacity:0.7; }
-  .csv-table th.sort-desc::after { content:' ▼';font-size:0.65rem;opacity:0.7; }
+  .csv-table th.sort-asc .csv-th-text::after { content:' ▲';font-size:0.65rem;opacity:0.7; }
+  .csv-table th.sort-desc .csv-th-text::after { content:' ▼';font-size:0.65rem;opacity:0.7; }
   .csv-table tr:nth-child(even) td { background:rgba(255,255,255,0.02); }
+  .csv-table td.csv-cell-active { outline:2px solid var(--accent);outline-offset:-2px;z-index:1; }
   .csv-row-hidden { display:none; }
+  /* Column resize handle */
+  .csv-resize { position:absolute;top:0;right:-3px;width:6px;height:100%;cursor:col-resize;z-index:3;user-select:none;-webkit-user-select:none; }
+  .csv-resize:hover,.csv-resize.active { background:var(--accent);opacity:0.5; }
+  /* Row number column */
+  .csv-table th.csv-rownum,.csv-table td.csv-rownum { width:42px;min-width:42px;max-width:42px;text-align:right;color:var(--dim);font-size:0.7rem;padding:6px 6px;background:var(--bg);position:sticky;left:0;z-index:1;border-right:2px solid var(--border); }
+  .csv-table th.csv-rownum { z-index:3;background:var(--card); }
+  /* Frozen first column */
+  .csv-table.csv-frozen th:nth-child(2),.csv-table.csv-frozen td:nth-child(2) { position:sticky;left:42px;z-index:1;background:var(--bg);border-right:2px solid var(--border); }
+  .csv-table.csv-frozen th:nth-child(2) { z-index:3;background:var(--card); }
+  .csv-table tr:nth-child(even) td.csv-rownum { background:var(--bg); }
+  .csv-table.csv-frozen tr:nth-child(even) td:nth-child(2) { background:var(--bg); }
+  /* Cell expand popover */
+  .csv-cell-pop { position:fixed;z-index:1000;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:0.82rem;max-width:90vw;max-height:50vh;overflow:auto;white-space:pre-wrap;word-break:break-word;box-shadow:0 4px 20px rgba(0,0,0,0.3);line-height:1.5; }
+  /* Mobile: bigger touch targets */
+  @media (max-width:600px) {
+    .csv-table th,.csv-table td { padding:10px 10px;font-size:0.82rem; }
+    .csv-toolbar { padding:10px 12px;gap:6px; }
+    .csv-search { width:100%;order:10; }
+    .csv-resize { width:10px;right:-5px; }
+    .csv-table th.csv-rownum,.csv-table td.csv-rownum { width:36px;min-width:36px;max-width:36px;padding:10px 4px; }
+  }
   /* Unified markdown content styling — used everywhere renderMarkdown() output appears */
   .md-content { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 0.88rem; line-height: 1.6; }
   .md-content > *:first-child { margin-top: 0 !important; }
@@ -14433,62 +14456,77 @@ function clearPeekSearch() {
 
 // ── File preview ──
 function _csvEsc(s) { return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-let _csvRows = [], _csvSort = { col: -1, asc: true };
+let _csvRows = [], _csvHeader = [], _csvSort = { col: -1, asc: true }, _csvColWidths = [], _csvFrozen = false;
 
 function renderCsvTable(csv) {
   if (!csv.trim()) return '<em style="color:var(--dim)">Empty file</em>';
-  // Use Papa Parse for correct RFC 4180 parsing (handles multiline fields,
-  // escaped quotes, BOM, various delimiters, etc.)
-  const parsed = Papa.parse(csv, {
-    header: false,
-    skipEmptyLines: true,
-    dynamicTyping: false,  // keep everything as strings for display
-  });
+  const parsed = Papa.parse(csv, { header: false, skipEmptyLines: true, dynamicTyping: false });
   if (!parsed.data.length) return '<em style="color:var(--dim)">Empty file</em>';
-  const header = parsed.data[0];
+  _csvHeader = parsed.data[0];
   const allRows = parsed.data.slice(1);
   const MAX_ROWS = 2000;
   const truncated = allRows.length > MAX_ROWS;
   _csvRows = truncated ? allRows.slice(0, MAX_ROWS) : allRows;
   _csvSort = { col: -1, asc: true };
+  _csvFrozen = false;
+  // Auto-size columns: measure header + sample rows
+  _csvColWidths = _csvHeader.map((h, i) => {
+    let maxLen = (h || '').length;
+    for (let r = 0; r < Math.min(50, _csvRows.length); r++) {
+      const cell = (_csvRows[r][i] || '');
+      if (cell.length > maxLen) maxLen = cell.length;
+    }
+    return Math.max(60, Math.min(280, maxLen * 8 + 20));
+  });
   const delimLabel = parsed.meta.delimiter === '\t' ? ' · TSV' : '';
+  const metaText = `${_csvRows.length.toLocaleString()}${truncated ? '+' : ''} rows × ${_csvHeader.length} cols${delimLabel}`;
+  const truncNote = truncated ? `<span class="csv-truncated">⚠ first ${MAX_ROWS.toLocaleString()} of ${allRows.length.toLocaleString()}</span>` : '';
 
-  const metaText = `${_csvRows.length.toLocaleString()}${truncated ? '+' : ''} rows × ${header.length} cols${delimLabel}`;
-  const truncNote = truncated ? `<span class="csv-truncated">⚠ showing first ${MAX_ROWS.toLocaleString()} of ${allRows.length.toLocaleString()} rows</span>` : '';
-  const thead = '<tr>' + header.map((h,i) =>
-    `<th onclick="_csvSortBy(${i})" title="${_csvEsc(h)}">${_csvEsc(h) || '<span style="opacity:.4">#'+i+'</span>'}</th>`
+  const colgroup = '<col class="csv-rownum-col" style="width:42px">' +
+    _csvColWidths.map((w,i) => `<col data-ci="${i}" style="width:${w}px">`).join('');
+  const thead = '<tr><th class="csv-rownum">#</th>' + _csvHeader.map((h,i) =>
+    `<th data-ci="${i}"><span class="csv-th-text" onclick="_csvSortBy(${i})" title="${_csvEsc(h)}">${_csvEsc(h) || '<span style="opacity:.4">col '+i+'</span>'}</span><div class="csv-resize" data-ci="${i}"></div></th>`
   ).join('') + '</tr>';
-  const tbody = _csvRows.map((r,ri) =>
-    `<tr data-ri="${ri}">` + header.map((_,ci) => `<td title="${_csvEsc(r[ci])}">${_csvEsc(r[ci])}</td>`).join('') + '</tr>'
-  ).join('');
+  const tbody = _csvRenderRows(_csvRows);
+
+  // Schedule resize handle init after DOM render
+  setTimeout(_csvInitResize, 50);
+  setTimeout(_csvInitCellTap, 50);
 
   return `<div class="csv-toolbar">
     <span class="csv-meta">${metaText}${truncNote}</span>
+    <label style="font-size:0.72rem;display:flex;align-items:center;gap:4px;cursor:pointer;color:var(--dim);">
+      <input type="checkbox" style="width:auto;accent-color:var(--accent);" onchange="_csvToggleFreeze(this.checked)"> Freeze col
+    </label>
     <input class="csv-search" placeholder="Filter rows…" oninput="_csvFilter(this.value)" type="search">
   </div>
-  <div class="csv-wrap"><table class="csv-table" id="csv-tbl"><thead>${thead}</thead><tbody id="csv-body">${tbody}</tbody></table></div>`;
+  <div class="csv-wrap"><table class="csv-table" id="csv-tbl"><colgroup>${colgroup}</colgroup><thead>${thead}</thead><tbody id="csv-body">${tbody}</tbody></table></div>`;
+}
+
+function _csvRenderRows(rows) {
+  return rows.map((r, ri) =>
+    `<tr data-ri="${ri}"><td class="csv-rownum">${ri + 1}</td>` +
+    _csvHeader.map((_, ci) => `<td data-ci="${ci}" title="${_csvEsc(r[ci])}">${_csvEsc(r[ci])}</td>`).join('') + '</tr>'
+  ).join('');
 }
 
 function _csvSortBy(col) {
   const asc = _csvSort.col === col ? !_csvSort.asc : true;
   _csvSort = { col, asc };
-  const sorted = [..._csvRows].sort((a,b) => {
-    const av = a[col]??'', bv = b[col]??'';
+  const sorted = [..._csvRows].sort((a, b) => {
+    const av = a[col] ?? '', bv = b[col] ?? '';
     const an = parseFloat(av), bn = parseFloat(bv);
     const cmp = (!isNaN(an) && !isNaN(bn)) ? an - bn : av.localeCompare(bv);
     return asc ? cmp : -cmp;
   });
   const tbody = document.getElementById('csv-body');
   if (!tbody) return;
-  tbody.innerHTML = sorted.map((r,ri) =>
-    `<tr data-ri="${ri}">` + r.map(c => `<td title="${_csvEsc(c??'')}">${_csvEsc(c??'')}</td>`).join('') + '</tr>'
-  ).join('');
-  // Update sort indicators
-  document.querySelectorAll('#csv-tbl th').forEach((th,i) => {
-    th.classList.toggle('sort-asc', i === col && asc);
-    th.classList.toggle('sort-desc', i === col && !asc);
+  tbody.innerHTML = _csvRenderRows(sorted);
+  document.querySelectorAll('#csv-tbl thead th[data-ci]').forEach(th => {
+    const ci = parseInt(th.dataset.ci);
+    th.classList.toggle('sort-asc', ci === col && asc);
+    th.classList.toggle('sort-desc', ci === col && !asc);
   });
-  // Re-apply filter
   const q = document.querySelector('.csv-search');
   if (q && q.value) _csvFilter(q.value);
 }
@@ -14505,8 +14543,79 @@ function _csvFilter(q) {
   if (meta) {
     if (!meta.dataset.base) meta.dataset.base = meta.firstChild.textContent || '';
     const base = meta.dataset.base;
-    if (meta.firstChild) meta.firstChild.textContent = lower ? `${vis} match${vis!==1?'es':''} · ${base}` : base;
+    if (meta.firstChild) meta.firstChild.textContent = lower ? `${vis} match${vis !== 1 ? 'es' : ''} · ${base}` : base;
   }
+}
+
+function _csvToggleFreeze(on) {
+  const tbl = document.getElementById('csv-tbl');
+  if (tbl) tbl.classList.toggle('csv-frozen', on);
+  _csvFrozen = on;
+}
+
+// ── Column resize (drag handles) ──
+function _csvInitResize() {
+  const tbl = document.getElementById('csv-tbl');
+  if (!tbl) return;
+  tbl.querySelectorAll('.csv-resize').forEach(handle => {
+    const start = (startX, ci) => {
+      const col = tbl.querySelector(`colgroup col[data-ci="${ci}"]`);
+      if (!col) return;
+      const startW = parseInt(col.style.width) || 100;
+      handle.classList.add('active');
+      const move = (x) => {
+        const newW = Math.max(40, startW + (x - startX));
+        col.style.width = newW + 'px';
+        _csvColWidths[ci] = newW;
+      };
+      const up = () => {
+        handle.classList.remove('active');
+        document.removeEventListener('mousemove', onMM);
+        document.removeEventListener('mouseup', up);
+        document.removeEventListener('touchmove', onTM);
+        document.removeEventListener('touchend', up);
+      };
+      const onMM = (e) => { e.preventDefault(); move(e.clientX); };
+      const onTM = (e) => { if (e.touches[0]) move(e.touches[0].clientX); };
+      document.addEventListener('mousemove', onMM);
+      document.addEventListener('mouseup', up);
+      document.addEventListener('touchmove', onTM, { passive: true });
+      document.addEventListener('touchend', up);
+    };
+    handle.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); start(e.clientX, parseInt(handle.dataset.ci)); });
+    handle.addEventListener('touchstart', (e) => { e.stopPropagation(); if (e.touches[0]) start(e.touches[0].clientX, parseInt(handle.dataset.ci)); }, { passive: true });
+  });
+}
+
+// ── Cell tap to expand (mobile-friendly) ──
+let _csvPopEl = null;
+function _csvInitCellTap() {
+  const tbl = document.getElementById('csv-tbl');
+  if (!tbl) return;
+  const dismiss = () => { if (_csvPopEl) { _csvPopEl.remove(); _csvPopEl = null; } };
+  tbl.addEventListener('click', (e) => {
+    const td = e.target.closest('td[data-ci]');
+    if (!td) { dismiss(); return; }
+    // Remove previous active
+    tbl.querySelectorAll('.csv-cell-active').forEach(c => c.classList.remove('csv-cell-active'));
+    dismiss();
+    td.classList.add('csv-cell-active');
+    const text = td.getAttribute('title') || td.textContent;
+    // Only show popover if content is truncated or on mobile
+    if (td.scrollWidth <= td.clientWidth + 2 && window.innerWidth > 600) return;
+    const pop = document.createElement('div');
+    pop.className = 'csv-cell-pop';
+    pop.textContent = text;
+    const rect = td.getBoundingClientRect();
+    pop.style.left = Math.min(rect.left, window.innerWidth - 320) + 'px';
+    pop.style.top = (rect.bottom + 4) + 'px';
+    document.body.appendChild(pop);
+    _csvPopEl = pop;
+    // Ensure it doesn't overflow screen
+    const popRect = pop.getBoundingClientRect();
+    if (popRect.bottom > window.innerHeight - 20) pop.style.top = (rect.top - popRect.height - 4) + 'px';
+  });
+  document.addEventListener('click', (e) => { if (_csvPopEl && !e.target.closest('.csv-cell-pop') && !e.target.closest('td[data-ci]')) dismiss(); });
 }
 
 let _fileData = null;
