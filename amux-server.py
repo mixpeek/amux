@@ -2063,6 +2063,7 @@ def _init_db():
         "ALTER TABLE schedules ADD COLUMN done_action TEXT NOT NULL DEFAULT 'disable'",
         "ALTER TABLE graph_nodes ADD COLUMN source_path TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE issues ADD COLUMN gcal_event_id TEXT",
+        "ALTER TABLE schedules ADD COLUMN kind TEXT NOT NULL DEFAULT 'tmux'",
     ]:
         try:
             db.execute(migration)
@@ -3002,19 +3003,33 @@ def _next_run_dt(sched):
 
 
 def _run_schedule(sched):
-    """Execute a schedule entry — send message to tmux session and log the run.
+    """Execute a schedule entry — send message to tmux session (kind='tmux')
+    or run as shell command (kind='shell'). Logs the run.
     If watch=1, spawns a background thread to monitor the response."""
     session = sched["session"]
     command = sched.get("command") or ""
-    slog(f"[sched] running '{sched['title']}' → session '{session}'")
+    kind = sched.get("kind") or "tmux"
+    slog(f"[sched] running '{sched['title']}' [{kind}] → {session or '(shell)'}")
     status, note = "ok", None
-    # Capture output before sending so we can detect new output later
-    pre_output = tmux_capture(session, 200) if sched.get("watch") else ""
+    # Capture output before sending so we can detect new output later (tmux mode only)
+    pre_output = tmux_capture(session, 200) if (kind == "tmux" and sched.get("watch")) else ""
     try:
-        ok, err = send_text(session, command)
-        if not ok:
-            status, note = "error", str(err)
-            slog(f"[sched] send failed for '{sched['title']}': {err}")
+        if kind == "shell":
+            r = subprocess.run(
+                ["/bin/bash", "-c", command],
+                capture_output=True, text=True, timeout=600,
+            )
+            if r.returncode != 0:
+                status = "error"
+                note = (r.stderr or r.stdout or f"exit {r.returncode}")[:500]
+                slog(f"[sched] shell failed for '{sched['title']}': {note}")
+            else:
+                note = (r.stdout or "")[:500] or None
+        else:
+            ok, err = send_text(session, command)
+            if not ok:
+                status, note = "error", str(err)
+                slog(f"[sched] send failed for '{sched['title']}': {err}")
     except Exception as e:
         status, note = "error", str(e)
         slog(f"[sched] exception running '{sched['title']}': {e}")
@@ -3032,8 +3047,8 @@ def _run_schedule(sched):
     except Exception as log_err:
         slog(f"[sched] failed to log run: {log_err}")
     _push_alert("scheduler", session, f"Ran schedule: {sched['title']}")
-    # If watch mode is enabled, monitor response in background
-    if sched.get("watch") and status == "ok":
+    # If watch mode is enabled (tmux only), monitor response in background
+    if (sched.get("kind") or "tmux") == "tmux" and sched.get("watch") and status == "ok":
         threading.Thread(
             target=_watch_schedule_response,
             args=(sched, pre_output),
@@ -9424,11 +9439,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <input id="sched-title" type="text" placeholder="What should run?" autocomplete="off">
     </div>
     <div class="field-group">
+      <label class="field-label">Kind</label>
+      <select id="sched-kind" class="board-detail-session-select" style="width:100%;" onchange="updateSchedKindUI()">
+        <option value="tmux">Send to session (Claude)</option>
+        <option value="shell">Run shell command</option>
+      </select>
+    </div>
+    <div class="field-group" id="sched-session-group">
       <label class="field-label">Session</label>
       <select id="sched-session" class="board-detail-session-select" style="width:100%;"></select>
     </div>
     <div class="field-group">
-      <label class="field-label">Command</label>
+      <label class="field-label" id="sched-command-label">Command</label>
       <textarea id="sched-command" rows="5" placeholder="e.g. /status or npm run build" autocomplete="off" style="resize:vertical;font-family:monospace;font-size:0.85rem;min-height:100px;white-space:pre;"></textarea>
     </div>
     <div class="field-group">
@@ -18596,6 +18618,16 @@ function updateSchedWatchUI() {
   document.getElementById('sched-watch-fields').style.display =
     document.getElementById('sched-watch').checked ? '' : 'none';
 }
+function updateSchedKindUI() {
+  const kind = document.getElementById('sched-kind').value;
+  document.getElementById('sched-session-group').style.display = kind === 'shell' ? 'none' : '';
+  document.getElementById('sched-command-label').textContent = kind === 'shell' ? 'Shell command' : 'Command';
+  document.getElementById('sched-command').placeholder = kind === 'shell'
+    ? 'e.g. /bin/bash /path/to/script.sh' : 'e.g. /status or npm run build';
+  // Watch mode only works in tmux mode
+  const watchSection = document.getElementById('sched-watch');
+  if (watchSection && kind === 'shell') { watchSection.checked = false; updateSchedWatchUI(); }
+}
 function openSchedModal(editId) {
   _schedEditId = editId || null;
   const overlay = document.getElementById('sched-overlay');
@@ -18606,6 +18638,7 @@ function openSchedModal(editId) {
     const s = schedules.find(x => x.id === editId);
     if (s) {
       document.getElementById('sched-title').value = s.title;
+      document.getElementById('sched-kind').value = s.kind || 'tmux';
       sel.value = s.session;
       document.getElementById('sched-command').value = s.command;
       document.getElementById('sched-type').value = s.sched_type;
@@ -18620,6 +18653,7 @@ function openSchedModal(editId) {
     document.getElementById('sched-save-btn').textContent = 'Update';
   } else {
     document.getElementById('sched-title').value = '';
+    document.getElementById('sched-kind').value = 'tmux';
     document.getElementById('sched-command').value = '';
     document.getElementById('sched-expr').value = '';
     document.getElementById('sched-type').value = 'once';
@@ -18633,6 +18667,7 @@ function openSchedModal(editId) {
   updateSchedTypeUI();
   updateSchedRecUI();
   updateSchedWatchUI();
+  updateSchedKindUI();
   overlay.style.display = 'flex';
   requestAnimationFrame(() => overlay.classList.add('active'));
   setTimeout(() => document.getElementById('sched-title').focus(), 50);
@@ -18645,10 +18680,12 @@ function closeSchedModal() {
 }
 async function saveSchedModal() {
   const title = document.getElementById('sched-title').value.trim();
-  const session = document.getElementById('sched-session').value;
+  const kind = document.getElementById('sched-kind').value;
+  const session = kind === 'shell' ? '' : document.getElementById('sched-session').value;
   const command = document.getElementById('sched-command').value.trim();
   const stype = document.getElementById('sched-type').value;
-  if (!title || !session || !command) return;
+  if (!title || !command) return;
+  if (kind === 'tmux' && !session) return;
   let run_at, recurrence;
   if (stype === 'once') {
     run_at = document.getElementById('sched-run-at').value;
@@ -18670,7 +18707,7 @@ async function saveSchedModal() {
   const donePattern = document.getElementById('sched-done-pattern').value.trim();
   const doneAction = document.getElementById('sched-done-action').value;
   const watchTimeout = parseInt(document.getElementById('sched-watch-timeout').value) || 120;
-  const payload = { title, session, command, sched_type: stype, recurrence: recurrence || null, run_at,
+  const payload = { title, session, kind, command, sched_type: stype, recurrence: recurrence || null, run_at,
                     schedule_expr: schedExpr || null,
                     watch, done_pattern: donePattern || null, done_action: doneAction, watch_timeout: watchTimeout };
   const url = _schedEditId ? API + '/api/schedules/' + _schedEditId : API + '/api/schedules';
@@ -27538,6 +27575,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     "id": sid, "title": data.get("title", ""),
                     "session": data.get("session", ""),
                     "command": data.get("command", ""),
+                    "kind": data.get("kind") or "tmux",
                     "sched_type": stype,
                     "recurrence": data.get("recurrence"),
                     "run_at": run_at, "next_run": run_at,
@@ -27557,12 +27595,12 @@ class CCHandler(BaseHTTPRequestHandler):
                 else:
                     sched["next_run"] = _next_run_dt(sched) or run_at
                 db.execute(
-                    """INSERT INTO schedules (id,title,session,command,sched_type,recurrence,
+                    """INSERT INTO schedules (id,title,session,command,kind,sched_type,recurrence,
                        run_at,next_run,last_run,enabled,run_count,schedule_expr,
                        watch,watch_timeout,done_pattern,done_action,
                        created,updated,deleted)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (sched["id"], sched["title"], sched["session"], sched["command"],
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (sched["id"], sched["title"], sched["session"], sched["command"], sched["kind"],
                      sched["sched_type"], sched["recurrence"], sched["run_at"],
                      sched["next_run"], sched["last_run"], sched["enabled"],
                      sched["run_count"], sched["schedule_expr"],
@@ -27623,7 +27661,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 cols = _sched_cols(db)
                 sched = _sched_row_to_dict(row, cols)
                 body = self._read_body()
-                for k in ("title","session","command","sched_type","recurrence","run_at","enabled","schedule_expr",
+                for k in ("title","session","command","kind","sched_type","recurrence","run_at","enabled","schedule_expr",
                           "watch","watch_timeout","done_pattern","done_action"):
                     if k in body:
                         sched[k] = body[k]
@@ -27635,11 +27673,12 @@ class CCHandler(BaseHTTPRequestHandler):
                     sched["next_run"] = _next_run_dt(sched) or sched.get("run_at", "")
                 sched["updated"] = int(_time.time())
                 db.execute(
-                    """UPDATE schedules SET title=?,session=?,command=?,sched_type=?,recurrence=?,
+                    """UPDATE schedules SET title=?,session=?,command=?,kind=?,sched_type=?,recurrence=?,
                        run_at=?,next_run=?,enabled=?,schedule_expr=?,
                        watch=?,watch_timeout=?,done_pattern=?,done_action=?,
                        updated=? WHERE id=?""",
-                    (sched["title"], sched["session"], sched["command"], sched["sched_type"],
+                    (sched["title"], sched["session"], sched["command"], sched.get("kind") or "tmux",
+                     sched["sched_type"],
                      sched["recurrence"], sched["run_at"], sched["next_run"],
                      sched["enabled"], sched.get("schedule_expr"),
                      int(sched.get("watch") or 0), int(sched.get("watch_timeout") or 120),
