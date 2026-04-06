@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Definitive Guide to Agentmaxxing: Running Parallel AI Coding Agents at Scale — amux</title>
+  <script>(function(){var t=localStorage.getItem('theme');if(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.setAttribute('data-theme','dark')})()</script>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="The complete guide to agentmaxxing — running 5, 10, or 50+ AI coding agents in parallel. Task decomposition, git worktree isolation, fleet monitoring, cost optimization, and real-world workflows.">
+  <meta name="keywords" content="agentmaxxing, parallel ai coding agents, run multiple claude code agents, ai agent fleet, agentmaxxing guide, parallel coding agents 2026, multiple ai agents simultaneously, ai coding at scale, vibe coding at scale, agent orchestration">
+  <link rel="canonical" href="https://amux.io/guides/agentmaxxing/">
+  <meta property="og:title" content="The Definitive Guide to Agentmaxxing — amux">
+  <meta property="og:description" content="Run 5, 10, or 50+ AI coding agents in parallel. The complete playbook for task splitting, isolation, monitoring, and scaling.">
+  <meta property="og:url" content="https://amux.io/guides/agentmaxxing/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Agentmaxxing","item":"https://amux.io/guides/agentmaxxing/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"The Definitive Guide to Agentmaxxing: Running Parallel AI Coding Agents at Scale","description":"The complete guide to agentmaxxing — running 5, 10, or 50+ AI coding agents in parallel with task decomposition, git isolation, fleet monitoring, and cost optimization.","url":"https://amux.io/guides/agentmaxxing/","datePublished":"2026-04-06","dateModified":"2026-04-06","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Run Multiple AI Coding Agents in Parallel (Agentmaxxing)","description":"Step-by-step guide to running parallel AI coding agents with proper isolation, monitoring, and task coordination.","step":[{"@type":"HowToStep","name":"Decompose your backlog","text":"Split work into atomic, independent tasks that can run without coordination. Each task should take 10-45 minutes for a single agent."},{"@type":"HowToStep","name":"Set up git isolation","text":"Create a separate git worktree or branch per agent so agents never write to the same files simultaneously."},{"@type":"HowToStep","name":"Register and launch agents","text":"Register each agent as an amux session with its own working directory, model preference, and CLAUDE.md rules."},{"@type":"HowToStep","name":"Monitor the fleet","text":"Use the amux web dashboard or mobile PWA to watch agent status, token spend, and output in real time."},{"@type":"HowToStep","name":"Review and merge","text":"Triage output from each agent — quick-accept clean PRs, flag issues, and merge completed work."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is agentmaxxing?","acceptedAnswer":{"@type":"Answer","text":"Agentmaxxing is the practice of running multiple AI coding agents in parallel to multiply developer throughput. Instead of working with one AI agent sequentially, you launch 5, 10, or 50+ agents simultaneously — each working on a separate task in an isolated git branch. The term emerged in early 2026 as CLI-based AI coding agents (Claude Code, Codex CLI, Gemini CLI) became reliable enough to run unsupervised."}},{"@type":"Question","name":"How many AI coding agents can I run in parallel?","acceptedAnswer":{"@type":"Answer","text":"On a laptop (16GB RAM): 5-7 agents comfortably. On a workstation (32GB+ RAM): 10-15 agents. On a cloud VM (4+ cores, 16GB RAM): 20-50+ agents. The bottleneck is usually API rate limits, not local compute — each agent is just a tmux session running a CLI tool. Stagger agent starts by 10-30 seconds to avoid hitting rate limits simultaneously."}},{"@type":"Question","name":"Do I need a special tool to run parallel AI agents?","acceptedAnswer":{"@type":"Answer","text":"You can start with bare tmux and git worktrees. But an orchestrator like amux adds self-healing (auto-restart crashed agents), fleet monitoring (web dashboard, mobile PWA), atomic task claiming (no duplicate work), token spend tracking, and agent-to-agent communication. These become essential once you run more than 3-4 agents."}},{"@type":"Question","name":"What tasks work best for agentmaxxing?","acceptedAnswer":{"@type":"Answer","text":"Tasks that are atomic, independently verifiable, and don't require cross-file coordination: unit tests for specific modules, single-file migrations, bug fixes with clear reproduction steps, API endpoint implementations, documentation for specific components, dependency upgrades for individual packages. Avoid tasks that touch shared state, require subjective judgment, or have unbounded scope."}},{"@type":"Question","name":"How much does agentmaxxing cost?","acceptedAnswer":{"@type":"Answer","text":"With Claude Code Max plan ($200/month): unlimited usage — 10 agents cost the same as 1. On API pricing: $0.50-2/agent-hour for Sonnet, $5-15/agent-hour for Opus. A typical 2-hour sprint with 10 agents on mixed models costs $20-50 on API pricing, or $0 marginal on Max plan. The Max plan is overwhelmingly the best value for agentmaxxing."}},{"@type":"Question","name":"Is agentmaxxing just vibe coding with more agents?","acceptedAnswer":{"@type":"Answer","text":"Vibe coding is a mindset — describing what you want in natural language and letting AI write it. Agentmaxxing is a workflow — running multiple agents in parallel with proper isolation, task decomposition, and monitoring. You can agentmax with vibe coding prompts or with precise engineering specs. The key difference is that agentmaxxing requires upfront planning (task splitting, branch isolation, guardrails) that solo vibe coding does not."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"><span class="icon-sun">&#9788;</span><span class="icon-moon">&#9790;</span></button>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">sign up</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Agentmaxxing</span></div>
+    <h1>The Definitive Guide to Agentmaxxing</h1>
+    <p class="subtitle">Run 5, 10, or 50+ AI coding agents in parallel. The complete playbook for task splitting, git isolation, fleet monitoring, cost optimization, and scaling beyond a single machine.</p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#what" style="color:var(--dim);text-decoration:none;">What Is Agentmaxxing?</a></li>
+        <li><a href="#why-now" style="color:var(--dim);text-decoration:none;">Why Agentmaxxing Works Now (and Didn't Before)</a></li>
+        <li><a href="#mental-model" style="color:var(--dim);text-decoration:none;">The Mental Model: Parallel Developers, Not Parallel Threads</a></li>
+        <li><a href="#task-splitting" style="color:var(--dim);text-decoration:none;">Task Splitting: The Skill That Makes or Breaks Everything</a></li>
+        <li><a href="#git-isolation" style="color:var(--dim);text-decoration:none;">Git Isolation: Worktrees, Branches, and Conflict Prevention</a></li>
+        <li><a href="#setup" style="color:var(--dim);text-decoration:none;">Setting Up Your First Agent Fleet</a></li>
+        <li><a href="#monitoring" style="color:var(--dim);text-decoration:none;">Fleet Monitoring and Observability</a></li>
+        <li><a href="#scaling" style="color:var(--dim);text-decoration:none;">Scaling: From 5 Agents to 50+</a></li>
+        <li><a href="#cost" style="color:var(--dim);text-decoration:none;">Cost Math: What Agentmaxxing Actually Costs</a></li>
+        <li><a href="#workflows" style="color:var(--dim);text-decoration:none;">7 Real-World Agentmaxxing Workflows</a></li>
+        <li><a href="#antipatterns" style="color:var(--dim);text-decoration:none;">Anti-Patterns: When NOT to Agentmax</a></li>
+        <li><a href="#tools" style="color:var(--dim);text-decoration:none;">Tool Comparison: amux vs dmux vs Claude Agent Teams vs Others</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="what">What Is Agentmaxxing?</h2>
+    <p><strong>Agentmaxxing</strong> is the practice of running multiple AI coding agents in parallel to multiply developer throughput. Instead of working with one Claude Code session sequentially, you launch 5, 10, or 50+ agents simultaneously &mdash; each working on a separate task in an isolated git branch.</p>
+    <p>The term emerged in early 2026 as CLI-based AI coding agents became reliable enough to run unsupervised. The core insight: AI agents are bottlenecked by API latency and sequential reasoning, not local compute. A single agent waits for API responses, types out diffs, and runs tests one-at-a-time. But five agents can do five tasks in the time one does one &mdash; with near-linear throughput scaling.</p>
+    <pre><code>One agent:     ████████████████████████████████████  2 hours, 1 task done
+
+Five agents:   ████████████████████████████████████  2 hours, 5 tasks done
+               ████████████████████████████████████
+               ████████████████████████████████████
+               ████████████████████████████████████
+               ████████████████████████████████████</code></pre>
+    <p>This is not a theoretical speedup. Developers running 10 agents on a standard codebase routinely report completing a full sprint's worth of tasks in 2&ndash;3 hours. The constraint shifts from <em>"how fast can my AI write code"</em> to <em>"how well can I decompose work."</em></p>
+
+    <h2 id="why-now">Why Agentmaxxing Works Now (and Didn't Before)</h2>
+    <p>Running parallel agents is not a new idea. What changed in 2025&ndash;2026 to make it practical?</p>
+
+    <h3>1. CLI agents got good enough</h3>
+    <p>Claude Code, Codex CLI, and Gemini CLI can now complete multi-file tasks end-to-end: read code, plan changes, write diffs, run tests, fix failures, and commit. A year ago they would lose context, hallucinate file paths, or produce code that looked right but failed silently. The 2025&ndash;2026 generation of models (Claude Opus 4, Sonnet 4, GPT-4.1) reduced these failure modes by an order of magnitude.</p>
+
+    <h3>2. Git worktrees solved isolation</h3>
+    <p><code>git worktree</code> lets you check out multiple branches from the same repo simultaneously, each in its own directory. This means 10 agents can work on 10 branches without file-level conflicts &mdash; and merging is standard git. Before worktrees were widely adopted for this pattern, agents would step on each other's changes constantly.</p>
+    <pre><code># Create isolated worktrees for each agent
+git worktree add ../myproject-agent-1 -b agent/add-tests
+git worktree add ../myproject-agent-2 -b agent/fix-auth-bug
+git worktree add ../myproject-agent-3 -b agent/migrate-user-service
+# Each agent gets its own full copy of the repo</code></pre>
+
+    <h3>3. Orchestration tools matured</h3>
+    <p>Raw tmux works for 2&ndash;3 agents. Beyond that, you need lifecycle management: restart crashed agents, prevent duplicate task claiming, track token spend, and monitor from your phone. Tools like amux, dmux, NTM, and cmux now provide this layer.</p>
+
+    <h3>4. Flat-rate pricing made it economical</h3>
+    <p>Claude Code's Max plan ($100&ndash;200/month) gives unlimited usage. Running 10 agents costs the same as running 1. This eliminated the biggest economic barrier &mdash; previously, a 10-agent fleet on API pricing could cost $50&ndash;100/hour.</p>
+
+    <h2 id="mental-model">The Mental Model: Parallel Developers, Not Parallel Threads</h2>
+    <p>The most common agentmaxxing mistake is treating agents like threads in a parallel program &mdash; splitting one task across multiple agents and having them coordinate. This fails. AI agents have no shared memory, can't lock files, and communicate slowly.</p>
+    <p>The right mental model: <strong>each agent is an independent junior developer</strong> who has been given a well-scoped ticket, a fresh git branch, and clear instructions. They don't talk to each other. They don't share files. They produce a PR when they're done.</p>
+
+    <table style="width:100%;border-collapse:collapse;font-size:0.88rem;margin:1.5rem 0;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left;padding:0.6rem;color:var(--green);">Think of agents as...</th>
+          <th style="text-align:left;padding:0.6rem;color:var(--red);">NOT as...</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Independent contractors with separate desks</td>
+          <td style="padding:0.6rem;">Threads sharing memory in a concurrent program</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Parallel assembly lines, each building a different part</td>
+          <td style="padding:0.6rem;">A single assembly line that moves faster</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Five developers in five rooms with five copies of the repo</td>
+          <td style="padding:0.6rem;">Five pairs of hands on one keyboard</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem;">A work queue drained by independent workers</td>
+          <td style="padding:0.6rem;">A single task split into concurrent subtasks</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>This mental model directly informs how you split tasks, set up branches, and review output. If you remember nothing else from this guide: <strong>agents work on separate things, never the same thing</strong>.</p>
+
+    <h2 id="task-splitting">Task Splitting: The Skill That Makes or Breaks Everything</h2>
+    <p>Agentmaxxing throughput is a function of task quality, not agent count. Ten agents with bad tasks will produce ten messes. Five agents with great tasks will produce five clean PRs.</p>
+
+    <h3>The three rules of agent-ready tasks</h3>
+    <ol>
+      <li><strong>Atomic:</strong> One conceptual change. If you'd open two tickets for it, split it into two tasks.</li>
+      <li><strong>Independent:</strong> No task depends on another task's output. All agents can start simultaneously.</li>
+      <li><strong>Verifiable:</strong> You can confirm correctness in under 2 minutes (tests pass, diff looks right, endpoint responds correctly).</li>
+    </ol>
+
+    <h3>Good vs. bad task splits</h3>
+    <table style="width:100%;border-collapse:collapse;font-size:0.88rem;margin:1rem 0;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left;padding:0.6rem;color:var(--green);">Agentmaxxable (atomic, independent)</th>
+          <th style="text-align:left;padding:0.6rem;color:var(--red);">Not agentmaxxable (coupled, vague)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">"Add unit tests for <code>auth/login.py</code>"</td>
+          <td style="padding:0.6rem;">"Improve test coverage across the project"</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">"Migrate <code>UserService</code> from JS to TS"</td>
+          <td style="padding:0.6rem;">"Convert the codebase to TypeScript"</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">"Add rate limiting to <code>POST /api/search</code>"</td>
+          <td style="padding:0.6rem;">"Make the API more secure"</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">"Upgrade <code>axios</code> v0.21 &rarr; v1.6, fix breaking changes"</td>
+          <td style="padding:0.6rem;">"Update all dependencies"</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">"Write OpenAPI docs for <code>/api/users/*</code>"</td>
+          <td style="padding:0.6rem;">"Document the API"</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem;">"Fix bug #142: login form submits twice on slow connections"</td>
+          <td style="padding:0.6rem;">"Fix the bugs in the login flow"</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>The splitting algorithm</h3>
+    <p>When you have a big piece of work, split it by these boundaries (in priority order):</p>
+    <ol>
+      <li><strong>By file/module:</strong> Each agent touches different files. Zero merge conflicts.</li>
+      <li><strong>By feature boundary:</strong> Each agent builds a different endpoint, component, or service.</li>
+      <li><strong>By layer:</strong> One agent writes the backend, another writes tests, another writes docs. (Only works if the backend is already committed.)</li>
+    </ol>
+    <p>Never split by: lines within a file, tightly coupled classes, sequential pipeline steps, or anything that requires coordination during execution.</p>
+
+    <h3>The task spec format</h3>
+    <p>Agents running in parallel can't ask you clarifying questions. Write task specs like you're writing a ticket for a contractor in a different timezone:</p>
+    <pre><code>## Task: Add rate limiting to the public API
+
+### Context
+The /api/v2/* endpoints are public and have no rate limiting.
+We've seen scrapers hitting /api/v2/search at 100+ req/sec.
+
+### Requirements
+- Add rate limiting middleware to all /api/v2/* routes
+- Limit: 60 requests per minute per IP
+- Return 429 with Retry-After header when exceeded
+- Use in-memory store (no Redis dependency)
+- Add tests for the rate limiter
+
+### Files to modify
+- src/middleware/rateLimit.ts (create)
+- src/routes/v2/index.ts (add middleware)
+- tests/middleware/rateLimit.test.ts (create)
+
+### Do NOT
+- Modify any v1 routes
+- Add external dependencies
+- Change the response format of existing endpoints</code></pre>
+    <p>The "Do NOT" section is critical. Agents will expand scope if you don't fence them in. Explicit boundaries prevent drift.</p>
+
+    <h2 id="git-isolation">Git Isolation: Worktrees, Branches, and Conflict Prevention</h2>
+    <p>When 10 agents edit code simultaneously, git isolation is not optional &mdash; it's the foundation. There are three approaches, in order of reliability:</p>
+
+    <h3>Option 1: Git worktrees (recommended)</h3>
+    <p>Each agent gets a physical copy of the repo at its own branch. No possibility of file-level conflict during execution.</p>
+    <pre><code># Set up 5 worktrees for a sprint
+for i in $(seq 1 5); do
+  git worktree add ../myproject-agent-$i -b agent/task-$i
+done
+
+# Register each as an amux session
+for i in $(seq 1 5); do
+  amux register agent-$i --dir ../myproject-agent-$i --yolo
+done
+
+# Start them all
+amux start --all</code></pre>
+    <p><strong>Pros:</strong> True filesystem isolation. Agents can't accidentally modify each other's files. Standard git merge for combining work.<br>
+    <strong>Cons:</strong> Uses disk space (though git shares objects internally). Need to clean up worktrees after merging.</p>
+
+    <h3>Option 2: Separate clones</h3>
+    <p>Full independent clones of the repo. Maximum isolation but uses more disk and doesn't share git objects.</p>
+    <pre><code>for i in $(seq 1 5); do
+  git clone myproject ../myproject-agent-$i
+  cd ../myproject-agent-$i && git checkout -b agent/task-$i
+done</code></pre>
+    <p><strong>Use when:</strong> worktrees are insufficient (e.g., different agents need different submodule states) or you're running on a cloud VM with cheap disk.</p>
+
+    <h3>Option 3: Branch-only (risky)</h3>
+    <p>All agents share one repo directory but work on different branches. This only works if agents touch completely different files. One overlap and you get merge hell.</p>
+    <p><strong>Not recommended for more than 2&ndash;3 agents.</strong></p>
+
+    <h3>Merge strategy</h3>
+    <p>After agents finish:</p>
+    <pre><code># Review each branch
+for i in $(seq 1 5); do
+  echo "=== Agent $i ==="
+  git log main..agent/task-$i --oneline
+  git diff main..agent/task-$i --stat
+done
+
+# Merge clean PRs to main one at a time
+git checkout main
+git merge agent/task-1  # tests pass? ✓
+git merge agent/task-3  # tests pass? ✓
+git merge agent/task-2  # conflict? resolve manually
+
+# Clean up
+git worktree remove ../myproject-agent-1
+git branch -d agent/task-1</code></pre>
+
+    <h2 id="setup">Setting Up Your First Agent Fleet</h2>
+    <p>Let's walk through launching 5 parallel agents on a real codebase. This example uses amux, but the principles apply to any orchestrator.</p>
+
+    <h3>Step 1: Install</h3>
+    <pre><code>git clone https://github.com/mixpeek/amux && cd amux
+./install.sh
+# Requires: Python 3.8+, tmux, Claude Code CLI</code></pre>
+
+    <h3>Step 2: Create worktrees and register sessions</h3>
+    <pre><code># From your project root
+cd ~/Dev/myproject
+
+# Create 5 isolated worktrees
+for i in $(seq 1 5); do
+  git worktree add ../myproject-w$i -b agent/sprint-$i
+  amux register worker-$i --dir ../myproject-w$i --yolo
+done</code></pre>
+
+    <h3>Step 3: Queue tasks on the board</h3>
+    <pre><code># Add tasks — each will be claimed by an agent atomically
+amux board add "Add unit tests for auth/login.py — target 90% coverage"
+amux board add "Migrate UserService from JavaScript to TypeScript"
+amux board add "Fix bug #142: double-submit on slow connections"
+amux board add "Add rate limiting to POST /api/v2/search"
+amux board add "Write OpenAPI spec for /api/users endpoints"</code></pre>
+
+    <h3>Step 4: Configure CLAUDE.md guardrails</h3>
+    <p>Each worktree gets its own CLAUDE.md with task-specific instructions and safety boundaries:</p>
+    <pre><code>cat > ../myproject-w1/CLAUDE.md << 'EOF'
+# Agent Instructions
+
+## Your task
+Add unit tests for auth/login.py — target 90% line coverage.
+
+## Rules
+- Only modify files under tests/auth/
+- Run pytest after every change
+- Commit when tests pass with a descriptive message
+- Do NOT modify any source code, only test code
+
+## When you're done
+Run `amux board done $TASK_ID` to mark your task complete.
+EOF</code></pre>
+
+    <h3>Step 5: Launch</h3>
+    <pre><code># Start all agents
+amux start --all
+
+# Open the dashboard to monitor
+amux serve  # → https://localhost:8822</code></pre>
+    <p>Each agent picks up a task from the board, works on it independently, and marks it done when finished. You watch the dashboard, review PRs, and merge.</p>
+
+    <h2 id="monitoring">Fleet Monitoring and Observability</h2>
+    <p>Running one agent is like pair programming. Running ten is like managing a team. You need observability.</p>
+
+    <h3>The amux dashboard</h3>
+    <p>The web dashboard (<code>https://localhost:8822</code>) shows all agents at a glance:</p>
+    <ul>
+      <li><strong>Status:</strong> running, idle, crashed, or stuck (no output for N minutes)</li>
+      <li><strong>Token spend:</strong> per-session and cumulative cost tracking</li>
+      <li><strong>Last output:</strong> scrollable peek into each agent's recent terminal output</li>
+      <li><strong>Board:</strong> kanban view of tasks (todo &rarr; doing &rarr; done)</li>
+      <li><strong>Send bar:</strong> type a message to any agent directly from the dashboard</li>
+    </ul>
+
+    <h3>Mobile monitoring via PWA</h3>
+    <p>Install the dashboard as a PWA on your phone. Check agent status from anywhere &mdash; during lunch, in a meeting, or from bed at 2am. See the <a href="/guides/mobile-management-pwa/">Mobile Management guide</a> for setup.</p>
+
+    <h3>Key metrics to watch</h3>
+    <table style="width:100%;border-collapse:collapse;font-size:0.88rem;margin:1rem 0;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left;padding:0.6rem;">Metric</th>
+          <th style="text-align:left;padding:0.6rem;">Healthy</th>
+          <th style="text-align:left;padding:0.6rem;">Investigate</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Output freshness</td>
+          <td style="padding:0.6rem;">New output every 30&ndash;120 seconds</td>
+          <td style="padding:0.6rem;">No output for 5+ minutes</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Token burn rate</td>
+          <td style="padding:0.6rem;">Steady, proportional to task complexity</td>
+          <td style="padding:0.6rem;">Spiking (likely in a retry loop)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Task board movement</td>
+          <td style="padding:0.6rem;">Tasks moving from doing &rarr; done</td>
+          <td style="padding:0.6rem;">Tasks stuck in "doing" for 30+ minutes</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem;">Git commits</td>
+          <td style="padding:0.6rem;">Regular commits every 5&ndash;15 minutes</td>
+          <td style="padding:0.6rem;">No commits for 20+ minutes</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Self-healing watchdog</h3>
+    <p>amux's watchdog automatically handles the common failure modes:</p>
+    <ul>
+      <li><strong>Crash:</strong> Agent process dies &rarr; auto-restart, replay last message</li>
+      <li><strong>Context overflow:</strong> Hit context limit &rarr; auto-compact and continue</li>
+      <li><strong>Stuck:</strong> No output for N minutes &rarr; send a nudge message, or restart</li>
+      <li><strong>Rate limit:</strong> API returns 429 &rarr; back off and retry (handled by the CLI)</li>
+    </ul>
+    <p>See the <a href="/guides/self-healing-configuration/">Self-Healing Configuration guide</a> for detailed setup.</p>
+
+    <h2 id="scaling">Scaling: From 5 Agents to 50+</h2>
+    <p>Scaling agent count introduces new challenges at each tier:</p>
+
+    <table style="width:100%;border-collapse:collapse;font-size:0.88rem;margin:1.5rem 0;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left;padding:0.6rem;">Tier</th>
+          <th style="text-align:left;padding:0.6rem;">Agent Count</th>
+          <th style="text-align:left;padding:0.6rem;">Hardware</th>
+          <th style="text-align:left;padding:0.6rem;">Key Challenge</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;"><strong>Starter</strong></td>
+          <td style="padding:0.6rem;">2&ndash;5</td>
+          <td style="padding:0.6rem;">Laptop (16GB RAM)</td>
+          <td style="padding:0.6rem;">Task quality &mdash; bad tasks waste agents</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;"><strong>Sprint</strong></td>
+          <td style="padding:0.6rem;">5&ndash;15</td>
+          <td style="padding:0.6rem;">Workstation (32GB+ RAM)</td>
+          <td style="padding:0.6rem;">Merge conflicts &mdash; need worktree discipline</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;"><strong>Fleet</strong></td>
+          <td style="padding:0.6rem;">15&ndash;50</td>
+          <td style="padding:0.6rem;">Cloud VM (4+ cores, 16GB)</td>
+          <td style="padding:0.6rem;">Rate limits &mdash; stagger starts, use multiple API keys</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem;"><strong>Factory</strong></td>
+          <td style="padding:0.6rem;">50+</td>
+          <td style="padding:0.6rem;">Multiple VMs or dedicated server</td>
+          <td style="padding:0.6rem;">Review bandwidth &mdash; you become the bottleneck</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Laptop agentmaxxing (2&ndash;7 agents)</h3>
+    <p>Most developers start here. Each Claude Code session uses ~200&ndash;500MB RAM. A 16GB laptop runs 5&ndash;7 agents comfortably with headroom for your IDE and browser.</p>
+    <pre><code># Check resource headroom
+free -h  # or `top` on macOS
+# Each agent ≈ 300MB RSS (node process + tmux pane)</code></pre>
+
+    <h3>Cloud agentmaxxing (15&ndash;50+ agents)</h3>
+    <p>For serious fleet work, run agents on a cloud VM. A 4-core, 16GB RAM VM (e2-standard-4 on GCP, m5.xlarge on AWS) handles 20&ndash;50 agents easily. Access the dashboard remotely via Tailscale or SSH tunnel.</p>
+    <pre><code># On a cloud VM
+amux serve --host 0.0.0.0  # or use Tailscale for secure access
+
+# From your laptop
+ssh -L 8822:localhost:8822 user@your-vm
+# Open https://localhost:8822 locally</code></pre>
+    <p>See the <a href="/guides/scaling-to-50-agents/">Scaling to 50+ Agents</a> and <a href="/guides/remote-access-tailscale/">Remote Access with Tailscale</a> guides for detailed setup.</p>
+
+    <h3>Staggering agent starts</h3>
+    <p>Launching 20 agents simultaneously will hit API rate limits. Stagger starts by 10&ndash;30 seconds:</p>
+    <pre><code># Staggered launch
+for session in $(amux list --names); do
+  amux start $session
+  sleep 15
+done</code></pre>
+
+    <h2 id="cost">Cost Math: What Agentmaxxing Actually Costs</h2>
+    <p>This is the section everyone skips to. Here are real numbers.</p>
+
+    <table style="width:100%;border-collapse:collapse;font-size:0.88rem;margin:1.5rem 0;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left;padding:0.6rem;">Plan</th>
+          <th style="text-align:left;padding:0.6rem;">Cost per Agent-Hour</th>
+          <th style="text-align:left;padding:0.6rem;">10 Agents &times; 2 Hours</th>
+          <th style="text-align:left;padding:0.6rem;">10 Agents &times; 8 Hours</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;"><strong>Claude Max ($200/mo)</strong></td>
+          <td style="padding:0.6rem;">$0 marginal</td>
+          <td style="padding:0.6rem;">$0 marginal</td>
+          <td style="padding:0.6rem;">$0 marginal</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">API &mdash; Sonnet</td>
+          <td style="padding:0.6rem;">$0.50&ndash;2.00</td>
+          <td style="padding:0.6rem;">$10&ndash;40</td>
+          <td style="padding:0.6rem;">$40&ndash;160</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">API &mdash; Opus</td>
+          <td style="padding:0.6rem;">$5&ndash;15</td>
+          <td style="padding:0.6rem;">$100&ndash;300</td>
+          <td style="padding:0.6rem;">$400&ndash;1,200</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem;">API &mdash; Haiku</td>
+          <td style="padding:0.6rem;">$0.05&ndash;0.20</td>
+          <td style="padding:0.6rem;">$1&ndash;4</td>
+          <td style="padding:0.6rem;">$4&ndash;16</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p><strong>The Max plan is overwhelmingly the best value for agentmaxxing.</strong> If you run more than 5 agents regularly, the flat rate pays for itself in a single sprint. On API pricing, use Sonnet for routine tasks and reserve Opus for complex ones &mdash; the 10x price difference matters at scale.</p>
+
+    <h3>Optimizing cost on API pricing</h3>
+    <ul>
+      <li><strong>Right-size models:</strong> Haiku for docs/tests, Sonnet for features/bugs, Opus only for architecture-level tasks</li>
+      <li><strong>Set cost caps:</strong> Configure amux to kill sessions that exceed a per-task budget</li>
+      <li><strong>Use prompt caching:</strong> Large CLAUDE.md files and shared context benefit from prompt caching on the API</li>
+      <li><strong>Monitor burn rate:</strong> The amux dashboard shows real-time per-session cost &mdash; catch runaway agents early</li>
+    </ul>
+    <p>See the <a href="/guides/cost-optimization/">Cost Optimization guide</a> and <a href="/guides/token-spend-tracking/">Token Spend Tracking guide</a> for more detail.</p>
+
+    <h2 id="workflows">7 Real-World Agentmaxxing Workflows</h2>
+
+    <h3>1. Test suite expansion sprint</h3>
+    <p>Goal: Go from 40% to 80% coverage in an afternoon.</p>
+    <pre><code># Split by module
+amux board add "Tests for auth/ — target 90% coverage"
+amux board add "Tests for api/users/ — target 85% coverage"
+amux board add "Tests for api/orders/ — target 85% coverage"
+amux board add "Tests for payments/ — target 90% coverage"
+amux board add "Tests for notifications/ — target 80% coverage"
+# 5 agents, 2 hours → 5 modules covered</code></pre>
+
+    <h3>2. Dependency upgrade blitz</h3>
+    <p>Goal: Upgrade 10 major dependencies that have been deferred for months.</p>
+    <pre><code># One agent per dependency
+amux board add "Upgrade react 17→18, fix breaking changes"
+amux board add "Upgrade axios 0.21→1.6, update all callsites"
+amux board add "Upgrade jest 27→29, fix config and snapshots"
+amux board add "Upgrade webpack 4→5, update plugins/loaders"
+amux board add "Upgrade typescript 4.9→5.4, fix new strict errors"</code></pre>
+
+    <h3>3. API documentation generation</h3>
+    <p>Goal: Generate OpenAPI specs for all endpoints.</p>
+    <pre><code># Split by API domain
+amux board add "Write OpenAPI spec for /api/users/* endpoints"
+amux board add "Write OpenAPI spec for /api/orders/* endpoints"
+amux board add "Write OpenAPI spec for /api/products/* endpoints"
+amux board add "Write OpenAPI spec for /api/auth/* endpoints"</code></pre>
+
+    <h3>4. Bug fix queue drain</h3>
+    <p>Goal: Clear 15 bugs from the backlog in one sitting.</p>
+    <pre><code># Each agent gets one bug
+for bug_id in 101 102 103 104 105 106 107 108 109 110; do
+  amux board add "Fix bug #$bug_id — see GitHub issue for repro steps"
+done
+# 10 agents, 10 bugs → most done in 1-2 hours</code></pre>
+
+    <h3>5. JavaScript to TypeScript migration</h3>
+    <p>Goal: Migrate a 50-file JS project to TypeScript.</p>
+    <pre><code># Split by directory
+amux board add "Migrate src/components/ to TypeScript (10 files)"
+amux board add "Migrate src/hooks/ to TypeScript (8 files)"
+amux board add "Migrate src/utils/ to TypeScript (12 files)"
+amux board add "Migrate src/api/ to TypeScript (6 files)"
+amux board add "Migrate src/pages/ to TypeScript (14 files)"</code></pre>
+
+    <h3>6. Multi-platform feature implementation</h3>
+    <p>Goal: Build the same feature across web, iOS, and Android simultaneously.</p>
+    <pre><code>amux board add "Implement dark mode toggle — React web app"
+amux board add "Implement dark mode toggle — iOS SwiftUI"
+amux board add "Implement dark mode toggle — Android Jetpack Compose"
+# 3 agents, 3 platforms, same spec → all done in parallel</code></pre>
+
+    <h3>7. Codebase-wide refactor</h3>
+    <p>Goal: Rename a core abstraction across the entire codebase.</p>
+    <pre><code># Split by layer to avoid conflicts
+amux board add "Rename UserManager→AccountService in src/services/"
+amux board add "Rename UserManager→AccountService in src/api/"
+amux board add "Rename UserManager→AccountService in tests/"
+amux board add "Update all imports referencing UserManager"
+amux board add "Update documentation references to UserManager"</code></pre>
+
+    <h2 id="antipatterns">Anti-Patterns: When NOT to Agentmax</h2>
+    <p>Agentmaxxing is not always the answer. These patterns waste tokens and produce bad output:</p>
+
+    <h3>1. Tasks that take less than 10 minutes</h3>
+    <p>The overhead of setting up a worktree, writing a task spec, and reviewing the PR exceeds the time saved. Just do it yourself in a single agent session.</p>
+
+    <h3>2. Tightly coupled changes</h3>
+    <p>If task B depends on task A's output (e.g., "build the API" then "write the frontend that calls it"), you can't parallelize them. Run them sequentially in one agent.</p>
+
+    <h3>3. Subjective or design-heavy work</h3>
+    <p>"Design a beautiful landing page" or "architect the authentication system" require iterative human judgment. Use a single interactive session where you can give feedback in real time.</p>
+
+    <h3>4. Production-critical systems without tests</h3>
+    <p>If there are no tests to validate agent output, you're trusting the agent to be correct without verification. Add tests first (great agentmaxxing task!), then parallelize the feature work.</p>
+
+    <h3>5. "Fix everything" mega-tasks</h3>
+    <p>Vague, unbounded tasks cause agents to wander. "Improve performance" will result in random, possibly harmful changes. Scope tightly or don't parallelize.</p>
+
+    <h3>The breakeven rule</h3>
+    <p>Agentmaxxing pays off when: <code>(task_time &times; task_count) > setup_overhead + review_time</code>. For most setups, this means the total sequential work needs to be at least 30&ndash;60 minutes. Below that, a single agent is faster.</p>
+
+    <h2 id="tools">Tool Comparison: amux vs dmux vs Claude Agent Teams vs Others</h2>
+    <p>The parallel agent orchestrator space has grown rapidly. Here's an honest comparison of the major tools as of April 2026:</p>
+
+    <table style="width:100%;border-collapse:collapse;font-size:0.82rem;margin:1.5rem 0;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left;padding:0.6rem;">Feature</th>
+          <th style="text-align:left;padding:0.6rem;">amux</th>
+          <th style="text-align:left;padding:0.6rem;">dmux</th>
+          <th style="text-align:left;padding:0.6rem;">Claude Agent Teams</th>
+          <th style="text-align:left;padding:0.6rem;">cmux</th>
+          <th style="text-align:left;padding:0.6rem;">NTM</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Web dashboard</td>
+          <td style="padding:0.6rem;color:var(--green);">Yes (+ mobile PWA)</td>
+          <td style="padding:0.6rem;">No</td>
+          <td style="padding:0.6rem;">No</td>
+          <td style="padding:0.6rem;">No</td>
+          <td style="padding:0.6rem;">TUI only</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Self-healing watchdog</td>
+          <td style="padding:0.6rem;color:var(--green);">Yes</td>
+          <td style="padding:0.6rem;">No</td>
+          <td style="padding:0.6rem;">Partial</td>
+          <td style="padding:0.6rem;">No</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Task board / coordination</td>
+          <td style="padding:0.6rem;color:var(--green);">SQLite kanban</td>
+          <td style="padding:0.6rem;">No</td>
+          <td style="padding:0.6rem;">Built-in delegation</td>
+          <td style="padding:0.6rem;">No</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Git worktree auto-setup</td>
+          <td style="padding:0.6rem;">Manual</td>
+          <td style="padding:0.6rem;color:var(--green);">Automatic</td>
+          <td style="padding:0.6rem;color:var(--green);">Automatic</td>
+          <td style="padding:0.6rem;">Manual</td>
+          <td style="padding:0.6rem;">Manual</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Token/cost tracking</td>
+          <td style="padding:0.6rem;color:var(--green);">Yes (per session)</td>
+          <td style="padding:0.6rem;">No</td>
+          <td style="padding:0.6rem;">No</td>
+          <td style="padding:0.6rem;">No</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Multi-agent CLI support</td>
+          <td style="padding:0.6rem;">Claude Code</td>
+          <td style="padding:0.6rem;color:var(--green);">Claude, Codex, Gemini, Aider</td>
+          <td style="padding:0.6rem;">Claude Code only</td>
+          <td style="padding:0.6rem;">Claude Code</td>
+          <td style="padding:0.6rem;">Claude Code</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">REST API</td>
+          <td style="padding:0.6rem;color:var(--green);">Full API</td>
+          <td style="padding:0.6rem;">No</td>
+          <td style="padding:0.6rem;">No</td>
+          <td style="padding:0.6rem;">No</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Remote access</td>
+          <td style="padding:0.6rem;color:var(--green);">Web + Tailscale</td>
+          <td style="padding:0.6rem;">SSH only</td>
+          <td style="padding:0.6rem;">Local only</td>
+          <td style="padding:0.6rem;">Local only</td>
+          <td style="padding:0.6rem;">SSH only</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Platform</td>
+          <td style="padding:0.6rem;">macOS, Linux</td>
+          <td style="padding:0.6rem;">macOS, Linux</td>
+          <td style="padding:0.6rem;">macOS, Linux, Windows</td>
+          <td style="padding:0.6rem;">macOS only</td>
+          <td style="padding:0.6rem;">macOS, Linux</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem;">Open source</td>
+          <td style="padding:0.6rem;color:var(--green);">MIT</td>
+          <td style="padding:0.6rem;color:var(--green);">MIT</td>
+          <td style="padding:0.6rem;">Built into Claude Code</td>
+          <td style="padding:0.6rem;color:var(--green);">MIT</td>
+          <td style="padding:0.6rem;color:var(--green);">MIT</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p><strong>Choose amux if:</strong> you want unattended operation with self-healing, a web dashboard you can access from your phone, token cost tracking, and a REST API for custom automation.</p>
+    <p><strong>Choose dmux if:</strong> you use multiple AI CLIs (not just Claude) and want automatic worktree setup with minimal configuration.</p>
+    <p><strong>Choose Claude Agent Teams if:</strong> you only use Claude Code and want zero-setup orchestration built into the CLI itself.</p>
+    <p><strong>Choose cmux if:</strong> you're on macOS, prefer a native terminal experience, and don't need remote monitoring.</p>
+    <p><strong>Choose NTM if:</strong> you want a lightweight TUI dashboard without the overhead of a web server.</p>
+
+    <h2 id="faq">Frequently Asked Questions</h2>
+
+    <h3>What is agentmaxxing?</h3>
+    <p>Agentmaxxing is the practice of running multiple AI coding agents in parallel to multiply developer throughput. Instead of working with one agent sequentially, you launch 5&ndash;50+ agents simultaneously, each working on a separate task in its own git branch. The term emerged in early 2026 alongside the rise of reliable CLI-based AI coding agents.</p>
+
+    <h3>How many agents can I run in parallel?</h3>
+    <p>Laptop (16GB RAM): 5&ndash;7. Workstation (32GB+): 10&ndash;15. Cloud VM (4+ cores): 20&ndash;50+. The bottleneck is API rate limits, not local compute. Each agent is a lightweight tmux session (~300MB RAM).</p>
+
+    <h3>Do I need a special tool, or can I just use tmux?</h3>
+    <p>You can start with bare tmux + git worktrees for 2&ndash;3 agents. Beyond that, you'll want an orchestrator for crash recovery, task coordination, spend tracking, and remote monitoring. amux, dmux, and NTM are the main open-source options.</p>
+
+    <h3>What tasks work best for parallel agents?</h3>
+    <p>Atomic, independently verifiable tasks that touch different files: unit tests for specific modules, single-file migrations, bug fixes, API endpoint implementations, documentation, dependency upgrades. Avoid coupled tasks, subjective design work, or anything requiring human judgment mid-execution.</p>
+
+    <h3>How much does it cost?</h3>
+    <p>On Claude Code Max ($200/month): $0 marginal per agent. On API pricing: $0.50&ndash;2/agent-hour for Sonnet, $5&ndash;15 for Opus. The Max plan is the best value if you agentmax regularly — 10 agents for 2 hours on Sonnet API would cost $10&ndash;40, which adds up fast.</p>
+
+    <h3>Is agentmaxxing just vibe coding with more agents?</h3>
+    <p>No. Vibe coding is a prompting style (natural language, let the AI figure it out). Agentmaxxing is an operational workflow (parallel execution, git isolation, task coordination, fleet monitoring). You can agentmax with vibe-coding-style prompts or with precise engineering specs. The key difference is that agentmaxxing requires upfront planning that solo vibe coding does not.</p>
+
+    <div class="cta-box" style="margin-top:3rem;"><h3>Start agentmaxxing with amux</h3><p>Run dozens of Claude Code agents in parallel. Self-healing, web dashboard, mobile monitoring, and token tracking. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+amux register worker-1 --dir ~/Dev/myproject --yolo
+amux start worker-1
+amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+  </main>
+  <footer>
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source agent multiplexer for Claude Code.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/mixpeek/amux/issues">Issues</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>
+document.getElementById('theme-toggle').addEventListener('click', function() {
+  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (isDark) {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('theme', 'light');
+  } else {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    localStorage.setItem('theme', 'dark');
+  }
+});
+</script>
+</body>
+</html>
