@@ -8948,8 +8948,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
     <div class="notes-mode-tabs" id="notes-mode-tabs" style="display:none;">
-      <button class="notes-mode-tab active" id="notes-tab-edit" onclick="_notesSwitchMode('edit')">Edit</button>
-      <button class="notes-mode-tab" id="notes-tab-preview" onclick="_notesSwitchMode('preview')">Preview</button>
+      <button class="notes-mode-tab" id="notes-tab-edit" onclick="_notesSwitchMode('edit')">Edit</button>
+      <button class="notes-mode-tab active" id="notes-tab-preview" onclick="_notesSwitchMode('preview')">Preview</button>
       <div id="notes-preview-search" style="display:none;margin-left:auto;display:none;align-items:center;gap:4px;">
         <input id="notes-preview-search-input" type="text" placeholder="Search in preview..." oninput="_notesPreviewSearch(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();event.shiftKey?_notesPreviewSearchNav(-1):_notesPreviewSearchNav(1);}" style="font-size:0.75rem;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);width:160px;outline:none;">
         <span id="notes-preview-search-count" style="font-size:0.68rem;color:var(--dim);min-width:36px;text-align:center;"></span>
@@ -22287,7 +22287,7 @@ let _quill = null;
 let _notesSidebarOpen = localStorage.getItem('amux_notes_sidebar') !== 'closed';
 let _notesOpenAbort = null; // AbortController for in-flight note fetches
 let _notesLoadingContent = false; // suppress text-change saves while loading note content
-let _notesMode = 'edit'; // 'edit' | 'preview'
+let _notesMode = 'preview'; // 'edit' | 'preview'
 let _notesRawContent = ''; // raw server content for the open note (for markdown preview)
 
 function _notesPreviewBindCheckboxes(container) {
@@ -22861,13 +22861,7 @@ async function _notesOpen(path) {
   setTimeout(() => { _notesLoadingContent = false; }, 0);
   document.getElementById('notes-empty-state').style.display = 'none';
   document.getElementById('notes-mode-tabs').style.display = 'flex';
-  _notesMode = 'edit';
-  document.getElementById('notes-tab-edit').classList.add('active');
-  document.getElementById('notes-tab-preview').classList.remove('active');
-  document.getElementById('notes-quill-wrap').style.display = '';
-  const previewEl = document.getElementById('notes-preview');
-  previewEl.innerHTML = '';
-  previewEl.classList.remove('active');
+  _notesSwitchMode('preview');
   _notesSidebarUpdateActive(path);
   _notesUpdatePinBtn();
   document.getElementById('notes-save-status').textContent = '';
