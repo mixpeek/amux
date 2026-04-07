@@ -8747,7 +8747,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <button id="tab-sessions" class="active" onclick="switchView('sessions')">Sessions</button>
   <button id="tab-board" onclick="switchView('board')">Board</button>
   <button id="tab-calendar" onclick="switchView('calendar')">Calendar</button>
-  <button id="tab-notifications" onclick="switchView('notifications')">Notifications</button>
   <button id="tab-scheduler" onclick="switchView('scheduler')">Scheduler</button>
   <button id="tab-files" onclick="switchView('files')">Files</button>
   <button id="tab-logs" onclick="switchView('logs')">Logs</button>
@@ -8832,18 +8831,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<!-- Email events view -->
-<div id="notifications-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
-  <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0;">
-    <span style="font-weight:600;font-size:0.85rem;flex:1;">Notifications</span>
-    <button class="btn" onclick="_notifMarkAllRead()" style="font-size:0.72rem;padding:2px 8px;">Mark all read</button>
-    <button class="btn" onclick="_notifClearRead()" style="font-size:0.72rem;padding:2px 8px;">Clear read</button>
-    <button class="notes-new-btn" onclick="_notificationsLoad()" title="Refresh">
-      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-    </button>
-  </div>
-  <div id="notif-list" style="flex:1;overflow-y:auto;padding:8px 12px;"></div>
-</div>
 <div id="files-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
   <!-- Toolbar -->
   <div class="fe-toolbar">
@@ -11651,7 +11638,6 @@ const ALL_TABS = [
   { id: 'sessions',      label: 'Sessions',   required: true },
   { id: 'board',         label: 'Board' },
   { id: 'calendar',      label: 'Calendar' },
-  { id: 'notifications', label: 'Notifications' },
   { id: 'scheduler',     label: 'Scheduler' },
   { id: 'files',         label: 'Files' },
   { id: 'logs',          label: 'Logs' },
@@ -17091,9 +17077,9 @@ let _crmSidebarOpen = localStorage.getItem('amux_crm_sidebar') !== 'closed';
 function switchView(view) {
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
   activeView = view;
-  const _svIds = ['session','board','calendar','notifications','scheduler','files','logs','notes','crm','map','metrics','torrents','terminal','browser','graph','journal'];
-  const _svNames = ['sessions','board','calendar','notifications','scheduler','files','logs','notes','crm','map','metrics','torrents','terminal','browser','graph','journal'];
-  const _svDisplay = ['','','flex','flex','','flex','flex','flex','flex','flex','flex','flex','flex','','flex','flex'];
+  const _svIds = ['session','board','calendar','scheduler','files','logs','notes','crm','map','metrics','torrents','terminal','browser','graph','journal'];
+  const _svNames = ['sessions','board','calendar','scheduler','files','logs','notes','crm','map','metrics','torrents','terminal','browser','graph','journal'];
+  const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','','flex','flex'];
   for (let i = 0; i < _svIds.length; i++) {
     const ve = document.getElementById(_svIds[i] + '-view');
     if (ve) ve.style.display = view === _svNames[i] ? (_svDisplay[i] || '') : 'none';
@@ -17118,7 +17104,6 @@ function switchView(view) {
       setTimeout(() => openPeek(_sess), 50);
     }
   }
-  if (view === 'notifications') _notificationsLoad();
   if (view === 'notes') {
     _notesInitQuill(); _notesApplySidebarState();
     _notesDirty = false;
@@ -23847,73 +23832,6 @@ function _gmailFmtDate(ts) {
 }
 
 // ── Notifications ────────────────────────────────────────────────────────────
-var _notifData = [];
-
-async function _notificationsLoad() {
-  const el = document.getElementById('notif-list');
-  if (!el) return;
-  el.innerHTML = '<div style="color:var(--muted);padding:24px;text-align:center">Loading…</div>';
-  const r = await fetch(API + '/api/notifications').catch(() => null);
-  if (!r || !r.ok) { el.innerHTML = '<div style="color:var(--muted);padding:24px;text-align:center">Could not load notifications.</div>'; return; }
-  _notifData = await r.json();
-  _notifRender();
-}
-
-function _notifRender() {
-  const el = document.getElementById('notif-list');
-  if (!el) return;
-  if (!_notifData.length) {
-    el.innerHTML = '<div style="color:var(--muted);padding:24px;text-align:center">No notifications.</div>';
-    return;
-  }
-  const levelColor = { info: 'var(--accent,#58a6ff)', warn: '#f0ad4e', error: '#e05252', success: '#3fb950' };
-  el.innerHTML = _notifData.map(n => {
-    const col = levelColor[n.level] || levelColor.info;
-    const ts = n.ts ? new Date(n.ts * 1000).toLocaleString() : '';
-    return `<div style="display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border);opacity:${n.read ? '0.5' : '1'}">
-      <div style="width:8px;height:8px;border-radius:50%;background:${col};margin-top:5px;flex-shrink:0;"></div>
-      <div style="flex:1;min-width:0;">
-        <div style="font-weight:600;font-size:0.85rem;">${_esc(n.title || '')}</div>
-        ${n.body ? `<div style="font-size:0.8rem;color:var(--muted);margin-top:2px;">${_esc(n.body)}</div>` : ''}
-        <div style="font-size:0.72rem;color:var(--muted);margin-top:4px;">${n.source ? `<span style="margin-right:6px;opacity:0.7">${_esc(n.source)}</span>` : ''}${ts}</div>
-      </div>
-      <div style="display:flex;gap:4px;flex-shrink:0;">
-        ${!n.read ? `<button class="btn" style="font-size:0.7rem;padding:2px 6px;" onclick="_notifMarkRead('${n.id}')">✓</button>` : ''}
-        <button class="btn" style="font-size:0.7rem;padding:2px 6px;" onclick="_notifDelete('${n.id}')">✕</button>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-function _esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-async function _notifMarkRead(id) {
-  await fetch(API + '/api/notifications/' + id, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({read: true}) });
-  const n = _notifData.find(x => x.id === id);
-  if (n) { n.read = true; _notifRender(); }
-}
-
-async function _notifMarkAllRead() {
-  await Promise.all(_notifData.filter(n => !n.read).map(n =>
-    fetch(API + '/api/notifications/' + n.id, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({read: true}) })
-  ));
-  _notifData.forEach(n => n.read = true);
-  _notifRender();
-}
-
-async function _notifDelete(id) {
-  await fetch(API + '/api/notifications/' + id, { method: 'DELETE' });
-  _notifData = _notifData.filter(n => n.id !== id);
-  _notifRender();
-}
-
-async function _notifClearRead() {
-  const readIds = _notifData.filter(n => n.read).map(n => n.id);
-  await Promise.all(readIds.map(id => fetch(API + '/api/notifications/' + id, { method: 'DELETE' })));
-  _notifData = _notifData.filter(n => !n.read);
-  _notifRender();
-}
-
 async function _emailLoad() {
   // Load connected accounts, then render inbox
   const r = await fetch(API + '/api/gmail/accounts').catch(() => null);
