@@ -27737,15 +27737,16 @@ class CCHandler(BaseHTTPRequestHandler):
                 if dict(row)["status"] not in ("todo", "backlog"):
                     return self._json({"error": f"item not available (status: {dict(row)['status']})"}, 409)
                 now = int(time.time())
-                # Atomic claim: only succeeds if still todo/backlog
-                db.execute(
+                # Atomic claim: only succeeds if still todo/backlog AND agent-owned
+                # The owner_type check in the WHERE prevents TOCTOU races where
+                # owner_type changes between the SELECT above and this UPDATE.
+                cur = db.execute(
                     "UPDATE issues SET status='doing', session=?, updated=?"
-                    " WHERE id=? AND status IN ('todo','backlog') AND deleted IS NULL",
+                    " WHERE id=? AND status IN ('todo','backlog') AND owner_type='agent' AND deleted IS NULL",
                     (session_name, now, bid),
                 )
                 db.commit()
-                updated = db.execute("SELECT session FROM issues WHERE id=?", (bid,)).fetchone()
-                if not updated or dict(updated)["session"] != session_name:
+                if cur.rowcount == 0:
                     return self._json({"error": "claim failed — taken by another session"}, 409)
                 _sse_cache["board"]["time"] = 0
                 return self._json(_item_by_id(bid))
