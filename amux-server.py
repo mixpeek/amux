@@ -33674,12 +33674,37 @@ def _cleanup_recordings():
 
 
 def _db_maintenance():
-    """Periodic database maintenance: WAL checkpoint and optimize."""
+    """Periodic database maintenance: WAL checkpoint, optimize, and board cleanup."""
     try:
         conn = get_db()
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.execute("PRAGMA optimize")
-        slog("[cleanup] database maintenance: WAL checkpoint + optimize")
+        # Auto-archive: soft-delete board tasks done >7 days ago
+        # Skip gh-linked tasks until their GH issue is also closed (checked by tag)
+        seven_days_ago = int(time.time()) - 7 * 86400
+        now = int(time.time())
+        archived = conn.execute(
+            "UPDATE issues SET deleted = ? "
+            "WHERE status = 'done' AND deleted IS NULL AND updated < ? "
+            "AND id NOT IN (SELECT issue_id FROM issue_tags WHERE tag LIKE 'gh:%')",
+            (now, seven_days_ago),
+        ).rowcount
+        # Hard-delete tasks soft-deleted >30 days ago
+        thirty_days_ago = int(time.time()) - 30 * 86400
+        purged = conn.execute(
+            "DELETE FROM issues WHERE deleted IS NOT NULL AND deleted < ?",
+            (thirty_days_ago,),
+        ).rowcount
+        if purged:
+            conn.execute("DELETE FROM issue_tags WHERE issue_id NOT IN (SELECT id FROM issues)")
+        conn.commit()
+        extra = ""
+        if archived:
+            extra += f", archived {archived} done board tasks"
+            _sse_cache["board"]["time"] = 0
+        if purged:
+            extra += f", purged {purged} old deleted tasks"
+        slog(f"[cleanup] database maintenance: WAL checkpoint + optimize{extra}")
     except Exception as e:
         slog(f"[cleanup] db maintenance error: {e}")
 
