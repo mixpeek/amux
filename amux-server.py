@@ -3026,20 +3026,36 @@ def _session_board_issue_id(session_name: str) -> str | None:
 
 
 def _complete_session_board_issue(session_name: str):
-    """Move a session's active board issue to done."""
+    """Move a session's active board issues to done.
+
+    Skips tasks with gh:* tags — those are owned by the SessionEnd hook
+    (board-gh-sync.py) which has gh CLI access for posting GH comments.
+    Also skips tasks in 'review' status (awaiting PR review, not abandoned).
+    """
     try:
         db = get_db()
-        row = db.execute(
-            "SELECT id FROM issues WHERE session=? AND deleted IS NULL "
-            "AND status NOT IN ('done','discarded') ORDER BY created DESC LIMIT 1",
+        rows = db.execute(
+            "SELECT i.id FROM issues i "
+            "WHERE i.session=? AND i.deleted IS NULL "
+            "AND i.status NOT IN ('done','discarded','review') "
+            "ORDER BY i.created DESC",
             (session_name,)
-        ).fetchone()
-        if row:
-            now = int(time.time())
+        ).fetchall()
+        if not rows:
+            return
+        now = int(time.time())
+        for row in rows:
+            # Skip gh-linked tasks — the SessionEnd hook handles those
+            gh_tag = db.execute(
+                "SELECT 1 FROM issue_tags WHERE issue_id=? AND tag LIKE 'gh:%' LIMIT 1",
+                (row["id"],)
+            ).fetchone()
+            if gh_tag:
+                continue
             _append_board_log(row["id"], "Session completed")
             db.execute("UPDATE issues SET status='done', updated=? WHERE id=?", (now, row["id"]))
-            db.commit()
-            _sse_cache["board"]["time"] = 0
+        db.commit()
+        _sse_cache["board"]["time"] = 0
     except Exception:
         pass
 
