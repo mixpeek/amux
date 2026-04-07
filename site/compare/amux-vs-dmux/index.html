@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>amux vs dmux: Complete Comparison for Parallel AI Coding Agents (2026) — amux</title>
+  <script>(function(){var t=localStorage.getItem('theme');if(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.setAttribute('data-theme','dark')})()</script>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs dmux head-to-head: feature matrix, architecture differences, when to choose each, and migration tips. The complete 2026 comparison of these two parallel AI coding agent orchestrators.">
+  <meta name="keywords" content="amux vs dmux, dmux alternative, dmux review, dmux comparison, parallel claude code tools, parallel ai coding agents, agent multiplexer comparison, dmux vs amux, best parallel coding agent tool, claude code worktree manager">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-dmux/">
+  <meta property="og:title" content="amux vs dmux: Complete Comparison (2026) — amux">
+  <meta property="og:description" content="The complete head-to-head: feature matrix, architecture, workflows, and migration tips for choosing between amux and dmux.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-dmux/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs dmux","item":"https://amux.io/compare/amux-vs-dmux/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs dmux: The Complete Comparison for Parallel AI Coding Agents","description":"Head-to-head comparison of amux and dmux — two parallel AI coding agent orchestrators. Feature matrix, architecture, workflows, migration tips.","url":"https://amux.io/compare/amux-vs-dmux/","datePublished":"2026-04-07","dateModified":"2026-04-07","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and dmux?","acceptedAnswer":{"@type":"Answer","text":"dmux is a worktree-focused tool that automates git worktree creation and lets you run multiple AI CLIs (Claude, Codex, Gemini, Aider) side by side. amux is a full orchestration platform — it adds a web dashboard, mobile PWA, self-healing watchdog, kanban task board, token cost tracking, and a REST API on top of the same parallel-agent pattern. dmux excels at the local 'spin up worktrees fast' use case. amux excels at unattended, monitored fleets you can run from your phone."}},{"@type":"Question","name":"Should I use amux or dmux?","acceptedAnswer":{"@type":"Answer","text":"Choose dmux if your workflow is interactive (you'll be at your desk), you want zero-config worktree management, and you mix multiple AI CLIs. Choose amux if you want to run agents unattended (overnight, while away from your desk), need a web dashboard accessible from your phone, want token cost visibility, or need a REST API to build custom automation."}},{"@type":"Question","name":"Can I use amux and dmux together?","acceptedAnswer":{"@type":"Answer","text":"Technically yes — they both use tmux underneath and don't conflict at the OS level. But there's no integration layer, so you'd be running two parallel orchestrators. Most people pick one. If you're moving from dmux to amux, the migration is straightforward: amux can register existing worktrees as sessions without recreating them."}},{"@type":"Question","name":"Does dmux have a web dashboard?","acceptedAnswer":{"@type":"Answer","text":"No. dmux is terminal-only. You manage agents through tmux panes and dmux's TUI. amux provides a full web dashboard at https://localhost:8822 with live status, token tracking, send bar, kanban board, and mobile PWA support."}},{"@type":"Question","name":"Does amux support Codex CLI and Gemini CLI like dmux does?","acceptedAnswer":{"@type":"Answer","text":"amux is primarily designed for Claude Code, but because each session is a tmux pane running an arbitrary command, you can register a Codex CLI or Gemini CLI session. The self-healing watchdog and token tracking are Claude Code-specific. dmux has first-class support for multiple AI CLIs out of the box."}},{"@type":"Question","name":"Is dmux open source?","acceptedAnswer":{"@type":"Answer","text":"Yes, both amux and dmux are MIT-licensed open source. amux is a single Python file (amux-server.py). dmux is a TypeScript/Node CLI with auto-generated git worktree management."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"><span class="icon-sun">&#9788;</span><span class="icon-moon">&#9790;</span></button>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">sign up</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/compare/">Compare</a> <span class="sep">&rsaquo;</span> <span>amux vs dmux</span></div>
+    <h1>amux vs dmux</h1>
+    <p class="subtitle">Both run parallel AI coding agents. One is a worktree manager. The other is an orchestration platform. Here's exactly when to pick which.</p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#tldr" style="color:var(--dim);text-decoration:none;">TL;DR</a></li>
+        <li><a href="#what" style="color:var(--dim);text-decoration:none;">What Each Tool Is</a></li>
+        <li><a href="#matrix" style="color:var(--dim);text-decoration:none;">Feature Matrix</a></li>
+        <li><a href="#architecture" style="color:var(--dim);text-decoration:none;">Architecture Differences</a></li>
+        <li><a href="#workflows" style="color:var(--dim);text-decoration:none;">Workflow Comparison</a></li>
+        <li><a href="#dashboards" style="color:var(--dim);text-decoration:none;">Dashboards &amp; Remote Access</a></li>
+        <li><a href="#unattended" style="color:var(--dim);text-decoration:none;">Unattended Operation &amp; Self-Healing</a></li>
+        <li><a href="#multi-cli" style="color:var(--dim);text-decoration:none;">Multi-CLI Support</a></li>
+        <li><a href="#which" style="color:var(--dim);text-decoration:none;">Which Should You Choose?</a></li>
+        <li><a href="#migration" style="color:var(--dim);text-decoration:none;">Migrating Between Them</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="tldr">TL;DR</h2>
+    <p>Both amux and dmux solve the same problem &mdash; running multiple AI coding agents in parallel without them stepping on each other &mdash; but they take very different approaches.</p>
+    <ul>
+      <li><strong>dmux</strong> is a <em>worktree manager</em>. It automates <code>git worktree</code> creation and gives each agent a clean isolated branch with minimal config. Terminal-first, multi-CLI (Claude, Codex, Gemini, Aider), interactive use case.</li>
+      <li><strong>amux</strong> is an <em>orchestration platform</em>. It adds a web dashboard, mobile PWA, self-healing watchdog, kanban task board, token cost tracking, and a REST API. Built for unattended fleets you can monitor from anywhere.</li>
+    </ul>
+    <p><strong>Pick dmux</strong> if you want fast, frictionless worktree spin-up at your desk and you mix multiple AI CLIs.<br>
+    <strong>Pick amux</strong> if you want to run agents while you're away (overnight, in meetings, on your phone), need spend visibility, or want a REST API for custom automation.</p>
+
+    <h2 id="what">What Each Tool Is</h2>
+
+    <h3>dmux</h3>
+    <p>dmux is an open-source CLI that spawns parallel AI coding sessions, each in its own git worktree. Its core insight is that <code>git worktree</code> + tmux + a CLI agent is enough to parallelize coding work &mdash; you just need a tool that automates the boilerplate.</p>
+    <p>Key features:</p>
+    <ul>
+      <li>One command creates a worktree, branch, and tmux pane running your AI CLI of choice</li>
+      <li>Built-in support for Claude Code, Codex CLI, Gemini CLI, and Aider</li>
+      <li>Clean merge tooling that diffs each worktree against main</li>
+      <li>Lightweight: a Node CLI with no server, no web UI, no daemon</li>
+    </ul>
+    <p>If you've ever wanted "<code>tmux new-window</code> but it also makes a git worktree and starts Claude Code in it," dmux is that tool.</p>
+
+    <h3>amux</h3>
+    <p>amux is an open-source orchestration platform built around <code>amux-server.py</code> &mdash; a single Python file that runs a local HTTPS server, manages tmux sessions, and serves a web dashboard. It treats parallel agents as a fleet that needs to be observed, recovered, and coordinated.</p>
+    <p>Key features:</p>
+    <ul>
+      <li>Web dashboard at <code>https://localhost:8822</code> with live status, token spend, and a send bar</li>
+      <li>Mobile PWA for managing the fleet from your phone</li>
+      <li>Self-healing watchdog: auto-restart crashed agents, auto-compact context overflow, detect stuck sessions</li>
+      <li>SQLite-backed kanban task board with atomic claiming (no two agents work on the same task)</li>
+      <li>Per-session token and cost tracking</li>
+      <li>Full REST API for custom automation, scheduling, and integration</li>
+      <li>Inter-session messaging so agents can delegate work to each other</li>
+      <li>Notes, CRM, and calendar primitives for solo developer workflows</li>
+    </ul>
+    <p>If dmux is "tmux + worktrees with a nice CLI," amux is "a full developer cockpit where parallel agents are first-class citizens."</p>
+
+    <h2 id="matrix">Feature Matrix</h2>
+
+    <table style="width:100%;border-collapse:collapse;font-size:0.88rem;margin:1.5rem 0;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left;padding:0.6rem;">Feature</th>
+          <th style="text-align:left;padding:0.6rem;">amux</th>
+          <th style="text-align:left;padding:0.6rem;">dmux</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Parallel AI agent sessions</td>
+          <td style="padding:0.6rem;color:var(--green);">Yes</td>
+          <td style="padding:0.6rem;color:var(--green);">Yes</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Automatic git worktree creation</td>
+          <td style="padding:0.6rem;">Manual or scripted</td>
+          <td style="padding:0.6rem;color:var(--green);">Built-in, one command</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Web dashboard</td>
+          <td style="padding:0.6rem;color:var(--green);">Yes (https://localhost:8822)</td>
+          <td style="padding:0.6rem;">No (terminal only)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Mobile PWA</td>
+          <td style="padding:0.6rem;color:var(--green);">Yes</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Self-healing watchdog</td>
+          <td style="padding:0.6rem;color:var(--green);">Auto-restart, auto-compact, stuck detection</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Token / cost tracking</td>
+          <td style="padding:0.6rem;color:var(--green);">Per-session and cumulative</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Kanban task board</td>
+          <td style="padding:0.6rem;color:var(--green);">SQLite-backed, atomic claiming</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">REST API</td>
+          <td style="padding:0.6rem;color:var(--green);">Full API for sessions, board, notes, browser, email</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Inter-session messaging</td>
+          <td style="padding:0.6rem;color:var(--green);">Send messages between agents</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Multi-CLI support out of the box</td>
+          <td style="padding:0.6rem;">Claude Code first-class; others run as raw panes</td>
+          <td style="padding:0.6rem;color:var(--green);">Claude, Codex, Gemini, Aider</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Worktree merge tooling</td>
+          <td style="padding:0.6rem;">Standard git workflow</td>
+          <td style="padding:0.6rem;color:var(--green);">Built-in diff &amp; merge UI</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Remote access</td>
+          <td style="padding:0.6rem;color:var(--green);">Web dashboard + Tailscale</td>
+          <td style="padding:0.6rem;">SSH + tmux attach</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Notes / CRM / calendar primitives</td>
+          <td style="padding:0.6rem;color:var(--green);">Yes</td>
+          <td style="padding:0.6rem;">No (out of scope)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Cron / scheduled triggers</td>
+          <td style="padding:0.6rem;color:var(--green);">Built-in</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Implementation</td>
+          <td style="padding:0.6rem;">Single Python file + tmux</td>
+          <td style="padding:0.6rem;">Node/TypeScript CLI</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Runtime dependencies</td>
+          <td style="padding:0.6rem;">Python 3.8+, tmux</td>
+          <td style="padding:0.6rem;">Node.js, tmux, git</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Cloud deployment</td>
+          <td style="padding:0.6rem;color:var(--green);">Single-file VM deploy with Terraform</td>
+          <td style="padding:0.6rem;">DIY</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">License</td>
+          <td style="padding:0.6rem;color:var(--green);">MIT</td>
+          <td style="padding:0.6rem;color:var(--green);">MIT</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem;">Best for</td>
+          <td style="padding:0.6rem;">Unattended fleets, mobile monitoring, custom automation</td>
+          <td style="padding:0.6rem;">Interactive parallel sessions, multi-CLI workflows</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2 id="architecture">Architecture Differences</h2>
+    <p>The two tools sit at different points on the same stack. dmux is a thin layer above git and tmux. amux is a full server with persistent state.</p>
+
+    <h3>dmux architecture</h3>
+    <pre><code>┌──────────────────────────────────────────────┐
+│  dmux CLI                                    │
+│  (one-shot commands, no daemon)              │
+└──────────────────────────────────────────────┘
+              │
+              ▼
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│ git worktree │ + │     tmux     │ + │  AI CLI of   │
+│              │   │   session    │   │   choice     │
+└──────────────┘   └──────────────┘   └──────────────┘</code></pre>
+    <p>dmux is stateless. Each invocation does one thing: create a worktree, list worktrees, merge a worktree, etc. Once a session is started, dmux is out of the loop &mdash; you interact with the agent through the tmux pane directly.</p>
+
+    <h3>amux architecture</h3>
+    <pre><code>┌──────────────────────────────────────────────────────────┐
+│           amux-server.py (long-running)                  │
+│                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │
+│  │ Web UI   │  │ REST API │  │ Watchdog │  │  Board  │ │
+│  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │
+│                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │
+│  │  Notes   │  │   CRM    │  │  Tokens  │  │  Cron   │ │
+│  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │
+└──────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+        ┌────────┐  ┌────────┐  ┌────────┐
+        │ tmux 1 │  │ tmux 2 │  │ tmux N │
+        │ Claude │  │ Claude │  │ Claude │
+        └────────┘  └────────┘  └────────┘</code></pre>
+    <p>amux runs as a persistent server. It owns session lifecycle, restarts crashed agents, exposes a REST API, and serves a dashboard. The server is the source of truth for everything &mdash; sessions, tasks, costs, notes &mdash; and survives across reboots.</p>
+
+    <h3>What this means in practice</h3>
+    <p>dmux's stateless model is simpler. There's no daemon to restart, no port to manage, no database to back up. If you close your terminal, dmux is gone (the tmux sessions keep running, of course).</p>
+    <p>amux's server model is more powerful. The dashboard is always available, the watchdog is always running, and you can hit the API from any other process (cron jobs, mobile apps, custom scripts, even other agents). The trade-off: you have one more long-running process to manage.</p>
+
+    <h2 id="workflows">Workflow Comparison</h2>
+    <p>Same task, two tools. Goal: spin up 5 parallel agents, each working on a different test suite expansion task.</p>
+
+    <h3>The dmux way</h3>
+    <pre><code># 5 commands, 5 worktrees, 5 agents
+dmux new add-auth-tests
+dmux new add-api-tests
+dmux new add-payment-tests
+dmux new add-notification-tests
+dmux new add-search-tests
+
+# Each command:
+#   1. Creates a git worktree at ../project-add-auth-tests
+#   2. Creates a branch named add-auth-tests
+#   3. Opens a tmux window with Claude Code running
+#   4. You type your task into Claude Code interactively
+
+# When done, merge:
+dmux merge add-auth-tests</code></pre>
+    <p><strong>Strengths:</strong> Fast, low ceremony, zero config. You're talking to Claude Code in seconds.<br>
+    <strong>Limitations:</strong> You manually type the task into each agent. No central queue. No way to check progress without attaching to each tmux pane.</p>
+
+    <h3>The amux way</h3>
+    <pre><code># Register sessions (one-time)
+for module in auth api payment notification search; do
+  git worktree add ../project-$module -b agent/$module-tests
+  amux register $module --dir ../project-$module --yolo
+done
+
+# Queue tasks on the board
+amux board add "Add auth tests, target 90% coverage" --session auth
+amux board add "Add API tests, target 85% coverage" --session api
+amux board add "Add payment tests, target 90% coverage" --session payment
+amux board add "Add notification tests, target 80% coverage" --session notification
+amux board add "Add search tests, target 85% coverage" --session search
+
+# Launch all sessions
+amux start --all
+
+# Open the dashboard
+amux serve  # → https://localhost:8822
+# Watch all 5 agents simultaneously, see token spend, get phone alerts</code></pre>
+    <p><strong>Strengths:</strong> Tasks are persisted on the board, you can monitor all agents from one dashboard, the watchdog restarts crashes, you can check progress from your phone.<br>
+    <strong>Limitations:</strong> More setup ceremony than dmux. Need to think about the board, sessions, and watchdog config.</p>
+
+    <h3>The takeaway</h3>
+    <p>dmux optimizes for <em>time-to-first-agent</em>. amux optimizes for <em>time-to-fleet-visibility</em>. If your sessions are short and interactive, dmux wins on friction. If your sessions run for hours and you want to walk away, amux wins on observability.</p>
+
+    <h2 id="dashboards">Dashboards &amp; Remote Access</h2>
+    <p>This is the biggest functional gap.</p>
+    <p><strong>dmux has no dashboard.</strong> You manage agents via tmux, the dmux CLI, and your terminal. To check progress, you attach to a tmux session and look. To check progress remotely, you SSH in and attach. To check progress from your phone &mdash; you don't.</p>
+    <p><strong>amux has a full web dashboard.</strong> Open <code>https://localhost:8822</code> in any browser and see:</p>
+    <ul>
+      <li>All sessions with live status (running, idle, crashed, stuck)</li>
+      <li>Per-session token spend and cumulative cost</li>
+      <li>Last N lines of output from every agent, scrollable</li>
+      <li>A send bar to type messages directly into any agent</li>
+      <li>The kanban board with drag-and-drop task management</li>
+    </ul>
+    <p>The dashboard works as a PWA on your phone, so you can install it like a native app. With Tailscale, you can access your home or office amux instance from anywhere on the internet without exposing ports. See the <a href="/guides/mobile-management-pwa/">Mobile Management PWA guide</a> and <a href="/guides/remote-access-tailscale/">Remote Access with Tailscale guide</a>.</p>
+    <p>If you ever want to start an agent before bed and check on it from your phone in the morning, amux is the only one of the two that can do this.</p>
+
+    <h2 id="unattended">Unattended Operation &amp; Self-Healing</h2>
+    <p>Running agents overnight is the canonical use case for parallel coding tools. Both can do it &mdash; but with very different reliability.</p>
+
+    <h3>dmux: agents run, you hope they don't crash</h3>
+    <p>dmux starts an agent in a tmux pane and walks away. If the agent crashes (segfault, OOM, network blip), the tmux pane shows the error and the agent is dead until you manually restart it. If the agent hits its context limit and freezes, dmux doesn't notice. If an agent gets stuck in a loop, dmux doesn't notice.</p>
+    <p>This is fine for a 30-minute interactive sprint. It is not fine for a 6-hour overnight run.</p>
+
+    <h3>amux: self-healing watchdog</h3>
+    <p>amux's watchdog actively monitors every session and handles common failure modes automatically:</p>
+    <ul>
+      <li><strong>Crash:</strong> Process dies &rarr; auto-restart, replay last user message</li>
+      <li><strong>Context overflow:</strong> Detected via output pattern &rarr; trigger <code>/compact</code> and continue</li>
+      <li><strong>Stuck:</strong> No new output for N minutes &rarr; send a nudge or restart</li>
+      <li><strong>Permission prompts:</strong> Auto-respond in YOLO mode</li>
+      <li><strong>Rate limits:</strong> Back off and retry transparently</li>
+    </ul>
+    <p>The watchdog is what makes overnight runs practical. Without it, one crash at 2am ends the session for the next 6 hours. With it, the agent restarts in 30 seconds and keeps going. See the <a href="/guides/self-healing-configuration/">Self-Healing Configuration guide</a> and <a href="/guides/ai-coding-agents-overnight/">Running AI Coding Agents Overnight guide</a> for details.</p>
+
+    <h2 id="multi-cli">Multi-CLI Support</h2>
+    <p>This is dmux's biggest strength.</p>
+    <p>dmux ships with first-class support for Claude Code, Codex CLI, Gemini CLI, and Aider. You pick the agent type when you create a session, and dmux knows how to start each one. This is genuinely useful if you're comparing models on the same task or running a mixed fleet to leverage each model's strengths.</p>
+    <p>amux is Claude Code-first. The session manager, watchdog, and token tracking are all designed around Claude Code's CLI. You <em>can</em> register a session running Codex CLI or Gemini CLI &mdash; each session is just a tmux pane running an arbitrary command &mdash; but you'll lose the smart watchdog behaviors (which key off Claude Code's specific output patterns) and token tracking (which parses Claude's spend output).</p>
+    <p>If you're a multi-model shop, dmux is the better fit. If you're 95%+ on Claude Code, amux's deep integration is more valuable than multi-CLI breadth.</p>
+
+    <h2 id="which">Which Should You Choose?</h2>
+
+    <h3>Choose dmux if...</h3>
+    <ul>
+      <li>You work interactively at your desk and don't need remote monitoring</li>
+      <li>You use multiple AI CLIs (Claude, Codex, Gemini, Aider) and want first-class support for all of them</li>
+      <li>You want zero-ceremony worktree spin-up &mdash; one command, agent running</li>
+      <li>You don't need a task board, dashboard, or REST API</li>
+      <li>You prefer tools that are "just CLIs" with no daemons, servers, or persistent state</li>
+      <li>Your sessions are short (under an hour) and you'll be there to handle failures yourself</li>
+    </ul>
+
+    <h3>Choose amux if...</h3>
+    <ul>
+      <li>You want to run agents unattended &mdash; overnight, while in meetings, while away from your desk</li>
+      <li>You need a web dashboard you can check from any device, including your phone</li>
+      <li>You want self-healing recovery from crashes, context overflows, and stuck sessions</li>
+      <li>You need token spend visibility per session</li>
+      <li>You want a kanban task board with atomic task claiming so agents don't duplicate work</li>
+      <li>You're building custom automation that needs a REST API (cron jobs, scripts, integrations)</li>
+      <li>You're running 10+ agents and need fleet-level observability</li>
+      <li>You want a single-file Python deployment that's easy to audit and easy to deploy to a cloud VM</li>
+      <li>You're 95%+ on Claude Code and want deep, model-aware integration</li>
+    </ul>
+
+    <h3>The honest summary</h3>
+    <p>If your mental model is "I want to run a bunch of agents in worktrees right now and merge them later," <strong>dmux is the right tool</strong>. It does that one thing extremely well with very little ceremony.</p>
+    <p>If your mental model is "I want to run a fleet of agents that I can monitor from anywhere, that recovers itself from failures, and that I can build custom automation around," <strong>amux is the right tool</strong>. It's a bigger surface area but it's solving a bigger problem.</p>
+    <p>Neither tool is wrong. They're optimized for different points on the interactive &harr; unattended spectrum.</p>
+
+    <h2 id="migration">Migrating Between Them</h2>
+
+    <h3>From dmux to amux</h3>
+    <p>If you already have dmux worktrees, you don't need to recreate them. amux can register an existing directory as a session:</p>
+    <pre><code># Your existing dmux worktrees are at ../project-add-auth-tests, etc.
+# Register each as an amux session
+for wt in ../project-add-*; do
+  name=$(basename $wt | sed 's/project-//')
+  amux register $name --dir $wt --yolo
+done
+
+# Start the amux server and dashboard
+amux serve
+
+# Now you can monitor your existing worktrees from the dashboard
+# without losing any state</code></pre>
+    <p>Your git history, branches, and uncommitted work are untouched. amux just adds a monitoring and recovery layer on top.</p>
+
+    <h3>From amux to dmux</h3>
+    <p>The reverse is also straightforward. amux's worktrees are standard git worktrees, so dmux can find and manage them. You'll lose the dashboard, watchdog, board, and token tracking &mdash; but the underlying git state is unchanged.</p>
+
+    <h2 id="faq">Frequently Asked Questions</h2>
+
+    <h3>What is the main difference between amux and dmux?</h3>
+    <p>dmux is a worktree manager &mdash; it automates git worktree creation and lets you run multiple AI CLIs side by side. amux is a full orchestration platform &mdash; it adds a web dashboard, mobile PWA, self-healing watchdog, kanban task board, token cost tracking, and a REST API on top of the same parallel-agent pattern.</p>
+
+    <h3>Should I use amux or dmux?</h3>
+    <p>Use dmux for fast interactive worktree management at your desk, especially if you mix multiple AI CLIs. Use amux when you need unattended operation, remote monitoring, self-healing, cost tracking, or a REST API.</p>
+
+    <h3>Can I use amux and dmux together?</h3>
+    <p>Technically yes &mdash; they don't conflict at the OS level &mdash; but most people pick one. amux can register existing dmux worktrees as sessions if you want to migrate.</p>
+
+    <h3>Does dmux have a web dashboard?</h3>
+    <p>No. dmux is terminal-only. amux provides a full web dashboard at <code>https://localhost:8822</code> with mobile PWA support.</p>
+
+    <h3>Does amux support Codex CLI and Gemini CLI like dmux does?</h3>
+    <p>amux is primarily designed for Claude Code. You can register sessions running other CLIs, but the self-healing watchdog and token tracking are Claude-specific. dmux has first-class multi-CLI support out of the box.</p>
+
+    <h3>Is dmux open source?</h3>
+    <p>Yes, both are MIT-licensed. amux is a single Python file. dmux is a Node/TypeScript CLI.</p>
+
+    <h3>Which is more reliable for overnight runs?</h3>
+    <p>amux, by a wide margin. The self-healing watchdog handles crashes, context overflows, and stuck sessions automatically. dmux has no equivalent &mdash; if an agent dies overnight, it stays dead until you restart it manually.</p>
+
+    <h3>Which has better cost tracking?</h3>
+    <p>amux. It tracks token spend per session and shows cumulative cost on the dashboard. dmux has no cost tracking layer; you'd need to check Claude's billing dashboard separately.</p>
+
+    <h3>Are there other parallel AI agent tools I should consider?</h3>
+    <p>Yes &mdash; the category is growing. Look at <a href="/compare/amux-vs-claude-code-agent-teams/">Claude Code Agent Teams</a> (Anthropic's built-in feature), cmux (native macOS), NTM (lightweight TUI), and the broader <a href="/compare/">comparison index</a>. The <a href="/guides/agentmaxxing/">agentmaxxing guide</a> includes a feature matrix across all of them.</p>
+
+    <div class="cta-box" style="margin-top:3rem;"><h3>Try amux</h3><p>Run dozens of Claude Code agents in parallel with self-healing, mobile monitoring, and token tracking. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+  </main>
+  <footer>
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source agent multiplexer for Claude Code.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/mixpeek/amux/issues">Issues</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>
+document.getElementById('theme-toggle').addEventListener('click', function() {
+  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (isDark) {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('theme', 'light');
+  } else {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    localStorage.setItem('theme', 'dark');
+  }
+});
+</script>
+</body>
+</html>
