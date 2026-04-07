@@ -16311,8 +16311,99 @@ function _peekOpenLink(e) {
 }
 document.getElementById('peek-body').addEventListener('click', _peekOpenLink);
 document.getElementById('peek-body').addEventListener('touchend', _peekOpenLink, {passive: false});
-document.addEventListener('mouseup', () => { peekCheckSelection(); });
-document.addEventListener('touchend', () => { peekCheckSelection(); });
+document.addEventListener('mouseup', () => { peekCheckSelection(); _peekShowSelPopover(); });
+document.addEventListener('touchend', () => { peekCheckSelection(); setTimeout(_peekShowSelPopover, 50); });
+
+// ── Peek selection popover (Look up / Copy) ──
+function _peekShowSelPopover() {
+  const sel = window.getSelection();
+  const text = sel ? sel.toString().trim() : '';
+  const body = document.getElementById('peek-body');
+  // Only show when selection is inside peek body
+  if (!text || !body || !sel.anchorNode || !body.contains(sel.anchorNode)) {
+    _peekHideSelPopover();
+    return;
+  }
+  let pop = document.getElementById('peek-sel-popover');
+  if (!pop) {
+    pop = document.createElement('div');
+    pop.id = 'peek-sel-popover';
+    pop.style.cssText = 'position:fixed;z-index:10000;background:#1a1a2e;border:1px solid #444;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,0.5);padding:4px;display:flex;gap:2px;font-size:0.78rem;';
+    pop.innerHTML = '<button id="peek-sel-lookup" style="background:none;border:none;color:#c7d2fe;padding:6px 10px;cursor:pointer;border-radius:5px;">&#x1F50D; Look up</button><button id="peek-sel-copy" style="background:none;border:none;color:#c7d2fe;padding:6px 10px;cursor:pointer;border-radius:5px;">Copy</button>';
+    document.body.appendChild(pop);
+    pop.querySelector('#peek-sel-lookup').onclick = (e) => { e.stopPropagation(); _peekLookupSelection(); };
+    pop.querySelector('#peek-sel-copy').onclick = (e) => {
+      e.stopPropagation();
+      const t = window.getSelection()?.toString() || '';
+      if (t) navigator.clipboard?.writeText(t);
+      _peekHideSelPopover();
+    };
+    pop.addEventListener('mousedown', (e) => e.preventDefault()); // don't kill selection
+  }
+  // Position above the selection
+  const range = sel.getRangeAt(0);
+  const rect = range.getBoundingClientRect();
+  pop.style.display = 'flex';
+  // Default above selection; if no room, put below
+  const popH = 36;
+  const popW = 160;
+  let top = rect.top - popH - 8;
+  if (top < 8) top = rect.bottom + 8;
+  let left = rect.left + (rect.width / 2) - (popW / 2);
+  left = Math.max(8, Math.min(left, window.innerWidth - popW - 8));
+  pop.style.top = top + 'px';
+  pop.style.left = left + 'px';
+}
+function _peekHideSelPopover() {
+  const pop = document.getElementById('peek-sel-popover');
+  if (pop) pop.style.display = 'none';
+}
+async function _peekLookupSelection() {
+  const text = window.getSelection()?.toString().trim() || '';
+  if (!text) return;
+  _peekHideSelPopover();
+  _peekShowLookupModal(text, null, true);
+  try {
+    const r = await fetch(API + '/api/lookup', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ text })
+    });
+    const d = await r.json();
+    if (d.error) {
+      _peekShowLookupModal(text, 'Error: ' + d.error, false);
+    } else {
+      _peekShowLookupModal(text, d.text || '(no response)', false);
+    }
+  } catch (e) {
+    _peekShowLookupModal(text, 'Lookup failed: ' + e.message, false);
+  }
+}
+function _peekShowLookupModal(query, result, loading) {
+  let modal = document.getElementById('peek-lookup-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'peek-lookup-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10001;display:flex;align-items:center;justify-content:center;padding:20px;';
+    modal.innerHTML = '<div style="background:#1a1a2e;border:1px solid #444;border-radius:12px;max-width:560px;width:100%;max-height:80vh;overflow:auto;padding:20px;box-shadow:0 24px 64px rgba(0,0,0,0.6);color:#e8e8e8;position:relative;"><button id="peek-lookup-close" style="position:absolute;top:10px;right:12px;background:none;border:none;color:#aaa;font-size:1.1rem;cursor:pointer;">&#x2715;</button><div style="font-size:0.7rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Looking up</div><div id="peek-lookup-query" style="font-family:monospace;font-size:0.85rem;background:#111;padding:8px 12px;border-radius:6px;margin-bottom:14px;word-break:break-word;max-height:120px;overflow:auto;"></div><div style="font-size:0.7rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Explanation</div><div id="peek-lookup-result" style="font-size:0.92rem;line-height:1.55;white-space:pre-wrap;"></div></div>';
+    document.body.appendChild(modal);
+    modal.querySelector('#peek-lookup-close').onclick = () => { modal.style.display = 'none'; };
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.style.display = 'none'; });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && modal.style.display !== 'none') modal.style.display = 'none';
+    });
+  }
+  modal.querySelector('#peek-lookup-query').textContent = query;
+  modal.querySelector('#peek-lookup-result').textContent = loading ? 'Looking up…' : result;
+  modal.style.display = 'flex';
+}
+// Hide popover on click outside
+document.addEventListener('mousedown', (e) => {
+  const pop = document.getElementById('peek-sel-popover');
+  if (pop && pop.style.display !== 'none' && !pop.contains(e.target)) {
+    // Let the new selection check handle re-showing
+    setTimeout(() => { if (!window.getSelection()?.toString().trim()) _peekHideSelPopover(); }, 10);
+  }
+});
 
 // ── Clipboard: copy/paste events (most reliable in Chrome PWA desktop) ──
 // The 'copy' and 'paste' DOM events give direct clipboardData access without
@@ -27902,6 +27993,31 @@ class CCHandler(BaseHTTPRequestHandler):
                 return self._json({"branches": branches})
             except Exception:
                 return self._json({"branches": []})
+
+        if method == "POST" and path == "/api/lookup":
+            body = self._read_body()
+            text = (body.get("text") or "").strip()
+            if not text:
+                return self._json({"error": "missing text"}, 400)
+            if len(text) > 2000:
+                text = text[:2000]
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            if not api_key:
+                return self._json({"error": "no API key configured"}, 400)
+            try:
+                import anthropic as _anthropic
+                client = _anthropic.Anthropic(api_key=api_key)
+                msg = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=400,
+                    messages=[{"role": "user", "content":
+                        f"Briefly explain what this means or refers to in 2-4 sentences. "
+                        f"Be concise and direct. If it's a technical term, code, error, "
+                        f"or concept, explain it. If it's a name, identify it.\n\n{text}"}],
+                )
+                return self._json({"text": msg.content[0].text.strip()})
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
 
         if method == "POST" and path == "/api/suggest-branch":
             body = self._read_body()
