@@ -27514,6 +27514,21 @@ class CCHandler(BaseHTTPRequestHandler):
                         db.commit()
                     return self._json({"ok": True})
 
+            # GET /api/board/tag-completion?tag=X — check if all tasks with a tag are done
+            if method == "GET" and path == "/api/board/tag-completion":
+                tag = qs.get("tag", [""])[0]
+                if not tag:
+                    return self._json({"error": "missing tag parameter"}, 400)
+                rows = db.execute(
+                    "SELECT i.status FROM issues i "
+                    "JOIN issue_tags t ON t.issue_id = i.id "
+                    "WHERE t.tag = ? AND i.deleted IS NULL",
+                    (tag,),
+                ).fetchall()
+                total = len(rows)
+                done = sum(1 for r in rows if r["status"] in ("done", "discarded"))
+                return self._json({"tag": tag, "total": total, "done": done, "complete": total > 0 and done == total})
+
             # POST /api/board/<id>/claim — atomic task claim for multi-agent coordination
             claim_m = re.match(r"^/api/board/([A-Za-z0-9_-]+)/claim$", path)
             if claim_m and method == "POST":
