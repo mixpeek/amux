@@ -7944,12 +7944,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     /* Hide mode tabs entirely on mobile — preview is tap-to-edit */
     .notes-mode-tabs { display: none !important; }
     .notes-editor-header { padding: 10px 12px; min-height: 48px; }
-    .notes-title-input { font-size: 1.05rem; }
+    /* 16px minimum on inputs prevents iOS Safari auto-zoom on focus */
+    .notes-title-input { font-size: 16px; }
+    .notes-search-wrap input { font-size: 16px !important; padding: 10px 12px; }
     .notes-delete-btn, .notes-pin-btn { min-width: 40px; min-height: 40px; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; }
     .notes-list-item { padding: 14px 14px; min-height: 56px; border-radius: 6px; }
     .notes-list-item .nli-title { font-size: 0.92rem; }
     .notes-list-item .nli-date { font-size: 0.74rem; }
-    .notes-list { padding: 4px 0; }
+    .notes-list { padding: 4px 0; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+    .notes-quill-wrap .ql-container.ql-snow { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+    .notes-preview { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+    /* Prevent double-tap zoom on action buttons */
+    .notes-list-item, .notes-delete-btn, .notes-pin-btn, .notes-new-btn, .notes-toggle-btn, .notes-expand-btn,
+    .notes-quill-wrap .ql-toolbar.ql-snow button { touch-action: manipulation; }
     /* Sticky bottom toolbar — move Quill toolbar to bottom on mobile */
     .notes-quill-wrap { flex-direction: column-reverse; }
     .notes-quill-wrap .ql-toolbar.ql-snow {
@@ -7966,10 +7973,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .notes-quill-wrap .ql-toolbar.ql-snow .ql-underline,
     .notes-quill-wrap .ql-toolbar.ql-snow .ql-clean,
     .notes-quill-wrap .ql-toolbar.ql-snow .ql-divider { display: none; }
-    .notes-quill-wrap .ql-editor { font-size: 1rem; min-height: 160px; padding: 12px 16px 96px; }
-    .notes-preview { padding: 16px 16px 96px; font-size: 1rem; }
+    .notes-quill-wrap .ql-editor { font-size: 16px; min-height: 160px; padding: 12px 16px 96px; }
+    .notes-preview { padding: 16px 16px 96px; font-size: 16px; }
     .notes-new-btn { width: 36px; height: 36px; font-size: 1.3rem; }
-    .notes-search-wrap input { font-size: 0.92rem; padding: 9px 12px; }
   }
 
   /* ── Gmail / Email view ─────────────────────────────────────────────────── */
@@ -22966,23 +22972,39 @@ function _notesInitQuill() {
 }
 
 async function _notesLoad() {
+  // SWR: render from cache INSTANTLY (synchronous localStorage), then revalidate
+  const cachedRaw = localStorage.getItem('amux_notes_cache');
+  let cached = null;
+  if (cachedRaw) {
+    try { cached = JSON.parse(cachedRaw); } catch(e) {}
+  }
+  let openedFromCache = false;
+  if (cached && cached.length) {
+    _notesAllNotes = cached;
+    _notesRenderList(_notesAllNotes);
+    // Open last-viewed note immediately from cache (cache-first)
+    if (!_notesActive) {
+      const lastPath = localStorage.getItem('amux_last_note');
+      const lastNote = lastPath && _notesAllNotes.find(n => n.path === lastPath);
+      _notesOpen(lastNote ? lastNote.path : _notesAllNotes[0].path); // fire and forget
+      openedFromCache = true;
+    }
+  }
+  // Revalidate in background
   let fresh;
   try {
     const r = await fetch(API + '/api/notes');
     fresh = await r.json();
-    // Cache the list
     localStorage.setItem('amux_notes_cache', JSON.stringify(fresh));
     _idb.set('amux_notes_cache', JSON.stringify(fresh));
   } catch(e) {
-    // Offline — load from cache
-    const cached = localStorage.getItem('amux_notes_cache');
+    // Offline and no cache — try IDB
     if (!cached) {
       const idbVal = await _idb.get('amux_notes_cache').catch(() => null);
       if (idbVal) { localStorage.setItem('amux_notes_cache', idbVal); fresh = JSON.parse(idbVal); }
-    } else {
-      fresh = JSON.parse(cached);
     }
-    if (!fresh) { _notesShowEmpty(); return; }
+    if (!fresh && !cached) { _notesShowEmpty(); return; }
+    if (!fresh) return; // already rendered from cache
   }
   // Preserve local titles — client may be ahead of server (unsaved debounce)
   if (_notesAllNotes.length) {
@@ -22994,7 +23016,7 @@ async function _notesLoad() {
   _notesTrashLoad();
   if (!_notesActive && _notesAllNotes.length === 0) {
     _notesShowEmpty();
-  } else if (!_notesActive && _notesAllNotes.length > 0) {
+  } else if (!_notesActive && !openedFromCache && _notesAllNotes.length > 0) {
     const lastPath = localStorage.getItem('amux_last_note');
     const lastNote = lastPath && _notesAllNotes.find(n => n.path === lastPath);
     await _notesOpen(lastNote ? lastNote.path : _notesAllNotes[0].path);
@@ -23217,57 +23239,19 @@ function _notesSearchFilter(q) {
   ));
 }
 
-async function _notesOpen(path) {
-  if (path === _notesActive?.path) return; // already open
-  // Fire pending save in background — don't block switching
-  // (content + pathKey are captured synchronously before the first await in _notesSave)
-  if (_notesSaveTimer) {
-    clearTimeout(_notesSaveTimer);
-    _notesSaveTimer = null;
-    _notesSave(); // intentionally not awaited
-  }
-  // Cancel any in-flight open request (rapid sidebar clicks)
-  if (_notesOpenAbort) _notesOpenAbort.abort();
-  _notesOpenAbort = new AbortController();
-  const signal = _notesOpenAbort.signal;
-
-  // Optimistic: highlight the clicked item immediately and blank the editor
-  document.querySelectorAll('#notes-list .notes-list-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.path === path);
-  });
-  if (_quill) { _quill.setText(''); }
-  document.getElementById('notes-save-status').textContent = '';
-
-  let data;
-  const noteCacheKey = 'amux_note_' + path;
-  try {
-    const r = await fetch(API + '/api/notes/' + path.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/'), { signal });
-    if (!r.ok) throw new Error('not ok');
-    data = await r.json();
-    // Cache to IDB for offline access
-    _idb.set(noteCacheKey, JSON.stringify(data));
-  } catch(e) {
-    if (e.name === 'AbortError') return; // superseded by a newer click
-    // Offline — try IDB cache
-    const cached = await _idb.get(noteCacheKey).catch(() => null);
-    if (cached) { data = JSON.parse(cached); }
-    else return;
-  }
-
+function _notesRenderContent(data) {
+  // Populate UI from note data (shared by cache + network paths)
   _notesActive = { path: data.path };
   _notesRawContent = data.content || '';
   localStorage.setItem('amux_last_note', data.path);
-  // Derive title from content H1 or filename
   const h1html = data.content.match(/<h1[^>]*>(.*?)<\/h1>/i);
   const h1md = data.content.match(/^#\s+(.+)$/m);
   const titleFromContent = h1html ? h1html[1].replace(/<[^>]+>/g, '') : (h1md ? h1md[1] : '');
-  const titleFromPath = path.replace(/\.md$/, '').split('/').pop();
+  const titleFromPath = data.path.replace(/\.md$/, '').split('/').pop();
   _notesActive.title = titleFromContent || titleFromPath;
   document.getElementById('notes-title').value = _notesActive.title;
-  // Keep sidebar list name in sync with derived title
   const listEntry = _notesAllNotes.find(n => n.path === data.path);
   if (listEntry) listEntry.name = _notesActive.title;
-  // Load into Quill instantly (no fade)
   if (!_quill) _notesInitQuill();
   const isHtml = /<[a-z][\s\S]*>/i.test(data.content);
   _notesLoadingContent = true;
@@ -23280,11 +23264,77 @@ async function _notesOpen(path) {
   document.getElementById('notes-empty-state').style.display = 'none';
   document.getElementById('notes-mode-tabs').style.display = 'flex';
   _notesSwitchMode('preview');
-  _notesSidebarUpdateActive(path);
+  _notesSidebarUpdateActive(data.path);
   _notesUpdatePinBtn();
+}
+
+async function _notesOpen(path) {
+  if (path === _notesActive?.path) return; // already open
+  // Fire pending save in background — don't block switching
+  if (_notesSaveTimer) {
+    clearTimeout(_notesSaveTimer);
+    _notesSaveTimer = null;
+    _notesSave(); // intentionally not awaited
+  }
+  // Cancel any in-flight open request (rapid sidebar clicks)
+  if (_notesOpenAbort) _notesOpenAbort.abort();
+  _notesOpenAbort = new AbortController();
+  const signal = _notesOpenAbort.signal;
+
+  // Optimistic: highlight clicked item instantly
+  document.querySelectorAll('#notes-list .notes-list-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.path === path);
+  });
   document.getElementById('notes-save-status').textContent = '';
-  // On mobile, auto-collapse sidebar after selecting a note
-  if (window.innerWidth <= 600 && _notesSidebarOpen) {
+
+  const noteCacheKey = 'amux_note_' + path;
+
+  // CACHE-FIRST: try to render from IDB synchronously-ish before network
+  // This gives Obsidian-like instant switching even on flaky connections
+  let rendered = false;
+  try {
+    const cached = await _idb.get(noteCacheKey);
+    if (cached && !signal.aborted) {
+      const data = JSON.parse(cached);
+      _notesRenderContent(data);
+      rendered = true;
+      // On mobile, collapse sidebar immediately after cache render
+      if (window.innerWidth <= 600 && _notesSidebarOpen) {
+        _notesSidebarOpen = false;
+        _notesApplySidebarState();
+      }
+    }
+  } catch(e) {}
+
+  // Revalidate from network (SWR)
+  let data;
+  try {
+    const r = await fetch(API + '/api/notes/' + path.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/'), { signal });
+    if (!r.ok) throw new Error('not ok');
+    data = await r.json();
+    _idb.set(noteCacheKey, JSON.stringify(data));
+  } catch(e) {
+    if (e.name === 'AbortError') return;
+    if (!rendered) { return; } // already logged; nothing to render
+    return; // cache already displayed, silently fail revalidation
+  }
+
+  // Only overwrite editor if content actually changed AND user isn't editing right now
+  // (avoid clobbering in-progress typing during revalidation)
+  if (rendered && _quill) {
+    const localHtml = _quill.root.innerHTML === '<p><br></p>' ? '' : _quill.root.innerHTML;
+    const serverContent = data.content || '';
+    if (localHtml === serverContent) {
+      // No change — just update metadata
+      _notesActive.path = data.path;
+      return;
+    }
+    // If Quill has focus, user is editing — skip server overwrite and let debounced save win
+    if (_quill.hasFocus()) return;
+  }
+
+  _notesRenderContent(data);
+  if (!rendered && window.innerWidth <= 600 && _notesSidebarOpen) {
     _notesSidebarOpen = false;
     _notesApplySidebarState();
   }
@@ -23356,19 +23406,22 @@ async function _notesSave() {
   _notesRawContent = content;
   const pathKey = _notesActive.path.replace(/\.md$/, '');
   const statusEl = document.getElementById('notes-save-status');
+  const activePath = _notesActive.path;
+  // OPTIMISTIC: write to IDB FIRST so local state is always durable
+  // (survives reload even if network/queue hasn't drained yet)
+  _idb.set('amux_note_' + activePath, JSON.stringify({ path: activePath, content }));
   const result = await apiCall(API + '/api/notes/' + pathKey.split('/').map(encodeURIComponent).join('/'), {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ content })
   });
   if (!result) {
-    statusEl.textContent = 'Queued';
-    setTimeout(() => { statusEl.textContent = ''; }, 2000);
+    statusEl.textContent = '◐ Offline';
+    statusEl.title = 'Saved locally, will sync when online';
     return;
   }
-  statusEl.textContent = '✓ Saved';
-  setTimeout(() => { statusEl.textContent = ''; }, 1500);
-  // Update IDB cache with fresh content
-  _idb.set('amux_note_' + _notesActive.path, JSON.stringify({ path: _notesActive.path, content }));
+  statusEl.textContent = '✓';
+  statusEl.title = 'Saved';
+  setTimeout(() => { statusEl.textContent = ''; statusEl.title = ''; }, 1500);
   // Update in-memory list and patch the DOM item in place (no full re-render)
   const saved = _notesAllNotes.find(n => n.path === _notesActive.path);
   if (saved) {
