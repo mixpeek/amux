@@ -12453,6 +12453,7 @@ function render() {
           ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();cloneSession('${s.name}')"><span class="mi">&#x1F504;</span> Clone &amp; continue</div>` : ''}
           ${!s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();newConversation('${s.name}')"><span class="mi">&#x1F195;</span> New conversation</div>` : ''}
           <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();shareSession('${s.name}')"><span class="mi">&#x1F517;</span> Share link</div>
+          <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();copyMoshCmd('${s.name}')"><span class="mi">&#x1F4CB;</span> Copy mosh command</div>
           <div class="card-menu-item" onclick="event.stopPropagation();archiveSession('${s.name}')"><span class="mi">&#x1F4E6;</span> Archive</div>
           <div class="card-menu-sep"></div>
           <div class="card-menu-item danger" onclick="event.stopPropagation();deleteSession('${s.name}')"><span class="mi">&#x2716;</span> Delete</div>
@@ -13512,6 +13513,17 @@ async function doStop(name) {
   await apiCall(API + '/api/sessions/' + name + '/stop', { method: 'POST' });
   await new Promise(r => setTimeout(r, 500));
   await fetchSessions();
+}
+
+async function copyMoshCmd(name) {
+  const cmd = `mosh --server=/opt/homebrew/bin/mosh-server konrad@bot-mini -- /opt/homebrew/bin/tmux attach-session -t amux-${name}`;
+  try {
+    await navigator.clipboard.writeText(cmd);
+    showToast('Copied mosh command');
+  } catch (e) {
+    // Fallback for non-HTTPS contexts
+    await showAlert(cmd);
+  }
 }
 
 async function doRestart(name) {
