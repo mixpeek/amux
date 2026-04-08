@@ -10032,7 +10032,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <input type="file" id="peek-file-input" multiple
           style="display:none" onchange="handlePeekFileInput(event)">
         <label for="peek-file-input" class="peek-attach-btn" title="Attach file">&#128206;</label>
-        <button class="peek-mic-btn" id="peek-mic-btn" onclick="_voiceToggle()" title="Voice chat">&#127908;</button>
+        <button class="peek-attach-btn" id="peek-hist-btn" onclick="openCmdHistoryModal()" title="Message history">&#x1F551;</button>
         <button class="btn primary" onclick="sendPeekCmd()">Send</button>
       </div>
       <!-- Drag-over hint (shown by CSS when drag-over class is on peek-overlay) -->
@@ -10261,6 +10261,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
 <!-- Toast -->
 <div id="toast" class="toast"></div>
+
+<!-- Cmd history modal -->
+<div id="cmd-history-modal" class="overlay" style="z-index:210;" onclick="if(event.target===this)closeCmdHistoryModal()">
+  <div style="display:flex;flex-direction:column;height:100%;max-width:680px;margin:0 auto;width:100%;">
+    <div class="overlay-header">
+      <h2>&#x1F551; Message history</h2>
+      <button class="btn" onclick="closeCmdHistoryModal()">&#x2715;</button>
+    </div>
+    <input type="search" id="cmd-history-search" placeholder="Search past messages..."
+      oninput="_renderCmdHistoryList(this.value)"
+      style="width:100%;box-sizing:border-box;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.9rem;outline:none;margin-bottom:10px;">
+    <div id="cmd-history-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;"></div>
+  </div>
+</div>
 
 <!-- Confirm / alert modal -->
 <div id="modal-backdrop" class="modal-backdrop" onclick="_modalBgClick(event)">
@@ -14692,6 +14706,52 @@ function cmdHistoryAdd(text) {
 
 function cmdHistoryReset() { _cmdHistoryIdx = -1; }
 
+function openCmdHistoryModal() {
+  const m = document.getElementById('cmd-history-modal');
+  if (!m) return;
+  m.classList.add('active');
+  const s = document.getElementById('cmd-history-search');
+  if (s) { s.value = ''; setTimeout(() => s.focus(), 50); }
+  _renderCmdHistoryList('');
+}
+function closeCmdHistoryModal() {
+  const m = document.getElementById('cmd-history-modal');
+  if (m) m.classList.remove('active');
+}
+function _renderCmdHistoryList(filter) {
+  const list = document.getElementById('cmd-history-list');
+  if (!list) return;
+  const q = (filter || '').trim().toLowerCase();
+  // newest first, dedupe consecutive duplicates already handled at add time
+  const items = _cmdHistory.slice().reverse();
+  const filtered = q ? items.filter(t => t.toLowerCase().includes(q)) : items;
+  if (!filtered.length) {
+    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px;text-align:center;">'
+      + (q ? 'No matches.' : 'No history yet.') + '</div>';
+    return;
+  }
+  list.innerHTML = filtered.map(t => {
+    const safe = t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    const enc = encodeURIComponent(t);
+    return '<div onclick="_pickCmdHistory(decodeURIComponent(\u0027' + enc + '\u0027))" '
+      + 'style="cursor:pointer;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;'
+      + 'font-size:0.85rem;color:var(--text);white-space:pre-wrap;word-break:break-word;line-height:1.45;'
+      + 'transition:border-color 0.15s;" '
+      + 'onmouseenter="this.style.borderColor=\u0027var(--accent)\u0027" '
+      + 'onmouseleave="this.style.borderColor=\u0027var(--border)\u0027">' + safe + '</div>';
+  }).join('');
+}
+function _pickCmdHistory(text) {
+  const inp = document.getElementById('peek-cmd-input');
+  if (inp) {
+    inp.value = text;
+    autoGrow(inp);
+    inp.focus({ preventScroll: true });
+    requestAnimationFrame(() => { inp.selectionStart = inp.selectionEnd = inp.value.length; });
+  }
+  closeCmdHistoryModal();
+}
+
 function cmdHistoryUp(inp) {
   if (!_cmdHistory.length) return;
   if (_cmdHistoryIdx === -1) { _cmdHistoryDraft = inp.value; _cmdHistoryIdx = _cmdHistory.length - 1; }
@@ -16856,7 +16916,11 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   if (!document.getElementById('peek-overlay').classList.contains('active')) return;
-  if (e.key === 'Escape') { e.preventDefault(); closePeek(); return; }
+  if (e.key === 'Escape') {
+    const histM = document.getElementById('cmd-history-modal');
+    if (histM && histM.classList.contains('active')) { e.preventDefault(); closeCmdHistoryModal(); return; }
+    e.preventDefault(); closePeek(); return;
+  }
   // Ctrl+C with no selection → send interrupt; Ctrl+X (outside input) → send Ctrl-X
   if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
     const ae = document.activeElement;
