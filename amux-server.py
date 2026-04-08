@@ -1658,6 +1658,11 @@ INSERT OR IGNORE INTO statuses (id, label, position, is_builtin) VALUES
     ('review',    'In Review',    3, 1),
     ('done',      'Done',         4, 1),
     ('discarded', 'Discarded',    5, 1);
+-- Migrate existing DBs: when 'review' was inserted into a pre-existing table,
+-- 'done' and 'discarded' kept their old positions (3, 4) and would tie with
+-- 'review' at 3, breaking ORDER BY position. Idempotent fix:
+UPDATE statuses SET position = 4 WHERE id = 'done'      AND position <> 4;
+UPDATE statuses SET position = 5 WHERE id = 'discarded' AND position <> 5;
 CREATE TABLE IF NOT EXISTS issues (
     id          TEXT PRIMARY KEY,
     title       TEXT NOT NULL,
