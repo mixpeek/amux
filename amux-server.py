@@ -2239,6 +2239,7 @@ def _init_db():
         "ALTER TABLE graph_nodes ADD COLUMN source_path TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE issues ADD COLUMN gcal_event_id TEXT",
         "ALTER TABLE issues ADD COLUMN pos REAL NOT NULL DEFAULT 0",
+        "ALTER TABLE issues ADD COLUMN notified INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE schedules ADD COLUMN kind TEXT NOT NULL DEFAULT 'tmux'",
     ]:
         try:
@@ -2739,6 +2740,37 @@ def _complete_session_board_issue(session_name: str):
             _sse_cache["board"]["time"] = 0
     except Exception:
         pass
+
+
+def _notify_session_of_task(session_name: str, item_id: str, title: str):
+    """Push a one-line task pickup notice into the target session's tmux pane.
+    Idempotent per (session, item_id): we mark `notified=1` on the issue row so
+    re-PATCHes (e.g. tag edits) don't re-notify. Runs in a background thread so
+    the API call returns immediately even if the target session takes a moment.
+    Best-effort: silently swallows errors (session might not be running yet)."""
+    def _run():
+        try:
+            db = get_db()
+            row = db.execute(
+                "SELECT notified FROM issues WHERE id=?", (item_id,)
+            ).fetchone()
+            if row and row["notified"]:
+                return  # already notified
+            # Mark first to win the race against concurrent PATCHes
+            db.execute("UPDATE issues SET notified=1 WHERE id=?", (item_id,))
+            db.commit()
+            text = (
+                f"New board task assigned: {item_id} — {title[:120]}. "
+                f"Run `amux board claim {item_id}` to take it, or check `amux board` for context."
+            )
+            ok, _msg = send_text(session_name, text)
+            if not ok:
+                # Session not running — clear the flag so a future restart picks it up
+                db.execute("UPDATE issues SET notified=0 WHERE id=?", (item_id,))
+                db.commit()
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True).start()
 
 
 _DEFAULT_STATUSES = [
@@ -27890,6 +27922,12 @@ class CCHandler(BaseHTTPRequestHandler):
                     _gcal_sync_bg(item_id, title=title, due=due, due_time=due_time or "", desc=desc, status=status)
                 _req_tl.event = {"type": "board", "action": "created", "target": item_id,
                                  "session": session, "detail": f"{item_id}: {title}"}
+                # Auto-notify the assignee session if this is an agent task waiting for pickup.
+                # Skip if creator==session (the session created its own task).
+                if (session and owner_type == "agent"
+                        and status in ("todo", "backlog")
+                        and creator != session):
+                    _notify_session_of_task(session, item_id, title)
                 return self._json(item, 201)
 
             # POST /api/board/clear-done — soft-delete all done issues
@@ -28034,6 +28072,11 @@ class CCHandler(BaseHTTPRequestHandler):
                 if method == "PATCH":
                     body = self._read_body()
                     now = int(time.time())
+                    # Snapshot the prior session+status so we can detect transitions
+                    prior = db.execute(
+                        "SELECT session, status, owner_type FROM issues WHERE id = ?", (bid,)
+                    ).fetchone()
+                    prior_session = prior["session"] if prior else None
                     set_clauses, params = [], []
                     for k in ("title", "desc", "status", "session", "due", "due_time", "owner_type", "pinned", "pos"):
                         if k in body:
@@ -28043,6 +28086,9 @@ class CCHandler(BaseHTTPRequestHandler):
                     if "creator" in body:
                         set_clauses.append("creator = ?")
                         params.append(body["creator"])
+                    # If session is being changed, reset notified so the new assignee gets pinged
+                    if "session" in body and (body.get("session") or None) != prior_session:
+                        set_clauses.append("notified = 0")
                     set_clauses.append("updated = ?")
                     params.append(now)
                     params.append(bid)
@@ -28067,6 +28113,13 @@ class CCHandler(BaseHTTPRequestHandler):
                                   due_time=updated_item.get("due_time", "") or "",
                                   desc=updated_item.get("desc", ""),
                                   status=updated_item.get("status", ""))
+                    # Auto-notify the (possibly new) assignee if the card is now an
+                    # agent task waiting for pickup. Idempotent via the notified flag.
+                    new_session = updated_item.get("session") or ""
+                    if (new_session
+                            and updated_item.get("owner_type") == "agent"
+                            and updated_item.get("status") in ("todo", "backlog")):
+                        _notify_session_of_task(new_session, bid, updated_item.get("title", ""))
                     return self._json(updated_item)
 
                 if method == "DELETE":
