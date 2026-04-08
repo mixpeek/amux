@@ -326,6 +326,175 @@ def _bu_screenshot(session: str = "amux", path: str = "") -> dict:
         return {"path": dest, "size": size}
     return result
 
+def _bu_agent_run(task: str, session: str = "amux-agent", profile: str = "",
+                  start_url: str = "", max_iterations: int = 25,
+                  model: str = "claude-sonnet-4-5") -> dict:
+    """Run an Anthropic Computer Use agent loop driving the browser-use Playwright session.
+
+    The model takes screenshots, decides actions, and we execute them via _bu_call.
+    Default model is Sonnet 4.5 because computer use is canonically a Sonnet feature;
+    pass model='claude-opus-4-6' or similar to override.
+    """
+    try:
+        import anthropic
+    except ImportError:
+        return {"error": "anthropic package not installed (pip install anthropic)"}
+    import base64
+
+    # Ensure session is open
+    if profile and start_url:
+        _bu_call(["-b", "real", "--profile", profile, "open", start_url], session=session, timeout_s=30)
+    elif profile:
+        _bu_call(["-b", "real", "--profile", profile, "open", "about:blank"], session=session, timeout_s=30)
+    elif start_url:
+        _bu_call(["open", start_url], session=session, timeout_s=30)
+    else:
+        _bu_call(["open", "about:blank"], session=session, timeout_s=30)
+
+    DISPLAY_W, DISPLAY_H = 1280, 800
+
+    try:
+        client = anthropic.Anthropic()
+    except Exception as e:
+        return {"error": f"failed to init Anthropic client: {e}"}
+
+    def _shot_b64():
+        s = _bu_screenshot(session=session)
+        p = s.get("path", "")
+        if not p or not Path(p).exists():
+            return None, None, f"screenshot failed: {s}"
+        try:
+            data = Path(p).read_bytes()
+            # Detect media type from magic bytes (browser-use may write PNG to .jpg path)
+            if data[:8] == b"\x89PNG\r\n\x1a\n":
+                media = "image/png"
+            elif data[:3] == b"\xff\xd8\xff":
+                media = "image/jpeg"
+            elif data[:6] in (b"GIF87a", b"GIF89a"):
+                media = "image/gif"
+            elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+                media = "image/webp"
+            else:
+                media = "image/png"
+            return base64.standard_b64encode(data).decode(), media, None
+        except Exception as e:
+            return None, None, str(e)
+
+    def _exec_action(inp):
+        a = inp.get("action", "")
+        coord = inp.get("coordinate") or [0, 0]
+        x, y = (coord + [0, 0])[:2]
+        text = inp.get("text", "")
+        try:
+            if a == "screenshot":
+                pass
+            elif a == "left_click":
+                _bu_call(["click", str(int(x)), str(int(y))], session=session)
+            elif a == "double_click":
+                _bu_call(["click", str(int(x)), str(int(y))], session=session)
+                time.sleep(0.1)
+                _bu_call(["click", str(int(x)), str(int(y))], session=session)
+            elif a == "triple_click":
+                for _ in range(3):
+                    _bu_call(["click", str(int(x)), str(int(y))], session=session)
+                    time.sleep(0.05)
+            elif a == "right_click":
+                _bu_call(["eval",
+                    f"(()=>{{const el=document.elementFromPoint({int(x)},{int(y)});"
+                    f"if(el)el.dispatchEvent(new MouseEvent('contextmenu',{{bubbles:true,clientX:{int(x)},clientY:{int(y)}}}));}})()"
+                ], session=session)
+            elif a == "middle_click":
+                _bu_call(["click", str(int(x)), str(int(y))], session=session)
+            elif a == "type":
+                _bu_call(["type", text], session=session)
+            elif a == "key":
+                _bu_call(["keys", text], session=session)
+            elif a == "scroll":
+                direction = inp.get("scroll_direction", "down")
+                amount = max(1, int(inp.get("scroll_amount", 3))) * 100
+                _bu_call(["scroll", direction, "--amount", str(amount)], session=session)
+            elif a == "wait":
+                time.sleep(min(float(inp.get("duration", 1)), 10))
+            elif a in ("mouse_move", "left_mouse_down", "left_mouse_up", "cursor_position", "hold_key"):
+                pass  # no-op (browser-use doesn't expose hover/drag)
+            else:
+                return {"is_error": True, "text": f"unsupported action: {a}"}
+        except Exception as e:
+            return {"is_error": True, "text": f"action {a} failed: {e}"}
+        b64, media, err = _shot_b64()
+        if err:
+            return {"is_error": True, "text": err}
+        return {"image_b64": b64, "media": media}
+
+    tools = [{
+        "type": "computer_20250124",
+        "name": "computer",
+        "display_width_px": DISPLAY_W,
+        "display_height_px": DISPLAY_H,
+    }]
+    messages = [{"role": "user", "content": task}]
+    action_log = []
+    final_text = ""
+    iterations = 0
+
+    for it in range(max_iterations):
+        iterations = it + 1
+        try:
+            resp = client.beta.messages.create(
+                model=model,
+                max_tokens=4096,
+                tools=tools,
+                messages=messages,
+                betas=["computer-use-2025-01-24"],
+            )
+        except Exception as e:
+            return {"error": f"anthropic call failed: {e}", "iterations": iterations, "log": action_log}
+
+        # Re-serialize content blocks to plain dicts so we can append
+        assistant_content = []
+        tool_uses = []
+        for block in resp.content:
+            try:
+                d = block.model_dump(exclude_none=True)
+            except Exception:
+                d = {"type": getattr(block, "type", "unknown")}
+            assistant_content.append(d)
+            if block.type == "text":
+                final_text = block.text
+                action_log.append({"type": "text", "text": block.text[:500]})
+            elif block.type == "tool_use":
+                tool_uses.append(block)
+                action_log.append({"type": "tool_use", "name": block.name, "input": block.input})
+        messages.append({"role": "assistant", "content": assistant_content})
+
+        if resp.stop_reason == "end_turn" or not tool_uses:
+            break
+
+        results = []
+        for tu in tool_uses:
+            r = _exec_action(tu.input)
+            content = []
+            if r.get("image_b64"):
+                content.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": r.get("media", "image/png"), "data": r["image_b64"]},
+                })
+            if r.get("text"):
+                content.append({"type": "text", "text": r["text"]})
+            tr = {"type": "tool_result", "tool_use_id": tu.id, "content": content}
+            if r.get("is_error"):
+                tr["is_error"] = True
+            results.append(tr)
+        messages.append({"role": "user", "content": results})
+
+    return {
+        "success": True,
+        "result": final_text,
+        "iterations": iterations,
+        "stop_reason": getattr(resp, "stop_reason", None),
+        "log": action_log,
+    }
+
 # ── Terminal (PTY) session management ─────────────────────────────────────────
 import pty
 import fcntl
@@ -26457,26 +26626,52 @@ class CCHandler(BaseHTTPRequestHandler):
 
         # GET /api/sessions
         if method == "GET" and path == "/api/sessions":
-            # Use shared SSE cache to avoid redundant subprocess calls on concurrent requests
+            # Shared cache with stale-while-revalidate. Only ONE thread ever
+            # runs list_sessions() at a time. Other threads return stale data
+            # immediately (if any) or wait briefly then return whatever the
+            # refresher produced. This prevents thundering herd under load
+            # where list_sessions() can take 30+ seconds.
             now = time.time()
             sc = _sse_cache["sessions"]
-            if now - sc["time"] > _SSE_CACHE_TTL:
+            age = now - sc["time"]
+            if age > _SSE_CACHE_TTL:
                 if _sse_cache_lock.acquire(blocking=False):
+                    # We're the refresher.
+                    released_to_bg = False
                     try:
-                        if time.time() - sc["time"] > _SSE_CACHE_TTL:  # double-check
+                        if time.time() - sc["time"] > _SSE_CACHE_TTL:
+                            # If we already have data, refresh in the background
+                            # so this request returns fast. Only block if cold.
+                            if sc["data"] is not None:
+                                def _bg_refresh():
+                                    try:
+                                        data = list_sessions()
+                                        sc["data"] = data
+                                        sc["json"] = json.dumps(data, sort_keys=True)
+                                        sc["time"] = time.time()
+                                    finally:
+                                        _sse_cache_lock.release()
+                                threading.Thread(target=_bg_refresh, daemon=True).start()
+                                released_to_bg = True
+                                return self._json(sc["data"])
+                            # Cold cache — must block.
                             data = list_sessions()
                             sc["data"] = data
                             sc["json"] = json.dumps(data, sort_keys=True)
                             sc["time"] = time.time()
                     finally:
-                        _sse_cache_lock.release()
+                        if not released_to_bg:
+                            _sse_cache_lock.release()
                 else:
-                    # Another thread is refreshing — wait briefly for it
-                    for _ in range(50):
+                    # Another thread is refreshing. Return stale data immediately
+                    # if we have any, otherwise wait briefly for the refresher.
+                    if sc["data"] is not None:
+                        return self._json(sc["data"])
+                    for _ in range(100):  # up to 10s for cold start
                         time.sleep(0.1)
-                        if time.time() - sc["time"] <= _SSE_CACHE_TTL:
+                        if sc["data"] is not None:
                             break
-            return self._json(sc["data"] if sc["data"] is not None else list_sessions())
+            return self._json(sc["data"] if sc["data"] is not None else [])
 
         # GET/POST /api/memory/global
         if path == "/api/memory/global":
@@ -29661,6 +29856,24 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     return self._json({"success": True, "profile": name, "path": str(dest)})
                 except Exception as e:
                     return self._json({"error": str(e)}, 500)
+
+            # POST /api/browser/agent  {"task":"...", "session":"...", "profile":"...",
+            #                            "start_url":"...", "max_iterations":25, "model":"..."}
+            # AI agent loop powered by Anthropic Computer Use, executor = browser-use/Playwright.
+            if method == "POST" and path == "/api/browser/agent":
+                body = self._read_body()
+                task = body.get("task", "").strip()
+                if not task:
+                    return self._json({"error": "task required"}, 400)
+                result = _bu_agent_run(
+                    task=task,
+                    session=body.get("session", "amux-agent"),
+                    profile=body.get("profile", ""),
+                    start_url=body.get("start_url", ""),
+                    max_iterations=int(body.get("max_iterations", 25)),
+                    model=body.get("model", "claude-sonnet-4-5"),
+                )
+                return self._json(result)
 
             return self._json({"error": "browser route not found"}, 404)
 
