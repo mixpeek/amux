@@ -11520,7 +11520,10 @@ function render() {
       </div>` : ''}
       ${!s.running ? `<div style="padding:6px 0 2px;" onclick="event.stopPropagation()">
         <button class="btn primary" style="width:100%;" onclick="doStart('${s.name}')">&#x25B6; Start</button>
-      </div>` : ''}
+      </div>` : `<div style="padding:6px 0 2px;display:flex;gap:6px;" onclick="event.stopPropagation()">
+        <button class="btn" style="flex:1;background:var(--surface);border:1px solid var(--border);color:var(--dim);" onclick="doStop('${s.name}')">&#x23F9; Stop</button>
+        <button class="btn" style="flex:1;background:var(--surface);border:1px solid var(--border);color:var(--accent);" onclick="doRestart('${s.name}')">&#x21BB; Restart</button>
+      </div>`}
       <div class="panel" onclick="event.stopPropagation()">
         ${isExp && s.task_name ? `<div class="card-task-name"><span class="tn-label">Task:</span>${esc(s.task_name)}</div>` : ''}
         ${isExp && s.running ? `<div class="card-timing">
@@ -12534,6 +12537,26 @@ async function doStop(name) {
   await apiCall(API + '/api/sessions/' + name + '/stop', { method: 'POST' });
   await new Promise(r => setTimeout(r, 500));
   await fetchSessions();
+}
+
+async function doRestart(name) {
+  await apiCall(API + '/api/sessions/' + name + '/stop', { method: 'POST' });
+  // Poll until stopped (up to 5s). If it never stops, bail out instead of
+  // racing doStart against a still-running session.
+  let stopped = false;
+  for (let i = 0; i < 10; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    await fetchSessions();
+    if (!sessions.find(s => s.name === name && s.running)) {
+      stopped = true;
+      break;
+    }
+  }
+  if (!stopped) {
+    showToast("Stop didn't take effect, try again");
+    return;
+  }
+  await doStart(name);
 }
 
 // ── Sending indicator ──
