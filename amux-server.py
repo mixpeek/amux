@@ -13524,6 +13524,12 @@ async function refreshPeek() {
     if (peekSession !== name) return;
     const output = data.output || '(no output)';
     const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+    // Anchor on distance-from-bottom, not scrollTop. Peek returns the
+    // tail of the buffer, so when new lines append, old lines roll off
+    // the top — every visible line shifts up by N. Preserving scrollTop
+    // would slide the user's reading position; preserving distance from
+    // the bottom keeps the same content under their eye.
+    const distFromBottom = body.scrollHeight - body.scrollTop - body.clientHeight;
     const newHTML = linkifyOutput(stripAnsi(output));
     // Re-check: user may have started selecting text during the async fetch
     if (peekSelecting || (window.getSelection()?.toString().length > 0)) return;
@@ -13531,12 +13537,11 @@ async function refreshPeek() {
     if (_sendingSnapshot && newHTML !== _sendingSnapshot) clearSendingIndicator();
     lastPeekHTML = newHTML;
     const hasSearch = peekSearchQuery.trim().length > 0;
-    const savedScrollTop = body.scrollTop;
     applyPeekSearch(hasSearch);  // keepIndex=true when search is active
     if (atBottom && !hasSearch) {
       body.scrollTop = body.scrollHeight;
     } else {
-      body.scrollTop = savedScrollTop;
+      body.scrollTop = Math.max(0, body.scrollHeight - body.clientHeight - distFromBottom);
     }
     statusEl.textContent = (data.saved ? 'Saved log' : 'Updated') + ' ' + new Date().toLocaleTimeString();
     // Cache peek output for offline browsing
