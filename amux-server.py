@@ -9678,7 +9678,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <button id="tp-play" onclick="_tpToggle()" style="background:#7c6fcd;border:none;color:#fff;width:40px;height:40px;border-radius:50%;font-size:1.1rem;cursor:pointer;">&#x25B6;</button>
     <div style="display:flex;align-items:center;gap:6px;">
       <span style="color:#aaa;font-size:0.75rem;">WPM</span>
-      <input id="tp-wpm" type="range" min="60" max="400" step="5" value="150" oninput="_tpSetWpm(this.value)" style="width:120px;accent-color:#7c6fcd;">
+      <input id="tp-wpm" type="range" min="10" max="400" step="5" value="150" oninput="_tpSetWpm(this.value)" style="width:120px;accent-color:#7c6fcd;">
       <span id="tp-wpm-val" style="min-width:32px;font-variant-numeric:tabular-nums;">150</span>
     </div>
     <div style="display:flex;align-items:center;gap:6px;">
