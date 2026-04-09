@@ -9990,11 +9990,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </div>
       <button class="btn" id="peek-explore-btn" onclick="openExplore(peekSessionDir,peekSession)" title="Browse files">&#x1F4C2;</button>
       <button class="btn" onclick="togglePeekFocus()" id="peek-focus-btn" title="Focus mode — hide controls">&#x25B4;</button>
-      <button class="btn" id="peek-menu-btn" onclick="event.stopPropagation();togglePeekMenu()" title="Session options">&#x22EF;</button>
-      <div class="card-menu" id="peek-menu">
-        <div class="card-menu-item" onclick="event.stopPropagation();_peekMenuRestart()"><span class="mi">&#x21BB;</span> Restart</div>
-        <div class="card-menu-item" onclick="event.stopPropagation();_peekMenuStop()"><span class="mi">&#x23F9;</span> Stop</div>
-      </div>
       <button class="btn" onclick="closePeek()">Close</button>
     </div>
   </div>
@@ -11491,6 +11486,8 @@ function render() {
           <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','desc','${esc(s.desc||"")}')"><span class="mi">&#x1F4DD;</span> Description</div>
           <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','tags','${esc(s.tags.join(", "))}')"><span class="mi">&#x1F3F7;</span> Tags</div>
           <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','dir','${esc(s.dir)}')"><span class="mi">&#x1F4C1;</span> Directory</div>
+          ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();doRestart('${s.name}')"><span class="mi">&#x21BB;</span> Restart</div>` : ''}
+          ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();doStop('${s.name}')"><span class="mi">&#x23F9;</span> Stop</div>` : ''}
           ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();clearScrollback('${s.name}')"><span class="mi">&#x239A;</span> Clear scrollback</div>` : ''}
           <div class="card-menu-item" onclick="event.stopPropagation();duplicateSession('${s.name}')"><span class="mi">&#x2398;</span> Duplicate</div>
           ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();cloneSession('${s.name}')"><span class="mi">&#x1F504;</span> Clone &amp; continue</div>` : ''}
