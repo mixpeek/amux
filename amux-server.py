@@ -10038,8 +10038,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           <div id="slash-ac-list" class="ac-list slash-ac"></div>
         </div>
         <input type="file" id="peek-file-input" multiple
-          style="display:none" onchange="handlePeekFileInput(event)">
-        <label for="peek-file-input" class="peek-attach-btn" title="Attach file">&#128206;</label>
+          style="position:absolute;width:0;height:0;opacity:0;overflow:hidden;pointer-events:none;" onchange="handlePeekFileInput(event)">
+        <button class="peek-attach-btn" title="Attach file" onclick="document.getElementById('peek-file-input').click()">&#128206;</button>
         <button class="peek-attach-btn" id="peek-hist-btn" onclick="openCmdHistoryModal()" title="Message history">&#x1F551;</button>
         <button class="btn primary" onclick="sendPeekCmd()">Send</button>
       </div>
