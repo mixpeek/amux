@@ -14516,6 +14516,11 @@ const SLASH_COMMANDS = [
   { cmd: '/config', desc: 'Open config panel' },
   { cmd: '/amux', desc: 'Interact with amux — board, memory, sessions' },
   { cmd: '/amux-board', desc: 'Add a task or note to the board' },
+  { cmd: '/chrome-cdp', desc: 'Control live Chrome — screenshots, click, type, eval' },
+  { cmd: '/playwright-auth', desc: 'Capture and sync browser auth profiles' },
+  { cmd: '/pw-test', desc: 'Run Playwright UI tests or investigate issues' },
+  { cmd: '/record', desc: 'Record MP4 video of a browser task' },
+  { cmd: '/review-session-log', desc: 'Review a session terminal log' },
 ];
 
 // ── Customizable chip bar ──
