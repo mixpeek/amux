@@ -16617,6 +16617,23 @@ function _showFilesMenu(path, btn, type) {
   linkItem.textContent = 'Copy link';
   linkItem.onclick = () => { popup.remove(); _copyFileDeeplink(path); };
   popup.appendChild(linkItem);
+  // Delete
+  const delItem = document.createElement('button');
+  delItem.className = 'explore-menu-item';
+  delItem.style.color = 'var(--red, #f85149)';
+  delItem.textContent = type === 'directory' ? 'Delete folder' : 'Delete file';
+  delItem.onclick = async () => {
+    popup.remove();
+    const name = path.split('/').pop();
+    if (!confirm('Delete "' + name + '"? This cannot be undone.')) return;
+    try {
+      const r = await fetch(API + '/api/fs/delete', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ path }) });
+      const d = await r.json();
+      if (r.ok) { showToast('Deleted ' + name); loadFiles(_filesPath); }
+      else showToast('Delete failed: ' + (d.error || r.status));
+    } catch(e) { showToast('Delete error: ' + e.message); }
+  };
+  popup.appendChild(delItem);
   document.body.appendChild(popup);
   const r = btn.getBoundingClientRect();
   const pw = popup.offsetWidth || 160;
