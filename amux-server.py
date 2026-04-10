@@ -5505,7 +5505,7 @@ def _gmail_list_labels(account: str) -> list:
 
 
 _SHARE_CSS = """
-:root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#e6edf3; --text2:#8b949e; --green:#3fb950; --accent:#58a6ff; }
+:root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#e6edf3; --text2:#9ca3af; --green:#3fb950; --accent:#58a6ff; }
 *{ box-sizing:border-box; margin:0; padding:0; }
 body{ background:var(--bg); color:var(--text); font-family:'SF Mono',Menlo,Consolas,monospace; font-size:13px; }
 header{ padding:16px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:12px; }
@@ -5663,7 +5663,7 @@ RELEASE_NOTES_HTML = """<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#0a0a0c;--card:#111114;--border:#2a2a30;--text:#e8e8ec;--dim:#8888a0;--muted:#55556a;--green:#4ade80;--mono:'JetBrains Mono','SF Mono',Consolas,monospace}
+:root{--bg:#0a0a0c;--card:#111114;--border:#2a2a30;--text:#e8e8ec;--dim:#a0a0b8;--muted:#707088;--green:#4ade80;--mono:'JetBrains Mono','SF Mono',Consolas,monospace}
 body{font-family:'DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;line-height:1.5;-webkit-font-smoothing:antialiased}
 body::before{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(255,255,255,0.008) 2px,rgba(255,255,255,0.008) 4px);pointer-events:none;z-index:9999}
 a{color:var(--green);text-decoration:none}
@@ -5951,10 +5951,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     cursor: default; color: var(--dim); opacity: 0; transition: opacity 0.15s; border-radius: 3px;
     user-select: none; -webkit-user-select: none; touch-action: none;
   }
-  .card:hover .card-drag-handle { opacity: 0.45; cursor: grab; }
+  .card:hover .card-drag-handle { opacity: 0.7; cursor: grab; }
   .card-drag-handle:hover { opacity: 1 !important; cursor: grab; color: var(--fg); background: rgba(139,148,158,0.1); }
   .card-drag-handle:active { cursor: grabbing; }
-  @media (hover: none) { .card-drag-handle { opacity: 0.35; cursor: grab; } }
+  @media (hover: none) { .card-drag-handle { opacity: 0.6; cursor: grab; } }
   .card-header-meta { display: flex; align-items: center; gap: 6px; margin-left: 20px; min-width: 0; }
   .card-menu-btn {
     width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--border);
@@ -6382,7 +6382,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .explore-mtime { font-size: 0.68rem; color: var(--dim); flex-shrink: 0; }
   .explore-menu-btn { flex-shrink: 0; background: none; border: none; color: var(--dim);
     cursor: pointer; font-size: 1rem; padding: 2px 6px; border-radius: 4px; line-height: 1;
-    opacity: 0.4; transition: opacity 0.15s; }
+    opacity: 0.7; transition: opacity 0.15s; }
   .explore-row:hover .explore-menu-btn, .explore-menu-btn:focus { opacity: 1; }
   #files-body.files-drop-active { outline: 2px dashed var(--accent); outline-offset: -4px; background: color-mix(in srgb, var(--accent) 6%, var(--bg)); }
   /* File explorer redesign */
@@ -7511,7 +7511,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     transition: opacity 0.15s; border-radius: 4px;
     color: var(--dim); display: flex; align-items: center; justify-content: center;
   }
-  .board-card:hover .board-pin-btn { opacity: 0.5; }
+  .board-card:hover .board-pin-btn { opacity: 0.7; }
   .board-pin-btn:hover { opacity: 1 !important; background: rgba(139,148,158,0.12); }
   .board-pin-btn.active { opacity: 0.8 !important; color: var(--accent); }
   .board-card:hover .board-pin-btn.active { opacity: 1 !important; }
@@ -7524,7 +7524,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     border-radius: 4px;
     touch-action: none;
   }
-  .board-card:hover .board-drag-handle { opacity: 0.55; cursor: grab; }
+  .board-card:hover .board-drag-handle { opacity: 0.7; cursor: grab; }
   .board-drag-handle:hover { opacity: 1 !important; cursor: grab; color: var(--fg); background: rgba(139,148,158,0.12); }
   .board-drag-handle:active { cursor: grabbing; }
   @media (hover: none) { .board-drag-handle { opacity: 0.5; width: 32px; height: 32px; cursor: grab; } }
@@ -8837,41 +8837,41 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <!-- API key setup modal — shown on cloud when no user key is configured (dismissible) -->
 <div id="apikey-setup-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:none;align-items:center;justify-content:center;">
   <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:32px;max-width:440px;width:90%;box-shadow:0 24px 64px rgba(0,0,0,0.6);position:relative;color:#e8e8e8;">
-    <button onclick="document.getElementById('apikey-setup-modal').style.display='none'" style="position:absolute;top:12px;right:14px;background:none;border:none;color:#aaa;font-size:1.2rem;cursor:pointer;padding:4px;" title="Close">&#x2715;</button>
+    <button onclick="document.getElementById('apikey-setup-modal').style.display='none'" style="position:absolute;top:12px;right:14px;background:none;border:none;color:#ccc;font-size:1.2rem;cursor:pointer;padding:4px;" title="Close">&#x2715;</button>
     <div style="font-size:1.4rem;font-weight:700;margin-bottom:8px;color:#fff;">Get started</div>
-    <div style="font-size:0.85rem;color:#aaa;margin-bottom:20px;line-height:1.5;">
+    <div style="font-size:0.85rem;color:#ccc;margin-bottom:20px;line-height:1.5;">
       Choose how to authenticate with Claude:
     </div>
     <button id="apikey-login-btn" onclick="apikeySetupLogin()"
-      style="width:100%;padding:12px;border-radius:7px;border:1px solid #4338ca;background:#1e1b4b;color:#c7d2fe;font-size:0.95rem;font-weight:600;cursor:pointer;margin-bottom:10px;display:flex;align-items:center;justify-content:center;gap:8px;">
+      style="width:100%;padding:12px;border-radius:7px;border:1px solid #6366f1;background:#312e81;color:#e0e7ff;font-size:0.95rem;font-weight:600;cursor:pointer;margin-bottom:10px;display:flex;align-items:center;justify-content:center;gap:8px;">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v6m0 0l2.5-2.5M8 7L5.5 4.5M2 10v2a2 2 0 002 2h8a2 2 0 002-2v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       Log in with Claude account
     </button>
-    <div style="font-size:0.78rem;color:#888;text-align:center;margin-bottom:16px;">Recommended — uses your Claude.ai account (Pro, Max, or Team)</div>
+    <div style="font-size:0.78rem;color:#b0b0b0;text-align:center;margin-bottom:16px;">Recommended — uses your Claude.ai account (Pro, Max, or Team)</div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
       <div style="flex:1;height:1px;background:#333;"></div>
-      <span style="font-size:0.75rem;color:#666;">or use an API key</span>
+      <span style="font-size:0.75rem;color:#9ca3af;">or use an API key</span>
       <div style="flex:1;height:1px;background:#333;"></div>
     </div>
     <input id="apikey-setup-input" type="password" placeholder="sk-ant-api03-..." autocomplete="off" spellcheck="false"
-      style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:7px;border:1px solid #444;background:#111;color:#e8e8e8;font-size:0.92rem;font-family:monospace;margin-bottom:8px;"
+      style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:7px;border:1px solid #555;background:#111;color:#e8e8e8;font-size:0.92rem;font-family:monospace;margin-bottom:8px;"
       onkeydown="if(event.key==='Enter')apikeySetupSave()">
     <div id="apikey-setup-err" style="color:#f87171;font-size:0.8rem;min-height:18px;margin-bottom:12px;"></div>
     <button id="apikey-setup-btn" onclick="apikeySetupSave()"
-      style="width:100%;padding:11px;border-radius:7px;border:none;background:#333;color:#ccc;font-size:0.88rem;font-weight:500;cursor:pointer;">
+      style="width:100%;padding:11px;border-radius:7px;border:none;background:#444;color:#e8e8e8;font-size:0.88rem;font-weight:500;cursor:pointer;">
       Save API key
     </button>
     <div style="text-align:center;margin-top:8px;">
       <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:#a78bfa;font-size:0.78rem;">Get a key at console.anthropic.com &rarr;</a>
     </div>
-    <div style="text-align:center;margin-top:8px;font-size:0.78rem;color:#888;">You can change this later in Settings</div>
+    <div style="text-align:center;margin-top:8px;font-size:0.78rem;color:#b0b0b0;">You can change this later in Settings</div>
   </div>
 </div>
-<div id="org-banner" style="display:none;background:#1e1b4b;border-bottom:1px solid #4338ca;color:#c7d2fe;padding:7px 16px;text-align:center;font-size:0.82rem;z-index:200;position:relative;display:none;">
+<div id="org-banner" style="display:none;background:#312e81;border-bottom:1px solid #6366f1;color:#e0e7ff;padding:7px 16px;text-align:center;font-size:0.82rem;z-index:200;position:relative;display:none;">
   <span id="org-banner-text"></span>
   <button onclick="_switchOrg('')" style="margin-left:12px;background:#4338ca;color:#e0e7ff;border:none;border-radius:4px;padding:2px 10px;font-size:0.78rem;cursor:pointer;">← My workspace</button>
 </div>
-<div id="org-invite-banner" style="display:none;background:#14532d;border-bottom:1px solid #16a34a;color:#bbf7d0;padding:7px 16px;font-size:0.82rem;z-index:200;position:relative;display:none;align-items:center;justify-content:center;gap:10px;">
+<div id="org-invite-banner" style="display:none;background:#166534;border-bottom:1px solid #22c55e;color:#dcfce7;padding:7px 16px;font-size:0.82rem;z-index:200;position:relative;display:none;align-items:center;justify-content:center;gap:10px;">
   <span id="org-invite-banner-text"></span>
   <button onclick="_dismissOrgBanner()" style="background:none;border:none;color:#bbf7d0;cursor:pointer;font-size:1rem;line-height:1;opacity:0.7;padding:0 2px;" title="Dismiss">&#x2715;</button>
 </div>
