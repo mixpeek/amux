@@ -8187,8 +8187,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .notes-quill-wrap .ql-editor blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--dim); margin: 8px 0; }
   .notes-quill-wrap .ql-editor pre { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: 0.85em; }
   .notes-quill-wrap .ql-editor hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
-  .notes-quill-wrap .ql-snow .ql-toolbar .ql-divider { width: 28px; font-size: 0.75rem; color: var(--dim); font-weight: 600; }
-  .notes-quill-wrap .ql-snow .ql-toolbar .ql-divider::after { content: '—'; }
+  .ql-snow .ql-toolbar .ql-divider { width: 28px; }
+  .ql-snow .ql-toolbar .ql-divider svg { width: 18px; height: 18px; }
   .notes-quill-wrap .ql-editor.ql-blank::before { color: var(--dim); font-style: normal; }
   .notes-quill-wrap .ql-snow .ql-stroke { stroke: var(--dim); }
   .notes-quill-wrap .ql-snow .ql-fill { fill: var(--dim); }
@@ -8299,8 +8299,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     /* Hide less-used formatting on mobile to keep bar uncluttered */
     .notes-quill-wrap .ql-toolbar.ql-snow .ql-strike,
     .notes-quill-wrap .ql-toolbar.ql-snow .ql-underline,
-    .notes-quill-wrap .ql-toolbar.ql-snow .ql-clean,
-    .notes-quill-wrap .ql-toolbar.ql-snow .ql-divider { display: none; }
+    .notes-quill-wrap .ql-toolbar.ql-snow .ql-clean { display: none; }
     .notes-quill-wrap .ql-editor { font-size: 16px; min-height: 160px; padding: 12px 16px 96px; }
     .notes-preview { padding: 16px 16px 96px; font-size: 16px; }
     .notes-new-btn { width: 36px; height: 36px; font-size: 1.3rem; }
@@ -9357,6 +9356,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <button class="notes-expand-btn" onclick="_notesToggleSidebar()" title="Show notes list"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg></button>
       <input id="notes-title" type="text" placeholder="Note title…" class="notes-title-input" oninput="_notesTitleChange()" onblur="_notesSaveDebounce()">
       <div style="display:flex;gap:6px;align-items:center;">
+        <span id="notes-session-badge" style="display:none;font-size:0.7rem;padding:3px 8px;border-radius:10px;background:rgba(88,166,255,0.12);color:var(--accent);cursor:pointer;border:1px solid rgba(88,166,255,0.3);" title="Open this session"></span>
         <span id="notes-save-status" style="font-size:0.72rem;color:var(--dim);"></span>
         <button id="notes-pin-btn" class="notes-pin-btn" onclick="_notesTogglePinActive()" title="Pin to top"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg></button>
         <button class="notes-delete-btn" onclick="_notesDelete()" title="Delete note"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
@@ -13488,6 +13488,18 @@ function _peekNotesShowEmpty() {
 
 function _peekNotesInitQuill() {
   if (_peekQuill) return;
+  // Reuse divider blot registered by main notes init (registers globally on Quill)
+  if (!_quillDividerRegistered && typeof Quill !== 'undefined') {
+    const BlockEmbed = Quill.import('blots/block/embed');
+    class DividerBlot extends BlockEmbed {
+      static create() { return super.create(); }
+      static value() { return true; }
+    }
+    DividerBlot.blotName = 'divider';
+    DividerBlot.tagName = 'hr';
+    Quill.register(DividerBlot);
+    _quillDividerRegistered = true;
+  }
   _peekQuill = new Quill('#peek-notes-quill', {
     theme: 'snow',
     modules: {
@@ -13498,12 +13510,27 @@ function _peekNotesInitQuill() {
           ['blockquote', 'code-block'],
           [{ list: 'ordered' }, { list: 'bullet' }, { list: 'check' }],
           ['link'],
+          ['divider'],
           ['clean']
-        ]
+        ],
+        handlers: {
+          divider: function() {
+            const range = _peekQuill.getSelection(true);
+            _peekQuill.insertText(range.index, '\n', 'user');
+            _peekQuill.insertEmbed(range.index + 1, 'divider', true, 'user');
+            _peekQuill.insertText(range.index + 2, '\n', 'user');
+            _peekQuill.setSelection(range.index + 3, 0, 'silent');
+          }
+        }
       }
     },
     placeholder: 'Write your note…'
   });
+  const _pdivBtn = document.querySelector('#peek-notes-panel .ql-toolbar .ql-divider');
+  if (_pdivBtn && !_pdivBtn.innerHTML) {
+    _pdivBtn.innerHTML = '<svg viewBox="0 0 18 18"><line class="ql-stroke" x1="3" x2="15" y1="9" y2="9" stroke-width="2"></line></svg>';
+    _pdivBtn.title = 'Insert horizontal divider';
+  }
   if (typeof QuillMarkdown !== 'undefined') {
     try { new QuillMarkdown(_peekQuill); } catch(e) {}
   }
@@ -23943,6 +23970,12 @@ function _notesInitQuill() {
     },
     placeholder: 'Write your note…'
   });
+  // Quill doesn't render any visual content for custom-format buttons — inject the icon ourselves
+  const _divBtn = document.querySelector('.notes-quill-wrap .ql-toolbar .ql-divider');
+  if (_divBtn && !_divBtn.innerHTML) {
+    _divBtn.innerHTML = '<svg viewBox="0 0 18 18"><line class="ql-stroke" x1="3" x2="15" y1="9" y2="9" stroke-width="2"></line></svg>';
+    _divBtn.title = 'Insert horizontal divider';
+  }
   // Enable inline markdown shortcuts (** → bold, # → heading, etc.)
   if (typeof QuillMarkdown !== 'undefined') {
     try { new QuillMarkdown(_quill); } catch(e) { console.warn('quilljs-markdown init failed:', e); }
@@ -24278,6 +24311,23 @@ function _notesRenderContent(data) {
   _notesSwitchMode('preview');
   _notesSidebarUpdateActive(data.path);
   _notesUpdatePinBtn();
+  _notesUpdateSessionBadge(data.path);
+}
+
+function _notesUpdateSessionBadge(path) {
+  const badge = document.getElementById('notes-session-badge');
+  if (!badge) return;
+  // Session-scoped notes live in _sessions/<sessionname>/<note>.md
+  const m = (path || '').match(/^_sessions\/([^/]+)\//);
+  if (m) {
+    const session = m[1];
+    badge.textContent = '⌘ ' + session;
+    badge.style.display = '';
+    badge.onclick = () => openPeek(session);
+  } else {
+    badge.style.display = 'none';
+    badge.onclick = null;
+  }
 }
 
 async function _notesOpen(path) {
