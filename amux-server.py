@@ -13576,6 +13576,7 @@ function _peekNotesSwitchMode(mode) {
       }
       preview.classList.add('md-content');
     }
+    preview.style.display = '';
     preview.classList.add('active');
     quillWrap.style.display = 'none';
   } else {
