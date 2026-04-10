@@ -1,0 +1,13 @@
+{
+  "name": "amux-desktop",
+  "version": "1.0.0",
+  "description": "Amux desktop app — Electron wrapper for the amux dashboard",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "electron": "^35.0.0"
+  }
+}
