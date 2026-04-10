@@ -7015,7 +7015,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   /* Peek tabs & memory panel */
   .peek-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 12px;
-    overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none; }
+    overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none;
+    overscroll-behavior-x: contain; touch-action: pan-x; }
   .peek-tabs::-webkit-scrollbar { display: none; }
   .peek-tab { padding: 8px 14px; font-size: 0.82rem; background: none; border: none;
     border-bottom: 2px solid transparent; color: var(--dim); cursor: pointer;
