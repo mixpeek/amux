@@ -22149,7 +22149,7 @@ async function _handleDeeplink(hash) {
   } else {
     dpath = new URLSearchParams(location.search).get('path');
     // Migrate old ?path= links to hash format
-    if (dpath) history.replaceState({}, '', location.pathname + '#path=' + encodeURIComponent(dpath));
+    if (dpath) history.replaceState({}, '', location.pathname + '#path=' + _encodeHashPath(dpath));
   }
   if (!dpath) return;
   try {
