@@ -5054,6 +5054,21 @@ def _channel_deliver(sender: str, recipient: str, text: str) -> tuple[bool, str]
     return send_text(recipient, wrapped)
 
 
+def _channel_end(closer: str, other: str) -> tuple[bool, str]:
+    """End a channel: notify the other side without a reply hint, then delete the file."""
+    safe_closer = closer if _VALID_SESSION_NAME_RE.match(closer) else "unknown"
+    notice = f"[channel ended by @{safe_closer}] no reply needed — the channel has been closed."
+    if is_running(other):
+        send_text(other, notice)
+    f = _channel_file(closer, other)
+    try:
+        if f.exists():
+            f.unlink()
+    except OSError as e:
+        return False, f"could not delete channel file: {e}"
+    return True, "ended"
+
+
 _ALLOWED_TMUX_KEYS = frozenset({
     "Enter", "Escape", "Tab", "BTab", "Space", "BSpace",
     "Up", "Down", "Left", "Right", "Home", "End",
@@ -10689,7 +10704,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <span class="channel-header-icon">#</span>
         <span id="channel-header-pair">channel</span>
       </div>
-      <button class="btn" onclick="channelClose()" aria-label="Close" style="font-size:1rem;padding:4px 10px;">&#x2715;</button>
+      <div style="display:flex;gap:6px;">
+        <button class="btn" onclick="channelEnd()" aria-label="End channel" title="End channel and clear history" style="font-size:0.78rem;padding:4px 10px;color:var(--red,#f85149);">End</button>
+        <button class="btn" onclick="channelClose()" aria-label="Close" style="font-size:1rem;padding:4px 10px;">&#x2715;</button>
+      </div>
     </div>
     <div id="channel-thread" class="channel-thread"></div>
     <form class="channel-input-row" onsubmit="event.preventDefault(); channelSend();">
@@ -14831,6 +14849,28 @@ function channelRender(messages) {
   }).join('');
   thread.innerHTML = html;
   thread.scrollTop = thread.scrollHeight;
+}
+
+async function channelEnd() {
+  if (!_channelMe || !_channelOther) return;
+  const me = _channelMe, other = _channelOther;
+  const ok = await showConfirm(
+    `End channel with @${other}?\n\nThis clears the history and notifies @${other} that the conversation is over.`,
+    'End channel', true);
+  if (!ok) return;
+  try {
+    const r = await fetch(API + '/api/channels/' + encodeURIComponent(me) +
+      '/' + encodeURIComponent(other) + '/messages', { method: 'DELETE' });
+    const d = await r.json();
+    if (r.ok && d.ok) {
+      showToast('Channel with @' + other + ' ended');
+      channelClose();
+    } else {
+      showToast('End failed: ' + (d.error || r.status));
+    }
+  } catch (e) {
+    showToast('End error: ' + e.message);
+  }
 }
 
 async function channelSend() {
@@ -31280,6 +31320,11 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                         "delivered": delivered,
                         "delivery_status": deliver_msg,
                     })
+                if method == "DELETE":
+                    # End the channel: notify peer (no reply hint) + delete history
+                    closer, other = a, b
+                    ok, msg = _channel_end(closer, other)
+                    return self._json({"ok": ok, "message": msg}, 200 if ok else 500)
             return self._json({"error": "channel route not found"}, 404)
 
         # ── CRM / People ─────────────────────────────────────────────────────
