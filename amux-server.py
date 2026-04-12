@@ -211,6 +211,55 @@ def slog(*args):
     except Exception:
         pass
 
+_server_start_time = time.time()
+
+def psutil_process_info():
+    """Gather process-level diagnostics without psutil dependency."""
+    info = {}
+    try:
+        pid = os.getpid()
+        # CPU: sample over 0.1s
+        t1 = os.times()
+        time.sleep(0.1)
+        t2 = os.times()
+        info["cpu_percent"] = round(((t2.user - t1.user) + (t2.system - t1.system)) / 0.1 * 100, 1)
+    except Exception:
+        pass
+    try:
+        import resource as _res
+        ru = _res.getrusage(_res.RUSAGE_SELF)
+        info["memory_mb"] = round(ru.ru_maxrss / (1024 * 1024), 1) if sys.platform == "darwin" else round(ru.ru_maxrss / 1024, 1)
+    except Exception:
+        pass
+    try:
+        info["fd_count"] = len(os.listdir(f"/dev/fd"))
+    except Exception:
+        pass
+    try:
+        import subprocess
+        out = subprocess.check_output(["tmux", "list-sessions", "-F", "#{session_name}"], stderr=subprocess.DEVNULL, timeout=5)
+        info["session_count"] = len([l for l in out.decode().strip().splitlines() if l])
+    except Exception:
+        info["session_count"] = -1
+    return info
+
+def _log_resource_snapshot(label="snapshot"):
+    """Log a resource snapshot to server.log."""
+    info = psutil_process_info()
+    slog(f"[{label}] pid={os.getpid()} cpu={info.get('cpu_percent','?')}% mem={info.get('memory_mb','?')}MB fds={info.get('fd_count','?')} threads={threading.active_count()} sessions={info.get('session_count','?')} requests={_server_request_count}")
+
+def _install_signal_handlers():
+    """Install signal handlers that log before exit."""
+    import signal
+    def _sig_handler(signum, frame):
+        sig_name = signal.Signals(signum).name
+        slog(f"[SIGNAL] received {sig_name} ({signum}) — logging diagnostics before exit")
+        _log_resource_snapshot("crash-dump")
+        slog(f"[SIGNAL] exiting due to {sig_name}")
+        sys.exit(128 + signum)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _sig_handler)
+
 # ── Torrent (aria2c RPC) helpers ──────────────────────────────────────────────
 _ARIA2_RPC_PORT = 6800
 _ARIA2_RPC_SECRET = "amux"
@@ -28030,7 +28079,19 @@ class CCHandler(BaseHTTPRequestHandler):
 
         # GET /health — lightweight uptime check (no auth required)
         if method == "GET" and path == "/health":
-            return self._json({"status": "ok"})
+            import resource as _res
+            _proc = psutil_process_info()
+            return self._json({
+                "status": "ok",
+                "pid": os.getpid(),
+                "uptime_s": int(time.time() - _server_start_time),
+                "requests": _server_request_count,
+                "threads": threading.active_count(),
+                "cpu_percent": _proc.get("cpu_percent", -1),
+                "memory_mb": _proc.get("memory_mb", -1),
+                "fd_count": _proc.get("fd_count", -1),
+                "sessions": _proc.get("session_count", -1),
+            })
 
         # GET /release-notes — standalone SEO-indexable release notes page
         if method == "GET" and path == "/release-notes":
@@ -33216,7 +33277,9 @@ def main():
         except Exception as e:
             print(f"\033[33m  TLS setup failed ({e}), falling back to HTTP\033[0m")
 
+    _install_signal_handlers()
     slog(f"[startup] server starting — pid={os.getpid()}, port={port}, scheme={scheme}, python={sys.version.split()[0]}")
+    _log_resource_snapshot("startup")
     print("\033[1m\033[34mamux\033[0m web dashboard running")
     print(f"  Local:   {scheme}://localhost:{port}")
     if ts_hostname:
@@ -33303,6 +33366,7 @@ def main():
     schedule_job(_cleanup_recordings,       interval=86400,              name="recording_cleanup",  initial_delay=180)
     schedule_job(_db_maintenance,           interval=86400,              name="db_maintenance",     initial_delay=240)
     schedule_job(_validate_api_key_job,     interval=300,                name="key_validate",       initial_delay=10)
+    schedule_job(lambda: _log_resource_snapshot("heartbeat"), interval=300, name="resource_log", initial_delay=60)
     if _AUTO_UPDATE_REPO:
         slog(f"[auto-update] watching {_AUTO_UPDATE_REPO}@{_AUTO_UPDATE_BRANCH} every {_AUTO_UPDATE_INTERVAL}s")
         schedule_job(_auto_update_check, interval=_AUTO_UPDATE_INTERVAL, name="auto_update", initial_delay=_AUTO_UPDATE_INTERVAL)
