@@ -4412,6 +4412,12 @@ def _git_info(work_dir: str, detail: bool = False) -> dict:
         return cached[1]
     _git_subprocess_sem.acquire()
     try:
+        # Re-check cache after acquiring semaphore — another thread may have
+        # populated it while we were waiting (prevents 80 threads all re-running
+        # git when they simultaneously see an expired cache entry).
+        cached = _git_info_cache.get(cache_key)
+        if cached and time.time() - cached[0] < ttl:
+            return cached[1]
         rb = subprocess.run(
             ["git", "-C", work_dir, "branch", "--show-current"],
             capture_output=True, text=True, timeout=2,
