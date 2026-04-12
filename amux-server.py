@@ -4395,7 +4395,8 @@ def _session_work_dir(name: str) -> str:
 
 
 _git_info_cache: dict[str, tuple[float, dict]] = {}  # work_dir -> (timestamp, result)
-_GIT_INFO_TTL = 15  # seconds — git status doesn't change that fast
+_GIT_INFO_TTL = 30  # seconds — branch names don't change that fast
+_git_subprocess_sem = threading.Semaphore(4)  # limit concurrent git subprocesses
 _GIT_INFO_DETAIL_TTL = 10  # seconds — detail view can be slightly fresher
 
 
@@ -4409,6 +4410,7 @@ def _git_info(work_dir: str, detail: bool = False) -> dict:
     cached = _git_info_cache.get(cache_key)
     if cached and time.time() - cached[0] < ttl:
         return cached[1]
+    _git_subprocess_sem.acquire()
     try:
         rb = subprocess.run(
             ["git", "-C", work_dir, "branch", "--show-current"],
@@ -4478,6 +4480,8 @@ def _git_info(work_dir: str, detail: bool = False) -> dict:
         return result
     except Exception:
         return {"branch": "", "repo": ""}
+    finally:
+        _git_subprocess_sem.release()
 
 
 def _init_default_sessions():
@@ -12205,23 +12209,12 @@ function _renderBranchBadge(name, sessionBranch) {
 async function _fetchGitBranches(sess) {
   const withDir = (sess || []).filter(s => s.dir);
   if (!withDir.length) return;
-  // Fetch in batches of 5 to avoid spawning 70+ concurrent git subprocesses
-  const BATCH = 5;
-  const results = [];
-  for (let i = 0; i < withDir.length; i += BATCH) {
-    const batch = withDir.slice(i, i + BATCH);
-    const batchResults = await Promise.allSettled(
-      batch.map(s =>
-        fetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/git')
-          .then(r => r.json()).then(d => ({name: s.name, ...d}))
-      )
-    );
-    results.push(...batchResults);
-  }
-  const newInfo = {};
-  for (const r of results) {
-    if (r.status === 'fulfilled' && r.value.name) newInfo[r.value.name] = r.value;
-  }
+  // Single bulk request — server handles concurrency control
+  let newInfo = {};
+  try {
+    const r = await fetch(API + '/api/sessions-git');
+    newInfo = await r.json();
+  } catch(e) { console.error('bulk git fetch:', e); return; }
   // Detect conflicts: two sessions on same branch in same repo
   // Use session's CC_BRANCH if set (sessions have their own branch even if repo is on main)
   const byKey = {};
@@ -28489,6 +28482,27 @@ class CCHandler(BaseHTTPRequestHandler):
                         if sc["data"] is not None:
                             break
             return self._json(sc["data"] if sc["data"] is not None else [])
+
+        # GET /api/sessions-git — bulk git info for all sessions (avoids 80+ individual requests)
+        if method == "GET" and path == "/api/sessions-git":
+            from concurrent.futures import ThreadPoolExecutor
+            sc = _sse_cache["sessions"]
+            sess_list = sc["data"] if sc["data"] is not None else []
+            def _get_git(s):
+                name = s.get("name", "")
+                wd = s.get("dir", "")
+                if not wd:
+                    return None
+                info = _git_info(wd)
+                if info.get("branch"):
+                    return {"name": name, **info}
+                return None
+            results = {}
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                for r in pool.map(_get_git, sess_list):
+                    if r:
+                        results[r["name"]] = r
+            return self._json(results)
 
         # GET/POST /api/memory/global
         if path == "/api/memory/global":
