@@ -356,28 +356,47 @@ def _aria2_list_all():
 # ── Browser automation helpers (browser-use CLI) ─────────────────────────────
 _BROWSER_USE_BIN = shutil.which("browser-use") or "/usr/local/bin/browser-use"
 _browser_session_activity: dict[str, float] = {}  # session_name -> last_activity epoch
+_browser_locks: dict[str, threading.Lock] = {}     # per-session lock to serialize subprocess calls
+_browser_locks_mu = threading.Lock()               # protects _browser_locks dict
+
+def _browser_lock_for(session: str) -> threading.Lock:
+    """Return (or create) the per-session lock for browser-use calls."""
+    with _browser_locks_mu:
+        if session not in _browser_locks:
+            _browser_locks[session] = threading.Lock()
+        return _browser_locks[session]
 
 def _browser_touch(session: str = "amux"):
     """Record activity for a browser-use session (called on every _bu_call)."""
     _browser_session_activity[session] = time.time()
 
 def _bu_call(args: list, timeout_s: int = 30, session: str = "amux") -> dict:
-    """Run a browser-use CLI command, return parsed JSON result."""
-    if args and args[0] != "close":
-        _browser_touch(session)
-    cmd = [_BROWSER_USE_BIN, "--json", "--session", session] + args
+    """Run a browser-use CLI command, return parsed JSON result.
+
+    Serialized per-session via lock to prevent concurrent subprocess spawning
+    (multiple Chromium launches cause sustained high CPU).
+    """
+    lock = _browser_lock_for(session)
+    if not lock.acquire(timeout=timeout_s + 5):
+        return {"error": "browser session busy, try again later"}
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
-        out = r.stdout.strip()
-        if not out:
-            return {"error": r.stderr.strip() or f"browser-use exited {r.returncode}"}
-        return json.loads(out)
-    except subprocess.TimeoutExpired:
-        return {"error": "browser operation timed out"}
-    except json.JSONDecodeError:
-        return {"error": r.stdout.strip()[:200] if r.stdout else "invalid JSON"}
-    except Exception as e:
-        return {"error": str(e)}
+        if args and args[0] != "close":
+            _browser_touch(session)
+        cmd = [_BROWSER_USE_BIN, "--json", "--session", session] + args
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+            out = r.stdout.strip()
+            if not out:
+                return {"error": r.stderr.strip() or f"browser-use exited {r.returncode}"}
+            return json.loads(out)
+        except subprocess.TimeoutExpired:
+            return {"error": "browser operation timed out"}
+        except json.JSONDecodeError:
+            return {"error": r.stdout.strip()[:200] if r.stdout else "invalid JSON"}
+        except Exception as e:
+            return {"error": str(e)}
+    finally:
+        lock.release()
 
 def _bu_list_profiles() -> list:
     """List available Chrome profiles via browser-use."""
