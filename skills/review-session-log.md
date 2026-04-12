@@ -1,5 +1,5 @@
 ---
-description: Review the full terminal log of an amux session — summarize what happened, find errors, extract key decisions
+description: Use when the user asks what a session did, wants to review session history, or needs to find errors in a session log
 allowed-tools: Bash, Read, Grep
 argument-hint: <session-name>
 ---

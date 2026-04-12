@@ -1,7 +1,8 @@
 ---
-description: Record an MP4 video of a browser task — describe what to do in plain English, amux drives the browser and produces a clean MP4 with idle frames removed
+description: Use when the user wants to record a video of a browser task, create a screen recording, or produce an MP4 demo
 allowed-tools: Bash
 argument-hint: "<task description>"
+context: fork
 ---
 
 # /record — Browser Screen Recorder
@@ -58,3 +59,10 @@ Parse the final status:
 - Max 25 browser steps by default
 - Uses the currently active browser profile (for authenticated sessions, switch profiles in the Browser tab first)
 - To stop a running recording early: `curl -sk -X POST https://localhost:8822/api/browser/agent/stop`
+
+## Gotchas
+
+- The agent uses the **currently active** browser profile — switch profiles in the Browser tab before recording if you need specific auth.
+- `ffmpeg` must be installed for idle-frame removal; without it the raw (unprocessed) video is kept but will have long pauses.
+- Max 25 browser steps by default — complex multi-page flows may hit this limit and stop early.
+- The video endpoint (`/api/browser/video`) only serves the most recent recording — start a new one and the previous is overwritten.

@@ -1,7 +1,8 @@
 ---
-description: Interact with the user's live Chrome browser — screenshots, click, type, eval JS, read accessibility tree, navigate. Connects to real Chrome tabs with existing logins.
+description: Use when the user asks to interact with a web page, take a screenshot of a site, click or type in Chrome, scrape content, or debug a web UI. Connects to real Chrome tabs with existing logins.
 allowed-tools: Bash, Read
 argument-hint: <command> [args...]
+context: fork
 ---
 
 # /chrome-cdp — Chrome Browser Automation
@@ -124,3 +125,11 @@ CSS px = screenshot px / DPR
 - Daemons auto-exit after 20 minutes of inactivity.
 - Prefer `snap` over `html` for understanding page structure.
 - Use `type` (not eval) to enter text — click to focus first, then type.
+
+## Gotchas
+
+- Chrome must have remote debugging enabled (`chrome://inspect/#remote-debugging`) or all commands silently fail.
+- First access to a tab triggers an "Allow debugging" modal — you must approve it before commands work.
+- `clickxy` uses CSS pixels, not screenshot pixels. Divide screenshot coords by DPR (usually 2 on Retina).
+- `eval` results are stringified — objects come back as `[object Object]` unless you `JSON.stringify()`.
+- Don't chain multiple `eval` calls that depend on DOM index positions — the DOM can change between calls.

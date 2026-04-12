@@ -1,0 +1,36 @@
+{
+  "model": {
+    "default": "sonnet",
+    "planMode": "opus"
+  },
+  "thinking": true,
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import ast*\")",
+      "Bash(python3 -c \"*\")",
+      "Bash(curl -sk*)",
+      "Bash(git log*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git branch*)",
+      "Bash(git stash*)",
+      "Bash(git show*)",
+      "Bash(git rev-parse*)",
+      "Bash(wc*)",
+      "Bash(node skills/*)",
+      "Bash(node tests/*)",
+      "Bash(amux *)",
+      "Edit(amux-server.py)",
+      "Edit(.claude/**)",
+      "Edit(skills/**)",
+      "Read(*)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(rm -rf ~)",
+      "Bash(git push --force*)"
+    ]
+  }
+}

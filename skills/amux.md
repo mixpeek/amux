@@ -1,5 +1,5 @@
 ---
-description: Interact with the amux multiplexer — board, memory, sessions, and more
+description: Use when you need to interact with the amux system — manage board tasks, check sessions, send emails, automate browsers, or work with CRM contacts
 allowed-tools: Bash, Read, Edit, Write
 argument-hint: [board|memory|sessions|schedule|notes|email|browser|crm|help] [args...]
 ---

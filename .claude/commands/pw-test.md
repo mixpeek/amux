@@ -1,7 +1,8 @@
 ---
-description: Run Playwright UI tests against the amux dashboard, or investigate a specific UI issue with headless Playwright
+description: Use when you need to test the amux dashboard UI, investigate a visual bug, or verify a frontend change works correctly
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write
 argument-hint: [run|investigate <description>]
+context: fork
 ---
 
 # /pw-test — Playwright UI Testing
@@ -90,3 +91,10 @@ Add a new test case to `tests/browser-comparison.js`:
 - Default board view is `session` mode; switch to `status` for column headers
 - `page.goto` must use `waitUntil: 'domcontentloaded'` (SSE prevents networkidle)
 - Screenshots are saved to `/tmp/` — read them with the Read tool to show the user
+
+## Gotchas
+
+- Always use `waitUntil: 'domcontentloaded'` — SSE keeps connections open so `networkidle` never fires.
+- Board data is loaded via SSE, not on page load — call `await fetchBoard(); renderBoard();` in `page.evaluate()` before inspecting board DOM.
+- The auth profile directory is locked while in use — don't run tests while `playwright-auth capture` is open.
+- `ignoreHTTPSErrors: true` is required for the self-signed cert; without it the page won't load.

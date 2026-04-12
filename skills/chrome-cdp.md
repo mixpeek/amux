@@ -1,5 +1,5 @@
 ---
-description: Interact with the user's live Chrome browser — screenshots, click, type, eval JS, read accessibility tree, navigate. Connects to real Chrome tabs with existing logins.
+description: Use when the user asks to interact with a web page, take a screenshot of a site, click or type in Chrome, scrape content, or debug a web UI. Connects to real Chrome tabs with existing logins.
 allowed-tools: Bash, Read
 argument-hint: <command> [args...]
 ---

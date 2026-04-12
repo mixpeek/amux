@@ -1,5 +1,5 @@
 ---
-description: Add a task or note to the amux shared board (localhost:8822)
+description: Use when the user says "add to board", "create a task", or wants to track a todo on the amux kanban board
 allowed-tools: Bash
 argument-hint: [task title or description]
 ---

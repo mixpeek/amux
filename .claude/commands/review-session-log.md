@@ -1,7 +1,8 @@
 ---
-description: Review the full terminal log of an amux session — summarize what happened, find errors, extract key decisions
+description: Use when the user asks what a session did, wants to review session history, or needs to find errors in a session log
 allowed-tools: Bash, Read, Grep
 argument-hint: <session-name>
+context: fork
 ---
 
 # /review-session-log — Review a session's terminal log
@@ -50,3 +51,10 @@ The user wants to review: **$ARGUMENTS**
 - If the log is very long, prioritize recent activity but note if earlier sections contain important context
 - Quote specific log lines when citing errors or key moments
 - Be concise — the user wants a quick situational overview, not a line-by-line walkthrough
+
+## Gotchas
+
+- Logs contain raw ANSI escape codes — ignore formatting artifacts when parsing.
+- Logs are capped at ~10 MB with oldest output trimmed — very old activity may be missing.
+- Session names are case-sensitive — `~/.amux/logs/MySession.log` ≠ `~/.amux/logs/mysession.log`.
+- A missing log file means the session has never produced output (new or idle session), not an error.

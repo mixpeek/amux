@@ -1,5 +1,5 @@
 ---
-description: Capture browser auth profiles and sync to cloud — log into any site once, use it everywhere
+description: Use when the user needs to log into a website for browser automation, save auth cookies, or sync browser profiles to cloud
 allowed-tools: Bash
 argument-hint: [capture|sync|status]
 ---
@@ -47,3 +47,10 @@ Always report clearly:
 - Whether a profile exists and how old it is
 - Whether the last sync succeeded
 - Next steps if something needs attention
+
+## Gotchas
+
+- `capture` opens a **headed** (visible) browser — it cannot run in a headless/SSH session.
+- The profile directory at `~/.amux/playwright-auth/profile/` is locked while a browser is using it — don't run capture while another Playwright instance is open.
+- Auth cookies expire — if automated tasks start getting 401s, the profile needs a fresh capture.
+- `sync` requires `gcloud` CLI and IAP tunnel access to the cloud VM; it will fail if the VM is down.

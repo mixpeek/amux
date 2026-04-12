@@ -1,5 +1,5 @@
 ---
-description: Interact with the amux multiplexer — board, memory, sessions, and more
+description: Use when you need to interact with the amux system — manage board tasks, check sessions, send emails, automate browsers, or work with CRM contacts
 allowed-tools: Bash, Read, Edit, Write
 argument-hint: [board|memory|sessions|schedule|notes|email|browser|crm|help] [args...]
 ---
@@ -276,3 +276,11 @@ Always:
 2. Use `curl -sk` (self-signed cert)
 3. Format output clearly — tables for lists, key facts for status
 4. After adding/updating anything, confirm with the ID and brief summary
+
+## Gotchas
+
+- Always use `curl -sk` — the server uses a self-signed TLS cert; without `-k` every request fails silently.
+- "Board" means the amux local board at localhost:8822, NOT Linear or Notion.
+- Session names are case-sensitive in API paths (`/api/sessions/MySession` ≠ `/api/sessions/mysession`).
+- Email send requires a valid `to` address — the API validates format and rejects malformed addresses.
+- Browser screenshot returns a JSON `{path:...}` — never pipe it with `-o` to a file; read the path from the JSON instead.

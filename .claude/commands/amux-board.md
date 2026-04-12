@@ -1,5 +1,5 @@
 ---
-description: Add a task or note to the amux shared board (localhost:8822)
+description: Use when the user says "add to board", "create a task", or wants to track a todo on the amux kanban board
 allowed-tools: Bash
 argument-hint: [task title or description]
 ---
@@ -52,3 +52,10 @@ The user's request is: **$ARGUMENTS**
 6. Confirm success by showing the created item's title and ID
 
 Do not ask clarifying questions — infer context from the arguments and current conversation. If the arguments are empty, add a generic task titled "Untitled task" with an empty desc.
+
+## Gotchas
+
+- Always use `curl -sk` — self-signed TLS cert.
+- The `session` field should match an existing amux session name exactly (case-sensitive).
+- Board item IDs are server-generated — never fabricate an ID; get it from the creation response or a list call.
+- Custom status columns are allowed but the dashboard groups by `backlog`/`todo`/`doing`/`done` — other values appear in an "Other" column.
