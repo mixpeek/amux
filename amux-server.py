@@ -1052,11 +1052,22 @@ def save_session_log(session: str, content: str):
         pass
 
 
-def load_session_log(session: str) -> str:
-    """Load saved session log from disk."""
+def load_session_log(session: str, tail_bytes: int = 0) -> str:
+    """Load saved session log from disk.
+
+    If tail_bytes > 0, read only the last tail_bytes of the file to avoid
+    loading multi-MB logs into memory when only the end is needed.
+    """
     lp = _log_path(session)
     if lp.exists():
         try:
+            if tail_bytes > 0:
+                size = lp.stat().st_size
+                if size <= tail_bytes:
+                    return lp.read_text(errors="replace")
+                with lp.open("rb") as f:
+                    f.seek(size - tail_bytes)
+                    return f.read().decode("utf-8", errors="replace")
             return lp.read_text(errors="replace")
         except Exception:
             pass
@@ -1244,6 +1255,30 @@ def _read_jsonl_tail(filepath: Path, max_bytes: int = 5_000_000) -> list:
     return lines
 
 
+def _iter_jsonl_tail(filepath: Path, max_bytes: int = 5_000_000):
+    """Iterate over parsed entries from the tail of a JSONL file.
+
+    Unlike _read_jsonl_tail, this yields entries one at a time instead of
+    accumulating them all in a list — much less memory for large files.
+    """
+    try:
+        size = filepath.stat().st_size
+    except OSError:
+        return
+    try:
+        with filepath.open("rb") as fh:
+            if size > max_bytes:
+                fh.seek(size - max_bytes)
+                fh.readline()  # discard partial first line
+            for raw in fh:
+                try:
+                    yield json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+    except Exception:
+        pass
+
+
 def _last_meaningful_user_message(work_dir: str) -> str:
     """Extract the last meaningful user message (>20 chars) from the session's JSONL history."""
     if not work_dir:
@@ -1257,7 +1292,7 @@ def _last_meaningful_user_message(work_dir: str) -> str:
         return ""
     last_msg = ""
     try:
-        for entry in _read_jsonl_tail(jsonl_files[0], max_bytes=2_000_000):
+        for entry in _iter_jsonl_tail(jsonl_files[0], max_bytes=2_000_000):
             try:
                 msg = entry.get("message", {})
                 if msg.get("role") == "user":
@@ -1705,7 +1740,7 @@ def get_claude_stats(work_dir: str) -> dict:
     total_in = 0
     total_out = 0
     last_ts = ""
-    for entry in _read_jsonl_tail(jsonl_files[0], max_bytes=5_000_000):
+    for entry in _iter_jsonl_tail(jsonl_files[0], max_bytes=5_000_000):
         try:
             ts = entry.get("timestamp", "")
             if ts:
@@ -3630,9 +3665,10 @@ def get_daily_token_stats() -> dict:
                 continue
             try:
                 prev_usage_sig = None
-                # Read only the tail — today's entries are at the end.
+                # Stream entries from the tail — today's entries are at the end.
                 # 20MB covers a full day's usage even for heavy sessions.
-                for entry in _read_jsonl_tail(jf, max_bytes=20_000_000):
+                # Uses _iter_jsonl_tail to avoid accumulating all entries in memory.
+                for entry in _iter_jsonl_tail(jf, max_bytes=20_000_000):
                     try:
                         ts = entry.get("timestamp", "")
                         if not ts or not ts.startswith(today):
@@ -4163,7 +4199,8 @@ def list_sessions() -> list:
             raw = captures.get(name, "")
         elif _log_path(name).exists():
             # Load saved log for stopped sessions (last 30 lines worth)
-            saved = load_session_log(name)
+            # Only read tail 16KB — avoid loading multi-MB logs into memory
+            saved = load_session_log(name, tail_bytes=16_384)
             if saved:
                 raw = "\n".join(saved.splitlines()[-30:])
         if raw:
@@ -28336,7 +28373,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 lines = int(qs.get("lines", ["200"])[0])
                 output = tmux_capture(session_name, lines)
                 if not output:
-                    output = load_session_log(session_name) or "(no output)"
+                    output = load_session_log(session_name, tail_bytes=65_536) or "(no output)"
                 return self._json({"name": session_name, "output": output})
 
             if method == "GET" and action == "info":
@@ -32204,8 +32241,8 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     # Also save snapshot while we have it
                     threading.Thread(target=save_session_log, args=(name, output), daemon=True).start()
                     return self._json({"name": name, "output": output})
-                # Not running or empty — serve saved log
-                saved = load_session_log(name)
+                # Not running or empty — serve saved log (tail only to limit memory)
+                saved = load_session_log(name, tail_bytes=65_536)
                 if saved:
                     return self._json({"name": name, "output": saved, "saved": True})
                 return self._json({"name": name, "output": "(no output)"})
