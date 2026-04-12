@@ -6589,12 +6589,32 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   @media (max-width: 600px) {
     .file-overlay-header { flex-wrap: wrap; gap: 6px; }
     .file-overlay-header h2 { font-size: 0.88rem; flex-basis: calc(100% - 50px); }
-    .file-overlay-header .btn { min-width: 40px; min-height: 40px; font-size: 1.1rem;
-      display: flex; align-items: center; justify-content: center; }
-    .file-view-tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; flex-wrap: nowrap; }
+    .file-overlay-header .btn,
+    .file-overlay-header #file-save-btn,
+    .file-overlay-header #file-download-btn {
+      min-width: 44px; min-height: 44px; font-size: 1rem; padding: 8px 12px;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .file-view-tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; flex-wrap: nowrap; flex-basis: 100%; gap: 6px; padding-bottom: 2px; }
     .file-view-tabs::-webkit-scrollbar { display: none; }
-    .file-view-tab { flex-shrink: 0; min-height: 36px; padding: 6px 12px; }
+    .file-view-tab { flex-shrink: 0; min-height: 44px; min-width: 44px; padding: 8px 14px; font-size: 0.85rem; }
+    #md-search-row { padding: 8px 4px; }
+    #md-search-input { font-size: 16px; min-height: 40px; }
+    #md-search-row .btn { min-width: 40px; min-height: 40px; }
   }
+  /* Markdown in-page search */
+  #md-search-row { display: none; align-items: center; gap: 6px; padding: 6px 2px; flex-shrink: 0; }
+  #md-search-row.active { display: flex; }
+  #md-search-input {
+    flex: 1; min-width: 0; background: var(--input, var(--card));
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px;
+    font-size: 0.85rem; color: var(--text); outline: none;
+  }
+  #md-search-input:focus { border-color: var(--accent); }
+  #md-search-count { font-size: 0.72rem; color: var(--dim); white-space: nowrap; padding: 0 4px; min-width: 44px; text-align: right; }
+  #md-search-row .btn { padding: 4px 10px; font-size: 0.78rem; }
+  mark.md-search-hit { background: rgba(255, 215, 0, 0.35); color: inherit; border-radius: 2px; padding: 0 1px; }
+  mark.md-search-hit.current { background: #ffb000; color: #000; }
   /* Unified markdown content styling — used everywhere renderMarkdown() output appears */
   .md-content { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 0.88rem; line-height: 1.6; }
   .md-content > *:first-child { margin-top: 0 !important; }
@@ -10790,12 +10810,22 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <button class="file-view-tab" id="file-tab-edit" onclick="setFileViewMode('edit')" style="display:none;">Edit</button>
       <button class="file-view-tab" id="file-tab-raw" onclick="setFileViewMode('raw')">Raw</button>
       <button class="file-view-tab" id="file-tab-teleprompter" onclick="_filesOpenTeleprompter()" title="Teleprompter mode" style="display:none;">&#x25B6; Teleprompter</button>
+      <button class="file-view-tab" id="file-tab-search" onclick="_mdSearchToggle()" title="Find in markdown" style="display:none;">&#x1F50D; Find</button>
       <button class="file-view-tab" id="file-tab-copy" onclick="copyFileContent()" title="Copy to clipboard">Copy</button>
       <button class="file-view-tab" id="file-tab-link" onclick="_copyFileDeeplink(_fileData&&_fileData.path||'')" title="Copy deep link">Link</button>
     </div>
     <button id="file-save-btn" onclick="_fileSave()" style="display:none;">Save</button>
     <button id="file-download-btn" onclick="_fileDownload()" style="display:none;font-size:0.72rem;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--accent);background:transparent;cursor:pointer;white-space:nowrap;flex-shrink:0;">&#x2B07; Download</button>
     <button class="btn" onclick="closeFilePreview()" style="flex-shrink:0;">&#x2715;</button>
+  </div>
+  <div id="md-search-row">
+    <input id="md-search-input" type="search" placeholder="Find in document…" autocomplete="off"
+      oninput="_mdSearchApply(this.value)"
+      onkeydown="if(event.key==='Enter'){event.preventDefault();_mdSearchStep(event.shiftKey?-1:1);}else if(event.key==='Escape'){event.preventDefault();_mdSearchClose();}">
+    <span id="md-search-count"></span>
+    <button class="btn" onclick="_mdSearchStep(-1)" title="Previous match">&#x2191;</button>
+    <button class="btn" onclick="_mdSearchStep(1)" title="Next match">&#x2193;</button>
+    <button class="btn" onclick="_mdSearchClose()" title="Close search">&#x2715;</button>
   </div>
   <div id="file-body" class="file-overlay-body"></div>
   <div id="file-edit-wrap"><textarea id="file-edit-ta" class="file-edit-ta" spellcheck="false" onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='s'){event.preventDefault();_fileSave();}"></textarea></div>
@@ -16320,6 +16350,8 @@ let _fileData = null;
 let _fileViewMode = 'preview';
 
 function _renderFileBody(data, mode) {
+  // Tear down any active markdown-search highlights before re-rendering
+  if (_mdSearchHits && _mdSearchHits.length) { _mdSearchHits = []; _mdSearchIdx = -1; }
   const body = document.getElementById('file-body');
   // Binary — no tabs, just render
   if (data.is_image) {
@@ -16450,7 +16482,112 @@ function setFileViewMode(mode) {
   const editTab = document.getElementById('file-tab-edit');
   if (editTab) editTab.classList.toggle('active', mode === 'edit');
   document.getElementById('file-save-btn').style.display = (mode === 'edit' && _fileData && (_fileData.is_markdown || _fileData._isNew)) ? '' : 'none';
+  // Search button only valid in markdown preview mode
+  const searchTab = document.getElementById('file-tab-search');
+  if (searchTab) {
+    searchTab.style.display = (_fileData && _fileData.is_markdown && mode === 'preview') ? '' : 'none';
+  }
+  if (mode !== 'preview') _mdSearchClose();
   if (_fileData) _renderFileBody(_fileData, mode);
+}
+
+// ---------- Markdown in-page search ----------
+let _mdSearchHits = [];
+let _mdSearchIdx = -1;
+
+function _mdSearchToggle() {
+  const row = document.getElementById('md-search-row');
+  if (row.classList.contains('active')) { _mdSearchClose(); return; }
+  _mdSearchOpen();
+}
+function _mdSearchOpen() {
+  const row = document.getElementById('md-search-row');
+  row.classList.add('active');
+  const input = document.getElementById('md-search-input');
+  input.focus();
+  input.select();
+  if (input.value) _mdSearchApply(input.value);
+}
+function _mdSearchClose() {
+  const row = document.getElementById('md-search-row');
+  row.classList.remove('active');
+  _mdSearchClear();
+}
+function _mdSearchClear() {
+  const body = document.getElementById('file-body');
+  if (body) {
+    body.querySelectorAll('mark.md-search-hit').forEach(m => {
+      const parent = m.parentNode;
+      if (!parent) return;
+      parent.replaceChild(document.createTextNode(m.textContent), m);
+      parent.normalize();
+    });
+  }
+  _mdSearchHits = [];
+  _mdSearchIdx = -1;
+  const c = document.getElementById('md-search-count');
+  if (c) c.textContent = '';
+}
+function _mdSearchApply(query) {
+  _mdSearchClear();
+  const q = (query || '').trim();
+  const countEl = document.getElementById('md-search-count');
+  if (!q) { if (countEl) countEl.textContent = ''; return; }
+  const body = document.getElementById('file-body');
+  if (!body || !body.classList.contains('md-content')) return;
+  const ql = q.toLowerCase();
+  // Walk text nodes (skip script/style/already-marked nodes)
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      if (!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+      const p = n.parentNode;
+      if (!p) return NodeFilter.FILTER_REJECT;
+      const tag = p.nodeName;
+      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK') return NodeFilter.FILTER_REJECT;
+      return n.nodeValue.toLowerCase().includes(ql) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    }
+  });
+  const targets = [];
+  let n;
+  while ((n = walker.nextNode())) targets.push(n);
+  for (const node of targets) {
+    const text = node.nodeValue;
+    const lower = text.toLowerCase();
+    const frag = document.createDocumentFragment();
+    let i = 0;
+    while (i < text.length) {
+      const found = lower.indexOf(ql, i);
+      if (found < 0) {
+        frag.appendChild(document.createTextNode(text.slice(i)));
+        break;
+      }
+      if (found > i) frag.appendChild(document.createTextNode(text.slice(i, found)));
+      const mark = document.createElement('mark');
+      mark.className = 'md-search-hit';
+      mark.textContent = text.slice(found, found + ql.length);
+      frag.appendChild(mark);
+      _mdSearchHits.push(mark);
+      i = found + ql.length;
+    }
+    if (node.parentNode) node.parentNode.replaceChild(frag, node);
+  }
+  if (countEl) countEl.textContent = _mdSearchHits.length ? '1/' + _mdSearchHits.length : '0/0';
+  if (_mdSearchHits.length) {
+    _mdSearchIdx = 0;
+    _mdSearchHighlightCurrent();
+  }
+}
+function _mdSearchStep(dir) {
+  if (!_mdSearchHits.length) return;
+  _mdSearchIdx = (_mdSearchIdx + dir + _mdSearchHits.length) % _mdSearchHits.length;
+  _mdSearchHighlightCurrent();
+  const c = document.getElementById('md-search-count');
+  if (c) c.textContent = (_mdSearchIdx + 1) + '/' + _mdSearchHits.length;
+}
+function _mdSearchHighlightCurrent() {
+  _mdSearchHits.forEach((m, i) => m.classList.toggle('current', i === _mdSearchIdx));
+  const cur = _mdSearchHits[_mdSearchIdx];
+  if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
 async function openFilePreview(path) {
@@ -16481,6 +16618,9 @@ async function openFilePreview(path) {
       // Show Edit tab only for markdown
       document.getElementById('file-tab-edit').style.display = data.is_markdown ? '' : 'none';
       document.getElementById('file-tab-teleprompter').style.display = data.is_markdown ? '' : 'none';
+      // Show Find tab only for markdown
+      const searchTab = document.getElementById('file-tab-search');
+      if (searchTab) searchTab.style.display = (data.is_markdown && _fileViewMode === 'preview') ? '' : 'none';
     }
     // Show download button for all files
     const dlBtn = document.getElementById('file-download-btn');
@@ -16512,11 +16652,14 @@ async function openFilePreview(path) {
 function closeFilePreview() {
   const v = document.querySelector('#file-body video');
   if (v) { v.pause(); v.src = ''; }
+  _mdSearchClose();
   document.getElementById('file-overlay').classList.remove('active');
   document.getElementById('file-download-btn').style.display = 'none';
   document.getElementById('file-save-btn').style.display = 'none';
   const tpTab = document.getElementById('file-tab-teleprompter');
   if (tpTab) tpTab.style.display = 'none';
+  const searchTab = document.getElementById('file-tab-search');
+  if (searchTab) searchTab.style.display = 'none';
   document.getElementById('file-edit-wrap').style.display = 'none';
   document.getElementById('file-body').style.display = '';
   _fileData = null;
