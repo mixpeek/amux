@@ -15012,36 +15012,50 @@ async function channelSend() {
 // ── @mention routing ──
 // If a message starts with @sessionname, auto-route to that session.
 // Returns {target, message} where target may differ from the sending session.
+// Matching is case-insensitive and falls back to unique prefix match — important
+// because if we miss the routing, the literal "@name" gets shipped to Claude
+// and Claude interprets it as a file/directory reference (the "directory thing").
 function _atRoute(text) {
   const known = (sessions || []).map(s => s.name);
   const m = text.match(/^@([\w][\w.-]*)([\s\S]*)$/);
-  if (m && known.includes(m[1])) {
-    const target = m[1];
-    const rest = m[2].trim();
-    return { target, message: rest || text };
+  if (!m) return null;
+  const typed = m[1];
+  const typedLower = typed.toLowerCase();
+  let target = known.find(n => n === typed)
+            || known.find(n => n.toLowerCase() === typedLower);
+  if (!target) {
+    const prefixMatches = known.filter(n => n.toLowerCase().startsWith(typedLower));
+    if (prefixMatches.length === 1) target = prefixMatches[0];
   }
-  return null;
+  if (!target) return null;
+  const rest = m[2].trim();
+  return { target, message: rest };
 }
 
 // ── @mention → HTTP API hint ──
-// When a message contains @session-name mentions, append a compact API hint
-// so Claude knows to use the HTTP API for delegation (not tmux directly).
+// When a message contains @session-name mentions:
+//   1. Wrap the mention in backticks so Claude does NOT interpret @name as a
+//      file/directory path lookup.
+//   2. Append a compact API hint so Claude uses HTTP for delegation (not tmux).
 function _expandAtMentions(text) {
-  const known = (window._sessions || []).map(s => s.name);
-  // find all @word tokens that match a known session name
+  const known = (sessions || []).map(s => s.name);
+  if (!known.length) return text;
+  const lowerToReal = {};
+  for (const n of known) lowerToReal[n.toLowerCase()] = n;
   const mentioned = [];
-  const re = /@([\w][\w.-]*)/g;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    const n = m[1];
-    if (known.includes(n) && !mentioned.includes(n)) mentioned.push(n);
-  }
+  const rewritten = text.replace(/(^|[^`\w])@([\w][\w.-]*)/g, (full, lead, name) => {
+    const real = lowerToReal[name.toLowerCase()];
+    if (!real) return full;
+    if (!mentioned.includes(real)) mentioned.push(real);
+    // Backtick the mention so Claude does not file-resolve it.
+    return `${lead}\`@${real}\``;
+  });
   if (mentioned.length === 0) return text;
   const base = '$AMUX_URL';
   const hints = mentioned.map(n =>
     `  @${n} → POST ${base}/api/sessions/${n}/send  {"text":"<msg>"}`
   ).join('\n');
-  return text + '\n\n[amux: use HTTP API to reach @-mentioned sessions — never tmux directly]\n' + hints;
+  return rewritten + '\n\n[amux: @-mentions above are amux sessions, NOT files. Reach them via HTTP API, never tmux directly]\n' + hints;
 }
 
 // ── @mention helpers ──
