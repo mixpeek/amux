@@ -6587,17 +6587,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .csv-table th.csv-rownum,.csv-table td.csv-rownum { width:36px;min-width:36px;max-width:36px;padding:10px 4px; }
   }
   @media (max-width: 600px) {
-    .file-overlay-header { flex-wrap: wrap; gap: 6px; }
-    .file-overlay-header h2 { font-size: 0.88rem; flex-basis: calc(100% - 50px); }
+    .file-overlay-header { flex-wrap: nowrap; gap: 6px; align-items: center; }
+    .file-overlay-header h2 { font-size: 0.82rem; flex: 0 1 auto; min-width: 0; max-width: 32vw; margin-right: 4px; }
     .file-overlay-header .btn,
     .file-overlay-header #file-save-btn,
     .file-overlay-header #file-download-btn {
-      min-width: 44px; min-height: 44px; font-size: 1rem; padding: 8px 12px;
-      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 40px; min-height: 40px; font-size: 0.95rem; padding: 6px 10px;
+      display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
     }
-    .file-view-tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; flex-wrap: nowrap; flex-basis: 100%; gap: 6px; padding-bottom: 2px; }
+    .file-view-tabs { flex: 1 1 auto; min-width: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; flex-wrap: nowrap; gap: 4px; padding-bottom: 2px; }
     .file-view-tabs::-webkit-scrollbar { display: none; }
-    .file-view-tab { flex-shrink: 0; min-height: 44px; min-width: 44px; padding: 8px 14px; font-size: 0.85rem; }
+    .file-view-tab { flex-shrink: 0; min-height: 40px; padding: 6px 12px; font-size: 0.82rem; }
     #md-search-row { padding: 8px 4px; }
     #md-search-input { font-size: 16px; min-height: 40px; }
     #md-search-row .btn { min-width: 40px; min-height: 40px; }
