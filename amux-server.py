@@ -1217,6 +1217,33 @@ def _push_alert(alert_type: str, session: str, message: str):
             _sse_alerts = _sse_alerts[-50:]
 
 
+def _read_jsonl_tail(filepath: Path, max_bytes: int = 5_000_000) -> list:
+    """Read the last max_bytes of a JSONL file and return parsed lines.
+
+    Avoids reading entire multi-hundred-MB files into memory when only
+    recent entries are needed. Skips the first (likely partial) line
+    when seeking into the middle of a file.
+    """
+    try:
+        size = filepath.stat().st_size
+    except OSError:
+        return []
+    lines = []
+    try:
+        with filepath.open("rb") as fh:
+            if size > max_bytes:
+                fh.seek(size - max_bytes)
+                fh.readline()  # discard partial first line
+            for raw in fh:
+                try:
+                    lines.append(json.loads(raw))
+                except (json.JSONDecodeError, ValueError):
+                    continue
+    except Exception:
+        pass
+    return lines
+
+
 def _last_meaningful_user_message(work_dir: str) -> str:
     """Extract the last meaningful user message (>20 chars) from the session's JSONL history."""
     if not work_dir:
@@ -1230,9 +1257,8 @@ def _last_meaningful_user_message(work_dir: str) -> str:
         return ""
     last_msg = ""
     try:
-        for line in jsonl_files[0].read_text(errors="replace").splitlines():
+        for entry in _read_jsonl_tail(jsonl_files[0], max_bytes=2_000_000):
             try:
-                entry = json.loads(line)
                 msg = entry.get("message", {})
                 if msg.get("role") == "user":
                     content = msg.get("content", [])
@@ -1659,7 +1685,11 @@ def _kill_stale_ray():
 
 
 def get_claude_stats(work_dir: str) -> dict:
-    """Get token usage and last activity from Claude Code session files for a directory."""
+    """Get token usage and last activity from Claude Code session files for a directory.
+
+    Only reads the tail of the JSONL file (last 5MB) to avoid loading
+    hundreds of MB into memory for long-running sessions.
+    """
     if not work_dir:
         return {"tokens": 0, "last_active": ""}
     # Map dir path to Claude project directory name
@@ -1671,28 +1701,23 @@ def get_claude_stats(work_dir: str) -> dict:
     jsonl_files = sorted(project_dir.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
     if not jsonl_files:
         return {"tokens": 0, "last_active": ""}
-    # Sum tokens from most recent session, get last timestamp
+    # Sum tokens from tail of most recent session, get last timestamp
     total_in = 0
     total_out = 0
     last_ts = ""
-    try:
-        with jsonl_files[0].open() as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                    ts = entry.get("timestamp", "")
-                    if ts:
-                        last_ts = ts
-                    msg = entry.get("message", {})
-                    usage = msg.get("usage", {})
-                    if usage:
-                        total_in += usage.get("input_tokens", 0)
-                        total_in += usage.get("cache_read_input_tokens", 0)
-                        total_out += usage.get("output_tokens", 0)
-                except (json.JSONDecodeError, AttributeError):
-                    continue
-    except Exception:
-        pass
+    for entry in _read_jsonl_tail(jsonl_files[0], max_bytes=5_000_000):
+        try:
+            ts = entry.get("timestamp", "")
+            if ts:
+                last_ts = ts
+            msg = entry.get("message", {})
+            usage = msg.get("usage", {})
+            if usage:
+                total_in += usage.get("input_tokens", 0)
+                total_in += usage.get("cache_read_input_tokens", 0)
+                total_out += usage.get("output_tokens", 0)
+        except (json.JSONDecodeError, AttributeError):
+            continue
     return {"tokens": total_in + total_out, "last_active": last_ts}
 
 
@@ -3605,35 +3630,35 @@ def get_daily_token_stats() -> dict:
                 continue
             try:
                 prev_usage_sig = None
-                with jf.open() as f:
-                    for line in f:
-                        try:
-                            entry = json.loads(line)
-                            ts = entry.get("timestamp", "")
-                            if not ts or not ts.startswith(today):
-                                msg = entry.get("message", {})
-                                if not msg.get("usage"):
-                                    prev_usage_sig = None
-                                continue
+                # Read only the tail — today's entries are at the end.
+                # 20MB covers a full day's usage even for heavy sessions.
+                for entry in _read_jsonl_tail(jf, max_bytes=20_000_000):
+                    try:
+                        ts = entry.get("timestamp", "")
+                        if not ts or not ts.startswith(today):
                             msg = entry.get("message", {})
-                            usage = msg.get("usage", {})
-                            if usage:
-                                # Deduplicate: Claude Code logs thinking + tool_use
-                                # as separate entries with identical usage
-                                sig = (usage.get("input_tokens", 0),
-                                       usage.get("cache_read_input_tokens", 0),
-                                       usage.get("output_tokens", 0))
-                                if sig == prev_usage_sig:
-                                    continue
-                                prev_usage_sig = sig
-                                proj_in += usage.get("input_tokens", 0)
-                                proj_in += usage.get("cache_creation_input_tokens", 0)
-                                proj_in += usage.get("cache_read_input_tokens", 0)
-                                proj_out += usage.get("output_tokens", 0)
-                            else:
+                            if not msg.get("usage"):
                                 prev_usage_sig = None
-                        except (json.JSONDecodeError, AttributeError):
                             continue
+                        msg = entry.get("message", {})
+                        usage = msg.get("usage", {})
+                        if usage:
+                            # Deduplicate: Claude Code logs thinking + tool_use
+                            # as separate entries with identical usage
+                            sig = (usage.get("input_tokens", 0),
+                                   usage.get("cache_read_input_tokens", 0),
+                                   usage.get("output_tokens", 0))
+                            if sig == prev_usage_sig:
+                                continue
+                            prev_usage_sig = sig
+                            proj_in += usage.get("input_tokens", 0)
+                            proj_in += usage.get("cache_creation_input_tokens", 0)
+                            proj_in += usage.get("cache_read_input_tokens", 0)
+                            proj_out += usage.get("output_tokens", 0)
+                        else:
+                            prev_usage_sig = None
+                    except (json.JSONDecodeError, AttributeError):
+                        continue
             except Exception:
                 continue
         if proj_in + proj_out > 0:
@@ -3693,10 +3718,12 @@ _METRICS_TTL = 8.0  # seconds
 def _refresh_metrics_cache() -> None:
     """Build metrics in a background thread and store in cache."""
     global _metrics_cache, _metrics_cache_ts
+    import gc
     data = _build_system_metrics()
     with _metrics_cache_lock:
         _metrics_cache = data
         _metrics_cache_ts = time.time()
+    gc.collect()  # reclaim memory from JSONL parsing
 
 
 def get_system_metrics() -> dict:
