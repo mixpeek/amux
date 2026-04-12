@@ -1162,10 +1162,21 @@ _yolo_last_responded: dict = {}
 def _yolo_auto_respond():
     """Check yolo sessions for known blocking prompts and auto-answer them."""
     now = time.time()
+    # Fetch running tmux sessions once to avoid spawning a subprocess per session
+    running_sessions = set()
+    try:
+        r = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            running_sessions = set(r.stdout.splitlines())
+    except Exception:
+        return  # tmux not available, nothing to do
     for f in CC_SESSIONS.glob("*.env"):
         name = f.stem
         try:
-            if not is_running(name):
+            if tmux_name(name) not in running_sessions:
                 continue
             if now - _yolo_last_responded.get(name, 0) < _YOLO_COOLDOWN:
                 continue
@@ -1289,9 +1300,20 @@ def _snapshot_all_sessions():
     4. Auto-restart: if CC_AUTO_CONTINUE=1 and Claude has exited to a shell prompt,
        restart it automatically (handles context-limit exits mid-task).
     """
+    # Fetch running tmux sessions once to avoid spawning a subprocess per session
+    running_sessions = set()
+    try:
+        r = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            running_sessions = set(r.stdout.splitlines())
+    except Exception:
+        return
     for f in CC_SESSIONS.glob("*.env"):
         name = f.stem
-        if not is_running(name):
+        if tmux_name(name) not in running_sessions:
             continue
         try:
             output = tmux_capture(name, 5000)
