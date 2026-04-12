@@ -6716,17 +6716,28 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   #fc-container .fc .fc-daygrid-day-frame { min-height: 80px; }
   #fc-container .fc-subscribe-button { font-size: 0.78rem !important; padding: 4px 10px !important; }
   @media (max-width: 600px) {
-    #fc-container .fc .fc-toolbar { flex-direction: column; align-items: stretch; padding: 6px 4px; gap: 4px; }
-    #fc-container .fc .fc-toolbar-chunk { display: flex; justify-content: center; }
-    #fc-container .fc .fc-toolbar-title { font-size: 0.95rem; }
-    #fc-container .fc .fc-button { font-size: 0.78rem; padding: 6px 10px; min-height: 34px; }
-    #fc-container .fc .fc-daygrid-day-frame { min-height: 48px; }
-    #fc-container .fc .fc-daygrid-day-number { font-size: 0.75rem; padding: 3px 5px; }
-    #fc-container .fc .fc-event { font-size: 0.72rem; padding: 2px 4px; min-height: 22px; line-height: 1.3; }
+    #calendar-view { height: calc(100dvh - 60px); }
+    #fc-container { padding: 0 !important; }
+    #fc-container .fc .fc-toolbar { padding: 8px 6px; gap: 4px; flex-wrap: wrap; justify-content: space-between; }
+    #fc-container .fc .fc-toolbar-chunk { display: flex; align-items: center; gap: 4px; }
+    #fc-container .fc .fc-toolbar-chunk:first-child { order: 1; }
+    #fc-container .fc .fc-toolbar-chunk:nth-child(2) { order: 0; width: 100%; justify-content: center; }
+    #fc-container .fc .fc-toolbar-chunk:last-child { order: 2; }
+    #fc-container .fc .fc-toolbar-title { font-size: 1.05rem; font-weight: 700; }
+    #fc-container .fc .fc-button { font-size: 0.78rem; padding: 8px 12px; min-height: 38px; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+    #fc-container .fc .fc-button-group { flex-wrap: nowrap; }
+    #fc-container .fc .fc-daygrid-day-frame { min-height: 52px; }
+    #fc-container .fc .fc-daygrid-day-number { font-size: 0.78rem; padding: 4px 6px; }
+    #fc-container .fc .fc-event { font-size: 0.75rem; padding: 3px 6px; min-height: 26px; line-height: 1.4; border-radius: 5px; }
     #fc-container .fc .fc-col-header-cell { font-size: 0.68rem; padding: 6px 0; }
-    #fc-container .fc .fc-timegrid-slot { height: 3em; }
+    #fc-container .fc .fc-timegrid-slot { height: 3.5em; }
+    #fc-container .fc .fc-timegrid-event { min-height: 28px; }
     #fc-container .fc .fc-scrollgrid { border: none; }
     #fc-container .fc .fc-subscribe-button { display: none; }
+    #fc-container .fc .fc-list-event { font-size: 0.85rem; }
+    #fc-container .fc .fc-list-event td { padding: 10px 8px; }
+    #fc-container .fc .fc-list-day-cushion { padding: 8px; font-size: 0.82rem; }
+    #fc-container .fc .fc-list-empty-cushion { font-size: 0.85rem; padding: 40px 16px; }
   }
   /* Board collapse */
   .board-col-collapse { background: none; border: none; cursor: pointer; color: var(--dim);
@@ -20920,17 +20931,20 @@ function _fcInit() {
   if (!['dayGridMonth','timeGridWeek','timeGridDay'].includes(savedView)) savedView = 'dayGridMonth';
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark' || (!document.body.classList.contains('light'));
   const isMobile = window.innerWidth <= 600;
+  const mobileViews = ['listWeek','dayGridMonth','timeGridDay'];
+  const mobileDefault = mobileViews.includes(savedView) ? savedView : 'listWeek';
   _fcInstance = new FullCalendar.Calendar(el, {
-    initialView: isMobile ? 'timeGridDay' : savedView,
+    initialView: isMobile ? mobileDefault : savedView,
     headerToolbar: isMobile ? {
       left: 'prev,next today',
       center: 'title',
-      right: 'dayGridMonth,timeGridWeek,timeGridDay',
+      right: 'listWeek,dayGridMonth,timeGridDay',
     } : {
       left: 'prev,today,next',
       center: 'title',
       right: 'dayGridMonth,timeGridWeek,timeGridDay subscribe',
     },
+    buttonText: isMobile ? { listWeek: 'List', dayGridMonth: 'Month', timeGridDay: 'Day', today: 'Today' } : {},
     customButtons: {
       subscribe: {
         text: 'Subscribe',
@@ -20938,7 +20952,7 @@ function _fcInit() {
       },
     },
     events: function(info, successCallback) { successCallback(_fcGetEvents()); },
-    height: window.innerHeight - el.getBoundingClientRect().top,
+    height: isMobile ? (window.visualViewport ? window.visualViewport.height : window.innerHeight) - el.getBoundingClientRect().top : window.innerHeight - el.getBoundingClientRect().top,
     nowIndicator: true,
     navLinks: true,
     editable: false,
