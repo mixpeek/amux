@@ -11560,10 +11560,10 @@ function _renderOrgSwitcher() {
   const wsList = document.getElementById('settings-workspace-list');
   if (!_gatewayOrgs.length) return;
 
-  const otherOrgs = _gatewayOrgs.filter(o => !o.is_own);
+  const otherOrgs = _gatewayOrgs.filter(o => !o.is_personal);
   const cookieOrg = document.cookie.split(';').map(c => c.trim())
     .find(c => c.startsWith('amux_org='))?.split('=')[1] || '';
-  const current = _gatewayOrgs.find(o => o.id === cookieOrg) || _gatewayOrgs.find(o => o.is_own);
+  const current = _gatewayOrgs.find(o => o.id === cookieOrg) || _gatewayOrgs.find(o => o.is_personal);
   const inOtherOrg = current && !current.is_own;
 
   // Show workspace section in settings if user has access to multiple orgs
@@ -11572,7 +11572,7 @@ function _renderOrgSwitcher() {
     wsSep.style.display = '';
     wsList.innerHTML = _gatewayOrgs.map(o => {
       const isCurrent = current && o.id === current.id;
-      const label = o.is_own ? 'My workspace' : (o.email || o.id);
+      const label = o.is_personal ? 'My workspace' : (o.name || o.id);
       return `<div onclick="_switchOrg('${esc(o.id)}');closeSettings();" style="padding:8px 12px;border-radius:6px;cursor:pointer;font-size:0.82rem;${isCurrent ? 'background:rgba(56,139,253,0.12);font-weight:600;border:1px solid var(--accent);' : 'border:1px solid var(--border);'}display:flex;justify-content:space-between;align-items:center;-webkit-tap-highlight-color:transparent;" onmouseover="if(!${isCurrent})this.style.background='var(--bg3)'" onmouseout="if(!${isCurrent})this.style.background=''">
         <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(label)}</span>
         ${isCurrent ? '<span style="color:var(--accent);font-size:0.65rem;">current</span>' : ''}
@@ -11592,7 +11592,7 @@ function _renderOrgSwitcher() {
   // Banner: viewing another workspace
   if (orgBanner && orgBannerText) {
     if (inOtherOrg) {
-      orgBannerText.textContent = `Viewing ${current.email || current.id}'s workspace`;
+      orgBannerText.textContent = `Viewing ${current.name || current.id}'s workspace`;
       orgBanner.style.display = '';
     } else {
       orgBanner.style.display = 'none';
@@ -11603,11 +11603,11 @@ function _renderOrgSwitcher() {
   const dismissed = JSON.parse(localStorage.getItem('amux_dismissed_org_banners') || '[]');
   const undismissedOrgs = otherOrgs.filter(o => !dismissed.includes(o.id));
   if (inviteBanner && inviteBannerText && !inOtherOrg && undismissedOrgs.length > 0) {
-    const names = undismissedOrgs.map(o => o.email || o.id).join(', ');
+    const names = undismissedOrgs.map(o => o.name || o.id).join(', ');
     inviteBannerText.innerHTML = `You have access to: <strong>${esc(names)}</strong> &nbsp;`;
     undismissedOrgs.forEach(o => {
       const btn = document.createElement('button');
-      btn.textContent = `Switch to ${o.email || o.id}`;
+      btn.textContent = `Switch to ${o.name || o.id}`;
       btn.style.cssText = 'background:#16a34a;color:#fff;border:none;border-radius:4px;padding:2px 10px;font-size:0.78rem;cursor:pointer;margin-left:4px;';
       btn.onclick = () => _switchOrg(o.id);
       inviteBannerText.appendChild(btn);
@@ -11633,7 +11633,7 @@ function _dismissOrgBanner() {
   if (banner) banner.style.display = 'none';
   // Store dismissed org IDs so banner stays closed
   const dismissed = JSON.parse(localStorage.getItem('amux_dismissed_org_banners') || '[]');
-  (_gatewayOrgs || []).filter(o => !o.is_own).forEach(o => {
+  (_gatewayOrgs || []).filter(o => !o.is_personal).forEach(o => {
     if (!dismissed.includes(o.id)) dismissed.push(o.id);
   });
   localStorage.setItem('amux_dismissed_org_banners', JSON.stringify(dismissed));
