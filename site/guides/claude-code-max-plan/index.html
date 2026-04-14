@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>How to Get 10x More Out of Your Claude Code Max Plan (2026) — amux</title>
+  <script>(function(){var t=localStorage.getItem('theme');if(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.setAttribute('data-theme','dark')})()</script>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Claude Code Max plan rate limits hit hard. This guide shows how to get 10x more done within the same limits using parallel agents, model routing, context management, and task pipelining. Real numbers, real workflows.">
+  <meta name="keywords" content="claude code max plan, claude code rate limit, claude code rate limited, claude max plan worth it, claude code token limit, claude code usage limit, claude code parallel agents rate limit, claude code max plan tips, maximize claude code, claude code throughput">
+  <link rel="canonical" href="https://amux.io/guides/claude-code-max-plan/">
+  <meta property="og:title" content="How to Get 10x More Out of Your Claude Code Max Plan — amux">
+  <meta property="og:description" content="Rate limited on Claude Code? Parallel agents, model routing, and task pipelining get 10x more done within the same caps.">
+  <meta property="og:url" content="https://amux.io/guides/claude-code-max-plan/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Claude Code Max Plan","item":"https://amux.io/guides/claude-code-max-plan/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"How to Get 10x More Out of Your Claude Code Max Plan (2026)","description":"Practical guide to maximizing Claude Code throughput within rate limits using parallel agents, model routing, context management, and task pipelining.","url":"https://amux.io/guides/claude-code-max-plan/","datePublished":"2026-04-14","dateModified":"2026-04-14","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Why does Claude Code hit rate limits so fast on the Max plan?","acceptedAnswer":{"@type":"Answer","text":"Claude Code is token-hungry by design. Every tool call reads files, runs commands, and processes output — all of which count as input tokens. A single complex coding session can burn through 500K–1M tokens in an hour. The Max plan's weekly cap, while generous for interactive use, runs out quickly when agents work autonomously on large codebases. The key insight: it's not about using fewer tokens per task, it's about getting more useful output per token spent."}},{"@type":"Question","name":"Can I run multiple Claude Code sessions on one Max plan?","acceptedAnswer":{"@type":"Answer","text":"Yes. Claude Code sessions share your account's rate limit, but you can run as many concurrent sessions as you want. The limit is on total tokens per time window, not on session count. This means 5 agents each doing focused 15-minute tasks use the same tokens as 1 agent doing 5 tasks sequentially — but finish 5x faster in wall-clock time. Parallel agents don't increase your token spend; they compress the calendar time."}},{"@type":"Question","name":"Is the Max plan worth it for parallel agents?","acceptedAnswer":{"@type":"Answer","text":"Yes, if you use the techniques in this guide. The Max plan at $100/month or $200/month gives you significantly higher rate limits than Pro ($20/month). For a single interactive session, Pro is often sufficient. For parallel agents — especially overnight fleets of 5-10 agents — you will hit Pro limits within the first hour. Max pays for itself if you run more than 3 concurrent agents regularly."}},{"@type":"Question","name":"How do I check my current rate limit usage?","acceptedAnswer":{"@type":"Answer","text":"Claude Code shows remaining capacity in the status bar. You can also check via the Anthropic Console dashboard. With amux, the per-session token tracking shows exactly how many tokens each agent has consumed, making it easy to identify which sessions are burning through your quota fastest."}},{"@type":"Question","name":"Does using Haiku or Sonnet instead of Opus help with rate limits?","acceptedAnswer":{"@type":"Answer","text":"Significantly. Rate limits are model-specific — Opus has the tightest caps, Haiku the most generous. Routing routine tasks (tests, docs, simple refactors) to Sonnet or Haiku means those tasks don't count against your Opus quota. This is the single highest-leverage optimization: reserve Opus for complex reasoning, use Sonnet for everything else. amux lets you set the model per session."}},{"@type":"Question","name":"What happens when Claude Code hits the rate limit?","acceptedAnswer":{"@type":"Answer","text":"The session pauses with a 'rate limited' message and waits for the limit to reset (usually 1–5 minutes for short-term limits, up to 24 hours for daily caps). In an unattended session, this means dead time where the agent produces nothing. With amux's watchdog, rate-limited sessions are detected and the agent can be automatically switched to a different model tier or queued for retry."}},{"@type":"Question","name":"Can I use the API instead of the Max plan to avoid limits?","acceptedAnswer":{"@type":"Answer","text":"Yes. The Anthropic API has separate, higher rate limits and charges per token with no weekly cap. For heavy parallel agent usage (10+ agents, overnight runs), the API is often more cost-effective than the Max plan because you pay exactly for what you use with no artificial ceiling. Claude Code supports both the Max plan and API keys — you can even mix them across sessions."}},{"@type":"Question","name":"How many parallel agents can I run on the Max plan?","acceptedAnswer":{"@type":"Answer","text":"There is no limit on concurrent sessions — only on total tokens per time window. Practically, 3–5 agents running Sonnet for focused tasks is sustainable on the $100/month Max plan. For 10+ agents or overnight runs, the $200/month Max plan or switching to API billing gives more headroom. The key is task scoping: short, focused tasks (15–30 min) use fewer tokens than long, exploratory sessions."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"><span class="icon-sun">&#9788;</span><span class="icon-moon">&#9790;</span></button>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">sign up</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Claude Code Max Plan</span></div>
+    <h1>How to Get 10x More Out of Your Claude Code Max Plan</h1>
+    <p class="subtitle">You're paying $100&ndash;200/month for the Max plan and still hitting rate limits by Wednesday. Here's how to get 10x more useful output from the same quota.</p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">The problem in one sentence</strong>
+      <p style="font-size:0.92rem;color:var(--text);margin:0.5rem 0 0;line-height:1.7;">Claude Code burns tokens <em>reading files and running commands</em>, not just writing code. A single session can consume 1M tokens/hour while producing 200 lines of useful output. The fix isn't using less &mdash; it's using smarter.</p>
+    </div>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#limits" style="color:var(--dim);text-decoration:none;">Understanding the Rate Limits</a></li>
+        <li><a href="#where" style="color:var(--dim);text-decoration:none;">Where Your Tokens Actually Go</a></li>
+        <li><a href="#model-routing" style="color:var(--dim);text-decoration:none;">Strategy 1: Model Routing</a></li>
+        <li><a href="#context" style="color:var(--dim);text-decoration:none;">Strategy 2: Context Discipline</a></li>
+        <li><a href="#parallel" style="color:var(--dim);text-decoration:none;">Strategy 3: Parallel Agents</a></li>
+        <li><a href="#pipeline" style="color:var(--dim);text-decoration:none;">Strategy 4: Task Pipelining</a></li>
+        <li><a href="#specs" style="color:var(--dim);text-decoration:none;">Strategy 5: Specs Over Prompts</a></li>
+        <li><a href="#api" style="color:var(--dim);text-decoration:none;">Strategy 6: API Keys for Heavy Workloads</a></li>
+        <li><a href="#schedule" style="color:var(--dim);text-decoration:none;">Strategy 7: Schedule Around Resets</a></li>
+        <li><a href="#calculator" style="color:var(--dim);text-decoration:none;">Max Plan Calculator</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="limits">Understanding the Rate Limits</h2>
+    <p>The Max plan has two types of limits, and confusing them costs people hours of dead time:</p>
+
+    <div class="table-scroll">
+    <table class="diff-table" style="margin:1.5rem 0;">
+      <thead>
+        <tr>
+          <th>Limit type</th>
+          <th>Window</th>
+          <th>What happens</th>
+          <th>Recovery</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="row-label">Short-term (burst)</td><td>Per minute</td><td>Session pauses, retries automatically</td><td>1&ndash;5 minutes</td></tr>
+        <tr><td class="row-label">Daily / weekly cap</td><td>Rolling 24h / 7d</td><td>Session blocked until window rolls</td><td>Hours to days</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>Short-term limits are annoying but manageable &mdash; the agent just slows down. <strong>Daily and weekly caps are the killer.</strong> When you burn through your weekly Opus quota by Tuesday, you're paying $200/month for 2 days of real work.</p>
+
+    <p>The limits are <strong>per-model</strong>. Opus, Sonnet, and Haiku each have independent quotas. This is the single most important thing to understand &mdash; and the foundation of every strategy below.</p>
+
+    <h2 id="where">Where Your Tokens Actually Go</h2>
+    <p>Before optimizing, you need to see where the waste is. Most people assume tokens go to code generation. In reality:</p>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin:1.5rem 0;">
+      <div style="background:var(--bg);padding:1.2rem;">
+        <div style="font-size:2rem;font-weight:700;letter-spacing:-0.03em;">~70%</div>
+        <div style="font-size:0.82rem;color:var(--dim);margin-top:0.2rem;"><strong>Input tokens</strong> &mdash; reading files, command output, error messages, context from previous turns</div>
+      </div>
+      <div style="background:var(--bg);padding:1.2rem;">
+        <div style="font-size:2rem;font-weight:700;letter-spacing:-0.03em;">~30%</div>
+        <div style="font-size:0.82rem;color:var(--dim);margin-top:0.2rem;"><strong>Output tokens</strong> &mdash; actual code, tool calls, thinking. The part you care about.</div>
+      </div>
+    </div>
+
+    <p>The agent reads your entire codebase context on every turn. A 5,000-line file gets re-read every time the agent makes a change. A failing test suite dumps 500 lines of output that gets processed as input. <strong>Most of your quota goes to the agent understanding the world, not changing it.</strong></p>
+
+    <h3>The top token sinks</h3>
+    <ol>
+      <li><strong>Large file reads.</strong> The agent reads entire files even when it only needs 10 lines. A 2,000-line file = ~8K tokens per read.</li>
+      <li><strong>Test output.</strong> Running a full test suite that prints 1,000 lines of output = ~4K tokens of context the agent has to process.</li>
+      <li><strong>Conversation history.</strong> Every previous turn stays in context. A 30-turn conversation carries the full history forward.</li>
+      <li><strong>Exploration.</strong> The agent reads files to understand the codebase before making changes. Necessary, but expensive when repeated across sessions.</li>
+      <li><strong>Retries.</strong> When the agent goes off-track and you correct it, you pay for the bad attempt <em>and</em> the correction.</li>
+    </ol>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:1.5rem 0;">
+      <strong style="font-size:0.82rem;color:var(--muted);">With amux</strong>
+      <p style="font-size:0.88rem;color:var(--dim);margin:0.4rem 0 0;">The per-session token tracking dashboard shows exactly where your tokens go. Sort sessions by token spend to identify which agents are burning the most quota. Sessions that read the same large files repeatedly are candidates for context optimization.</p>
+    </div>
+
+    <h2 id="model-routing">Strategy 1: Model Routing (Biggest Win)</h2>
+    <p>This is the highest-leverage optimization. Route tasks to the cheapest model that can handle them.</p>
+
+    <div class="table-scroll">
+    <table class="diff-table" style="margin:1.5rem 0;">
+      <thead>
+        <tr>
+          <th>Task type</th>
+          <th>Model</th>
+          <th>Why</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="row-label">Complex architecture, multi-file refactors</td><td><strong>Opus</strong></td><td>Needs deep reasoning across files</td></tr>
+        <tr><td class="row-label">Feature implementation, bug fixes</td><td><strong>Sonnet</strong></td><td>Good enough for 90% of coding tasks</td></tr>
+        <tr><td class="row-label">Test generation, documentation</td><td><strong>Sonnet</strong></td><td>Structured output, doesn't need Opus reasoning</td></tr>
+        <tr><td class="row-label">Simple refactors, formatting, renames</td><td><strong>Haiku</strong></td><td>Mechanical changes, minimal reasoning needed</td></tr>
+        <tr><td class="row-label">Code review, linting suggestions</td><td><strong>Haiku</strong></td><td>Pattern matching, not creative work</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p><strong>The math:</strong> If you route 60% of your work to Sonnet and 20% to Haiku, you free up your Opus quota for the 20% of tasks that actually need it. That means your Opus quota lasts 5x longer &mdash; from Tuesday to the following Monday.</p>
+
+    <pre><code><span class="comment"># With amux, set the model per session</span>
+<span class="prompt">$</span> <span class="cmd">amux register test-gen --dir ~/Dev/api --yolo --model sonnet</span>
+<span class="prompt">$</span> <span class="cmd">amux register arch-review --dir ~/Dev/api --yolo --model opus</span>
+<span class="prompt">$</span> <span class="cmd">amux register doc-update --dir ~/Dev/api --yolo --model haiku</span></code></pre>
+
+    <h2 id="context">Strategy 2: Context Discipline</h2>
+    <p>Every token in the conversation history is re-processed on every turn. A 50-turn conversation with a growing context window becomes exponentially expensive. Cut it ruthlessly.</p>
+
+    <h3>CLAUDE.md is your best friend</h3>
+    <p>A good <code>CLAUDE.md</code> file gives the agent context <em>once</em> instead of discovering it through expensive exploration. Every minute the agent spends reading random files to understand your project is a minute of wasted Opus tokens.</p>
+    <pre><code><span class="comment"># Bad: agent explores for 5 minutes, reads 20 files</span>
+<span class="comment"># Cost: ~40K input tokens just to understand the project</span>
+
+<span class="comment"># Good: CLAUDE.md tells it everything upfront</span>
+<span class="comment"># Cost: ~2K tokens, agent starts coding immediately</span></code></pre>
+
+    <h3>Short sessions beat long ones</h3>
+    <p>A 50-turn session carries all 50 turns in context. By turn 50, the agent is re-reading 200K tokens of history on every single response. That's your quota evaporating.</p>
+    <p><strong>The fix:</strong> Short, focused sessions. One task per session. 5&ndash;15 turns. When the task is done, close the session. The next task starts fresh with a clean context window.</p>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin:1.5rem 0;">
+      <div style="background:var(--bg);padding:1.2rem;">
+        <div style="font-size:0.85rem;font-weight:600;color:var(--red);margin-bottom:0.3rem;">1 session, 50 turns</div>
+        <div style="font-size:0.82rem;color:var(--dim);">~800K total tokens. By turn 40, context is so large that compaction kicks in and the agent forgets early decisions.</div>
+      </div>
+      <div style="background:var(--bg);padding:1.2rem;">
+        <div style="font-size:0.85rem;font-weight:600;color:var(--green);margin-bottom:0.3rem;">5 sessions, 10 turns each</div>
+        <div style="font-size:0.82rem;color:var(--dim);">~250K total tokens. Each session is focused, context stays small, agent stays sharp. Same work, 3x fewer tokens.</div>
+      </div>
+    </div>
+
+    <h3>Targeted file reads</h3>
+    <p>In your <code>CLAUDE.md</code>, tell the agent which files matter for what. This prevents the agent from reading your entire <code>src/</code> directory to find the auth middleware:</p>
+    <pre><code><span class="comment"># In CLAUDE.md:</span>
+Auth middleware: src/middleware/auth.ts
+Database models: src/models/ (one file per table)
+API routes: src/routes/ (grouped by resource)
+Tests: tests/ (mirrors src/ structure)</code></pre>
+
+    <h2 id="parallel">Strategy 3: Parallel Agents</h2>
+    <p>This is counterintuitive: <strong>running more agents doesn't use more tokens.</strong> 5 agents doing 5 tasks in parallel use the same total tokens as 1 agent doing 5 tasks sequentially. But they finish 5x faster.</p>
+
+    <p>Why this matters for rate limits: if your daily cap resets at midnight, you want to burn through your quota as efficiently as possible during the hours you have. 1 agent running for 8 hours wastes time between tasks (thinking, exploring, re-reading). 5 agents running for 2 hours do the same work with less per-session overhead.</p>
+
+    <h3>Parallel agents actually <em>save</em> tokens</h3>
+    <p>Each parallel agent starts with a fresh context window. That means:</p>
+    <ul>
+      <li>No accumulated conversation history from previous tasks</li>
+      <li>No context pollution from unrelated file reads</li>
+      <li>No compaction artifacts from hitting context limits</li>
+      <li>Each agent reads only the files relevant to its specific task</li>
+    </ul>
+
+    <p>In practice, 5 parallel focused sessions use <strong>20&ndash;40% fewer total tokens</strong> than 1 session doing all 5 tasks sequentially, because the sequential session carries growing context baggage.</p>
+
+    <pre><code><span class="comment"># Sequential: 1 agent, 5 tasks, growing context</span>
+<span class="comment"># Task 1: 50K tokens (clean context)</span>
+<span class="comment"># Task 2: 65K tokens (carrying Task 1 history)</span>
+<span class="comment"># Task 3: 80K tokens (carrying Tasks 1-2 history)</span>
+<span class="comment"># Task 4: 95K tokens (carrying Tasks 1-3 history)</span>
+<span class="comment"># Task 5: 110K tokens (carrying Tasks 1-4 history)</span>
+<span class="comment"># Total: 400K tokens</span>
+
+<span class="comment"># Parallel: 5 agents, 1 task each, fresh context</span>
+<span class="comment"># Agent 1: 50K tokens</span>
+<span class="comment"># Agent 2: 50K tokens</span>
+<span class="comment"># Agent 3: 50K tokens</span>
+<span class="comment"># Agent 4: 50K tokens</span>
+<span class="comment"># Agent 5: 50K tokens</span>
+<span class="comment"># Total: 250K tokens (37% savings)</span></code></pre>
+
+    <h2 id="pipeline">Strategy 4: Task Pipelining</h2>
+    <p>Don't let agents sit idle. When one finishes, immediately start the next task in its session slot. Think of it like a factory assembly line, not a single worker doing everything.</p>
+
+    <h3>The pipeline</h3>
+    <pre><code>Hour 1:  [Agent 1: API endpoints]  [Agent 2: tests]    [Agent 3: docs]
+Hour 2:  [Agent 1: auth refactor]  [Agent 2: UI tests]  [Agent 3: README]
+Hour 3:  [Agent 1: migration]      [Agent 2: e2e tests] [Agent 3: changelog]</code></pre>
+
+    <p>Each agent finishes a task, closes the session (clearing context), and immediately starts the next one fresh. No accumulated context, no wasted quota on history.</p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:1.5rem 0;">
+      <strong style="font-size:0.82rem;color:var(--muted);">With amux</strong>
+      <p style="font-size:0.88rem;color:var(--dim);margin:0.4rem 0 0;">The kanban board enables pipelining naturally. Agents claim tasks from the board, complete them, and automatically move on to the next available task. The watchdog ensures no session sits idle &mdash; if an agent finishes and there's work on the board, it can be prompted to claim the next item.</p>
+    </div>
+
+    <h2 id="specs">Strategy 5: Specs Over Prompts</h2>
+    <p>A vague prompt causes the agent to explore, ask questions, try approaches, backtrack, and retry. Every one of those interactions burns tokens. A clear spec eliminates them.</p>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin:1.5rem 0;">
+      <div style="background:var(--bg);padding:1.2rem;">
+        <div style="font-size:0.85rem;font-weight:600;color:var(--red);margin-bottom:0.3rem;">Vague prompt</div>
+        <div style="font-size:0.82rem;color:var(--dim);line-height:1.6;">"Add pagination to the users API"<br><br>Agent explores 8 files. Picks offset-based. You correct to cursor-based. Agent rewrites. You add "don't change the schema." Agent rewrites again.<br><br><strong>Result:</strong> 3 rounds, ~120K tokens, 45 minutes.</div>
+      </div>
+      <div style="background:var(--bg);padding:1.2rem;">
+        <div style="font-size:0.85rem;font-weight:600;color:var(--green);margin-bottom:0.3rem;">Spec</div>
+        <div style="font-size:0.82rem;color:var(--dim);line-height:1.6;">"Cursor-based pagination on GET /users. Key on created_at. Default 50, max 200. Don't change the schema. Acceptance: curl returns {data, next_cursor}."<br><br>Agent reads 2 files. Implements once. Done.<br><br><strong>Result:</strong> 1 round, ~40K tokens, 12 minutes.</div>
+      </div>
+    </div>
+
+    <p>Specs are a 3x token multiplier. Every minute spent writing a spec saves 3 minutes of agent exploration and 3x the tokens. See <a href="/guides/spec-driven-development/">our spec-driven development guide</a> for templates.</p>
+
+    <h2 id="api">Strategy 6: API Keys for Heavy Workloads</h2>
+    <p>The Max plan is a flat monthly fee with usage caps. The Anthropic API is pay-per-token with no weekly ceiling. For heavy parallel-agent workloads, the API is often cheaper and more predictable.</p>
+
+    <div class="table-scroll">
+    <table class="diff-table" style="margin:1.5rem 0;">
+      <thead>
+        <tr>
+          <th>Usage pattern</th>
+          <th>Best option</th>
+          <th>Why</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="row-label">Interactive, 2&ndash;4 hours/day</td><td><strong>Max $100</strong></td><td>Flat fee, enough headroom for moderate use</td></tr>
+        <tr><td class="row-label">Heavy daily use, 6&ndash;8 hours</td><td><strong>Max $200</strong></td><td>Higher caps cover sustained workloads</td></tr>
+        <tr><td class="row-label">Overnight fleets, 10+ agents</td><td><strong>API billing</strong></td><td>No weekly cap, pay only for what you use</td></tr>
+        <tr><td class="row-label">Burst + overnight (best of both)</td><td><strong>Max + API</strong></td><td>Max for daytime interactive, API for overnight batch</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <pre><code><span class="comment"># Claude Code supports both — set per session</span>
+<span class="prompt">$</span> <span class="cmd">export ANTHROPIC_API_KEY=sk-ant-...</span>
+
+<span class="comment"># Interactive session: uses Max plan (default)</span>
+<span class="prompt">$</span> <span class="cmd">amux register interactive --dir ~/Dev/api</span>
+
+<span class="comment"># Overnight batch: uses API key (no weekly cap)</span>
+<span class="prompt">$</span> <span class="cmd">amux register overnight-batch --dir ~/Dev/api --yolo</span></code></pre>
+
+    <h2 id="schedule">Strategy 7: Schedule Around Resets</h2>
+    <p>Rate limits have rolling windows. If your weekly cap resets on Monday at midnight UTC, schedule your heaviest workloads for Monday and Tuesday. Save Wednesday&ndash;Friday for lighter, interactive work.</p>
+
+    <h3>The weekly rhythm</h3>
+    <pre><code>Monday:    Heavy batch — overnight fleet of 10 agents (test gen, refactors, docs)
+Tuesday:   Heavy batch — feature implementation, 5-8 agents
+Wednesday: Interactive — architecture decisions, code review (Opus, light usage)
+Thursday:  Interactive — bug fixes, small features (Sonnet)
+Friday:    Pipeline — ship: merge branches, deploy, cleanup</code></pre>
+
+    <p>This matches natural development cycles too: decompose over the weekend, execute Monday&ndash;Tuesday, refine Wednesday&ndash;Friday.</p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:1.5rem 0;">
+      <strong style="font-size:0.82rem;color:var(--muted);">With amux</strong>
+      <p style="font-size:0.88rem;color:var(--dim);margin:0.4rem 0 0;">The built-in scheduler lets you set up recurring overnight jobs. Schedule heavy test generation for Monday nights and documentation updates for Tuesday nights, automatically.</p>
+    </div>
+
+    <h2 id="calculator">Max Plan Calculator</h2>
+    <p>Rough estimates for common workflows:</p>
+
+    <div class="table-scroll">
+    <table class="diff-table" style="margin:1.5rem 0;">
+      <thead>
+        <tr>
+          <th>Workflow</th>
+          <th>Tokens/task</th>
+          <th>Tasks/week (Max $100)</th>
+          <th>Tasks/week (Max $200)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="row-label">Simple bug fix (Sonnet)</td><td>~30K</td><td>~200</td><td>~500</td></tr>
+        <tr><td class="row-label">Feature implementation (Sonnet)</td><td>~80K</td><td>~75</td><td>~180</td></tr>
+        <tr><td class="row-label">Complex refactor (Opus)</td><td>~150K</td><td>~20</td><td>~50</td></tr>
+        <tr><td class="row-label">Test generation (Sonnet)</td><td>~50K</td><td>~120</td><td>~300</td></tr>
+        <tr><td class="row-label">Documentation (Haiku)</td><td>~20K</td><td>~500+</td><td>~1000+</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>These are rough &mdash; actual usage varies by codebase size, task complexity, and how much the agent needs to explore. The point: <strong>model routing alone can 3&ndash;5x your effective task capacity.</strong></p>
+
+    <h2 id="faq">FAQ</h2>
+
+    <div class="faq-list" style="display:flex;flex-direction:column;gap:1rem;margin-top:1.5rem;">
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> Why does Claude Code hit rate limits so fast?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          Claude Code is token-hungry by design. Every tool call &mdash; reading files, running commands, processing output &mdash; counts as input tokens. A single complex session can burn 500K&ndash;1M tokens per hour. The key insight: it's not about using fewer tokens per task, it's about getting more useful output per token spent.
+        </div>
+      </details>
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> Can I run multiple sessions on one Max plan?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          Yes. The limit is on total tokens per time window, not on session count. 5 agents each doing focused tasks use the same total tokens as 1 agent doing them sequentially &mdash; but finish 5x faster. Parallel agents don't increase token spend; they compress calendar time.
+        </div>
+      </details>
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> Is the Max plan worth it for parallel agents?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          Yes, if you run more than 3 concurrent agents regularly. The Pro plan ($20/month) hits limits within the first hour of parallel work. Max pays for itself by giving you the headroom to actually run agents at scale. For overnight fleets of 10+ agents, consider supplementing with API billing.
+        </div>
+      </details>
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> Does using Sonnet/Haiku help with rate limits?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          Significantly. Rate limits are per-model. Routing 60% of work to Sonnet and 20% to Haiku means those tasks don't count against Opus quota at all. This is the single highest-leverage optimization.
+        </div>
+      </details>
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> Can I use the API instead to avoid caps?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          Yes. The Anthropic API has separate, higher rate limits and charges per token with no weekly ceiling. For 10+ parallel agents or overnight runs, API billing is often more cost-effective. Claude Code supports both &mdash; you can use the Max plan for daytime interactive work and API keys for overnight batch runs.
+        </div>
+      </details>
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> What happens when I hit the rate limit?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          Short-term limits: the session pauses and retries automatically in 1&ndash;5 minutes. Daily/weekly caps: the session is blocked until the window resets. With amux, the watchdog detects rate-limited sessions and can switch to a different model tier or queue the work for later.
+        </div>
+      </details>
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> How many parallel agents on the Max plan?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          No limit on concurrent sessions &mdash; only on total tokens. Practically: 3&ndash;5 Sonnet agents are sustainable on the $100 plan. For 10+ agents, use the $200 plan or API billing. Short, focused tasks (15&ndash;30 min) use fewer tokens than long exploratory sessions.
+        </div>
+      </details>
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> How do I track which sessions use the most tokens?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          amux shows per-session token spend on every session card in the dashboard. Sort by token count to find the heaviest consumers. The Anthropic Console also shows aggregate API usage. Between the two, you can see both per-session and account-level token consumption.
+        </div>
+      </details>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem 1.6rem;margin:3rem 0 2rem;text-align:center;">
+      <strong style="font-size:1rem;">Stop hitting rate limits. Start running parallel agents.</strong>
+      <p style="font-size:0.88rem;color:var(--dim);margin:0.5rem 0 1rem;">amux manages parallel Claude Code sessions with per-session token tracking, model routing, and a self-healing watchdog. One command to install.</p>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="display:inline-block;padding:0.6rem 1.6rem;background:var(--accent);color:#fff;border-radius:8px;text-decoration:none;font-size:0.88rem;font-weight:600;">Get Started &mdash; It's Free</a>
+    </div>
+
+  </main>
+  <footer class="site-footer"><div class="footer-inner"><p>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a>. MIT + Commons Clause.</p></div></footer>
+  <script>
+  document.getElementById('theme-toggle').addEventListener('click',function(){var d=document.documentElement,t=d.getAttribute('data-theme')==='dark';d.setAttribute('data-theme',t?'':'dark');localStorage.setItem('theme',t?'light':'dark')});
+  </script>
+</body>
+</html>

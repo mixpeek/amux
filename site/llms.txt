@@ -48,6 +48,7 @@ Claude Code runs one agent per terminal. amux runs dozens — with live monitori
 
 ## Guides
 
+- [How to Get 10x More Out of Your Claude Code Max Plan](https://amux.io/guides/claude-code-max-plan/): Rate limited by Wednesday? 7 strategies — model routing, parallel agents, context discipline, task pipelining, specs, API fallback, and scheduling — to 10x throughput within the same quota.
 - [Agentic Engineering: The Practical Guide](https://amux.io/guides/agentic-engineering/): Go from 1 agent to 10+ running in parallel. Task decomposition, git isolation, coordination patterns, overnight operation, and review workflows. The step-by-step guide to the Karpathy-coined discipline.
 - [CLAUDE.md Templates](https://amux.io/guides/claude-md-templates/): 20+ copy-paste CLAUDE.md configs for Python APIs, React apps, Go services, monorepos, data pipelines, Terraform, mobile apps, CLI tools. Filterable gallery with explanations.
 - [Getting Started with amux](https://amux.io/guides/getting-started/): Install amux and run your first parallel Claude Code agents in under 5 minutes.
