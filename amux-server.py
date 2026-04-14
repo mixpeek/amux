@@ -7501,6 +7501,34 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     flex-shrink: 0; min-width: 0; overflow: hidden; }
   .peek-dir-bar span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; font-family: "SF Mono","Fira Code",monospace; }
   .peek-terminal-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  /* Split pane wrapper */
+  .peek-split-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .peek-split-wrap.split-active { flex-direction: row; gap: 1px; }
+  .peek-split-wrap.split-active > .peek-terminal-panel { flex: 1; min-width: 0; }
+  .peek-split-wrap.split-active > .peek-split-files { display: flex; flex: 1; min-width: 0; flex-direction: column;
+    border-left: 1px solid var(--border); background: var(--bg); }
+  .peek-split-files { display: none; }
+  .peek-split-files-header { display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+    border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 0.8rem; min-width: 0; }
+  .peek-split-files-header .psf-crumb { color: var(--accent); cursor: pointer; white-space: nowrap; }
+  .peek-split-files-header .psf-crumb:hover { text-decoration: underline; }
+  .peek-split-files-body { flex: 1; min-height: 0; overflow-y: auto; font-size: 0.82rem; }
+  .peek-split-files-body .psf-row { display: flex; align-items: center; gap: 8px; padding: 5px 12px;
+    cursor: pointer; border-bottom: 1px solid rgba(128,128,128,0.08); }
+  .peek-split-files-body .psf-row:hover { background: rgba(128,128,128,0.08); }
+  .peek-split-files-body .psf-row .psf-icon { flex-shrink: 0; width: 16px; text-align: center; font-size: 0.85rem; }
+  .peek-split-files-body .psf-row .psf-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .peek-split-files-body .psf-row .psf-size { color: var(--dim); font-size: 0.72rem; flex-shrink: 0; }
+  .peek-split-files-body .psf-dir .psf-name { color: var(--accent); }
+  .peek-split-file-content { flex: 1; min-height: 0; overflow: auto; padding: 10px;
+    font-family: "SF Mono","Fira Code",monospace; font-size: 0.78rem; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-all; background: #010409; border-radius: 6px; margin: 4px; }
+  .peek-split-btn.active { background: var(--accent); color: #000; border-color: var(--accent); }
+  @media (max-width: 600px) {
+    .peek-split-wrap.split-active { flex-direction: column; }
+    .peek-split-wrap.split-active > .peek-terminal-panel { flex: 1; }
+    .peek-split-wrap.split-active > .peek-split-files { flex: 1; border-left: none; border-top: 1px solid var(--border); }
+  }
   .peek-memory-editor { display: none; flex-direction: column; flex: 1; min-height: 0;
     padding: 14px 16px; gap: 10px; overflow: hidden; }
   .peek-memory-editor.active { display: flex; }
@@ -10570,7 +10598,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <button class="peek-nav-btn" onclick="peekSearchNext()" title="Next match (Enter)">&#x2193;</button>
         <button class="search-clear" onclick="event.stopPropagation();clearPeekSearch()">&#x2715;</button>
       </div>
-      <button class="btn" id="peek-explore-btn" onclick="openExplore(peekSessionDir,peekSession)" title="Browse files">&#x1F4C2;</button>
+      <button class="btn peek-split-btn" id="peek-split-toggle" onclick="togglePeekSplit()" title="Split: file browser">&#x1F4C2;</button>
       <button class="btn" onclick="togglePeekFocus()" id="peek-focus-btn" title="Focus mode — hide controls">&#x25B4;</button>
       <button class="btn" onclick="closePeek()">Close</button>
     </div>
@@ -10597,6 +10625,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <span class="card-dir-edit" onclick="peekSessionDir&&_copyFileDeeplink(peekSessionDir)" title="Copy link to this directory" style="opacity:0.6;font-size:0.85rem;">&#x1F517;</span>
     <span class="card-dir-edit" id="peek-dir-edit" onclick="editField(peekSession,'dir',peekSessionDir)" title="Change directory">&#x270E;</span>
   </div>
+  <!-- Split wrap: terminal + optional file browser side-by-side -->
+  <div id="peek-split-wrap" class="peek-split-wrap">
   <!-- Terminal panel -->
   <div id="peek-terminal-panel" class="peek-terminal-panel">
     <div style="position:relative;flex:1;min-height:0;">
@@ -10630,6 +10660,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div class="peek-drag-hint" style="display:none;">&#128206; Drop to attach</div>
     </div>
   </div>
+  <!-- Split files panel -->
+  <div id="peek-split-files" class="peek-split-files">
+    <div class="peek-split-files-header">
+      <div id="psf-breadcrumb" style="flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;"></div>
+      <button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="togglePeekSplit()">&#x2715;</button>
+    </div>
+    <div id="psf-body" class="peek-split-files-body"></div>
+  </div>
+  </div><!-- /peek-split-wrap -->
   <!-- Issues panel (board issues for this session) -->
   <div id="peek-issues-panel" class="peek-tasks-panel">
     <div class="peek-tasks-add" style="gap:10px;">
@@ -14531,11 +14570,106 @@ function closePeek() {
   peekSearchQuery = '';
   lastPeekHTML = '';
   clearPeekFiles();
+  // Close split pane if open
+  const splitWrap = document.getElementById('peek-split-wrap');
+  if (splitWrap) splitWrap.classList.remove('split-active');
+  const splitBtn = document.getElementById('peek-split-toggle');
+  if (splitBtn) splitBtn.classList.remove('active');
   const ov = document.getElementById('peek-overlay');
   ov.classList.remove('active', 'vv-compact', 'peek-focus');
   ov.style.height = '';
   ov.style.top = '';
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
+}
+
+// ── Peek split pane (file browser) ──
+let _peekSplitPath = null;
+let _peekSplitFileView = false;
+
+function togglePeekSplit() {
+  const wrap = document.getElementById('peek-split-wrap');
+  const btn = document.getElementById('peek-split-toggle');
+  const active = wrap.classList.toggle('split-active');
+  if (btn) btn.classList.toggle('active', active);
+  if (active) {
+    _peekSplitPath = peekSessionDir || '/';
+    _peekSplitFileView = false;
+    _psfLoad(_peekSplitPath);
+  }
+}
+
+async function _psfLoad(dirPath) {
+  _peekSplitPath = dirPath;
+  _peekSplitFileView = false;
+  const body = document.getElementById('psf-body');
+  const bc = document.getElementById('psf-breadcrumb');
+  // Breadcrumb
+  const parts = dirPath.split('/').filter(Boolean);
+  let crumbHtml = '<span class="psf-crumb" onclick="_psfLoad(\'/\')">/</span>';
+  let cum = '';
+  for (const part of parts) {
+    cum += '/' + part;
+    const cp = cum;
+    crumbHtml += '<span style="color:var(--dim)"> › </span><span class="psf-crumb" onclick="_psfLoad(\'' + cp.replace(/'/g, "\\'") + '\')">' + esc(part) + '</span>';
+  }
+  bc.innerHTML = crumbHtml;
+  body.innerHTML = '<div style="padding:12px;color:var(--dim)">Loading...</div>';
+  try {
+    const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(dirPath));
+    const data = await r.json();
+    if (data.error) { body.innerHTML = '<div style="padding:12px;color:var(--dim)">' + esc(data.error) + '</div>'; return; }
+    body.innerHTML = '';
+    // Parent row
+    if (data.parent && data.parent !== data.path) {
+      const back = document.createElement('div');
+      back.className = 'psf-row';
+      back.innerHTML = '<span class="psf-icon" style="color:var(--dim)">↑</span><span class="psf-name" style="color:var(--dim)">..</span><span class="psf-size"></span>';
+      back.onclick = () => _psfLoad(data.parent);
+      body.appendChild(back);
+    }
+    for (const entry of data.entries) {
+      const entryPath = dirPath.replace(/\/$/, '') + '/' + entry.name;
+      const row = document.createElement('div');
+      row.className = 'psf-row' + (entry.type === 'dir' ? ' psf-dir' : '');
+      const icon = entry.type === 'dir' ? '\u{1F4C1}' : _fileTypeIcon(entry.name, entry.type);
+      const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
+      row.innerHTML = '<span class="psf-icon">' + icon + '</span><span class="psf-name">' + esc(entry.name) + (entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '') + '</span><span class="psf-size">' + sizeStr + '</span>';
+      row.onclick = entry.type === 'dir' ? () => _psfLoad(entryPath) : () => _psfViewFile(entryPath);
+      body.appendChild(row);
+    }
+    if (!data.entries.length) {
+      body.innerHTML = '<div style="padding:16px;color:var(--dim);text-align:center;font-size:0.82rem;">Empty folder</div>';
+    }
+  } catch(e) {
+    body.innerHTML = '<div style="padding:12px;color:var(--dim)">Error: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function _psfViewFile(filePath) {
+  _peekSplitFileView = true;
+  const body = document.getElementById('psf-body');
+  const bc = document.getElementById('psf-breadcrumb');
+  const dir = filePath.substring(0, filePath.lastIndexOf('/')) || '/';
+  const fname = filePath.split('/').pop();
+  bc.innerHTML = '<span class="psf-crumb" onclick="_psfLoad(\'' + dir.replace(/'/g, "\\'") + '\')">← back</span><span style="color:var(--dim)"> / </span><span style="color:var(--text)">' + esc(fname) + '</span>';
+  body.innerHTML = '<div class="peek-split-file-content" style="margin:0;">Loading...</div>';
+  try {
+    const r = await fetch(API + '/api/file?path=' + encodeURIComponent(filePath));
+    if (!r.ok) { body.innerHTML = '<div class="peek-split-file-content">Error: ' + r.status + '</div>'; return; }
+    const ct = r.headers.get('content-type') || '';
+    if (ct.startsWith('image/')) {
+      body.innerHTML = '<div style="flex:1;display:flex;align-items:center;justify-content:center;overflow:auto;padding:8px;"><img src="' + API + '/api/file?path=' + encodeURIComponent(filePath) + '" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;"></div>';
+    } else {
+      const text = await r.text();
+      const pre = document.createElement('div');
+      pre.className = 'peek-split-file-content';
+      pre.textContent = text;
+      body.innerHTML = '';
+      body.appendChild(pre);
+    }
+  } catch(e) {
+    body.innerHTML = '<div class="peek-split-file-content">Error: ' + esc(e.message) + '</div>';
+  }
 }
 
 // Keep peek overlay fitted to the visual viewport so it stays visible
