@@ -23210,15 +23210,7 @@ function _switchServerUrl(idx, evt) {
     deviceName: localStorage.getItem('amux_device_name') || ''
   }));
   const url = s.url.replace(/\/+$/, '') + '/?_sync=' + encodeURIComponent(payload);
-  // Same-origin: navigate in place. Cross-origin: open new tab so PWA stays accessible
-  // if the destination is unreachable from this device (e.g. localhost from mobile).
-  // In native iOS WKWebView, window.open is blocked — always navigate in place.
-  try {
-    const destOrigin = new URL(url).origin;
-    const isNativeApp = window.navigator.standalone || /AmuxApp/.test(navigator.userAgent) || !window.open;
-    if (destOrigin === location.origin || isNativeApp) { location.href = url; }
-    else { window.open(url, '_blank') || (location.href = url); }
-  } catch(e) { location.href = url; }
+  location.href = url;
 }
 
 function switchServer(idx) {
@@ -23236,14 +23228,7 @@ function switchServer(idx) {
     deviceName: localStorage.getItem('amux_device_name') || ''
   }));
   const url = s.url + '/?_sync=' + encodeURIComponent(payload);
-  // Same-origin: navigate in place. Cross-origin: open new tab to keep current PWA accessible.
-  // In native iOS WKWebView, window.open is blocked — always navigate in place.
-  try {
-    const destOrigin = new URL(url).origin;
-    const isNativeApp = window.navigator.standalone || /AmuxApp/.test(navigator.userAgent) || !window.open;
-    if (destOrigin === location.origin || isNativeApp) { location.href = url; }
-    else { window.open(url, '_blank') || (location.href = url); }
-  } catch(e) { location.href = url; }
+  location.href = url;
 }
 
 // ═══════ SETTINGS DROPDOWN ═══════
