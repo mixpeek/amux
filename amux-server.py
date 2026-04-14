@@ -11564,7 +11564,7 @@ function _renderOrgSwitcher() {
   const cookieOrg = document.cookie.split(';').map(c => c.trim())
     .find(c => c.startsWith('amux_org='))?.split('=')[1] || '';
   const current = _gatewayOrgs.find(o => o.id === cookieOrg) || _gatewayOrgs.find(o => o.is_personal);
-  const inOtherOrg = current && !current.is_own;
+  const inOtherOrg = current && !current.is_personal;
 
   // Show workspace section in settings if user has access to multiple orgs
   if (wsSection && wsSep && wsList && _gatewayOrgs.length > 1) {
