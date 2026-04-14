@@ -21758,6 +21758,28 @@ function enterGridMode() {
   }
 }
 
+function wsToggleFullscreen() {
+  const view = document.getElementById('grid-view');
+  const fs = view.classList.toggle('ws-fullscreen');
+  const btn = document.getElementById('ws-fullscreen-btn');
+  if (btn) btn.title = fs ? 'Exit fullscreen' : 'Toggle fullscreen';
+  if (fs) {
+    view.style.top = '0';
+    document.querySelector('.header-row')?.style.setProperty('display', 'none');
+    document.querySelector('.tab-bar-outer')?.style.setProperty('display', 'none');
+  } else {
+    // Restore normal position below tab bar
+    const tabBar = document.querySelector('.tab-bar-outer');
+    const ref = tabBar || document.querySelector('.header-row');
+    if (ref) { ref.style.display = ''; document.querySelector('.header-row')?.style.setProperty('display', ''); }
+    if (tabBar) tabBar.style.display = '';
+    const rect = (tabBar || ref)?.getBoundingClientRect();
+    if (rect) view.style.top = rect.bottom + 'px';
+  }
+  // Trigger gridstack relayout
+  if (_grid) setTimeout(() => _grid.onParentResize(), 50);
+}
+
 function exitGridMode() {
   // Save current layout, then pause timers — keep grid alive to avoid re-init bugs
   _gridSaveLayout();
@@ -21767,7 +21789,14 @@ function exitGridMode() {
     const pane = _notePanes[nid];
     if (pane.saveTimer) { clearTimeout(pane.saveTimer); pane.saveTimer = null; _saveNotePaneContent(nid); }
   });
-  document.getElementById('grid-view').classList.remove('active');
+  // Exit fullscreen if active
+  const gv = document.getElementById('grid-view');
+  if (gv.classList.contains('ws-fullscreen')) {
+    gv.classList.remove('ws-fullscreen');
+    document.querySelector('.header-row')?.style.setProperty('display', '');
+    document.querySelector('.tab-bar-outer')?.style.setProperty('display', '');
+  }
+  gv.classList.remove('active');
   document.getElementById('tab-grid').classList.remove('active');
   document.getElementById('tab-' + (activeView || 'sessions')).classList.add('active');
 }
@@ -28073,6 +28102,7 @@ async function _jrnlSaveConfig() {
       </div>
     </div>
     <button class="btn" onclick="wsClearWorkspace()" style="flex-shrink:0;font-size:0.75rem;padding:4px 10px;color:var(--dim);" title="Remove all panes">Clear</button>
+    <button class="btn" id="ws-fullscreen-btn" onclick="wsToggleFullscreen()" style="flex-shrink:0;font-size:0.75rem;padding:4px 10px;" title="Toggle fullscreen">&#x26F6;</button>
     <button class="btn" onclick="exitGridMode()" style="flex-shrink:0;font-size:0.75rem;padding:4px 10px;">&#x2715; Exit</button>
   </div>
   <div id="gridstack-container">
