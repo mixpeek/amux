@@ -7501,9 +7501,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     flex-shrink: 0; min-width: 0; overflow: hidden; }
   .peek-dir-bar span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; font-family: "SF Mono","Fira Code",monospace; }
   .peek-terminal-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-  /* Split pane wrapper */
+  /* Split pane wrapper — reuses fe-row / fe-cell-* from the Files tab */
   .peek-split-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-  .peek-split-wrap.split-active { flex-direction: row; gap: 1px; }
+  .peek-split-wrap.split-active { flex-direction: row; gap: 0; }
   .peek-split-wrap.split-active > .peek-terminal-panel { flex: 1; min-width: 0; }
   .peek-split-wrap.split-active > .peek-split-files { display: flex; flex: 1; min-width: 0; flex-direction: column;
     border-left: 1px solid var(--border); background: var(--bg); }
@@ -7512,17 +7512,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 0.8rem; min-width: 0; }
   .peek-split-files-header .psf-crumb { color: var(--accent); cursor: pointer; white-space: nowrap; }
   .peek-split-files-header .psf-crumb:hover { text-decoration: underline; }
-  .peek-split-files-body { flex: 1; min-height: 0; overflow-y: auto; font-size: 0.82rem; }
-  .peek-split-files-body .psf-row { display: flex; align-items: center; gap: 8px; padding: 5px 12px;
-    cursor: pointer; border-bottom: 1px solid rgba(128,128,128,0.08); }
-  .peek-split-files-body .psf-row:hover { background: rgba(128,128,128,0.08); }
-  .peek-split-files-body .psf-row .psf-icon { flex-shrink: 0; width: 16px; text-align: center; font-size: 0.85rem; }
-  .peek-split-files-body .psf-row .psf-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .peek-split-files-body .psf-row .psf-size { color: var(--dim); font-size: 0.72rem; flex-shrink: 0; }
-  .peek-split-files-body .psf-dir .psf-name { color: var(--accent); }
-  .peek-split-file-content { flex: 1; min-height: 0; overflow: auto; padding: 10px;
-    font-family: "SF Mono","Fira Code",monospace; font-size: 0.78rem; line-height: 1.5;
-    white-space: pre-wrap; word-break: break-all; background: #010409; border-radius: 6px; margin: 4px; }
+  .peek-split-files-body { flex: 1; min-height: 0; overflow-y: auto; }
   .peek-split-btn.active { background: var(--accent); color: #000; border-color: var(--accent); }
   @media (max-width: 600px) {
     .peek-split-wrap.split-active { flex-direction: column; }
@@ -14584,7 +14574,6 @@ function closePeek() {
 
 // ── Peek split pane (file browser) ──
 let _peekSplitPath = null;
-let _peekSplitFileView = false;
 
 function togglePeekSplit() {
   const wrap = document.getElementById('peek-split-wrap');
@@ -14593,14 +14582,12 @@ function togglePeekSplit() {
   if (btn) btn.classList.toggle('active', active);
   if (active) {
     _peekSplitPath = peekSessionDir || '/';
-    _peekSplitFileView = false;
     _psfLoad(_peekSplitPath);
   }
 }
 
 async function _psfLoad(dirPath) {
   _peekSplitPath = dirPath;
-  _peekSplitFileView = false;
   const body = document.getElementById('psf-body');
   const bc = document.getElementById('psf-breadcrumb');
   // Breadcrumb
@@ -14619,22 +14606,28 @@ async function _psfLoad(dirPath) {
     const data = await r.json();
     if (data.error) { body.innerHTML = '<div style="padding:12px;color:var(--dim)">' + esc(data.error) + '</div>'; return; }
     body.innerHTML = '';
-    // Parent row
+    // Parent row — uses same fe-back-row class as Files tab
     if (data.parent && data.parent !== data.path) {
       const back = document.createElement('div');
-      back.className = 'psf-row';
-      back.innerHTML = '<span class="psf-icon" style="color:var(--dim)">↑</span><span class="psf-name" style="color:var(--dim)">..</span><span class="psf-size"></span>';
+      back.className = 'fe-back-row';
+      back.innerHTML = `<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (parent)</span></div><div></div><div></div><div></div>`;
       back.onclick = () => _psfLoad(data.parent);
       body.appendChild(back);
     }
     for (const entry of data.entries) {
       const entryPath = dirPath.replace(/\/$/, '') + '/' + entry.name;
       const row = document.createElement('div');
-      row.className = 'psf-row' + (entry.type === 'dir' ? ' psf-dir' : '');
-      const icon = entry.type === 'dir' ? '\u{1F4C1}' : _fileTypeIcon(entry.name, entry.type);
+      row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
+      const icon = _fileTypeIcon(entry.name, entry.type);
       const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
-      row.innerHTML = '<span class="psf-icon">' + icon + '</span><span class="psf-name">' + esc(entry.name) + (entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '') + '</span><span class="psf-size">' + sizeStr + '</span>';
-      row.onclick = entry.type === 'dir' ? () => _psfLoad(entryPath) : () => _psfViewFile(entryPath);
+      const dateStr = entry.modified ? timeAgo(entry.modified) : '';
+      const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
+      row.innerHTML =
+        `<div class="fe-cell-name">${icon}<span>${esc(entry.name)}${slash}</span></div>` +
+        `<div class="fe-cell-size">${sizeStr}</div>` +
+        `<div class="fe-cell-date">${dateStr}</div>` +
+        `<div class="fe-cell-actions"></div>`;
+      row.onclick = entry.type === 'dir' ? () => _psfLoad(entryPath) : () => openFilePreview(entryPath);
       body.appendChild(row);
     }
     if (!data.entries.length) {
@@ -14642,33 +14635,6 @@ async function _psfLoad(dirPath) {
     }
   } catch(e) {
     body.innerHTML = '<div style="padding:12px;color:var(--dim)">Error: ' + esc(e.message) + '</div>';
-  }
-}
-
-async function _psfViewFile(filePath) {
-  _peekSplitFileView = true;
-  const body = document.getElementById('psf-body');
-  const bc = document.getElementById('psf-breadcrumb');
-  const dir = filePath.substring(0, filePath.lastIndexOf('/')) || '/';
-  const fname = filePath.split('/').pop();
-  bc.innerHTML = '<span class="psf-crumb" onclick="_psfLoad(\'' + dir.replace(/'/g, "\\'") + '\')">← back</span><span style="color:var(--dim)"> / </span><span style="color:var(--text)">' + esc(fname) + '</span>';
-  body.innerHTML = '<div class="peek-split-file-content" style="margin:0;">Loading...</div>';
-  try {
-    const r = await fetch(API + '/api/file?path=' + encodeURIComponent(filePath));
-    if (!r.ok) { body.innerHTML = '<div class="peek-split-file-content">Error: ' + r.status + '</div>'; return; }
-    const ct = r.headers.get('content-type') || '';
-    if (ct.startsWith('image/')) {
-      body.innerHTML = '<div style="flex:1;display:flex;align-items:center;justify-content:center;overflow:auto;padding:8px;"><img src="' + API + '/api/file?path=' + encodeURIComponent(filePath) + '" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;"></div>';
-    } else {
-      const text = await r.text();
-      const pre = document.createElement('div');
-      pre.className = 'peek-split-file-content';
-      pre.textContent = text;
-      body.innerHTML = '';
-      body.appendChild(pre);
-    }
-  } catch(e) {
-    body.innerHTML = '<div class="peek-split-file-content">Error: ' + esc(e.message) + '</div>';
   }
 }
 
