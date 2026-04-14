@@ -6519,6 +6519,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   body.light .gp-header { background: var(--card); }
   body.light .gp-send { background: var(--card); }
   body.light .gp-close, body.light .gp-peek-btn { color: var(--dim); }
+  body.light #gridstack-container .grid-stack-item-content { background: var(--card); }
+  body.light .gp-body { color: var(--text); }
+  body.light .gp-send .chips .chip { background: var(--bg); color: var(--text); border-color: var(--border); }
   /* File/explore overlay — hardcoded near-black backdrop + body need light overrides */
   body.light .file-overlay { background: rgba(240,242,245,0.97); }
   body.light .file-overlay-header h2 { color: var(--text); }
