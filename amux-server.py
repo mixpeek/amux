@@ -12865,8 +12865,8 @@ let hiddenTabs = (function() {
     const s = localStorage.getItem('amux_hidden_tabs');
     if (s !== null) return new Set(JSON.parse(s));
   } catch(e) {}
-  // Default visible tabs: sessions, files, scheduler, board, workspace, notes
-  return new Set(['logs','browser','metrics','crm','torrents','terminal']);
+  // Default visible tabs: sessions, files, scheduler, board, workspace, notes, browser
+  return new Set(['logs','metrics','crm','torrents','terminal']);
 })();
 
 let tabOrder = (function() {
