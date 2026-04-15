@@ -1,8 +1,8 @@
 # amux
 
-> Open-source personal OS for AI coding agents — run dozens of parallel Claude Code sessions with a web dashboard, kanban board, notes, CRM, email, browser automation, skills, channels, scheduler, and agent-to-agent REST API orchestration. Self-healing, single-file, zero external dependencies.
+> Open-source control plane for AI agents — run, monitor, and govern parallel agent sessions with a web dashboard, kanban board, notes, CRM, email, browser automation, skills, channels, scheduler, and agent-to-agent REST API orchestration. Self-healing, single-file, zero external dependencies. Currently supports Claude Code via tmux.
 
-amux (Agent Multiplexer) is a Python + tmux tool that manages multiple Claude Code sessions in parallel. Beyond agent orchestration, it includes a full suite of built-in tools: markdown notes, CRM with interaction tracking, Mail.app email integration, shared Playwright browser automation, project-level slash-command skills, 1:1 inter-session channels with @mentions, a cron-style scheduler, and a file explorer with markdown editor. MIT licensed. No cloud dependency. Single Python file, zero dependencies beyond python3 and tmux.
+amux (Agent Multiplexer) is the open-source control plane for AI agent systems. It manages parallel agent sessions with self-healing, observability, cost control, and orchestration. Built-in tools include: markdown notes, CRM with interaction tracking, Mail.app email integration, shared Playwright browser automation, project-level slash-command skills, 1:1 inter-session channels with @mentions, a cron-style scheduler, and a file explorer with markdown editor. Currently supports Claude Code via tmux. MIT licensed. No cloud dependency. Single Python file, zero dependencies beyond python3 and tmux.
 
 ## Quick Start
 
@@ -48,6 +48,7 @@ Claude Code runs one agent per terminal. amux runs dozens — with live monitori
 
 ## Guides
 
+- [What Is an Agent Control Plane?](https://amux.io/guides/agent-control-plane/): The missing infrastructure layer for AI agents. Five pillars — lifecycle management, observability, fault tolerance, orchestration, and governance — explained with the three-layer model (framework vs runtime vs control plane) and a comparison of the 2026 landscape.
 - [How to Get 10x More Out of Your Claude Code Max Plan](https://amux.io/guides/claude-code-max-plan/): Rate limited by Wednesday? 7 strategies — model routing, parallel agents, context discipline, task pipelining, specs, API fallback, and scheduling — to 10x throughput within the same quota.
 - [Agentic Engineering: The Practical Guide](https://amux.io/guides/agentic-engineering/): Go from 1 agent to 10+ running in parallel. Task decomposition, git isolation, coordination patterns, overnight operation, and review workflows. The step-by-step guide to the Karpathy-coined discipline.
 - [CLAUDE.md Templates](https://amux.io/guides/claude-md-templates/): 20+ copy-paste CLAUDE.md configs for Python APIs, React apps, Go services, monorepos, data pipelines, Terraform, mobile apps, CLI tools. Filterable gallery with explanations.

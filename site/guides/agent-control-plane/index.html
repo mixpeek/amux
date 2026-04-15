@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>What Is an Agent Control Plane? The Missing Infrastructure Layer for AI Agents (2026) — amux</title>
+  <script>(function(){var t=localStorage.getItem('theme');if(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.setAttribute('data-theme','dark')})()</script>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="An agent control plane manages the lifecycle of AI agents: starting, monitoring, governing, and stopping them. This guide explains why every team running more than one agent needs one, what it looks like in practice, and how to build or adopt one today.">
+  <meta name="keywords" content="agent control plane, agent control plane open source, ai agent infrastructure, ai agent orchestration, ai agent monitoring, ai agent observability, ai agent cost control, ai agent governance, agent fleet management, multi agent management, ai agent kill switch, parallel ai agents infrastructure, agent runtime management">
+  <link rel="canonical" href="https://amux.io/guides/agent-control-plane/">
+  <meta property="og:title" content="What Is an Agent Control Plane? The Missing Infrastructure Layer for AI Agents — amux">
+  <meta property="og:description" content="Agent frameworks define what agents do. Agent runtimes execute them. An agent control plane manages the fleet. This is the developer's guide to the missing infrastructure layer.">
+  <meta property="og:url" content="https://amux.io/guides/agent-control-plane/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Agent Control Plane","item":"https://amux.io/guides/agent-control-plane/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"What Is an Agent Control Plane? The Missing Infrastructure Layer for AI Agents (2026)","description":"An agent control plane manages the lifecycle of AI agents: starting, monitoring, governing, and stopping them. The developer's guide to the missing infrastructure layer.","url":"https://amux.io/guides/agent-control-plane/","datePublished":"2026-04-15","dateModified":"2026-04-15","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"An agent control plane is infrastructure that manages the lifecycle of AI agents: starting, stopping, monitoring, governing, and coordinating them. It sits between the human operator and the agent runtimes, providing observability into what agents are doing, cost controls to prevent runaway spending, orchestration for multi-agent coordination, and fault tolerance for unattended operation. Think of it as what Kubernetes is to containers, but for AI agents."}},{"@type":"Question","name":"How is an agent control plane different from an agent framework?","acceptedAnswer":{"@type":"Answer","text":"An agent framework (LangGraph, CrewAI, AutoGen) defines agent logic: what tools they can use, how they reason, how they chain actions. An agent runtime (Claude Code, Cursor, Codex) executes those definitions. An agent control plane manages fleets of runtimes: how many are running, what each is doing, how much each is costing, and when to intervene. You need all three layers, and they are independent. You can swap frameworks without changing your control plane, and vice versa."}},{"@type":"Question","name":"Do I need an agent control plane if I only run one agent?","acceptedAnswer":{"@type":"Answer","text":"No. A control plane becomes necessary when you cross the threshold from interactive to unattended operation — typically around 3-5 concurrent agents. At that point, you cannot manually monitor each agent's terminal, and the failure modes multiply: agents crash, context windows overflow, costs spike, and tasks get duplicated. A control plane automates the responses to these failure modes."}},{"@type":"Question","name":"What is the difference between agent observability and agent governance?","acceptedAnswer":{"@type":"Answer","text":"Observability answers 'what is happening?' — dashboards, logs, token tracking, session replay. Governance answers 'what is allowed to happen?' — budget caps, kill switches, concurrency limits, approval gates. A complete control plane provides both. Most tools today focus on observability (Langfuse, Helicone) or governance (Microsoft Agent Governance Toolkit) but not both together."}},{"@type":"Question","name":"Is an agent control plane the same as an orchestration framework?","acceptedAnswer":{"@type":"Answer","text":"No. Orchestration frameworks like LangGraph and CrewAI define workflows: agent A does X, then agent B does Y. A control plane manages the operational reality: agent A crashed, restart it. Agent B is burning $50/hour, throttle it. Agent C finished early, assign it new work. Orchestration is design-time; control plane is runtime. You can use both together — orchestration defines what should happen, the control plane ensures it actually happens."}},{"@type":"Question","name":"What are the core components of an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"Five core components: (1) Agent lifecycle management — start, stop, restart agents programmatically. (2) Observability — real-time status, output streaming, token/cost tracking. (3) Fault tolerance — automatic crash recovery, context compaction, stuck-agent detection. (4) Orchestration — task assignment, inter-agent messaging, work queues with atomic claiming. (5) Governance — budget limits, concurrency caps, kill switches, audit logs."}},{"@type":"Question","name":"Can I build my own agent control plane?","acceptedAnswer":{"@type":"Answer","text":"Yes, and many teams start with shell scripts and tmux. The typical progression: (1) bash scripts that start/stop agents, (2) a shared task file agents read from, (3) a simple dashboard to see what's running, (4) automatic crash recovery. By stage 3, you've rebuilt half of what dedicated tools provide. The question is whether you want to maintain that infrastructure yourself. Open-source options like amux provide all five control plane layers in a single file with zero dependencies."}},{"@type":"Question","name":"How does amux implement an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"amux implements all five control plane layers as a single Python file: lifecycle management via tmux sessions, observability via a real-time web dashboard with SSE, fault tolerance via a watchdog that auto-compacts context and replays failed messages, orchestration via a REST API with a SQLite-backed kanban board for atomic task claiming, and governance via session-level controls and cost tracking. It requires only Python 3 and tmux — no Docker, no cloud, no config files."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"><span class="icon-sun">&#9788;</span><span class="icon-moon">&#9790;</span></button>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">sign up</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Agent Control Plane</span></div>
+    <h1>What Is an Agent Control Plane?</h1>
+    <p class="subtitle">Agent frameworks define what agents do. Agent runtimes execute them. An agent control plane manages the fleet. This is the missing infrastructure layer &mdash; and it&rsquo;s why your 10-agent setup keeps falling apart.</p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#problem" style="color:var(--dim);text-decoration:none;">The Problem: Agents Without Infrastructure</a></li>
+        <li><a href="#three-layers" style="color:var(--dim);text-decoration:none;">The Three-Layer Model</a></li>
+        <li><a href="#five-pillars" style="color:var(--dim);text-decoration:none;">Five Pillars of an Agent Control Plane</a></li>
+        <li><a href="#lifecycle" style="color:var(--dim);text-decoration:none;">1. Lifecycle Management</a></li>
+        <li><a href="#observability" style="color:var(--dim);text-decoration:none;">2. Observability</a></li>
+        <li><a href="#fault-tolerance" style="color:var(--dim);text-decoration:none;">3. Fault Tolerance</a></li>
+        <li><a href="#orchestration" style="color:var(--dim);text-decoration:none;">4. Orchestration</a></li>
+        <li><a href="#governance" style="color:var(--dim);text-decoration:none;">5. Governance and Cost Control</a></li>
+        <li><a href="#without-vs-with" style="color:var(--dim);text-decoration:none;">Without a Control Plane vs With One</a></li>
+        <li><a href="#landscape" style="color:var(--dim);text-decoration:none;">The 2026 Landscape</a></li>
+        <li><a href="#diy-progression" style="color:var(--dim);text-decoration:none;">The DIY Progression (and When to Stop)</a></li>
+        <li><a href="#getting-started" style="color:var(--dim);text-decoration:none;">Getting Started with amux</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ───────────────────────────────── SECTION: THE PROBLEM ───────────────────────────────── -->
+    <h2 id="problem">The Problem: Agents Without Infrastructure</h2>
+
+    <p>Running one AI coding agent is trivial. Open a terminal, start Claude Code or Cursor, give it a task, watch it work. No infrastructure needed.</p>
+
+    <p>Running five agents overnight is a different problem entirely.</p>
+
+    <p>At five concurrent agents, the failure modes multiply:</p>
+
+    <ul>
+      <li><strong>Agent 2 hit a context overflow at 2am and crashed silently.</strong> You wake up to a half-finished feature branch with no error message.</li>
+      <li><strong>Agents 3 and 4 both started implementing the same endpoint</strong> because there was no mechanism to prevent duplicate work.</li>
+      <li><strong>Agent 5 entered a retry loop on a flaky test</strong> and burned through $80 in tokens before you noticed.</li>
+      <li><strong>You have no idea what any of them did.</strong> Five terminal windows, no dashboard, no logs, no audit trail.</li>
+    </ul>
+
+    <p>These aren&rsquo;t edge cases. This is Tuesday night for anyone running agents at scale.</p>
+
+    <p>The root cause is a missing infrastructure layer. We have sophisticated agent frameworks (LangGraph, CrewAI, AutoGen) that define what agents do. We have powerful agent runtimes (Claude Code, Cursor, Codex) that execute tasks. But between "start the agents" and "check the results tomorrow," there is nothing. No monitoring. No crash recovery. No cost controls. No coordination.</p>
+
+    <p>That gap is what an agent control plane fills.</p>
+
+    <!-- ───────────────────────────────── SECTION: THREE-LAYER MODEL ───────────────────────────────── -->
+    <h2 id="three-layers">The Three-Layer Model</h2>
+
+    <p>The AI agent stack has three distinct layers, and confusing them leads to bad architectural decisions:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Layer</th><th>Purpose</th><th>Examples</th><th>Analogy</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Agent Framework</strong></td>
+            <td>Define agent logic &mdash; tools, reasoning chains, prompts</td>
+            <td>LangGraph, CrewAI, AutoGen, Strands</td>
+            <td>Application code</td>
+          </tr>
+          <tr>
+            <td><strong>Agent Runtime</strong></td>
+            <td>Execute tasks &mdash; read files, write code, run commands</td>
+            <td>Claude Code, Cursor, Codex CLI, Aider</td>
+            <td>Container / VM</td>
+          </tr>
+          <tr>
+            <td><strong>Agent Control Plane</strong></td>
+            <td>Manage the fleet &mdash; monitor, govern, recover, coordinate</td>
+            <td>amux, Conductor, Vibe Kanban</td>
+            <td>Kubernetes / Nomad</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The key insight: <strong>these layers are independent.</strong> You can swap your framework without changing your control plane. You can switch runtimes without rewriting your orchestration. And you need all three once you move beyond a single interactive agent.</p>
+
+    <p>Most tools today operate at exactly one layer. LangGraph is a framework &mdash; it defines DAGs of agent actions but doesn&rsquo;t monitor running agents or recover from crashes. Claude Code is a runtime &mdash; it executes brilliantly but gives you one session per terminal with no fleet management. The control plane layer is the one that was missing from the stack until 2026.</p>
+
+    <!-- ───────────────────────────────── SECTION: FIVE PILLARS ───────────────────────────────── -->
+    <h2 id="five-pillars">Five Pillars of an Agent Control Plane</h2>
+
+    <p>A complete agent control plane provides five capabilities. Most teams build them in this order, because each one becomes painful at a different scale threshold:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Pillar</th><th>What It Does</th><th>When It Becomes Critical</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Lifecycle Management</strong></td><td>Start, stop, restart agents programmatically</td><td>3+ agents</td></tr>
+          <tr><td><strong>Observability</strong></td><td>Real-time status, output streaming, cost tracking</td><td>3+ agents</td></tr>
+          <tr><td><strong>Fault Tolerance</strong></td><td>Auto-recovery from crashes, context overflow, stuck prompts</td><td>Overnight / unattended</td></tr>
+          <tr><td><strong>Orchestration</strong></td><td>Task assignment, inter-agent messaging, work queues</td><td>5+ agents on shared codebase</td></tr>
+          <tr><td><strong>Governance</strong></td><td>Budget limits, concurrency caps, kill switches, audit logs</td><td>Team use / production</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Let&rsquo;s look at each one.</p>
+
+    <!-- ───────────────────────────────── PILLAR 1: LIFECYCLE ───────────────────────────────── -->
+    <h2 id="lifecycle">1. Lifecycle Management</h2>
+
+    <p>The most basic control plane function: start agents, stop agents, see which ones are running.</p>
+
+    <p>Without lifecycle management, you&rsquo;re opening terminal tabs manually and hoping you remember which one is which. That breaks down fast.</p>
+
+    <p>A control plane gives you:</p>
+    <ul>
+      <li><strong>Named, persistent agents.</strong> Each agent has an identity that survives restarts &mdash; not a terminal tab you accidentally close.</li>
+      <li><strong>Batch operations.</strong> Start 10 agents with one command. Stop all idle agents. Restart any that crashed.</li>
+      <li><strong>Programmatic access.</strong> A REST API or CLI that other tools and scripts can use to manage the fleet.</li>
+    </ul>
+
+    <pre><code><span class="comment"># Without a control plane</span>
+<span class="dim">$ tmux new-session -d -s agent-1 'claude --resume ...'</span>
+<span class="dim">$ tmux new-session -d -s agent-2 'claude --resume ...'</span>
+<span class="dim">$ tmux new-session -d -s agent-3 'claude --resume ...'</span>
+<span class="dim"># ...repeat 7 more times, hope you got the flags right</span>
+
+<span class="comment"># With a control plane</span>
+$ amux start api worker-1 worker-2 worker-3 tests docs
+<span class="ok">  6 sessions started</span></code></pre>
+
+    <p>This seems simple, and it is. But it&rsquo;s the foundation every other pillar depends on. You can&rsquo;t monitor agents you can&rsquo;t enumerate.</p>
+
+    <!-- ───────────────────────────────── PILLAR 2: OBSERVABILITY ───────────────────────────────── -->
+    <h2 id="observability">2. Observability</h2>
+
+    <p>Observability answers the question: <strong>what is happening right now?</strong></p>
+
+    <p>With one agent, you can watch the terminal. With five, you need a dashboard. With ten running overnight, you need logs, metrics, and the ability to replay what happened.</p>
+
+    <p>An agent control plane provides four levels of observability:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Level</th><th>What You See</th><th>Why It Matters</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Fleet status</strong></td><td>Which agents are running, idle, stuck, or crashed</td><td>Triage at a glance &mdash; know where to look first</td></tr>
+          <tr><td><strong>Live output</strong></td><td>Stream an agent&rsquo;s terminal output without attaching</td><td>Check on an agent without interrupting it</td></tr>
+          <tr><td><strong>Token / cost tracking</strong></td><td>Per-agent spend, daily totals, model breakdown</td><td>Catch runaway costs before they become a billing surprise</td></tr>
+          <tr><td><strong>Session replay</strong></td><td>Full scrollback of what an agent did, searchable</td><td>Post-mortem: why did agent-3 produce a broken branch?</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The first thing most teams build (or wish they had) is a simple status dashboard. Knowing that agent-4 has been &ldquo;working&rdquo; for three hours on a task that should take thirty minutes is the difference between catching a problem at 11pm and discovering it at 8am.</p>
+
+    <p>The second thing they want is cost tracking. AI agent spending has a way of surprising people. A single agent in a retry loop can burn through $50&ndash;$100 in tokens in under an hour. Per-agent cost visibility turns &ldquo;our AI bill was $2,000 this month&rdquo; into &ldquo;agent-7 spent $400 on Tuesday because it was stuck on a flaky test.&rdquo;</p>
+
+    <!-- ───────────────────────────────── PILLAR 3: FAULT TOLERANCE ───────────────────────────────── -->
+    <h2 id="fault-tolerance">3. Fault Tolerance</h2>
+
+    <p>Fault tolerance is what separates &ldquo;I launched agents and hoped for the best&rdquo; from &ldquo;I launched agents and went to sleep.&rdquo;</p>
+
+    <p>AI agents fail in predictable ways:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Failure Mode</th><th>What Happens</th><th>Control Plane Response</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Context overflow</strong></td><td>Conversation exceeds model&rsquo;s token limit</td><td>Auto-compact the conversation and continue</td></tr>
+          <tr><td><strong>Thinking-block corruption</strong></td><td>Runtime hits an internal error on extended thinking</td><td>Restart the session and replay the last message</td></tr>
+          <tr><td><strong>Stuck waiting for input</strong></td><td>Agent asks a permission question at 3am</td><td>Auto-respond based on configured policy (YOLO mode)</td></tr>
+          <tr><td><strong>Process crash</strong></td><td>Agent process exits unexpectedly</td><td>Restart with conversation state intact</td></tr>
+          <tr><td><strong>Rate limit hit</strong></td><td>API returns 429, agent retries in a tight loop</td><td>Exponential backoff or pause until quota resets</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>A control plane with a <strong>watchdog</strong> monitors each agent for these conditions and applies the appropriate response automatically. The developer sets the policy once (&ldquo;auto-compact when context drops below 20%, restart on corruption, auto-continue when stuck&rdquo;) and the watchdog handles it all night.</p>
+
+    <p>Without fault tolerance, unattended agents are a gamble. One crash at 2am means that agent&rsquo;s entire overnight allocation is wasted. With a watchdog, the agent recovers in seconds and keeps working. Over a typical 8-hour overnight run, the difference is often 3&ndash;5 crashes recovered automatically &mdash; work that would otherwise be lost.</p>
+
+    <!-- ───────────────────────────────── PILLAR 4: ORCHESTRATION ───────────────────────────────── -->
+    <h2 id="orchestration">4. Orchestration</h2>
+
+    <p>Orchestration answers: <strong>who works on what, and how do agents coordinate?</strong></p>
+
+    <p>The simplest orchestration is a shared task board. Each agent checks the board, claims an unclaimed task, works on it, and marks it done. With atomic claiming (only one agent can claim a task), you eliminate duplicate work without any central coordinator.</p>
+
+    <pre><code><span class="comment"># Agent checks the board for available work</span>
+$ curl -sk $AMUX_URL/api/board | python3 -c "
+import json, sys
+tasks = [t for t in json.load(sys.stdin) if t['status'] == 'todo']
+print(f'{len(tasks)} tasks available')
+"
+<span class="ok">12 tasks available</span>
+
+<span class="comment"># Agent claims a task atomically (fails if already claimed)</span>
+$ curl -sk -X POST $AMUX_URL/api/board/PROJ-7/claim
+<span class="ok">{"claimed": true, "session": "worker-3"}</span>
+
+<span class="comment"># Agent marks it done when finished</span>
+$ curl -sk -X PATCH -H 'Content-Type: application/json' \
+  -d '{"status":"done","desc":"Implemented and tested"}' \
+  $AMUX_URL/api/board/PROJ-7</code></pre>
+
+    <p>Beyond task boards, more sophisticated orchestration includes:</p>
+
+    <ul>
+      <li><strong>Inter-agent messaging.</strong> Agent A finishes the database schema and notifies Agent B to start the API layer. Channels with @mentions let agents coordinate without human relay.</li>
+      <li><strong>Dependency tracking.</strong> Task B is blocked until Task A completes. The control plane holds Task B&rsquo;s agent until the dependency resolves.</li>
+      <li><strong>Work queues with priorities.</strong> Critical bugs get claimed before nice-to-have features, regardless of which agent picks them up.</li>
+    </ul>
+
+    <p>The key design principle: <strong>orchestration should be declarative, not procedural.</strong> You define what needs to happen (task board with priorities) and let agents self-organize, rather than scripting the exact sequence of agent actions. Declarative orchestration is resilient to agent failures &mdash; if an agent crashes, its unclaimed task goes back to the pool.</p>
+
+    <!-- ───────────────────────────────── PILLAR 5: GOVERNANCE ───────────────────────────────── -->
+    <h2 id="governance">5. Governance and Cost Control</h2>
+
+    <p>Governance answers: <strong>what is allowed to happen?</strong></p>
+
+    <p>This is the newest and fastest-growing control plane concern. In Q1 2026 alone, Galileo, Microsoft, NVIDIA, and GitHub all launched agent governance products. Gartner predicts over 2,000 AI-related legal claims by end of 2026 due to insufficient guardrails. The enterprise world is waking up to the fact that autonomous agents need boundaries.</p>
+
+    <p>But governance isn&rsquo;t just an enterprise concern. Any developer who has seen an agent spend $50 on a retry loop understands the need for cost controls.</p>
+
+    <p>A control plane provides governance through:</p>
+
+    <ul>
+      <li><strong>Budget caps.</strong> Per-agent, per-day, or per-project spending limits. When an agent hits its budget, it pauses &mdash; not crashes.</li>
+      <li><strong>Kill switches.</strong> Stop all agents instantly. Stop a single runaway agent. These need to work when you&rsquo;re on your phone at a restaurant, not just when you&rsquo;re at your desk.</li>
+      <li><strong>Concurrency limits.</strong> Maximum 10 agents running simultaneously. New agents queue until a slot opens.</li>
+      <li><strong>Audit logs.</strong> What did each agent do, when, and how much did it cost? Essential for post-mortems and compliance.</li>
+      <li><strong>Approval gates.</strong> Certain actions (deploying to production, modifying database schemas) require human approval, even in unattended mode.</li>
+    </ul>
+
+    <p>The cost control angle deserves emphasis. Token costs represent 70&ndash;90% of total agent operating cost, and most cost problems manifest in production, not development. A developer testing with one agent sees a $0.50 task. That same task running across 10 agents, with retries, overnight, can become a $50&ndash;$100 line item before morning. The difference between these scenarios is a control plane with budget visibility.</p>
+
+    <!-- ───────────────────────────────── SECTION: WITHOUT VS WITH ───────────────────────────────── -->
+    <h2 id="without-vs-with">Without a Control Plane vs With One</h2>
+
+    <p>The difference is most visible in a real scenario. Here&rsquo;s what running 8 agents overnight looks like with and without a control plane:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th style="width:30%;">Scenario</th><th>Without Control Plane</th><th>With Control Plane</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Setup</strong></td>
+            <td>Open 8 terminals, start each manually, copy-paste task descriptions</td>
+            <td><code>amux start</code> all 8, tasks already on the board</td>
+          </tr>
+          <tr>
+            <td><strong>Agent 3 crashes at 1am</strong></td>
+            <td>Dead until you wake up. 7 hours of work lost.</td>
+            <td>Watchdog restarts it in 10 seconds. Replays the last message. No work lost.</td>
+          </tr>
+          <tr>
+            <td><strong>Agent 5 enters a retry loop</strong></td>
+            <td>Burns $80 in tokens by morning. You find out on the bill.</td>
+            <td>Cost tracking alerts after $10. Kill switch stops it. $10 spent, not $80.</td>
+          </tr>
+          <tr>
+            <td><strong>Agents 6 and 7 both claim the same task</strong></td>
+            <td>Duplicate implementations. You merge one and throw away the other.</td>
+            <td>Atomic task claiming. Agent 7 gets a different task automatically.</td>
+          </tr>
+          <tr>
+            <td><strong>Morning review</strong></td>
+            <td>Scroll through 8 terminal histories trying to understand what happened</td>
+            <td>Dashboard shows: 6 completed, 1 recovered from crash, 1 stopped for cost. Click into any for full output.</td>
+          </tr>
+          <tr>
+            <td><strong>Net result</strong></td>
+            <td>4 of 8 tasks completed, $180 spent, 2 hours of morning cleanup</td>
+            <td>7 of 8 tasks completed, $45 spent, 15 minutes of review</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The control plane doesn&rsquo;t make agents smarter. It makes agent <em>operations</em> reliable.</p>
+
+    <!-- ───────────────────────────────── SECTION: LANDSCAPE ───────────────────────────────── -->
+    <h2 id="landscape">The 2026 Landscape</h2>
+
+    <p>The agent control plane category is forming in real time. Here&rsquo;s where the major players sit as of April 2026:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Tool</th><th>Type</th><th>Focus</th><th>Deployment</th></tr></thead>
+        <tbody>
+          <tr><td><strong>amux</strong></td><td>Full control plane</td><td>AI coding agents (Claude Code, any terminal agent)</td><td>Self-hosted, single file, MIT</td></tr>
+          <tr><td><strong>Claude Managed Agents</strong></td><td>Cloud runtime + control plane</td><td>Anthropic-hosted agents</td><td>Anthropic cloud only</td></tr>
+          <tr><td><strong>GitHub Copilot /fleet</strong></td><td>Multi-agent orchestration</td><td>GitHub-integrated coding agents</td><td>GitHub cloud</td></tr>
+          <tr><td><strong>Galileo Agent Control</strong></td><td>Governance layer</td><td>Enterprise policy enforcement</td><td>Cloud SaaS, Apache 2.0 core</td></tr>
+          <tr><td><strong>Microsoft Agent Governance Toolkit</strong></td><td>Security framework</td><td>OWASP agentic AI risks</td><td>Open-source (MIT)</td></tr>
+          <tr><td><strong>Conductor</strong></td><td>Control plane for coding agents</td><td>Multi-agent coding workflows</td><td>macOS app</td></tr>
+          <tr><td><strong>Langfuse / Helicone</strong></td><td>Observability</td><td>LLM call tracing and cost tracking</td><td>Cloud SaaS + self-hosted</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The landscape splits along two axes:</p>
+
+    <ul>
+      <li><strong>Cloud-managed vs self-hosted.</strong> Anthropic&rsquo;s Managed Agents ($0.08/session-hour) handles infrastructure for you. Self-hosted tools (amux, Conductor) give you full control and zero recurring costs beyond your API keys. The tradeoff is the same one teams have navigated with every infrastructure layer: convenience vs control.</li>
+      <li><strong>Observability-only vs full control plane.</strong> Langfuse and Helicone show you what happened. A full control plane also prevents bad things from happening (kill switches, budget caps, auto-recovery). Most teams start with observability and add governance as they scale.</li>
+    </ul>
+
+    <!-- ───────────────────────────────── SECTION: DIY PROGRESSION ───────────────────────────────── -->
+    <h2 id="diy-progression">The DIY Progression (and When to Stop)</h2>
+
+    <p>Every team that runs agents at scale goes through the same progression. Knowing where you are helps you decide whether to keep building or adopt a tool:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Stage</th><th>What You Build</th><th>Time to Build</th><th>What Breaks Next</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Stage 0</strong></td>
+            <td>Terminal tabs. Manual start/stop.</td>
+            <td>0 minutes</td>
+            <td>You can&rsquo;t tell which agent is doing what</td>
+          </tr>
+          <tr>
+            <td><strong>Stage 1</strong></td>
+            <td>Shell scripts with <code>tmux</code> to manage sessions</td>
+            <td>2 hours</td>
+            <td>Agents crash at night with no recovery</td>
+          </tr>
+          <tr>
+            <td><strong>Stage 2</strong></td>
+            <td>Watchdog script that monitors and restarts crashed agents</td>
+            <td>1 day</td>
+            <td>Agents duplicate work, no task assignment</td>
+          </tr>
+          <tr>
+            <td><strong>Stage 3</strong></td>
+            <td>Shared task file or SQLite DB for work assignment</td>
+            <td>2 days</td>
+            <td>No dashboard, no cost visibility, no mobile access</td>
+          </tr>
+          <tr>
+            <td><strong>Stage 4</strong></td>
+            <td>Web dashboard for monitoring + basic cost tracking</td>
+            <td>1 week</td>
+            <td>You&rsquo;re maintaining a custom internal tool</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Most teams stall at Stage 2 or 3. The watchdog is the minimum viable control plane for overnight operation, and the task board is the minimum for multi-agent coordination. Stage 4 &mdash; a full dashboard &mdash; is where the build-vs-buy decision tips. The effort to build a good dashboard with real-time updates, mobile support, and cost tracking exceeds the effort of adopting an open-source tool that already provides it.</p>
+
+    <p>If you recognize your current setup in stages 0&ndash;3, you don&rsquo;t need to keep climbing. The entire progression exists as a single tool you can install in 60 seconds.</p>
+
+    <!-- ───────────────────────────────── SECTION: GETTING STARTED ───────────────────────────────── -->
+    <h2 id="getting-started">Getting Started with amux</h2>
+
+    <p>amux implements all five control plane pillars as a single Python file with zero external dependencies. Here&rsquo;s what that looks like in practice:</p>
+
+    <pre><code><span class="comment"># Install (60 seconds)</span>
+$ git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+
+<span class="comment"># Register a project and start agents</span>
+$ amux register myproject --dir ~/Dev/myproject --yolo
+$ amux start api worker-1 worker-2 tests
+
+<span class="comment"># Open the control plane dashboard</span>
+$ amux serve
+<span class="ok">  ▸ https://localhost:8822</span>
+
+<span class="comment"># Agents self-heal overnight</span>
+<span class="dim">  ⚡ api: context 17% → /compact queued</span>
+<span class="dim">  ⚡ worker-1: stuck → auto-continued</span>
+<span class="dim">  ⚡ tests: crashed → restarted, message replayed</span>
+
+<span class="comment"># Morning: check what happened from your phone</span>
+<span class="dim">  Dashboard shows: 3 completed, 1 recovered, $12 spent</span></code></pre>
+
+    <p>The dashboard provides real-time fleet status, terminal peek, kanban board for task assignment, token/cost tracking, and mobile access via PWA or native iOS app. The watchdog handles context compaction, crash recovery, and stuck-prompt resolution. The REST API enables agent-to-agent messaging and atomic task claiming.</p>
+
+    <p>No Docker. No config files. No cloud dependency. <code>python3</code> and <code>tmux</code>.</p>
+
+    <div style="margin:2.5rem 0;text-align:center;">
+      <a href="https://github.com/mixpeek/amux" style="display:inline-flex;align-items:center;gap:0.5rem;background:var(--accent);color:#fff;padding:0.7rem 2rem;border-radius:999px;text-decoration:none;font-weight:600;font-size:0.92rem;transition:opacity 0.15s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">Get started &mdash; it&rsquo;s free and open source</a>
+    </div>
+
+    <!-- ───────────────────────────────── SECTION: FAQ ───────────────────────────────── -->
+    <h2 id="faq">Frequently Asked Questions</h2>
+
+    <div class="faq-list">
+      <details class="faq-item">
+        <summary>What is an agent control plane?</summary>
+        <p>An agent control plane is infrastructure that manages the lifecycle of AI agents: starting, stopping, monitoring, governing, and coordinating them. It sits between the human operator and the agent runtimes, providing observability into what agents are doing, cost controls to prevent runaway spending, orchestration for multi-agent coordination, and fault tolerance for unattended operation. Think of it as what Kubernetes is to containers, but for AI agents.</p>
+      </details>
+      <details class="faq-item">
+        <summary>How is a control plane different from an agent framework?</summary>
+        <p>An agent framework (LangGraph, CrewAI, AutoGen) defines agent logic: what tools they can use, how they reason, how they chain actions. An agent runtime (Claude Code, Cursor, Codex) executes those definitions. An agent control plane manages fleets of runtimes: how many are running, what each is doing, how much each is costing, and when to intervene. You need all three layers, and they are independent.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Do I need a control plane if I only run one agent?</summary>
+        <p>No. A control plane becomes necessary when you cross the threshold from interactive to unattended operation &mdash; typically around 3&ndash;5 concurrent agents. At that point, you cannot manually monitor each agent, and failure modes multiply: crashes, context overflows, cost spikes, and duplicated tasks.</p>
+      </details>
+      <details class="faq-item">
+        <summary>What is the difference between agent observability and agent governance?</summary>
+        <p>Observability answers "what is happening?" &mdash; dashboards, logs, token tracking, session replay. Governance answers "what is allowed to happen?" &mdash; budget caps, kill switches, concurrency limits, approval gates. A complete control plane provides both.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Is a control plane the same as an orchestration framework?</summary>
+        <p>No. Orchestration frameworks define workflows: agent A does X, then agent B does Y. A control plane manages the operational reality: agent A crashed, restart it. Agent B is burning $50/hour, throttle it. Agent C finished early, assign it new work. Orchestration is design-time; control plane is runtime.</p>
+      </details>
+      <details class="faq-item">
+        <summary>What are the core components of an agent control plane?</summary>
+        <p>Five components: (1) lifecycle management &mdash; start, stop, restart agents. (2) Observability &mdash; status, output streaming, cost tracking. (3) Fault tolerance &mdash; crash recovery, context compaction, stuck-agent detection. (4) Orchestration &mdash; task assignment, messaging, atomic work claiming. (5) Governance &mdash; budget limits, concurrency caps, kill switches, audit logs.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Can I build my own agent control plane?</summary>
+        <p>Yes, and many teams start with shell scripts and tmux. The typical progression goes from manual terminals, to shell scripts, to a watchdog, to a task board, to a dashboard. By stage 3, you&rsquo;ve rebuilt half of what dedicated tools provide. The question is whether maintaining that infrastructure is worth your time when open-source alternatives exist.</p>
+      </details>
+      <details class="faq-item">
+        <summary>How does amux implement a control plane?</summary>
+        <p>amux implements all five layers as a single Python file: lifecycle management via tmux, observability via a real-time web dashboard with SSE, fault tolerance via a watchdog that auto-compacts and replays, orchestration via a REST API with SQLite-backed atomic task claiming, and governance via session-level controls and cost tracking. It requires only Python 3 and tmux &mdash; no Docker, no cloud, no config files.</p>
+      </details>
+    </div>
+
+    <div class="related-guides" style="margin-top:3rem;padding:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Related Guides</strong>
+      <ul style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="/guides/agentic-engineering/" style="color:var(--dim);">Agentic Engineering: The Practical Guide</a></li>
+        <li><a href="/guides/running-10-plus-agents/" style="color:var(--dim);">Running 10+ Agents in Parallel</a></li>
+        <li><a href="/guides/self-healing-configuration/" style="color:var(--dim);">Self-Healing Configuration</a></li>
+        <li><a href="/guides/agent-to-agent-orchestration/" style="color:var(--dim);">Agent-to-Agent Orchestration</a></li>
+        <li><a href="/guides/cost-optimization/" style="color:var(--dim);">Cost Optimization</a></li>
+        <li><a href="/guides/claude-code-max-plan/" style="color:var(--dim);">How to 10x Your Claude Code Max Plan</a></li>
+      </ul>
+    </div>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source control plane for AI agents. Runtime, observability, orchestration, and cost control — in one file.</p>
+        </div>
+        <div class="footer-link-cols">
+          <div class="footer-col">
+            <strong>Product</strong>
+            <a href="/guides/getting-started/">Getting Started</a>
+            <a href="/guides/rest-api-reference/">API Reference</a>
+            <a href="https://cloud.amux.io">Cloud</a>
+            <a href="/pricing/">Pricing</a>
+            <a href="/changelog/">Changelog</a>
+          </div>
+          <div class="footer-col">
+            <strong>Resources</strong>
+            <a href="/guides/">Guides</a>
+            <a href="/blog/">Blog</a>
+            <a href="/faq/">FAQ</a>
+            <a href="/glossary/">Glossary</a>
+            <a href="/demos/">Demos</a>
+          </div>
+          <div class="footer-col">
+            <strong>Compare</strong>
+            <a href="/compare/amux-vs-claude-managed-agents/">vs Managed Agents</a>
+            <a href="/compare/amux-vs-cursor/">vs Cursor</a>
+            <a href="/compare/amux-vs-devin/">vs Devin</a>
+            <a href="/compare/">All comparisons</a>
+          </div>
+          <div class="footer-col">
+            <strong>More</strong>
+            <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+            <a href="/llms.txt">llms.txt</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </footer>
+  <script>
+  document.getElementById('theme-toggle').addEventListener('click',function(){
+    var d=document.documentElement, c=d.getAttribute('data-theme')==='dark'?'light':'dark';
+    d.setAttribute('data-theme',c); localStorage.setItem('theme',c);
+  });
+  </script>
+</body>
+</html>
