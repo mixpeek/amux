@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Code Headless Mode: The Complete Self-Hosting Guide (2026) — amux</title>
+  <script>(function(){var t=localStorage.getItem('theme');if(t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.setAttribute('data-theme','dark')})()</script>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Run Claude Code without the interactive terminal — for CI/CD, overnight batches, API-driven workflows, and parallel agents. Complete guide to headless mode, auth options, cost tracking, and self-hosting.">
+  <meta name="keywords" content="claude code headless, claude code non interactive, claude code api, claude code background, claude code automation, claude code ci cd, self hosted claude code, claude code anthropic api key, claude code programmatic, run claude code from script, headless ai agent, claude code daemon, claude code in docker, claude code server">
+  <link rel="canonical" href="https://amux.io/guides/claude-code-headless/">
+  <meta property="og:title" content="Claude Code Headless Mode: The Complete Self-Hosting Guide — amux">
+  <meta property="og:description" content="How to run Claude Code without the interactive terminal. Auth options, cost tracking, CI/CD patterns, parallel fleets, and the full headless workflow.">
+  <meta property="og:url" content="https://amux.io/guides/claude-code-headless/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Claude Code Headless","item":"https://amux.io/guides/claude-code-headless/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Claude Code Headless Mode: The Complete Self-Hosting Guide (2026)","description":"Run Claude Code without the interactive terminal. Full guide to headless flags, auth options, CI/CD patterns, parallel fleets, cost tracking, and self-hosting.","url":"https://amux.io/guides/claude-code-headless/","datePublished":"2026-04-16","dateModified":"2026-04-16","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Run Claude Code in Headless Mode","description":"Step-by-step guide to running Claude Code non-interactively for automation, CI/CD, and parallel agent workflows.","step":[{"@type":"HowToStep","name":"Install Claude Code","text":"Install the Claude Code CLI via npm: npm install -g @anthropic-ai/claude-code"},{"@type":"HowToStep","name":"Choose an auth method","text":"Either authenticate your Max subscription via claude login, or set ANTHROPIC_API_KEY for per-token billing."},{"@type":"HowToStep","name":"Run with --print flag","text":"Use claude --print \"your prompt\" to get a single non-interactive response written to stdout."},{"@type":"HowToStep","name":"Enable auto-approval","text":"Add --dangerously-skip-permissions for fully unattended runs, or configure a permission policy file for selective approval."},{"@type":"HowToStep","name":"Capture structured output","text":"Use --output-format json to get machine-readable responses including token usage and cost."},{"@type":"HowToStep","name":"Wrap in a supervisor","text":"For production use, wrap headless runs in a supervisor (tmux, systemd, or amux) that handles crash recovery, context compaction, and cost monitoring."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is Claude Code headless mode?","acceptedAnswer":{"@type":"Answer","text":"Headless mode runs Claude Code non-interactively — without the TUI prompt loop. You pass a task, it completes the task, it writes output to stdout or a file, and exits. This is how you use Claude Code inside CI/CD pipelines, cron jobs, parallel agent fleets, or any automated workflow where there is no human to watch the terminal."}},{"@type":"Question","name":"How do I run Claude Code non-interactively?","acceptedAnswer":{"@type":"Answer","text":"Use the --print flag (or -p): claude --print \"your task here\". Claude Code will execute the task and write the response to stdout without entering the interactive prompt loop. Combine with --output-format json to get structured output, and --dangerously-skip-permissions to auto-approve tool calls for fully unattended operation."}},{"@type":"Question","name":"Can I use Claude Code headless with my Max subscription?","acceptedAnswer":{"@type":"Answer","text":"Yes. Headless mode uses the same authentication as interactive mode. If you've logged in with claude login, your Max subscription covers headless usage under the same quota. The headless flag only changes how the interface behaves, not how billing works."}},{"@type":"Question","name":"Should I use my Max subscription or an API key for headless runs?","acceptedAnswer":{"@type":"Answer","text":"It depends on volume. Max subscriptions are flat-rate but rate-limited on a weekly window — good for predictable workloads under the cap. API keys (ANTHROPIC_API_KEY) are pay-per-token with no rate cap — good for bursty or team-shared workloads. Heavy overnight runs that burst above the Max ceiling typically benefit from API keys, while steady solo usage is cheaper on Max."}},{"@type":"Question","name":"How do I run Claude Code in Docker or on a server?","acceptedAnswer":{"@type":"Answer","text":"Install Node.js and the Claude Code CLI in your container image, mount your project as a volume, set ANTHROPIC_API_KEY as an env var, and invoke claude --print in your entrypoint. For persistent background operation, use a supervisor like tmux, systemd, or amux — Claude Code itself is not a daemon and will exit after each headless invocation."}},{"@type":"Question","name":"How do I track cost for headless Claude Code runs?","acceptedAnswer":{"@type":"Answer","text":"Use --output-format json to get per-invocation token counts in the response. For ongoing session tracking, parse the JSONL transcript file that Claude Code writes to ~/.claude/projects/. Each message includes input_tokens, output_tokens, and cache stats. A control plane like amux aggregates these into per-session and per-day dashboards automatically."}},{"@type":"Question","name":"Can I run multiple Claude Code agents in parallel headlessly?","acceptedAnswer":{"@type":"Answer","text":"Yes. Each headless invocation is a separate process with its own conversation directory. You can run dozens in parallel by launching them in separate tmux panes, subprocess children, or container instances. The main practical limits are system memory, API rate limits, and the coordination overhead of knowing what each agent is doing — which is what an agent control plane solves."}},{"@type":"Question","name":"Is it safe to use --dangerously-skip-permissions?","acceptedAnswer":{"@type":"Answer","text":"Only in isolated environments. The flag auto-approves all tool calls including file writes, shell commands, and network requests. Use it in ephemeral containers, worktrees, or VMs where damage is contained. Never use it on your main development machine with access to production credentials. For safer unattended operation, write a permission policy file that allows specific tools and denies others."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"><span class="icon-sun">&#9788;</span><span class="icon-moon">&#9790;</span></button>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">sign up</a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Claude Code Headless</span></div>
+    <h1>Claude Code Headless Mode</h1>
+    <p class="subtitle">How to run Claude Code without the interactive terminal &mdash; for CI/CD, overnight batches, API-driven workflows, and parallel agent fleets. The complete self-hosting guide.</p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#why-headless" style="color:var(--dim);text-decoration:none;">Why Headless Mode Matters</a></li>
+        <li><a href="#basics" style="color:var(--dim);text-decoration:none;">The Basics: --print and --output-format</a></li>
+        <li><a href="#auth" style="color:var(--dim);text-decoration:none;">Authentication: Max Subscription vs API Key</a></li>
+        <li><a href="#permissions" style="color:var(--dim);text-decoration:none;">Permission Modes for Unattended Runs</a></li>
+        <li><a href="#patterns" style="color:var(--dim);text-decoration:none;">Six Common Headless Patterns</a></li>
+        <li><a href="#supervision" style="color:var(--dim);text-decoration:none;">Supervision: tmux, systemd, and Control Planes</a></li>
+        <li><a href="#cost" style="color:var(--dim);text-decoration:none;">Tracking Cost and Token Usage</a></li>
+        <li><a href="#parallel" style="color:var(--dim);text-decoration:none;">Running Headless Agents in Parallel</a></li>
+        <li><a href="#docker" style="color:var(--dim);text-decoration:none;">Headless Claude Code in Docker</a></li>
+        <li><a href="#pitfalls" style="color:var(--dim);text-decoration:none;">Common Pitfalls</a></li>
+        <li><a href="#with-amux" style="color:var(--dim);text-decoration:none;">Headless Claude Code with amux</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ───────────────────────────── SECTION: WHY ───────────────────────────── -->
+    <h2 id="why-headless">Why Headless Mode Matters</h2>
+
+    <p>Claude Code ships as a terminal UI. You type, it responds, you approve tool calls, it executes them. That loop is great for interactive coding sessions and terrible for everything else.</p>
+
+    <p>The moment you want to do any of the following, you need headless mode:</p>
+
+    <ul>
+      <li><strong>Run Claude Code from a script.</strong> A bash wrapper, a Python subprocess, a Node.js worker &mdash; anything that needs to invoke the agent programmatically and capture its output.</li>
+      <li><strong>Use it in CI/CD.</strong> A GitHub Action that reviews PRs, a pre-commit hook that fixes lint errors, a nightly job that runs migrations.</li>
+      <li><strong>Run multiple agents in parallel.</strong> 10 sessions all working on different branches, with a single operator overseeing the fleet from a dashboard.</li>
+      <li><strong>Operate unattended overnight.</strong> Queue tasks before bed, have results waiting in the morning. Not possible with a loop that requires a human to approve tool calls.</li>
+      <li><strong>Integrate with your own UI.</strong> Slack bots, web apps, custom IDEs &mdash; anything that isn&rsquo;t the built-in TUI.</li>
+    </ul>
+
+    <p>Headless mode is the foundation of every advanced Claude Code workflow. It&rsquo;s also where most of the friction lives: authentication has sharp edges, permissions have dangerous defaults, and supervising a fleet of headless agents is its own problem domain.</p>
+
+    <p>This guide walks through all of it.</p>
+
+    <!-- ───────────────────────────── SECTION: BASICS ───────────────────────────── -->
+    <h2 id="basics">The Basics: --print and --output-format</h2>
+
+    <p>The simplest headless invocation is the <code>--print</code> flag (short form <code>-p</code>). It runs a single turn and exits:</p>
+
+    <pre><code><span class="comment"># Interactive mode (default)</span>
+$ claude
+<span class="dim"># → enters TUI, waits for input</span>
+
+<span class="comment"># Headless mode</span>
+$ claude --print "explain the auth flow in src/auth.py"
+<span class="ok">The auth flow in src/auth.py follows a three-step process...</span></code></pre>
+
+    <p>Without any other flags, <code>--print</code> will still prompt interactively for tool approvals the moment Claude wants to read a file or run a command. That&rsquo;s rarely useful in automation. For fully non-interactive runs you need to combine <code>--print</code> with permission flags (covered in the next section).</p>
+
+    <p>The other flag you&rsquo;ll use on every headless invocation is <code>--output-format</code>:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Format</th><th>Output</th><th>When to Use</th></tr></thead>
+        <tbody>
+          <tr><td><code>text</code> (default)</td><td>Human-readable response</td><td>Quick one-off scripts, piping to a human</td></tr>
+          <tr><td><code>json</code></td><td>Single JSON object with response + token usage + cost</td><td>Programmatic callers, cost tracking, audit logs</td></tr>
+          <tr><td><code>stream-json</code></td><td>Newline-delimited JSON, one event per message</td><td>Real-time streaming to a UI, live progress bars</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>JSON output is the one you want for anything production-grade. It gives you:</p>
+
+    <pre><code>{
+  "type": "result",
+  "subtype": "success",
+  "result": "The auth flow in src/auth.py follows...",
+  "session_id": "abc123",
+  "total_cost_usd": 0.0247,
+  "usage": {
+    "input_tokens": 1842,
+    "output_tokens": 318,
+    "cache_read_input_tokens": 12500
+  }
+}</code></pre>
+
+    <p>Now your wrapper script knows how much each run cost, how many tokens it used, and the session ID to resume from.</p>
+
+    <!-- ───────────────────────────── SECTION: AUTH ───────────────────────────── -->
+    <h2 id="auth">Authentication: Max Subscription vs API Key</h2>
+
+    <p>Claude Code supports two authentication paths, and picking the right one for headless workloads has direct cost implications.</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Method</th><th>How It Works</th><th>Billing</th><th>Best For</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Max subscription</strong></td>
+            <td><code>claude login</code> stores OAuth tokens in <code>~/.claude/</code></td>
+            <td>Flat monthly fee with weekly rate limit</td>
+            <td>Predictable workloads under the cap; solo developers</td>
+          </tr>
+          <tr>
+            <td><strong>API key</strong></td>
+            <td>Set <code>ANTHROPIC_API_KEY</code> environment variable</td>
+            <td>Pay-per-token, no rate cap</td>
+            <td>Bursty workloads, shared team usage, heavy overnight runs</td>
+          </tr>
+          <tr>
+            <td><strong>Enterprise Bedrock / Vertex</strong></td>
+            <td>Claude via AWS Bedrock or GCP Vertex AI credentials</td>
+            <td>Billed through your cloud vendor</td>
+            <td>Large orgs with existing cloud contracts and data residency requirements</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The practical question most people face: <strong>should I run headless agents against my Max subscription, or should I use an API key?</strong></p>
+
+    <p>The answer depends on your concurrency and volume:</p>
+
+    <ul>
+      <li><strong>1&ndash;3 agents, steady use:</strong> Max subscription is almost always cheaper. You&rsquo;re paying a flat fee you&rsquo;ve already committed to.</li>
+      <li><strong>5+ agents overnight:</strong> You&rsquo;ll hit rate limits within hours. API key is usually the right call for burst capacity.</li>
+      <li><strong>Mixed:</strong> Use the Max subscription for your primary interactive agent, and point overnight fleets at <code>ANTHROPIC_API_KEY</code>. You get the flat-rate benefit for everyday work and only pay per-token when bursting.</li>
+    </ul>
+
+    <p>Switching between the two at runtime is a matter of setting the env var:</p>
+
+    <pre><code><span class="comment"># Use Max subscription (default after `claude login`)</span>
+$ claude --print "do the thing"
+
+<span class="comment"># Force API-key billing for this invocation</span>
+$ ANTHROPIC_API_KEY=sk-ant-... claude --print "do the thing"
+
+<span class="comment"># Parallel fleet on API key</span>
+$ export ANTHROPIC_API_KEY=sk-ant-...
+$ for i in {1..10}; do
+    claude --print --dangerously-skip-permissions "task $i" &amp;
+  done
+$ wait</code></pre>
+
+    <p>One note on the Max subscription with headless runs: third-party wrappers and harnesses have been the subject of policy changes historically, and Anthropic has increasingly scoped Max subscription usage to first-party Claude Code invocations. If you&rsquo;re wrapping Claude Code in a larger product, run against an API key &mdash; it&rsquo;s the unambiguous, supported path.</p>
+
+    <!-- ───────────────────────────── SECTION: PERMISSIONS ───────────────────────────── -->
+    <h2 id="permissions">Permission Modes for Unattended Runs</h2>
+
+    <p>By default, Claude Code asks for human approval before running any tool that modifies state &mdash; writing files, running shell commands, making network requests. That&rsquo;s essential in an interactive session and a blocker in an automated one.</p>
+
+    <p>There are three ways to get past the approval prompt:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Approach</th><th>Flag / Config</th><th>Risk Level</th><th>Use Case</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Skip all approvals</strong></td>
+            <td><code>--dangerously-skip-permissions</code></td>
+            <td>High &mdash; any tool, any action</td>
+            <td>Ephemeral VMs, containers, git worktrees</td>
+          </tr>
+          <tr>
+            <td><strong>Allowlist specific tools</strong></td>
+            <td>Permission policy JSON</td>
+            <td>Medium &mdash; you define the surface area</td>
+            <td>CI/CD, team environments</td>
+          </tr>
+          <tr>
+            <td><strong>Allowlist specific bash prefixes</strong></td>
+            <td>Permission rule <code>Bash(npm test:*)</code></td>
+            <td>Low &mdash; surgical control</td>
+            <td>Scoped workflows (tests only, lint only)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The nuclear option is the aptly-named <code>--dangerously-skip-permissions</code>. It auto-approves every tool call. Use it only when the blast radius is contained:</p>
+
+    <ul>
+      <li>Inside a Docker container with no host volume mounts.</li>
+      <li>Inside a git worktree on a dedicated branch.</li>
+      <li>On an ephemeral cloud VM that gets destroyed after the run.</li>
+    </ul>
+
+    <p>For anything touching your main checkout, your production credentials, or your laptop&rsquo;s filesystem, <em>don&rsquo;t</em>. Use a permission policy instead:</p>
+
+    <pre><code><span class="comment"># ~/.claude/settings.json</span>
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm test:*)",
+      "Bash(npm run lint:*)",
+      "Bash(git diff:*)",
+      "Bash(git status)",
+      "Read(src/**)",
+      "Read(tests/**)"
+    ],
+    "deny": [
+      "Bash(rm:*)",
+      "Bash(git push:*)",
+      "Write(.env*)"
+    ]
+  }
+}</code></pre>
+
+    <p>This is the pattern most teams converge on: a per-project <code>.claude/settings.json</code> that scopes exactly what headless runs can do, checked into git so the rules evolve with the codebase.</p>
+
+    <!-- ───────────────────────────── SECTION: PATTERNS ───────────────────────────── -->
+    <h2 id="patterns">Six Common Headless Patterns</h2>
+
+    <p>The <code>--print</code> flag is the primitive. Most real workflows compose it into one of these six patterns:</p>
+
+    <h3 style="margin-top:2rem;">1. One-shot task</h3>
+    <p>Run a single discrete task and capture its output. The simplest pattern, and the starting point for everything else.</p>
+    <pre><code>$ claude --print --output-format json \
+    --dangerously-skip-permissions \
+    "Add JSDoc comments to all exported functions in src/" \
+    | jq '.result'</code></pre>
+
+    <h3 style="margin-top:2rem;">2. Resumable session</h3>
+    <p>Run a long task across multiple invocations, maintaining conversation state between them. Useful when each step needs human review before the next continues.</p>
+    <pre><code><span class="comment"># First turn</span>
+$ claude --print --output-format json "Plan the refactor of auth.py" \
+    | tee turn1.json
+$ SESSION=$(jq -r '.session_id' turn1.json)
+
+<span class="comment"># Continue the same session later</span>
+$ claude --print --resume $SESSION "Now implement step 1"</code></pre>
+
+    <h3 style="margin-top:2rem;">3. CI/CD gate</h3>
+    <p>A GitHub Action that runs Claude Code against a PR diff and posts its review as a comment. Headless is the only way to do this.</p>
+    <pre><code><span class="comment"># .github/workflows/ai-review.yml</span>
+- name: AI review
+  env:
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  run: |
+    diff=$(git diff origin/main...HEAD)
+    claude --print --output-format json \
+      --dangerously-skip-permissions \
+      "Review this diff and flag any bugs or risky changes: $diff" \
+      | jq -r '.result' > review.md
+    gh pr comment --body-file review.md</code></pre>
+
+    <h3 style="margin-top:2rem;">4. Batch fan-out</h3>
+    <p>Run the same prompt against many inputs in parallel. Common for test generation, docstring updates, or refactors that apply file-by-file.</p>
+    <pre><code>$ for file in src/**/*.py; do
+    (claude --print --dangerously-skip-permissions \
+      "Add type hints to $file" &gt; /dev/null) &amp;
+  done
+$ wait</code></pre>
+
+    <h3 style="margin-top:2rem;">5. Pipeline stages</h3>
+    <p>Chain Claude Code into a Unix pipeline, passing output between stages with other tools in between.</p>
+    <pre><code>$ git log --oneline -20 \
+    | claude --print "Group these commits by feature area" \
+    | tee changelog-draft.md \
+    | claude --print "Rewrite as a user-facing changelog"</code></pre>
+
+    <h3 style="margin-top:2rem;">6. Scheduled agent</h3>
+    <p>A cron job or scheduler that wakes Claude Code up on a schedule to do maintenance work: update dependencies, regenerate docs, triage new issues.</p>
+    <pre><code><span class="comment"># /etc/cron.daily/docs-refresh</span>
+#!/bin/bash
+cd /app
+export ANTHROPIC_API_KEY=$(cat /etc/claude-key)
+claude --print --dangerously-skip-permissions \
+  "Update README.md to reflect any changes in src/ since the last commit"
+git add README.md &amp;&amp; git commit -m "docs: daily refresh" || true</code></pre>
+
+    <!-- ───────────────────────────── SECTION: SUPERVISION ───────────────────────────── -->
+    <h2 id="supervision">Supervision: tmux, systemd, and Control Planes</h2>
+
+    <p>Claude Code headless is not a daemon. Each invocation runs a single turn and exits. For anything that needs to stay alive across turns, across crashes, or across reboots, you need a supervisor.</p>
+
+    <p>There are three tiers of supervision, each appropriate for a different scale:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Supervisor</th><th>What It Gives You</th><th>What It Doesn&rsquo;t</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>tmux / screen</strong></td>
+            <td>Persistent session, detach/reattach, scrollback</td>
+            <td>No crash recovery, no cost tracking, no fleet view</td>
+          </tr>
+          <tr>
+            <td><strong>systemd / supervisord</strong></td>
+            <td>Auto-restart on crash, log rotation, boot-time startup</td>
+            <td>No conversation state, no inter-agent coordination</td>
+          </tr>
+          <tr>
+            <td><strong>Agent control plane (<a href="/guides/agent-control-plane/">what is this?</a>)</strong></td>
+            <td>All of the above + observability, cost tracking, orchestration, self-healing</td>
+            <td>&mdash;</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Most teams start with tmux, migrate to systemd when they need crash recovery, and eventually move to a control plane when they&rsquo;re running enough agents that the operational overhead exceeds the setup cost.</p>
+
+    <p>A minimal systemd unit for a single long-lived Claude Code agent looks like this:</p>
+
+    <pre><code><span class="comment"># /etc/systemd/system/claude-doc-agent.service</span>
+[Unit]
+Description=Claude Code &mdash; documentation refresher
+After=network-online.target
+
+[Service]
+Type=simple
+User=claude
+WorkingDirectory=/app
+Environment="ANTHROPIC_API_KEY=sk-ant-..."
+ExecStart=/usr/local/bin/claude --print \
+    --dangerously-skip-permissions \
+    --output-format json \
+    "Update documentation based on git log since last run"
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target</code></pre>
+
+    <p>This works for one or two agents. It does not scale to ten. The moment you have a fleet, you need fleet-level tooling.</p>
+
+    <!-- ───────────────────────────── SECTION: COST ───────────────────────────── -->
+    <h2 id="cost">Tracking Cost and Token Usage</h2>
+
+    <p>Headless mode&rsquo;s biggest operational risk is invisible cost. An agent stuck in a retry loop at 3am can burn through $50&ndash;$100 in tokens before anyone notices. You need cost visibility from day one.</p>
+
+    <p>Claude Code gives you three levels of cost data, each more detailed than the last:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Level</th><th>Where</th><th>Use For</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Per-invocation</strong></td>
+            <td><code>total_cost_usd</code> field in JSON output</td>
+            <td>Script-level cost logging, budget gates</td>
+          </tr>
+          <tr>
+            <td><strong>Per-session</strong></td>
+            <td>JSONL transcript files in <code>~/.claude/projects/</code></td>
+            <td>Aggregating cost across many turns of a single agent</td>
+          </tr>
+          <tr>
+            <td><strong>Per-fleet</strong></td>
+            <td>Control plane dashboard (requires supervision)</td>
+            <td>Budget caps, alerts, team accountability</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The JSONL transcript format is the durable record. Every message Claude Code generates gets appended to a file like <code>~/.claude/projects/&lt;path&gt;/&lt;session-id&gt;.jsonl</code>, with token counts in every entry:</p>
+
+    <pre><code>{"type":"assistant","message":{"usage":{"input_tokens":542,"output_tokens":89,"cache_read_input_tokens":14200}},...}
+{"type":"assistant","message":{"usage":{"input_tokens":48,"output_tokens":156,"cache_read_input_tokens":15100}},...}</code></pre>
+
+    <p>Aggregating these is a few lines of Python:</p>
+
+    <pre><code>import json, pathlib
+
+total_input, total_output, total_cached = 0, 0, 0
+for line in pathlib.Path("~/.claude/projects/myproj/abc123.jsonl").expanduser().read_text().splitlines():
+    msg = json.loads(line).get("message", {})
+    u = msg.get("usage", {})
+    total_input += u.get("input_tokens", 0)
+    total_output += u.get("output_tokens", 0)
+    total_cached += u.get("cache_read_input_tokens", 0)
+
+# Claude 4 Opus pricing (example)
+cost = (total_input * 15 + total_output * 75 + total_cached * 1.5) / 1_000_000
+print(f"Session cost: ${cost:.2f}")</code></pre>
+
+    <p>A control plane does this automatically across every session and aggregates by day, by session, and by project. For low-volume use, a cron-driven script that emails you the daily total is enough.</p>
+
+    <!-- ───────────────────────────── SECTION: PARALLEL ───────────────────────────── -->
+    <h2 id="parallel">Running Headless Agents in Parallel</h2>
+
+    <p>The most common use of headless mode is running multiple agents at once. Four things complicate parallel execution that you don&rsquo;t think about in the single-agent case:</p>
+
+    <ol style="line-height:1.9;">
+      <li><strong>Git conflicts.</strong> Two agents modifying the same repo at the same time will step on each other. The standard solution is git worktrees: each agent gets its own branch in its own working directory, merged back only when done.</li>
+      <li><strong>Rate limiting.</strong> On the Max subscription, 10 parallel agents will exhaust your weekly quota in hours. Switch to API key billing for anything over 3&ndash;5 concurrent agents.</li>
+      <li><strong>Output multiplexing.</strong> Ten tail&rsquo;ing terminals is unmanageable. Structured JSON output piped to a central dashboard is the answer.</li>
+      <li><strong>Task distribution.</strong> If you launch 10 agents manually with 10 different prompts, you&rsquo;re doing orchestration yourself. A shared work queue with atomic task claiming removes that coordination overhead.</li>
+    </ol>
+
+    <p>A bare-bones parallel launcher looks like this:</p>
+
+    <pre><code><span class="comment"># parallel-agents.sh — 5 agents, one task each, separate worktrees</span>
+tasks=(
+  "Add retry logic to the HTTP client"
+  "Improve error messages in auth.py"
+  "Write tests for the rate limiter"
+  "Update the README install section"
+  "Refactor config loading to use pydantic"
+)
+
+for i in "${!tasks[@]}"; do
+  branch="agent-$i"
+  git worktree add "../work-$i" -b "$branch"
+  (
+    cd "../work-$i"
+    claude --print --dangerously-skip-permissions \
+      --output-format json "${tasks[$i]}" \
+      &gt; "../agent-$i-result.json"
+  ) &amp;
+done
+
+wait
+echo "All 5 agents complete. Check agent-*-result.json"</code></pre>
+
+    <p>This works. It also breaks the moment one agent crashes, runs long, or needs the result from another. Which is why the next section exists.</p>
+
+    <!-- ───────────────────────────── SECTION: DOCKER ───────────────────────────── -->
+    <h2 id="docker">Headless Claude Code in Docker</h2>
+
+    <p>Running Claude Code in a container is the cleanest way to use <code>--dangerously-skip-permissions</code> safely: the blast radius is the container.</p>
+
+    <p>A minimal Dockerfile:</p>
+
+    <pre><code>FROM node:22-alpine
+
+RUN apk add --no-cache git bash
+RUN npm install -g @anthropic-ai/claude-code
+
+WORKDIR /workspace
+ENTRYPOINT ["claude", "--print", "--dangerously-skip-permissions", "--output-format", "json"]</code></pre>
+
+    <p>Usage:</p>
+
+    <pre><code>$ docker build -t claude-headless .
+$ docker run --rm \
+    -e ANTHROPIC_API_KEY=sk-ant-... \
+    -v "$PWD:/workspace" \
+    claude-headless "Refactor the main function to use async/await"</code></pre>
+
+    <p>A few things to watch for:</p>
+
+    <ul>
+      <li><strong>Don&rsquo;t mount your real home directory.</strong> Claude stores auth in <code>~/.claude/</code> and you don&rsquo;t want a container writing there.</li>
+      <li><strong>Pin the npm version</strong> (<code>@anthropic-ai/claude-code@X.Y.Z</code>) so your container builds are reproducible &mdash; headless behavior can drift between releases.</li>
+      <li><strong>Pass the API key via env, not build arg.</strong> Build args land in image layers; environment variables at runtime do not.</li>
+      <li><strong>Mount a dedicated project volume</strong> rather than bind-mounting the whole repo when you want to isolate changes.</li>
+    </ul>
+
+    <!-- ───────────────────────────── SECTION: PITFALLS ───────────────────────────── -->
+    <h2 id="pitfalls">Common Pitfalls</h2>
+
+    <p>Pitfalls that show up consistently once people start running headless at scale:</p>
+
+    <ul>
+      <li><strong>Forgetting <code>--dangerously-skip-permissions</code>.</strong> The script hangs silently waiting for approval. Always pair <code>--print</code> with an explicit permission mode for automation.</li>
+      <li><strong>Letting agents write to <code>~/.claude/</code>.</strong> Container-based runs that accidentally share this path will corrupt each other&rsquo;s session state. Always use a fresh home directory or an ephemeral volume.</li>
+      <li><strong>No timeouts.</strong> A stuck agent will run until you kill it. Always wrap headless invocations in <code>timeout 30m</code> or equivalent.</li>
+      <li><strong>Ignoring exit codes.</strong> Claude Code returns non-zero on errors, tool failures, and rate-limit exhaustion. Check the exit code, don&rsquo;t just <code>tee</code> the output.</li>
+      <li><strong>Unbounded parallelism.</strong> Launching 50 agents in parallel against the API will burn through your rate limit in minutes. Cap concurrency with <code>xargs -P</code>, a semaphore, or a queue.</li>
+      <li><strong>No cost limits.</strong> A retry loop on a bad prompt can spend $100 in an hour. Always set per-invocation or per-day budget guards.</li>
+      <li><strong>Not saving session IDs.</strong> If you don&rsquo;t capture <code>session_id</code> from the JSON output, you can&rsquo;t resume. You can&rsquo;t post-mortem. You can&rsquo;t debug.</li>
+    </ul>
+
+    <!-- ───────────────────────────── SECTION: WITH AMUX ───────────────────────────── -->
+    <h2 id="with-amux">Headless Claude Code with amux</h2>
+
+    <p>amux is an open-source <a href="/guides/agent-control-plane/">agent control plane</a> specifically designed for running headless Claude Code at scale. It handles supervision, observability, cost tracking, and orchestration in a single Python file, without requiring any of the scripting above.</p>
+
+    <p>The difference is most visible in a side-by-side:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead><tr><th>Concern</th><th>Raw Headless</th><th>amux</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Start 10 agents</strong></td>
+            <td>Bash loop + <code>git worktree add</code> + <code>claude --print</code> for each</td>
+            <td><code>amux start worker-1 worker-2 ... worker-10</code></td>
+          </tr>
+          <tr>
+            <td><strong>See what each is doing</strong></td>
+            <td>10 log files to tail</td>
+            <td>Web dashboard with per-session live output</td>
+          </tr>
+          <tr>
+            <td><strong>Crash recovery</strong></td>
+            <td>systemd unit per agent + <code>Restart=on-failure</code></td>
+            <td>Built-in watchdog auto-restarts and replays last message</td>
+          </tr>
+          <tr>
+            <td><strong>Context overflow</strong></td>
+            <td>Agent fails; you rerun manually tomorrow</td>
+            <td>Auto-compacts and continues; no work lost</td>
+          </tr>
+          <tr>
+            <td><strong>Cost tracking</strong></td>
+            <td>Parse JSONL per session, aggregate yourself</td>
+            <td>Per-session and daily dashboards, built-in</td>
+          </tr>
+          <tr>
+            <td><strong>Task distribution</strong></td>
+            <td>You pre-split tasks before launching</td>
+            <td>SQLite-backed kanban board; agents claim tasks atomically</td>
+          </tr>
+          <tr>
+            <td><strong>Mobile access</strong></td>
+            <td>SSH from your phone</td>
+            <td>Installable PWA + native iOS app</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The install is one command:</p>
+
+    <pre><code>$ git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+$ amux register myproject --dir ~/Dev/myproject --yolo
+$ amux start worker-1 worker-2 worker-3
+$ amux serve  <span class="comment"># → https://localhost:8822</span></code></pre>
+
+    <p>Under the hood, <code>amux start</code> launches Claude Code in headless mode inside a tmux session per agent, with <code>--dangerously-skip-permissions</code> enabled by the <code>--yolo</code> project flag and cost-tracking auto-wired from the JSONL transcripts. The dashboard at <code>localhost:8822</code> shows live output, per-session cost, and a kanban board for task claiming &mdash; everything the supervision and cost sections of this guide described, already built.</p>
+
+    <p>If you&rsquo;re running one or two headless agents, the raw <code>claude --print</code> approach from earlier in this guide is perfectly fine. If you&rsquo;re running five or more, or anything overnight, use a control plane &mdash; either amux or something equivalent. The scripting to replicate its features yourself is a weekend project, but maintaining that scripting as Claude Code evolves is not.</p>
+
+    <!-- ───────────────────────────── SECTION: FAQ ───────────────────────────── -->
+    <h2 id="faq">FAQ</h2>
+
+    <div class="faq-list" style="margin-top:1.5rem;">
+      <details class="faq-item" open>
+        <summary>What is Claude Code headless mode?</summary>
+        <p>Headless mode runs Claude Code without the interactive terminal UI. You pass a prompt with <code>--print</code>, Claude executes the task, writes output to stdout, and exits. This is the foundation for CI/CD integration, parallel agents, overnight batches, and any automated workflow.</p>
+      </details>
+      <details class="faq-item">
+        <summary>How do I run Claude Code non-interactively?</summary>
+        <p>Use <code>claude --print "your task"</code>. For fully unattended runs, add <code>--dangerously-skip-permissions</code> or a permission policy file. For machine-readable output with token counts and cost, add <code>--output-format json</code>.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Can I use my Max subscription for headless runs?</summary>
+        <p>Yes &mdash; headless mode uses the same auth as interactive mode. Your Max subscription covers it under the same weekly rate limit. For sustained parallel usage above your cap, switch to an API key by setting <code>ANTHROPIC_API_KEY</code>.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Should I use the Max subscription or an API key for headless runs?</summary>
+        <p>Max subscription for 1&ndash;3 steady agents. API key for 5+ parallel agents or overnight bursts. A common setup combines both: Max for the interactive primary, API key for the overnight fleet.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Is it safe to use --dangerously-skip-permissions?</summary>
+        <p>Only in isolated environments: containers, git worktrees on dedicated branches, or ephemeral VMs. Never on your main laptop with production credentials. For safer unattended operation, use a permission policy that allowlists specific tools.</p>
+      </details>
+      <details class="faq-item">
+        <summary>How do I track cost for headless runs?</summary>
+        <p>Use <code>--output-format json</code> to get <code>total_cost_usd</code> and token counts per invocation. For session-level aggregation, parse the JSONL transcript in <code>~/.claude/projects/</code>. For fleet-level tracking, use a control plane like amux.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Can I run Claude Code in Docker?</summary>
+        <p>Yes. Install Node.js and the Claude Code CLI in your image, mount your project as a volume, pass <code>ANTHROPIC_API_KEY</code> as an env var, and use <code>claude --print</code> as the entrypoint. Containers are also the safest place to use <code>--dangerously-skip-permissions</code>.</p>
+      </details>
+      <details class="faq-item">
+        <summary>How do I run multiple headless agents in parallel?</summary>
+        <p>Launch each in its own git worktree to avoid conflicts, cap concurrency to stay under rate limits, capture structured JSON output, and use atomic task claiming to prevent duplicate work. A control plane automates all four.</p>
+      </details>
+      <details class="faq-item">
+        <summary>What&rsquo;s the difference between --print and the interactive REPL?</summary>
+        <p>The REPL loops until you exit; <code>--print</code> runs a single turn and returns. The REPL prompts for tool approvals interactively; <code>--print</code> combined with permission flags is fully non-interactive. Both share authentication and session state.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Can I resume a headless session later?</summary>
+        <p>Yes. Capture the <code>session_id</code> from JSON output and pass <code>--resume &lt;session-id&gt;</code> on the next invocation. The conversation picks up exactly where it left off.</p>
+      </details>
+    </div>
+
+    <div class="related-guides" style="margin-top:3rem;padding:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Related Guides</strong>
+      <ul style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="/guides/agent-control-plane/" style="color:var(--dim);">What Is an Agent Control Plane?</a></li>
+        <li><a href="/guides/setting-up-yolo-mode/" style="color:var(--dim);">Setting Up YOLO Mode for Headless Agents</a></li>
+        <li><a href="/guides/running-10-plus-agents/" style="color:var(--dim);">Running 10+ Agents in Parallel</a></li>
+        <li><a href="/guides/self-healing-configuration/" style="color:var(--dim);">Self-Healing Configuration</a></li>
+        <li><a href="/guides/token-spend-tracking/" style="color:var(--dim);">Token Spend Tracking</a></li>
+        <li><a href="/guides/claude-code-max-plan/" style="color:var(--dim);">How to 10x Your Claude Code Max Plan</a></li>
+      </ul>
+    </div>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source control plane for AI agents. Runtime, observability, orchestration, and cost control &mdash; in one file.</p>
+        </div>
+        <div class="footer-link-cols">
+          <div class="footer-col">
+            <strong>Product</strong>
+            <a href="/guides/getting-started/">Getting Started</a>
+            <a href="/guides/rest-api-reference/">API Reference</a>
+            <a href="https://cloud.amux.io">Cloud</a>
+            <a href="/pricing/">Pricing</a>
+            <a href="/changelog/">Changelog</a>
+          </div>
+          <div class="footer-col">
+            <strong>Resources</strong>
+            <a href="/guides/">Guides</a>
+            <a href="/blog/">Blog</a>
+            <a href="/faq/">FAQ</a>
+            <a href="/glossary/">Glossary</a>
+            <a href="/demos/">Demos</a>
+          </div>
+          <div class="footer-col">
+            <strong>Compare</strong>
+            <a href="/compare/amux-vs-claude-managed-agents/">vs Managed Agents</a>
+            <a href="/compare/amux-vs-cursor/">vs Cursor</a>
+            <a href="/compare/amux-vs-devin/">vs Devin</a>
+            <a href="/compare/">All comparisons</a>
+          </div>
+          <div class="footer-col">
+            <strong>More</strong>
+            <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+            <a href="/llms.txt">llms.txt</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </footer>
+  <script>
+  document.getElementById('theme-toggle').addEventListener('click',function(){
+    var d=document.documentElement, c=d.getAttribute('data-theme')==='dark'?'light':'dark';
+    d.setAttribute('data-theme',c); localStorage.setItem('theme',c);
+  });
+  </script>
+</body>
+</html>

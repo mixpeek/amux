@@ -48,6 +48,7 @@ Claude Code runs one agent per terminal. amux runs dozens — with live monitori
 
 ## Guides
 
+- [Claude Code Headless Mode — The Complete Self-Hosting Guide](https://amux.io/guides/claude-code-headless/): How to run Claude Code without the interactive terminal — for CI/CD, overnight batches, parallel agent fleets, and API-driven workflows. Covers --print and --output-format flags, Max subscription vs ANTHROPIC_API_KEY trade-offs, permission modes for unattended runs, cost tracking via JSONL transcripts, Docker patterns, and six common headless workflows.
 - [What Is an Agent Control Plane?](https://amux.io/guides/agent-control-plane/): The missing infrastructure layer for AI agents. Five pillars — lifecycle management, observability, fault tolerance, orchestration, and governance — explained with the three-layer model (framework vs runtime vs control plane) and a comparison of the 2026 landscape.
 - [How to Get 10x More Out of Your Claude Code Max Plan](https://amux.io/guides/claude-code-max-plan/): Rate limited by Wednesday? 7 strategies — model routing, parallel agents, context discipline, task pipelining, specs, API fallback, and scheduling — to 10x throughput within the same quota.
 - [Agentic Engineering: The Practical Guide](https://amux.io/guides/agentic-engineering/): Go from 1 agent to 10+ running in parallel. Task decomposition, git isolation, coordination patterns, overnight operation, and review workflows. The step-by-step guide to the Karpathy-coined discipline.
