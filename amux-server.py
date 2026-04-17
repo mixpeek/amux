@@ -9954,6 +9954,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <button class="tile-btn" id="tile-list-btn" onclick="setLayoutMode('list')" title="List view">&#x2630;</button>
     <button class="tile-btn" id="tile-group-btn" onclick="setLayoutMode('group')" title="Group by status" style="font-size:0.75rem;font-weight:700;">#</button>
     <button class="tile-btn tile-grid-only" id="tile-grid-btn" onclick="setLayoutMode('grid')" title="Grid view">&#x268F;</button>
+    <button class="tile-btn" id="tile-sort-btn" onclick="toggleSortMode()" title="Sort alphabetically (pinned stay on top, order stops shifting)" style="font-size:0.7rem;font-weight:700;letter-spacing:-0.5px;">A&#x2193;Z</button>
     <button class="tile-btn" id="tile-reset-btn" onclick="resetCardOrder()" title="Reset to default order (pinned → last active)" style="display:none;font-size:0.8rem;">&#x21BA;</button>
     <button class="tile-btn" id="tile-collapse-btn" onclick="collapseAll()" title="Collapse all sessions" style="display:none;font-size:0.75rem;">&#x2B06;</button>
   </div>
@@ -12581,13 +12582,18 @@ function render() {
 
   // Grid mode: flat list sorted by saved card order, no grouping (desktop only)
   if (layoutMode === 'grid' && window.innerWidth >= 900) {
-    const orderMap = {};
-    cardOrder.forEach((name, i) => { orderMap[name] = i; });
-    const sortedFiltered = [...filtered].sort((a, b) => {
-      const ai = orderMap[a.name] !== undefined ? orderMap[a.name] : 9999;
-      const bi = orderMap[b.name] !== undefined ? orderMap[b.name] : 9999;
-      return ai - bi;
-    });
+    let sortedFiltered;
+    if (sortMode === 'alpha') {
+      sortedFiltered = [...filtered].sort(_alphaSortSessions);
+    } else {
+      const orderMap = {};
+      cardOrder.forEach((name, i) => { orderMap[name] = i; });
+      sortedFiltered = [...filtered].sort((a, b) => {
+        const ai = orderMap[a.name] !== undefined ? orderMap[a.name] : 9999;
+        const bi = orderMap[b.name] !== undefined ? orderMap[b.name] : 9999;
+        return ai - bi;
+      });
+    }
     el.innerHTML = draftCards + sortedFiltered.map(_renderSessionCard).join('');
     for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
     if (focusedId) { const inp = document.getElementById(focusedId); if (inp) { inp.focus({ preventScroll: true }); const d = savedInputs[focusedId]; if (d && inp.tagName === 'TEXTAREA') { inp.selectionStart = d.start; inp.selectionEnd = d.end; } } }
@@ -12617,12 +12623,16 @@ function render() {
       else if (s.status === 'waiting') buckets.waiting.push(s);
       else                             buckets.idle.push(s);
     });
-    // Sort within each bucket: pinned first, then most recently active
+    // Sort within each bucket: alpha (pinned → name) or pinned → last activity
     for (const key of Object.keys(buckets)) {
-      buckets[key].sort((a, b) => {
-        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-        return (b.last_activity || 0) - (a.last_activity || 0);
-      });
+      if (sortMode === 'alpha') {
+        buckets[key].sort(_alphaSortSessions);
+      } else {
+        buckets[key].sort((a, b) => {
+          if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+          return (b.last_activity || 0) - (a.last_activity || 0);
+        });
+      }
     }
     STATUS_GROUPS.forEach(g => {
       if (_tagGroupCollapsed[g.key] === undefined) _tagGroupCollapsed[g.key] = !g.defaultOpen;
@@ -12652,7 +12662,9 @@ function render() {
     // list mode (flat) or group mode with active filter: flat list
     let flatList = filtered;
     if (layoutMode === 'list' && !activeTag && !q) {
-      if (cardOrder.length) {
+      if (sortMode === 'alpha') {
+        flatList = [...filtered].sort(_alphaSortSessions);
+      } else if (cardOrder.length) {
         const orderMap = {};
         cardOrder.forEach((n, i) => { orderMap[n] = i; });
         flatList = [...filtered].sort((a, b) => {
@@ -12666,6 +12678,8 @@ function render() {
       } else {
         flatList = [...filtered].sort(_naturalSortSessions);
       }
+    } else if (sortMode === 'alpha' && !activeTag && !q) {
+      flatList = [...filtered].sort(_alphaSortSessions);
     }
     el.innerHTML = draftCards + flatList.map(_renderSessionCard).join('');
     if (layoutMode === 'list') requestAnimationFrame(initSortable);
@@ -19054,6 +19068,7 @@ document.addEventListener('keydown', (e) => {
 
 // ═══════ LAYOUT MODES (list / grid) ═══════
 let layoutMode = localStorage.getItem('amux_layout') || 'group';
+let sortMode = localStorage.getItem('amux_sort_mode') || 'natural';
 let cardOrder = JSON.parse(localStorage.getItem('amux_card_order') || '[]');
 let _sortable = null;
 let _tileJustDragged = false; // keep for toggle() guard
@@ -19068,6 +19083,12 @@ function _naturalSortSessions(a, b) {
   const ap = _STATUS_PRI[a.status] ?? 1, bp = _STATUS_PRI[b.status] ?? 1;
   if (ap !== bp) return ap - bp;
   return (b.last_activity || 0) - (a.last_activity || 0);
+}
+
+// Alphabetical sort: pinned first, then by name — stable across activity changes
+function _alphaSortSessions(a, b) {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+  return (a.name || '').localeCompare(b.name || '');
 }
 
 function resetCardOrder() {
@@ -19097,8 +19118,18 @@ function setLayoutMode(mode) {
   _updateResetBtn();
 }
 
+function toggleSortMode() {
+  sortMode = sortMode === 'alpha' ? 'natural' : 'alpha';
+  localStorage.setItem('amux_sort_mode', sortMode);
+  const btn = document.getElementById('tile-sort-btn');
+  if (btn) btn.classList.toggle('active', sortMode === 'alpha');
+  if (sortMode === 'alpha') destroySortable();
+  render();
+}
+
 function initSortable() {
   if (typeof Sortable === 'undefined') return;
+  if (sortMode === 'alpha') { destroySortable(); return; }
   destroySortable();
   const cards = document.querySelector('.cards');
   if (!cards) return;
@@ -19158,6 +19189,8 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('tile-list-btn').classList.add('active');
     setTimeout(initSortable, 200);
   }
+  const sortBtn = document.getElementById('tile-sort-btn');
+  if (sortBtn) sortBtn.classList.toggle('active', sortMode === 'alpha');
 });
 
 // ═══════ REPORTS ═══════
