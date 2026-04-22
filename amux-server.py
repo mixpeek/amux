@@ -9984,7 +9984,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <button class="tile-btn" id="tile-list-btn" onclick="setLayoutMode('list')" title="List view">&#x2630;</button>
     <button class="tile-btn" id="tile-group-btn" onclick="setLayoutMode('group')" title="Group by status" style="font-size:0.75rem;font-weight:700;">#</button>
     <button class="tile-btn tile-grid-only" id="tile-grid-btn" onclick="setLayoutMode('grid')" title="Grid view">&#x268F;</button>
-    <button class="tile-btn" id="tile-sort-btn" onclick="toggleSortMode()" title="Sort alphabetically (pinned stay on top, order stops shifting)" style="font-size:0.7rem;font-weight:700;letter-spacing:-0.5px;">A&#x2193;Z</button>
+    <button class="tile-btn" id="tile-sort-btn" onclick="toggleSortMode()" title="Sort alphabetically (pinned stay on top, order stops shifting)" style="font-size:0.7rem;font-weight:700;">A</button>
     <button class="tile-btn" id="tile-reset-btn" onclick="resetCardOrder()" title="Reset to default order (pinned → last active)" style="display:none;font-size:0.8rem;">&#x21BA;</button>
     <button class="tile-btn" id="tile-collapse-btn" onclick="collapseAll()" title="Collapse all sessions" style="display:none;font-size:0.75rem;">&#x2B06;</button>
   </div>
@@ -15179,11 +15179,14 @@ function _syncPeekOverlayToVisualViewport() {
   const vv = window.visualViewport;
   const constrained = vv.height < window.innerHeight - 1 || vv.offsetTop > 1;
   if (constrained) {
-    ov.style.height = vv.height + 'px';
     ov.style.top = vv.offsetTop + 'px';
+    ov.style.height = (window.innerHeight - vv.offsetTop) + 'px';
+    const kbHeight = window.innerHeight - vv.offsetTop - vv.height;
+    ov.style.paddingBottom = Math.max(12, kbHeight) + 'px';
   } else {
     ov.style.height = '';
     ov.style.top = '';
+    ov.style.paddingBottom = '';
   }
   // Compact mode: hide chips, shrink padding when viewport is tight
   ov.classList.toggle('vv-compact', constrained && vv.height < window.innerHeight * 0.7);
