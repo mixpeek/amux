@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>A2A + MCP: How Agent-to-Agent and Model Context Protocol Work Together</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="How Google's A2A protocol and Anthropic's MCP work together in multi-agent systems. Architecture patterns, protocol comparison, and practical implementation for agent interoperability in 2026.">
+  <meta name="keywords" content="A2A protocol, MCP protocol, agent-to-agent protocol, model context protocol, agent interoperability, A2A vs MCP, A2A MCP integration, multi-agent protocols, agent communication protocol, google A2A, anthropic MCP, agent infrastructure 2026, agent orchestration protocols">
+  <link rel="canonical" href="https://amux.io/guides/a2a-mcp-agent-protocols/">
+  <meta property="og:title" content="A2A + MCP: Agent-to-Agent and Model Context Protocol Together">
+  <meta property="og:description" content="How A2A and MCP work together in multi-agent systems. Protocol comparison, architecture patterns, and practical implementation for agent interoperability.">
+  <meta property="og:url" content="https://amux.io/guides/a2a-mcp-agent-protocols/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="A2A + MCP: Agent-to-Agent and Model Context Protocol Together">
+  <meta name="twitter:description" content="How the two dominant agent protocols work together. Architecture, comparison, and implementation for multi-agent systems.">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"A2A + MCP: How Agent-to-Agent and Model Context Protocol Work Together","description":"How Google's A2A protocol and Anthropic's MCP work together in multi-agent systems. Architecture patterns, protocol comparison, and practical implementation.","datePublished":"2026-04-22","dateModified":"2026-04-22","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon-512.png"}},"image":"https://amux.io/og-image.png","mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/guides/a2a-mcp-agent-protocols/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"A2A + MCP Agent Protocols","item":"https://amux.io/guides/a2a-mcp-agent-protocols/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the difference between A2A and MCP?","acceptedAnswer":{"@type":"Answer","text":"MCP (Model Context Protocol) connects an agent to tools and data sources — it's the vertical axis. A2A (Agent-to-Agent Protocol) connects agents to each other — it's the horizontal axis. MCP gives an agent capabilities; A2A lets agents delegate tasks to peers. They solve different problems and are designed to work together."}},{"@type":"Question","name":"Do I need both A2A and MCP?","acceptedAnswer":{"@type":"Answer","text":"If you're running a single agent, MCP alone is sufficient — it connects your agent to databases, APIs, and file systems. Once you have multiple agents that need to discover and delegate to each other, A2A adds the coordination layer. Most production multi-agent systems use both."}},{"@type":"Question","name":"Can agents using different LLMs communicate via A2A?","acceptedAnswer":{"@type":"Answer","text":"Yes — that's one of A2A's primary design goals. A2A is model-agnostic. A Claude agent can delegate a task to a GPT agent or a Gemini agent via A2A without knowing or caring which model powers the other agent. The protocol abstracts the implementation behind Agent Cards and standard JSON-RPC messages."}},{"@type":"Question","name":"How does amux implement agent-to-agent communication?","acceptedAnswer":{"@type":"Answer","text":"amux implements agent-to-agent communication via a REST API that predates A2A but solves the same problems: session discovery (GET /api/sessions), message passing (POST /api/sessions/NAME/send), output peeking (GET /api/sessions/NAME/peek), shared state (notes, board), and atomic task claiming (POST /api/board/ID/claim). It's A2A-shaped without requiring A2A protocol support in the underlying agent framework."}},{"@type":"Question","name":"Is A2A production-ready in 2026?","acceptedAnswer":{"@type":"Answer","text":"A2A reached version 0.2 in early 2026 with 150+ participating organizations. It's deployed in Azure AI Foundry, Amazon Bedrock, and several enterprise platforms. The core spec (Agent Cards, tasks, streaming) is stable. Enterprise features like authentication delegation and complex workflow orchestration are still evolving."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>A2A + MCP Agent Protocols</span></div>
+    <h1>A2A + MCP: How the Two Agent Protocols Work Together</h1>
+<p class="subtitle">MCP connects agents to tools. A2A connects agents to each other. Here's how they fit together in production systems.</p>
+
+<p>Two protocols now dominate the agent infrastructure landscape. Anthropic's <strong>Model Context Protocol (MCP)</strong> — launched November 2024 — gives agents a standard way to access tools, databases, and APIs. Google's <strong>Agent-to-Agent Protocol (A2A)</strong> — launched April 2025, now at 150+ participating organizations — gives agents a standard way to discover and delegate to each other.</p>
+
+<p>Most guides cover them separately. This guide covers the architecture where they work together — because in any multi-agent system, you need both.</p>
+
+<h2>The two axes of agent connectivity</h2>
+
+<p>Think of agent connectivity as two axes:</p>
+
+<table class="data-table">
+<thead><tr><th></th><th>MCP (vertical axis)</th><th>A2A (horizontal axis)</th></tr></thead>
+<tbody>
+<tr><td><strong>Connects</strong></td><td>Agent &harr; tools/data</td><td>Agent &harr; agent</td></tr>
+<tr><td><strong>Question it answers</strong></td><td>"What can this agent <em>do</em>?"</td><td>"Who can this agent <em>delegate to</em>?"</td></tr>
+<tr><td><strong>Maintained by</strong></td><td>Anthropic (open spec)</td><td>Google (open spec)</td></tr>
+<tr><td><strong>Transport</strong></td><td>stdio, SSE, HTTP</td><td>HTTP + JSON-RPC 2.0</td></tr>
+<tr><td><strong>Discovery</strong></td><td>Config file (mcp.json)</td><td>Agent Cards (/.well-known/agent.json)</td></tr>
+<tr><td><strong>State model</strong></td><td>Stateless tool calls</td><td>Stateful tasks (submitted → working → done)</td></tr>
+<tr><td><strong>Streaming</strong></td><td>SSE for server-sent results</td><td>SSE for task progress updates</td></tr>
+<tr><td><strong>Auth</strong></td><td>Per-server (OAuth, API keys)</td><td>Agent Card declares auth schemes</td></tr>
+<tr><td><strong>Adoption (Apr 2026)</strong></td><td>Built into Claude Code, Cursor, VS Code, Windsurf, 50+ tools</td><td>150+ orgs, Azure AI Foundry, Amazon Bedrock, LangGraph</td></tr>
+</tbody>
+</table>
+
+<p>MCP is the <strong>nervous system</strong> — it lets each agent sense and act on its environment. A2A is the <strong>coordination layer</strong> — it lets agents form teams.</p>
+
+<h2>MCP: the tool protocol</h2>
+
+<p>MCP defines a standard interface between an agent (the "client") and external capabilities (the "server"). Before MCP, every agent framework invented its own tool-calling format. MCP standardized it.</p>
+
+<h3>How MCP works</h3>
+
+<ol>
+  <li><strong>Server declares capabilities.</strong> An MCP server exposes a list of tools (functions the agent can call), resources (data the agent can read), and prompts (templates the agent can use).</li>
+  <li><strong>Client discovers tools.</strong> The agent reads an <code>mcp.json</code> config file that lists available servers. At startup, it connects to each server and fetches the tool list.</li>
+  <li><strong>Agent calls tools.</strong> During a conversation, the LLM decides to call a tool. The agent framework routes the call to the appropriate MCP server, which executes it and returns the result.</li>
+</ol>
+
+<pre><code>// mcp.json — declares which MCP servers this agent can use
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "ghp_..." }
+    },
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres"],
+      "env": { "DATABASE_URL": "postgresql://..." }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/project"]
+    }
+  }
+}</code></pre>
+
+<p>The key insight: MCP servers are <strong>per-agent</strong>. Each agent gets its own set of tools, configured in its own <code>mcp.json</code>. An agent with a GitHub MCP server can create PRs. An agent with a Postgres MCP server can query databases. An agent with both can do both.</p>
+
+<h3>MCP in multi-agent systems</h3>
+
+<p>When you run multiple agents, MCP lets you give each agent a <strong>different toolkit</strong>:</p>
+
+<table class="data-table">
+<thead><tr><th>Agent role</th><th>MCP servers</th><th>Capabilities</th></tr></thead>
+<tbody>
+<tr><td>Frontend developer</td><td>filesystem, browser-tools</td><td>Read/write files, inspect rendered UI</td></tr>
+<tr><td>Backend developer</td><td>filesystem, postgres, redis</td><td>Read/write files, query databases</td></tr>
+<tr><td>Code reviewer</td><td>github, filesystem</td><td>Read PRs, post comments, read code</td></tr>
+<tr><td>DevOps agent</td><td>kubernetes, aws, terraform</td><td>Deploy, scale, manage infrastructure</td></tr>
+</tbody>
+</table>
+
+<p>This is <strong>least-privilege by design</strong>. The frontend agent can't accidentally drop a database table because it doesn't have the Postgres MCP server. The DevOps agent can't modify application code because it doesn't have write access to the filesystem.</p>
+
+<h2>A2A: the coordination protocol</h2>
+
+<p>MCP solves "what can this agent do?" but not "how do agents work together?" That's A2A's job.</p>
+
+<h3>How A2A works</h3>
+
+<p>A2A defines four primitives:</p>
+
+<ol>
+  <li><strong>Agent Cards.</strong> Every A2A agent publishes a JSON document at <code>/.well-known/agent.json</code> that describes its capabilities, accepted input formats, and authentication requirements. This is how agents discover each other.</li>
+  <li><strong>Tasks.</strong> The core unit of work. A client agent sends a task to a remote agent. Tasks have an ID, state machine (submitted → working → done/failed/canceled), and can carry structured or unstructured data via "parts" (text, files, structured data).</li>
+  <li><strong>Messages.</strong> Within a task, agents exchange messages — the request, progress updates, and the final result. Messages can contain multiple "parts" (text, file data, JSON).</li>
+  <li><strong>Streaming.</strong> Long-running tasks stream progress via SSE. The client receives real-time updates as the remote agent works.</li>
+</ol>
+
+<pre><code>// Agent Card — published at /.well-known/agent.json
+{
+  "name": "code-reviewer",
+  "description": "Reviews pull requests for bugs, security issues, and style violations",
+  "url": "https://reviewer.internal:8080",
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false
+  },
+  "skills": [
+    {
+      "id": "review-pr",
+      "name": "Review Pull Request",
+      "description": "Reviews a GitHub PR and posts comments with findings",
+      "tags": ["code-review", "security", "quality"]
+    }
+  ],
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["text/plain"]
+}</code></pre>
+
+<h3>The A2A task lifecycle</h3>
+
+<pre><code>Client Agent                          Remote Agent
+     |                                      |
+     |  POST /tasks/send                    |
+     |  {"skill":"review-pr",               |
+     |   "message":"Review PR #42"}         |
+     |-------------------------------------→|
+     |                                      |
+     |  {"status":"working",                |
+     |   "message":"Analyzing 12 files..."}  |
+     |←-------------------------------------|
+     |                                      |
+     |  {"status":"working",                |
+     |   "message":"Found 3 issues..."}     |
+     |←-------------------------------------|
+     |                                      |
+     |  {"status":"done",                   |
+     |   "message":"Review complete.        |
+     |    3 issues posted as PR comments."} |
+     |←-------------------------------------|</code></pre>
+
+<p>The key insight: A2A is <strong>model-agnostic</strong>. The client agent doesn't know or care what LLM powers the remote agent. A Claude agent can delegate to a GPT agent can delegate to a Gemini agent — the protocol abstracts the implementation behind Agent Cards and standard messages.</p>
+
+<h2>Where A2A and MCP intersect</h2>
+
+<p>In a production multi-agent system, A2A and MCP occupy distinct but complementary roles:</p>
+
+<div style="overflow-x:auto;">
+<pre><code>┌──────────────────────────────────────────────────────────────┐
+│                      Orchestrator                            │
+│                                                              │
+│   ┌─────────────┐    A2A     ┌─────────────┐                │
+│   │  Agent A     │ ◄───────► │  Agent B     │                │
+│   │              │           │              │                │
+│   │  MCP ▼       │           │  MCP ▼       │                │
+│   │ ┌─────────┐  │           │ ┌─────────┐  │                │
+│   │ │ GitHub  │  │           │ │ Postgres│  │                │
+│   │ │ Server  │  │           │ │ Server  │  │                │
+│   │ └─────────┘  │           │ └─────────┘  │                │
+│   │ ┌─────────┐  │           │ ┌─────────┐  │                │
+│   │ │Filesys  │  │           │ │  Redis  │  │                │
+│   │ │ Server  │  │           │ │ Server  │  │                │
+│   │ └─────────┘  │           │ └─────────┘  │                │
+│   └─────────────┘           └─────────────┘                │
+└──────────────────────────────────────────────────────────────┘
+
+MCP = vertical (agent → tools)     A2A = horizontal (agent → agent)</code></pre>
+</div>
+
+<p><strong>Agent A</strong> uses MCP to read files and create GitHub PRs. <strong>Agent B</strong> uses MCP to query Postgres and Redis. When Agent A finishes implementing a feature, it uses A2A to delegate a review task to Agent B. Agent B inspects the changes (using its own MCP tools), then responds via A2A with findings.</p>
+
+<h3>Three integration patterns</h3>
+
+<h4>Pattern 1: MCP server wraps A2A agent</h4>
+
+<p>Expose a remote A2A agent as a local MCP tool. The calling agent doesn't know it's talking to another agent — it just calls a tool.</p>
+
+<pre><code>// MCP server that delegates to an A2A code-reviewer agent
+{
+  "mcpServers": {
+    "code-review": {
+      "command": "node",
+      "args": ["a2a-mcp-bridge.js", "--agent=https://reviewer.internal:8080"]
+    }
+  }
+}
+
+// The MCP server internally:
+// 1. Receives tool call from local agent
+// 2. Creates A2A task on remote agent
+// 3. Streams progress back as MCP results
+// 4. Returns final output when A2A task completes</code></pre>
+
+<p><strong>When to use:</strong> When you want agents to delegate without being aware of A2A. The MCP bridge handles discovery, task creation, and progress tracking. The calling agent just sees a tool called <code>request_code_review</code>.</p>
+
+<h4>Pattern 2: A2A for orchestration, MCP for execution</h4>
+
+<p>The orchestrator uses A2A to assign work to specialized agents. Each agent uses MCP to execute its assigned work.</p>
+
+<pre><code># Orchestrator discovers available agents via Agent Cards
+GET https://frontend-agent:8080/.well-known/agent.json
+GET https://backend-agent:8081/.well-known/agent.json
+GET https://test-agent:8082/.well-known/agent.json
+
+# Orchestrator delegates tasks via A2A
+POST https://frontend-agent:8080/tasks/send
+  {"skill": "implement-component", "message": "Build the user settings page..."}
+
+POST https://backend-agent:8081/tasks/send
+  {"skill": "implement-endpoint", "message": "Add PUT /api/users/:id/settings..."}
+
+# Each agent uses its own MCP tools to do the actual work
+# Frontend agent: filesystem MCP, browser-tools MCP
+# Backend agent: filesystem MCP, postgres MCP
+# Test agent: filesystem MCP, playwright MCP</code></pre>
+
+<p><strong>When to use:</strong> Classic multi-agent orchestration. The orchestrator is the brain (task decomposition, dependency tracking), agents are the hands (each with specialized tools via MCP).</p>
+
+<h4>Pattern 3: Peer-to-peer A2A with shared MCP resources</h4>
+
+<p>No central orchestrator. Agents discover peers via Agent Cards and delegate tasks directly. All agents share access to a common MCP resource (like a shared database or board) for coordination.</p>
+
+<pre><code># Agent A discovers Agent B
+GET https://agent-b:8080/.well-known/agent.json
+→ skills: ["database-migration", "schema-review"]
+
+# Agent A delegates directly
+POST https://agent-b:8080/tasks/send
+  {"skill": "schema-review", "message": "Review this migration before I apply it: ..."}
+
+# Both agents share an MCP server for coordination state
+{
+  "mcpServers": {
+    "shared-board": {
+      "url": "https://orchestrator:8822/mcp",
+      "tools": ["create_task", "claim_task", "complete_task", "list_tasks"]
+    }
+  }
+}</code></pre>
+
+<p><strong>When to use:</strong> When agents are autonomous and tasks emerge dynamically. No predefined workflow — agents request help from peers as needed, coordinating through shared state.</p>
+
+<h2>How amux implements these patterns today</h2>
+
+<p>amux has supported agent-to-agent communication since before A2A existed. Its REST API implements the same primitives — just with a different wire format:</p>
+
+<table class="data-table">
+<thead><tr><th>A2A concept</th><th>amux equivalent</th><th>API</th></tr></thead>
+<tbody>
+<tr><td>Agent Card (discovery)</td><td>Session list</td><td><code>GET /api/sessions</code></td></tr>
+<tr><td>Task creation</td><td>Board item</td><td><code>POST /api/board</code></td></tr>
+<tr><td>Task claiming</td><td>Atomic claim (SQLite CAS)</td><td><code>POST /api/board/:id/claim</code></td></tr>
+<tr><td>Message passing</td><td>Session send</td><td><code>POST /api/sessions/:name/send</code></td></tr>
+<tr><td>Progress streaming</td><td>Session peek + SSE</td><td><code>GET /api/sessions/:name/peek</code></td></tr>
+<tr><td>Task state machine</td><td>Board status (todo → doing → done)</td><td><code>PATCH /api/board/:id</code></td></tr>
+<tr><td>Shared resources</td><td>Notes</td><td><code>GET/POST /api/notes/:slug</code></td></tr>
+<tr><td>Push notifications</td><td>Channels (@mentions)</td><td><code>POST /api/channels/:name/send</code></td></tr>
+</tbody>
+</table>
+
+<p>The difference: amux doesn't require agents to implement a protocol. Agents are Claude Code sessions — they call <code>curl</code> to interact with the REST API. The orchestrator (amux) handles discovery, state management, and coordination. Agents just need HTTP.</p>
+
+<pre><code># In amux: agent discovers peers
+curl -sk $AMUX_URL/api/sessions | python3 -c "
+import json, sys
+for s in json.load(sys.stdin):
+    print(f'{s[\"name\"]:20s} {s.get(\"status\",\"\")} — {s.get(\"desc\",\"\")}')
+"
+
+# Agent delegates a task
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Review the auth migration","session":"reviewer","status":"todo"}' \
+  $AMUX_URL/api/board
+
+# Agent sends a direct message to a peer
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"text":"I finished the auth refactor — can you review PR #42?"}' \
+  $AMUX_URL/api/sessions/reviewer/send
+
+# Agent checks peer's progress
+curl -sk "$AMUX_URL/api/sessions/reviewer/peek?lines=20" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('output',''))"</code></pre>
+
+<h3>MCP in amux sessions</h3>
+
+<p>Each amux session can have its own MCP configuration. The centralized <code>mcp.json</code> applies to all sessions, and per-project <code>.claude/settings.json</code> can add project-specific servers:</p>
+
+<pre><code># Global MCP config (shared by all sessions)
+cat mcp.json
+{
+  "mcpServers": {
+    "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] },
+    "memory": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"] }
+  }
+}
+
+# Per-project MCP config (only for sessions registered to this project)
+cat ~/Dev/myproject/.claude/settings.json
+{
+  "mcpServers": {
+    "postgres": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-postgres"] }
+  }
+}</code></pre>
+
+<h2>Choosing your architecture</h2>
+
+<p>The protocol you need depends on your deployment:</p>
+
+<table class="data-table">
+<thead><tr><th>Scenario</th><th>Protocol stack</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>Single agent, multiple tools</td><td>MCP only</td><td>No agent-to-agent communication needed</td></tr>
+<tr><td>Multiple agents, same machine</td><td>REST API (amux)</td><td>A2A is overkill for local orchestration — HTTP is simpler</td></tr>
+<tr><td>Multiple agents, same org, different machines</td><td>A2A + MCP</td><td>A2A handles cross-machine discovery and delegation</td></tr>
+<tr><td>Agents from different organizations</td><td>A2A + MCP + OAuth</td><td>A2A's auth model handles cross-org trust</td></tr>
+<tr><td>Heterogeneous models (Claude + GPT + Gemini)</td><td>A2A + MCP</td><td>A2A's model-agnostic design is essential</td></tr>
+</tbody>
+</table>
+
+<h3>When A2A is overkill</h3>
+
+<p>If all your agents run on the same machine, managed by the same orchestrator, you don't need A2A's formal protocol. A REST API with session discovery, message passing, and a task board gives you the same coordination without the protocol overhead. That's what amux provides.</p>
+
+<p>A2A becomes valuable when:</p>
+<ul>
+  <li>Agents run on <strong>different machines</strong> (distributed fleet)</li>
+  <li>Agents use <strong>different LLMs</strong> (Claude talks to GPT)</li>
+  <li>Agents belong to <strong>different organizations</strong> (cross-org delegation)</li>
+  <li>You need <strong>standardized discovery</strong> (Agent Cards at well-known URLs)</li>
+</ul>
+
+<h3>When MCP is not enough</h3>
+
+<p>MCP tools are <strong>stateless function calls</strong> — request in, response out. They don't model:</p>
+<ul>
+  <li><strong>Long-running tasks</strong> that take minutes or hours</li>
+  <li><strong>Multi-turn conversations</strong> between agents</li>
+  <li><strong>Progress tracking</strong> with intermediate status updates</li>
+  <li><strong>Task cancellation</strong> for runaway work</li>
+</ul>
+
+<p>If your agents need to delegate work that takes more than a few seconds, you need something beyond MCP — either A2A or a task-based API like amux's board.</p>
+
+<h2>The production stack in 2026</h2>
+
+<p>Here's what a production multi-agent system looks like when you combine everything:</p>
+
+<div style="overflow-x:auto;">
+<pre><code>┌─────────────────────────────────────────────────────────────────┐
+│                         Control Plane                           │
+│                   (amux / your orchestrator)                    │
+│                                                                 │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
+│  │Dashboard │  │Task Board│  │Cost Track│  │Scheduler │       │
+│  │(observe) │  │(coord)   │  │(govern)  │  │(automate)│       │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘       │
+├─────────────────────────────────────────────────────────────────┤
+│                   Agent-to-Agent Layer                          │
+│          (A2A for cross-machine / amux REST for local)         │
+│                                                                 │
+│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐      │
+│  │  Agent 1       │  │  Agent 2       │  │  Agent 3       │      │
+│  │  (Claude Code) │  │  (Claude Code) │  │  (GPT / other) │      │
+│  │                │  │                │  │                │      │
+│  │  MCP Servers:  │  │  MCP Servers:  │  │  MCP Servers:  │      │
+│  │  · GitHub      │  │  · Postgres    │  │  · Kubernetes  │      │
+│  │  · Filesystem  │  │  · Redis       │  │  · AWS         │      │
+│  │  · Browser     │  │  · Filesystem  │  │  · Terraform   │      │
+│  └───────────────┘  └───────────────┘  └───────────────┘      │
+├─────────────────────────────────────────────────────────────────┤
+│                   Infrastructure Layer                          │
+│     (tmux sessions, git worktrees, process isolation)          │
+└─────────────────────────────────────────────────────────────────┘</code></pre>
+</div>
+
+<p>The control plane (top) manages the fleet. The A2A/REST layer (middle) handles agent coordination. MCP (per-agent) provides tools. The infrastructure layer (bottom) runs the processes.</p>
+
+<h2>Implementation checklist</h2>
+
+<p>Setting up a multi-protocol agent system:</p>
+
+<ol>
+  <li><strong>Start with MCP.</strong> Configure MCP servers for each agent's role. Test that each agent can call its tools independently.</li>
+  <li><strong>Add local coordination.</strong> Use amux's REST API (or your own) for session discovery, message passing, and task tracking. Verify agents can delegate to each other.</li>
+  <li><strong>Add a task board.</strong> Atomic task claiming prevents duplicate work. SQLite CAS is sufficient for single-machine orchestration.</li>
+  <li><strong>Add observability.</strong> Dashboard showing all sessions, token spend per session, and terminal peek. You need to see what agents are doing.</li>
+  <li><strong>Add fault tolerance.</strong> Watchdog for crash recovery, context compaction, and message replay. Agents will fail — the system shouldn't.</li>
+  <li><strong>Add A2A (if needed).</strong> Only when you need cross-machine or cross-model agent coordination. Publish Agent Cards, implement the task endpoint, and bridge to your existing coordination layer.</li>
+</ol>
+
+<p>Steps 1–5 are what amux gives you out of the box. Step 6 is where you extend for distributed deployments.</p>
+
+<h2>The future: protocol convergence</h2>
+
+<p>A2A and MCP are converging. MCP's roadmap includes richer tool descriptions that look like A2A skills. A2A's roadmap includes resource access patterns that look like MCP resources. The end state is likely a unified agent protocol — but we're not there yet.</p>
+
+<p>For now, the practical approach is:</p>
+<ul>
+  <li><strong>Use MCP for tools.</strong> It's mature, widely adopted, and built into every major agent framework.</li>
+  <li><strong>Use A2A for agent coordination across boundaries.</strong> Machines, models, organizations.</li>
+  <li><strong>Use a control plane for everything else.</strong> Process management, observability, cost control, scheduling — the operational layer that neither protocol covers.</li>
+</ul>
+
+<div class="cta-box">
+  <h3>Get started with amux</h3>
+  <p>The open-source control plane for AI agents. MCP support, agent-to-agent coordination, and full observability — in one file.</p>
+  <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # &rarr; https://localhost:8822</code></pre>
+  <div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap;">
+    <a class="btn btn-primary" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">Get iOS App</a>
+    <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>
+  </div>
+</div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
