@@ -15059,6 +15059,8 @@ function closePeek() {
   ov.classList.remove('active', 'vv-compact', 'peek-focus');
   ov.style.height = '';
   ov.style.top = '';
+  ov.style.bottom = '';
+  ov.style.paddingBottom = '';
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
   sessionStorage.removeItem('peekState');
 }
@@ -15202,12 +15204,14 @@ function _syncPeekOverlayToVisualViewport() {
   const constrained = vv.height < window.innerHeight - 1 || vv.offsetTop > 1;
   if (constrained) {
     ov.style.top = vv.offsetTop + 'px';
-    ov.style.height = (window.innerHeight - vv.offsetTop) + 'px';
-    const kbHeight = window.innerHeight - vv.offsetTop - vv.height;
-    ov.style.paddingBottom = Math.max(12, kbHeight) + 'px';
-  } else {
+    ov.style.bottom = '0px';
     ov.style.height = '';
+    const kbHeight = window.innerHeight - vv.offsetTop - vv.height;
+    ov.style.paddingBottom = Math.max(0, kbHeight) + 'px';
+  } else {
     ov.style.top = '';
+    ov.style.bottom = '';
+    ov.style.height = '';
     ov.style.paddingBottom = '';
   }
   // Compact mode: hide chips, shrink padding when viewport is tight
