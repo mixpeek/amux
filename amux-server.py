@@ -9847,6 +9847,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
               <span class="theme-track"><span class="theme-thumb"></span></span>
             </label>
           </div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:8px;">
+            <span style="font-size:0.85rem;">Zoom</span>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <button class="btn" style="font-size:0.78rem;padding:2px 8px;min-width:28px;" onclick="zoomOut()">−</button>
+              <span id="zoom-level-display" style="font-size:0.82rem;font-weight:600;min-width:38px;text-align:center;">100%</span>
+              <button class="btn" style="font-size:0.78rem;padding:2px 8px;min-width:28px;" onclick="zoomIn()">+</button>
+              <button class="btn" style="font-size:0.65rem;padding:2px 6px;color:var(--dim);" onclick="resetZoom()">Reset</button>
+            </div>
+          </div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">&#x2318;+/&#x2318;− or Ctrl+/Ctrl−</div>
         </div>
         <div class="settings-sep"></div>
         <div class="settings-section" id="settings-apikeys-section">
@@ -9954,6 +9964,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <button class="tile-btn" id="tile-list-btn" onclick="setLayoutMode('list')" title="List view">&#x2630;</button>
     <button class="tile-btn" id="tile-group-btn" onclick="setLayoutMode('group')" title="Group by status" style="font-size:0.75rem;font-weight:700;">#</button>
     <button class="tile-btn tile-grid-only" id="tile-grid-btn" onclick="setLayoutMode('grid')" title="Grid view">&#x268F;</button>
+    <button class="tile-btn" id="tile-sort-btn" onclick="toggleSortMode()" title="Sort alphabetically (pinned stay on top, order stops shifting)" style="font-size:0.7rem;font-weight:700;letter-spacing:-0.5px;">A&#x2193;Z</button>
     <button class="tile-btn" id="tile-reset-btn" onclick="resetCardOrder()" title="Reset to default order (pinned → last active)" style="display:none;font-size:0.8rem;">&#x21BA;</button>
     <button class="tile-btn" id="tile-collapse-btn" onclick="collapseAll()" title="Collapse all sessions" style="display:none;font-size:0.75rem;">&#x2B06;</button>
   </div>
@@ -11478,9 +11489,13 @@ const _peekDrafts = {};  // session name → command text
 
 // ═══════ ZOOM ═══════
 const ZOOM_STEPS = [50, 60, 70, 75, 80, 85, 90, 95, 100, 110, 120, 130, 150, 175, 200];
-let _zoomLevel = 100;
+let _zoomLevel = parseInt(localStorage.getItem('amux_zoom')) || 100;
+if (!ZOOM_STEPS.includes(_zoomLevel)) _zoomLevel = 100;
 function _applyZoom() {
   document.documentElement.style.zoom = (_zoomLevel / 100);
+  localStorage.setItem('amux_zoom', _zoomLevel);
+  const el = document.getElementById('zoom-level-display');
+  if (el) el.textContent = _zoomLevel + '%';
 }
 function zoomIn() {
   var idx = ZOOM_STEPS.indexOf(_zoomLevel);
@@ -11493,6 +11508,7 @@ function zoomOut() {
   if (idx > 0) { _zoomLevel = ZOOM_STEPS[idx - 1]; _applyZoom(); }
 }
 function resetZoom() { _zoomLevel = 100; _applyZoom(); }
+if (_zoomLevel !== 100) _applyZoom();
 // Keyboard shortcuts: Cmd/Ctrl +/- for zoom
 document.addEventListener('keydown', function(e) {
   if ((e.metaKey || e.ctrlKey) && (e.key === '=' || e.key === '+')) { e.preventDefault(); zoomIn(); }
@@ -12504,6 +12520,7 @@ function render() {
           <button class="card-menu-btn" onclick="event.stopPropagation();toggleMenu('${s.name}')" title="Options">&#x22EF;</button>
           <div class="card-menu" id="menu-${s.name}">
           <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();openPeek('${s.name}')"><span class="mi">&#x1F4BB;</span> Peek terminal</div>
+          ${s.dir ? `<div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();openExplore('${s.dir.replace(/'/g,"\\'")}','${s.name.replace(/'/g,"\\'")}')"><span class="mi">&#x1F4C1;</span> Browse files</div>` : ''}
           <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();showSessionInfo('${s.name}')"><span class="mi">&#x2139;</span> Info</div>
           <div class="card-menu-item" onclick="event.stopPropagation();togglePin('${s.name}')"><span class="mi">${s.pinned?'&#x1F4CC;':'&#x1F4CC;'}</span> ${s.pinned ? 'Unpin' : 'Pin to top'}</div>
           <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','name','${esc(s.name)}')"><span class="mi">&#x270E;</span> Rename</div>
@@ -12534,7 +12551,7 @@ function render() {
           ${!online ? '<span class="cached-badge">cached</span>' : ''}
         </div>` : ''}
       </div>
-      ${s.dir ? `<div class="card-dir"><span class="card-dir-path" onclick="event.stopPropagation();openExplore('${s.dir.replace(/'/g,"\\'")}','${s.name.replace(/'/g,"\\'")}')" style="cursor:pointer;" title="Browse files">${esc(s.dir)}</span></div>` : ''}
+      ${s.dir ? `<div class="card-dir"><span class="card-dir-path" title="${esc(s.dir)}">${esc(s.dir)}</span></div>` : ''}
       ${s.creator ? `<div class="card-dir" style="font-size:0.72rem;">${esc(s.creator)}</div>` : ''}
       ${s.dir ? _renderBranchBadge(s.name, s.branch) : ''}
       ${isExp && s.desc ? `<div class="card-desc">${esc(s.desc)}</div>` : ''}
@@ -12581,13 +12598,18 @@ function render() {
 
   // Grid mode: flat list sorted by saved card order, no grouping (desktop only)
   if (layoutMode === 'grid' && window.innerWidth >= 900) {
-    const orderMap = {};
-    cardOrder.forEach((name, i) => { orderMap[name] = i; });
-    const sortedFiltered = [...filtered].sort((a, b) => {
-      const ai = orderMap[a.name] !== undefined ? orderMap[a.name] : 9999;
-      const bi = orderMap[b.name] !== undefined ? orderMap[b.name] : 9999;
-      return ai - bi;
-    });
+    let sortedFiltered;
+    if (sortMode === 'alpha') {
+      sortedFiltered = [...filtered].sort(_alphaSortSessions);
+    } else {
+      const orderMap = {};
+      cardOrder.forEach((name, i) => { orderMap[name] = i; });
+      sortedFiltered = [...filtered].sort((a, b) => {
+        const ai = orderMap[a.name] !== undefined ? orderMap[a.name] : 9999;
+        const bi = orderMap[b.name] !== undefined ? orderMap[b.name] : 9999;
+        return ai - bi;
+      });
+    }
     el.innerHTML = draftCards + sortedFiltered.map(_renderSessionCard).join('');
     for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
     if (focusedId) { const inp = document.getElementById(focusedId); if (inp) { inp.focus({ preventScroll: true }); const d = savedInputs[focusedId]; if (d && inp.tagName === 'TEXTAREA') { inp.selectionStart = d.start; inp.selectionEnd = d.end; } } }
@@ -12617,12 +12639,16 @@ function render() {
       else if (s.status === 'waiting') buckets.waiting.push(s);
       else                             buckets.idle.push(s);
     });
-    // Sort within each bucket: pinned first, then most recently active
+    // Sort within each bucket: alpha (pinned → name) or pinned → last activity
     for (const key of Object.keys(buckets)) {
-      buckets[key].sort((a, b) => {
-        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-        return (b.last_activity || 0) - (a.last_activity || 0);
-      });
+      if (sortMode === 'alpha') {
+        buckets[key].sort(_alphaSortSessions);
+      } else {
+        buckets[key].sort((a, b) => {
+          if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+          return (b.last_activity || 0) - (a.last_activity || 0);
+        });
+      }
     }
     STATUS_GROUPS.forEach(g => {
       if (_tagGroupCollapsed[g.key] === undefined) _tagGroupCollapsed[g.key] = !g.defaultOpen;
@@ -12652,7 +12678,9 @@ function render() {
     // list mode (flat) or group mode with active filter: flat list
     let flatList = filtered;
     if (layoutMode === 'list' && !activeTag && !q) {
-      if (cardOrder.length) {
+      if (sortMode === 'alpha') {
+        flatList = [...filtered].sort(_alphaSortSessions);
+      } else if (cardOrder.length) {
         const orderMap = {};
         cardOrder.forEach((n, i) => { orderMap[n] = i; });
         flatList = [...filtered].sort((a, b) => {
@@ -12666,6 +12694,8 @@ function render() {
       } else {
         flatList = [...filtered].sort(_naturalSortSessions);
       }
+    } else if (sortMode === 'alpha' && !activeTag && !q) {
+      flatList = [...filtered].sort(_alphaSortSessions);
     }
     el.innerHTML = draftCards + flatList.map(_renderSessionCard).join('');
     if (layoutMode === 'list') requestAnimationFrame(initSortable);
@@ -13746,6 +13776,7 @@ function setPeekTab(tab) {
   document.getElementById('peek-tab-schedules').classList.toggle('active', tab === 'schedules');
   document.getElementById('peek-tab-notes').classList.toggle('active', tab === 'notes');
   document.getElementById('peek-terminal-panel').style.display = tab === 'terminal' ? '' : 'none';
+  document.getElementById('peek-split-wrap').style.display = tab === 'terminal' ? '' : 'none';
   const issues = document.getElementById('peek-issues-panel');
   if (tab === 'issues') { issues.classList.add('active'); renderPeekIssues(); }
   else { issues.classList.remove('active'); }
@@ -19065,6 +19096,7 @@ document.addEventListener('keydown', (e) => {
 
 // ═══════ LAYOUT MODES (list / grid) ═══════
 let layoutMode = localStorage.getItem('amux_layout') || 'group';
+let sortMode = localStorage.getItem('amux_sort_mode') || 'natural';
 let cardOrder = JSON.parse(localStorage.getItem('amux_card_order') || '[]');
 let _sortable = null;
 let _tileJustDragged = false; // keep for toggle() guard
@@ -19079,6 +19111,11 @@ function _naturalSortSessions(a, b) {
   const ap = _STATUS_PRI[a.status] ?? 1, bp = _STATUS_PRI[b.status] ?? 1;
   if (ap !== bp) return ap - bp;
   return (b.last_activity || 0) - (a.last_activity || 0);
+}
+
+function _alphaSortSessions(a, b) {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+  return (a.name || '').localeCompare(b.name || '');
 }
 
 function resetCardOrder() {
@@ -19108,8 +19145,18 @@ function setLayoutMode(mode) {
   _updateResetBtn();
 }
 
+function toggleSortMode() {
+  sortMode = sortMode === 'alpha' ? 'natural' : 'alpha';
+  localStorage.setItem('amux_sort_mode', sortMode);
+  const btn = document.getElementById('tile-sort-btn');
+  if (btn) btn.classList.toggle('active', sortMode === 'alpha');
+  if (sortMode === 'alpha') destroySortable();
+  render();
+}
+
 function initSortable() {
   if (typeof Sortable === 'undefined') return;
+  if (sortMode === 'alpha') { destroySortable(); return; }
   destroySortable();
   const cards = document.querySelector('.cards');
   if (!cards) return;
@@ -19169,6 +19216,8 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('tile-list-btn').classList.add('active');
     setTimeout(initSortable, 200);
   }
+  const sortBtn = document.getElementById('tile-sort-btn');
+  if (sortBtn) sortBtn.classList.toggle('active', sortMode === 'alpha');
 });
 
 // ═══════ REPORTS ═══════
@@ -19531,11 +19580,7 @@ function switchView(view) {
   if (view === 'files') loadFiles(_filesPath);
   else {
     try { if (location.hash.startsWith('#path=')) history.replaceState({}, '', location.pathname); } catch(e) {}
-    if (view === 'sessions' && _exploreSession) {
-      const _sess = _exploreSession;
-      _exploreSession = null;
-      setTimeout(() => openPeek(_sess), 50);
-    }
+    if (view === 'sessions') _exploreSession = null;
   }
   if (view === 'notes') {
     _notesInitQuill(); _notesApplySidebarState(); _notesBindSwipeGestures();
@@ -23393,6 +23438,8 @@ function toggleSettings() {
   if (open) {
     _renderInstanceSwitcher();
     loadDefaultModel();
+    const zd = document.getElementById('zoom-level-display');
+    if (zd) zd.textContent = _zoomLevel + '%';
     // Apply cloud identity (email) or device name
     _applyIdentityToSettings();
     if (!_cloudEmail) {
@@ -28955,7 +29002,7 @@ class CCHandler(BaseHTTPRequestHandler):
 <meta name="viewport" content="width=device-width">
 <style>body{font-family:system-ui;background:#0d1117;color:#e6edf3;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column;gap:12px;font-size:1rem;}</style>
 </head><body>
-<div>Clearing cache\u2026</div>
+<div>Clearing cache&#8230;</div>
 <script>
 (async () => {
   if ('serviceWorker' in navigator) {
