@@ -4788,10 +4788,6 @@ def _evict_stale_caches():
         stale_locks = [k for k in _send_locks if k not in live_sessions]
         for k in stale_locks:
             _send_locks.pop(k, None)
-    with _session_locks_init:
-        stale_slocks = [k for k in _session_locks if k not in live_sessions]
-        for k in stale_slocks:
-            _session_locks.pop(k, None)
 
 
 def _cleanup_session_state(name: str):
@@ -4802,8 +4798,6 @@ def _cleanup_session_state(name: str):
     _session_prev_status.pop(name, None)
     with _send_locks_lock:
         _send_locks.pop(name, None)
-    with _session_locks_init:
-        _session_locks.pop(name, None)
 
 
 def _init_default_sessions():
