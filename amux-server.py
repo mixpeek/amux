@@ -5157,315 +5157,329 @@ def _get_default_model() -> str:
 
 def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False) -> tuple[bool, str]:
     """Start a session headless (no attach). Returns (success, message)."""
+    if not _VALID_SESSION_NAME_RE.match(name):
+        return False, "invalid session name"
     f = CC_SESSIONS / f"{name}.env"
     if not f.exists():
         return False, f"session '{name}' not found"
-    if is_running(name):
-        return True, "already running"
-    cfg = parse_env_file(f)
-    work_dir = str(Path(cfg.get("CC_DIR", str(Path.home()))).expanduser().resolve())
-    flags = cfg.get("CC_FLAGS", "")
-    # Claude Code v2.1.69+ rejects --dangerously-skip-permissions when running as root.
-    if os.getuid() == 0 and "--dangerously-skip-permissions" in flags:
-        flags = flags.replace("--dangerously-skip-permissions", "").strip()
-    _auto_trust_dir(work_dir)
-    _ensure_memory(name, work_dir)
+    with _get_session_lock(name):
+        if is_running(name):
+            return True, "already running"
+        cfg = parse_env_file(f)
+        work_dir = str(Path(cfg.get("CC_DIR", str(Path.home()))).expanduser().resolve())
+        flags = cfg.get("CC_FLAGS", "")
+        # Claude Code v2.1.69+ rejects --dangerously-skip-permissions when running as root.
+        if os.getuid() == 0 and "--dangerously-skip-permissions" in flags:
+            flags = flags.replace("--dangerously-skip-permissions", "").strip()
+        _auto_trust_dir(work_dir)
+        _ensure_memory(name, work_dir)
 
-    # Determine session resume strategy: name-based (new) > UUID (migration) > fresh
-    meta = _load_meta(name)
-    _uuid_re = re.compile(r'^[0-9a-fA-F-]{36}$')
-    if not _skip_conv_id:
-        cc_session_name = meta.get("cc_session_name", "")
-        conv_id = meta.get("cc_conversation_id", "")
-        if cc_session_name and _validate_cc_session_name(cc_session_name):
-            session_flag = f'--resume {shlex.quote(cc_session_name)}'
-            print(f"[start] {name}: resume={cc_session_name}")
-        elif conv_id and _uuid_re.match(conv_id):
-            # Migration path: old UUID-based session
-            conv_file = (
-                CLAUDE_HOME / "projects" / _project_name(work_dir) / f"{conv_id}.jsonl"
-            )
-            if conv_file.exists():
-                session_flag = f"--resume {conv_id}"
-                print(f"[start] {name}: resume (migration) uuid={conv_id}")
+        # Determine session resume strategy: name-based (new) > UUID (migration) > fresh
+        meta = _load_meta(name)
+        _uuid_re = re.compile(r'^[0-9a-fA-F-]{36}$')
+        if not _skip_conv_id:
+            cc_session_name = meta.get("cc_session_name", "")
+            conv_id = meta.get("cc_conversation_id", "")
+            if cc_session_name and _validate_cc_session_name(cc_session_name):
+                session_flag = f'--resume {shlex.quote(cc_session_name)}'
+                print(f"[start] {name}: resume={cc_session_name}")
+            elif conv_id and _uuid_re.match(conv_id):
+                # Migration path: old UUID-based session
+                conv_file = (
+                    CLAUDE_HOME / "projects" / _project_name(work_dir) / f"{conv_id}.jsonl"
+                )
+                if conv_file.exists():
+                    session_flag = f"--resume {conv_id}"
+                    print(f"[start] {name}: resume (migration) uuid={conv_id}")
+                else:
+                    session_flag = f'--name {shlex.quote(name)}'
+                    print(f"[start] {name}: fresh start (stale uuid)")
             else:
+                # First-ever start
                 session_flag = f'--name {shlex.quote(name)}'
-                print(f"[start] {name}: fresh start (stale uuid)")
+                print(f"[start] {name}: fresh start (new session)")
         else:
-            # First-ever start
-            session_flag = f'--name {shlex.quote(name)}'
-            print(f"[start] {name}: fresh start (new session)")
-    else:
-        session_flag = ""
-
-    # Load defaults
-    defaults_file = CC_HOME / "defaults.env"
-    default_flags = ""
-    if defaults_file.exists():
-        dcfg = parse_env_file(defaults_file)
-        default_flags = dcfg.get("CC_DEFAULT_FLAGS", "")
-
-    cmd = "claude"
-    if default_flags:
-        cmd += f" {_shell_quote_flags(default_flags)}"
-    if flags:
-        cmd += f" {_shell_quote_flags(flags)}"
-    if session_flag:
-        cmd += f" {session_flag}"
-    if extra_flags:
-        cmd += f" {_shell_quote_flags(extra_flags)}"
-    # Inject --mcp-config based on CC_MCP setting (chrome or empty)
-    mcp_val = cfg.get("CC_MCP", "").strip().lower()
-    mcp_dir = CC_HOME  # ~/.amux
-    if mcp_val == "chrome":
-        mcp_chrome = mcp_dir / "mcp-chrome.json"
-        if mcp_chrome.exists():
-            cmd += f" --mcp-config {shlex.quote(str(mcp_chrome))}"
-    # Default to sonnet if no --model specified anywhere
-    if "--model" not in cmd:
-        cmd += " --model sonnet"
-    try:
-        tmux_sess = tmux_name(name)
-        # Build shell setup string
-        shell_rc = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
-        # Detect OAuth
-        _has_oauth = False
+            session_flag = ""
+    
+        # Load defaults
+        defaults_file = CC_HOME / "defaults.env"
+        default_flags = ""
+        if defaults_file.exists():
+            dcfg = parse_env_file(defaults_file)
+            default_flags = dcfg.get("CC_DEFAULT_FLAGS", "")
+    
+        cmd = "claude"
+        if default_flags:
+            cmd += f" {_shell_quote_flags(default_flags)}"
+        if flags:
+            cmd += f" {_shell_quote_flags(flags)}"
+        if session_flag:
+            cmd += f" {session_flag}"
+        if extra_flags:
+            cmd += f" {_shell_quote_flags(extra_flags)}"
+        # Inject --mcp-config based on CC_MCP setting (chrome or empty)
+        mcp_val = cfg.get("CC_MCP", "").strip().lower()
+        mcp_dir = CC_HOME  # ~/.amux
+        if mcp_val == "chrome":
+            mcp_chrome = mcp_dir / "mcp-chrome.json"
+            if mcp_chrome.exists():
+                cmd += f" --mcp-config {shlex.quote(str(mcp_chrome))}"
+        # Default to sonnet if no --model specified anywhere
+        if "--model" not in cmd:
+            cmd += " --model sonnet"
         try:
-            import json as _j2
-            _cj = Path.home() / ".claude.json"
-            if _cj.exists():
-                _has_oauth = bool(_j2.loads(_cj.read_text()).get("oauthAccount"))
-        except Exception:
-            pass
-        if _has_oauth:
-            shell_rc += "unset ANTHROPIC_API_KEY; "
-        for rc in [Path.home() / ".zprofile", Path.home() / ".bash_profile", Path.home() / ".profile"]:
-            if rc.exists():
-                shell_rc += f"source {rc} 2>/dev/null; cd {shlex.quote(work_dir)}; "
-                break
-        else:
-            shell_rc += f"cd {shlex.quote(work_dir)}; "
-        if _has_oauth:
-            shell_rc += "unset ANTHROPIC_API_KEY; "
-        # Forward select env vars into the tmux session.
-        _env_args = []
-        if _has_oauth:
-            _env_args += ["-e", "ANTHROPIC_API_KEY="]
-        else:
-            _api_key_val = os.environ.get("ANTHROPIC_API_KEY", "")
-            if _api_key_val:
-                _env_args += ["-e", f"ANTHROPIC_API_KEY={_api_key_val}"]
-        for _ekey in ["OPENAI_API_KEY"]:
-            _eVal = os.environ.get(_ekey, "")
-            if _eVal:
-                _env_args += ["-e", f"{_ekey}={_eVal}"]
-
-        # Check if tmux session already exists
-        r_tmux = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"],
-                                capture_output=True, text=True)
-        tmux_exists = tmux_sess in r_tmux.stdout.splitlines()
-
-        if tmux_exists:
-            # Existing tmux session -- reuse it
-            output = tmux_capture(name, 10)
-            if _at_shell_prompt(output):
-                # At shell prompt -- clear and send Claude command
-                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-c"],
-                               capture_output=True, timeout=5)
-                time.sleep(0.1)
-                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-u"],
-                               capture_output=True, timeout=5)
-                time.sleep(0.1)
-                # Set HISTFILE to avoid leaking launch command to bash history
-                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l",
-                                "HISTFILE=/dev/null"],
-                               capture_output=True, timeout=5)
-                time.sleep(0.1)
-                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
-                               capture_output=True, timeout=5)
-                time.sleep(0.3)
-                # cd to work_dir
-                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l",
-                                f"cd {shlex.quote(work_dir)}"],
-                               capture_output=True, timeout=5)
-                time.sleep(0.1)
-                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
-                               capture_output=True, timeout=5)
-                time.sleep(0.3)
+            tmux_sess = tmux_name(name)
+            # Build shell setup string
+            shell_rc = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
+            # Detect OAuth
+            _has_oauth = False
+            try:
+                import json as _j2
+                _cj = Path.home() / ".claude.json"
+                if _cj.exists():
+                    _has_oauth = bool(_j2.loads(_cj.read_text()).get("oauthAccount"))
+            except Exception:
+                pass
+            if _has_oauth:
+                shell_rc += "unset ANTHROPIC_API_KEY; "
+            for rc in [Path.home() / ".zprofile", Path.home() / ".bash_profile", Path.home() / ".profile"]:
+                if rc.exists():
+                    shell_rc += f"source {rc} 2>/dev/null; cd {shlex.quote(work_dir)}; "
+                    break
             else:
-                # Not at prompt -- try Ctrl+C, wait, then respawn if needed
-                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-c"],
-                               capture_output=True, timeout=5)
-                time.sleep(3)
-                output2 = tmux_capture(name, 10)
-                if not _at_shell_prompt(output2):
-                    # Still not at prompt -- respawn pane
-                    subprocess.run(["tmux", "respawn-pane", "-k", "-t", tmux_target(name), "bash"],
-                                   capture_output=True, timeout=5)
-                    time.sleep(1)
-                    # Source profile in the new pane
-                    subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l", shell_rc],
+                shell_rc += f"cd {shlex.quote(work_dir)}; "
+            if _has_oauth:
+                shell_rc += "unset ANTHROPIC_API_KEY; "
+            # Forward select env vars into the tmux session.
+            _env_args = []
+            if _has_oauth:
+                _env_args += ["-e", "ANTHROPIC_API_KEY="]
+            else:
+                _api_key_val = os.environ.get("ANTHROPIC_API_KEY", "")
+                if _api_key_val:
+                    _env_args += ["-e", f"ANTHROPIC_API_KEY={_api_key_val}"]
+            for _ekey in ["OPENAI_API_KEY"]:
+                _eVal = os.environ.get(_ekey, "")
+                if _eVal:
+                    _env_args += ["-e", f"{_ekey}={_eVal}"]
+    
+            # Check if tmux session already exists
+            r_tmux = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"],
+                                    capture_output=True, text=True)
+            tmux_exists = tmux_sess in r_tmux.stdout.splitlines()
+    
+            if tmux_exists:
+                # Existing tmux session -- reuse it
+                output = tmux_capture(name, 10)
+                if _at_shell_prompt(output):
+                    # At shell prompt -- clear and send Claude command
+                    subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-c"],
                                    capture_output=True, timeout=5)
                     time.sleep(0.1)
-                    subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
-                                   capture_output=True, timeout=5)
-                    time.sleep(1)
-                else:
-                    # Got to prompt after Ctrl+C -- cd to work_dir
                     subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-u"],
                                    capture_output=True, timeout=5)
                     time.sleep(0.1)
+                    # Set HISTFILE to avoid leaking launch command to bash history
                     subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l",
                                     "HISTFILE=/dev/null"],
                                    capture_output=True, timeout=5)
                     time.sleep(0.1)
                     subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
                                    capture_output=True, timeout=5)
-                    time.sleep(0.3)
+                    _poll_shell_prompt(name, timeout=3.0)
+                    # cd to work_dir
                     subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l",
                                     f"cd {shlex.quote(work_dir)}"],
                                    capture_output=True, timeout=5)
                     time.sleep(0.1)
                     subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
                                    capture_output=True, timeout=5)
-                    time.sleep(0.3)
-        else:
-            # New tmux session -- start bash shell (not Claude directly)
-            subprocess.run(
-                ["tmux", "new-session", "-d", "-s", tmux_sess, "-n", name, "-c", work_dir,
-                 "-e", "TMUX_SESSION_NAME=" + name,
-                 "-e", "AMUX_SESSION=" + name,
-                 "-e", ("AMUX_URL=http" if "--no-tls" in sys.argv else "AMUX_URL=https") + "://localhost:8822",
-                 *_env_args,
-                 "bash"],
-                check=True, capture_output=True, timeout=10,
-            )
-            # Set remain-on-exit so pane survives if bash crashes
-            subprocess.run(["tmux", "set-option", "-t", tmux_sess, "remain-on-exit", "on"],
-                           capture_output=True, timeout=5)
-            # Lock the window name immediately
-            subprocess.run(
-                ["tmux", "set-option", "-t", tmux_sess, "allow-rename", "off"],
-                capture_output=True, timeout=5,
-            )
-            subprocess.run(
-                ["tmux", "set-window-option", "-t", tmux_sess, "automatic-rename", "off"],
-                capture_output=True, timeout=5,
-            )
-            subprocess.run(
-                ["tmux", "rename-window", "-t", tmux_sess, name],
-                capture_output=True, timeout=5,
-            )
-            # Source profile and cd to work_dir
-            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l", shell_rc],
-                           capture_output=True, timeout=5)
-            time.sleep(0.1)
-            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
-                           capture_output=True, timeout=5)
-            time.sleep(1)  # let profile source complete
-
-        # Send the Claude command
-        subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l", cmd],
-                       capture_output=True, timeout=5)
-        time.sleep(0.15)
-        subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
-                       capture_output=True, timeout=5)
-
-        # Wait for Claude's UI to appear (not shell prompt) for up to 10s
-        _claude_launched = False
-        for _i in range(20):
-            time.sleep(0.5)
-            _out = tmux_capture(name, 10)
-            if _out and _claude_ui_visible(_out):
-                _claude_launched = True
-                break
-            # If we see a shell prompt within 5s, --resume may have failed
-            if _i >= 10 and _out and _at_shell_prompt(_out):
-                break
-
-        if not _claude_launched and not _skip_conv_id:
-            # Check if Claude exited immediately (--resume failure)
-            _out_check = tmux_capture(name, 10)
-            if _at_shell_prompt(_out_check):
-                print(f"[start] {name}: --resume failed, starting fresh")
-                # Clear stale session name and retry with --name
-                meta.pop("cc_session_name", None)
-                meta.pop("cc_conversation_id", None)
-                _save_meta(name, meta)
-                # Clear prompt and send fresh start command
-                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-c"],
+                    _poll_shell_prompt(name, timeout=3.0)
+                else:
+                    # Not at prompt -- try Ctrl+C, wait, then respawn if needed
+                    subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-c"],
+                                   capture_output=True, timeout=5)
+                    time.sleep(3)
+                    output2 = tmux_capture(name, 10)
+                    if not _at_shell_prompt(output2):
+                        # Still not at prompt -- respawn pane
+                        subprocess.run(["tmux", "respawn-pane", "-k", "-t", tmux_target(name), "bash"],
+                                       capture_output=True, timeout=5)
+                        time.sleep(1)
+                        # Source profile in the new pane
+                        subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l", shell_rc],
+                                       capture_output=True, timeout=5)
+                        time.sleep(0.1)
+                        subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
+                                       capture_output=True, timeout=5)
+                        _poll_shell_prompt(name, timeout=3.0)
+                    else:
+                        # Got to prompt after Ctrl+C -- cd to work_dir
+                        subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-u"],
+                                       capture_output=True, timeout=5)
+                        time.sleep(0.1)
+                        subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l",
+                                        "HISTFILE=/dev/null"],
+                                       capture_output=True, timeout=5)
+                        time.sleep(0.1)
+                        subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
+                                       capture_output=True, timeout=5)
+                        _poll_shell_prompt(name, timeout=3.0)
+                        subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l",
+                                        f"cd {shlex.quote(work_dir)}"],
+                                       capture_output=True, timeout=5)
+                        time.sleep(0.1)
+                        subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
+                                       capture_output=True, timeout=5)
+                        _poll_shell_prompt(name, timeout=3.0)
+            else:
+                # New tmux session -- start bash shell (not Claude directly)
+                subprocess.run(
+                    ["tmux", "new-session", "-d", "-s", tmux_sess, "-n", name, "-c", work_dir,
+                     "-e", "TMUX_SESSION_NAME=" + name,
+                     "-e", "AMUX_SESSION=" + name,
+                     "-e", ("AMUX_URL=http" if "--no-tls" in sys.argv else "AMUX_URL=https") + "://localhost:8822",
+                     *_env_args,
+                     "bash"],
+                    check=True, capture_output=True, timeout=10,
+                )
+                # Set remain-on-exit so pane survives if bash crashes
+                subprocess.run(["tmux", "set-option", "-t", tmux_sess, "remain-on-exit", "on"],
+                               capture_output=True, timeout=5)
+                # Lock the window name immediately
+                subprocess.run(
+                    ["tmux", "set-option", "-t", tmux_sess, "allow-rename", "off"],
+                    capture_output=True, timeout=5,
+                )
+                subprocess.run(
+                    ["tmux", "set-window-option", "-t", tmux_sess, "automatic-rename", "off"],
+                    capture_output=True, timeout=5,
+                )
+                subprocess.run(
+                    ["tmux", "rename-window", "-t", tmux_sess, name],
+                    capture_output=True, timeout=5,
+                )
+                # Source profile and cd to work_dir
+                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l", shell_rc],
                                capture_output=True, timeout=5)
                 time.sleep(0.1)
-                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-u"],
-                               capture_output=True, timeout=5)
-                time.sleep(0.1)
-                # Rebuild cmd with --name instead of --resume
-                fresh_flag = f'--name {shlex.quote(name)}'
-                cmd_fresh = "claude"
-                if default_flags:
-                    cmd_fresh += f" {_shell_quote_flags(default_flags)}"
-                if flags:
-                    cmd_fresh += f" {_shell_quote_flags(flags)}"
-                cmd_fresh += f" {fresh_flag}"
-                if extra_flags:
-                    cmd_fresh += f" {_shell_quote_flags(extra_flags)}"
-                if mcp_val == "chrome":
-                    mcp_chrome = mcp_dir / "mcp-chrome.json"
-                    if mcp_chrome.exists():
-                        cmd_fresh += f" --mcp-config {shlex.quote(str(mcp_chrome))}"
-                if "--model" not in cmd_fresh:
-                    cmd_fresh += " --model sonnet"
-                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l", cmd_fresh],
-                               capture_output=True, timeout=5)
-                time.sleep(0.15)
                 subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
                                capture_output=True, timeout=5)
-                # Wait for fallback to launch
-                for _j in range(10):
-                    time.sleep(0.5)
-                    _out2 = tmux_capture(name, 10)
-                    if _out2 and _claude_ui_visible(_out2):
-                        _claude_launched = True
-                        break
-                if not _claude_launched:
-                    _out3 = tmux_capture(name, 10)
-                    if _at_shell_prompt(_out3):
-                        print(f"[start] {name}: fresh start also failed, marking error")
-                        meta["start_error"] = "both resume and fresh start failed"
-                        _save_meta(name, meta)
-                        return False, "Claude failed to start"
+                _poll_shell_prompt(name, timeout=3.0)  # let profile source complete
+    
+            # Send the Claude command
+            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l", cmd],
+                           capture_output=True, timeout=5)
+            time.sleep(0.15)
+            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
+                           capture_output=True, timeout=5)
+    
+            # Wait for Claude's UI to appear (not shell prompt) for up to 10s
+            _claude_launched = False
+            for _i in range(20):
+                time.sleep(0.5)
+                _out = tmux_capture(name, 10)
+                if _out and _claude_ui_visible(_out):
+                    _claude_launched = True
+                    break
+                # If we see a shell prompt within 5s, --resume may have failed
+                if _i >= 10 and _out and _at_shell_prompt(_out):
+                    break
+    
+            if not _claude_launched and not _skip_conv_id:
+                # Check if Claude exited immediately (--resume failure)
+                _out_check = tmux_capture(name, 10)
+                if _at_shell_prompt(_out_check):
+                    print(f"[start] {name}: --resume failed, starting fresh")
+                    # Clear stale session name and retry with --name
+                    meta.pop("cc_session_name", None)
+                    meta.pop("cc_conversation_id", None)
+                    _save_meta(name, meta)
+                    # Clear prompt and send fresh start command
+                    subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-c"],
+                                   capture_output=True, timeout=5)
+                    time.sleep(0.1)
+                    subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-u"],
+                                   capture_output=True, timeout=5)
+                    time.sleep(0.1)
+                    # Rebuild cmd with --name instead of --resume
+                    fresh_flag = f'--name {shlex.quote(name)}'
+                    cmd_fresh = "claude"
+                    if default_flags:
+                        cmd_fresh += f" {_shell_quote_flags(default_flags)}"
+                    if flags:
+                        cmd_fresh += f" {_shell_quote_flags(flags)}"
+                    cmd_fresh += f" {fresh_flag}"
+                    if extra_flags:
+                        cmd_fresh += f" {_shell_quote_flags(extra_flags)}"
+                    if mcp_val == "chrome":
+                        mcp_chrome = mcp_dir / "mcp-chrome.json"
+                        if mcp_chrome.exists():
+                            cmd_fresh += f" --mcp-config {shlex.quote(str(mcp_chrome))}"
+                    if "--model" not in cmd_fresh:
+                        cmd_fresh += " --model sonnet"
+                    subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l", cmd_fresh],
+                                   capture_output=True, timeout=5)
+                    time.sleep(0.15)
+                    subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
+                                   capture_output=True, timeout=5)
+                    # Wait for fallback to launch
+                    for _j in range(10):
+                        time.sleep(0.5)
+                        _out2 = tmux_capture(name, 10)
+                        if _out2 and _claude_ui_visible(_out2):
+                            _claude_launched = True
+                            break
+                    if not _claude_launched:
+                        _out3 = tmux_capture(name, 10)
+                        if _at_shell_prompt(_out3):
+                            print(f"[start] {name}: fresh start also failed, marking error")
+                            meta["start_error"] = "both resume and fresh start failed"
+                            _save_meta(name, meta)
+                            return False, "Claude failed to start"
+    
+            # Stream session output to log file
+            CC_LOGS.mkdir(parents=True, exist_ok=True)
+            lp = _log_path(name)
+            ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+            try:
+                with lp.open("ab") as _lf:
+                    _lf.write(f"\n\n=== Session started: {ts} ===\n\n".encode())
+            except Exception:
+                pass
+            subprocess.run(
+                ["tmux", "pipe-pane", "-t", tmux_name(name), "-o",
+                 f"cat >> {shlex.quote(str(lp))}"],
+                capture_output=True, timeout=5,
+            )
+            # Migration: if we resumed via UUID and Claude is running, read session name
+            if not _skip_conv_id and meta.get("cc_conversation_id") and not meta.get("cc_session_name"):
+                _cpid = _find_claude_pid(name)
+                _cname = _read_claude_session_name(_cpid) if _cpid else ""
+                if _cname and _validate_cc_session_name(_cname):
+                    meta["cc_session_name"] = _cname
+                    meta.pop("cc_conversation_id", None)
+                    print(f"[start] {name}: migrated from uuid to name={_cname}")
+            meta.pop("start_error", None)
+            meta["last_started"] = int(time.time())
+            meta["start_count"] = meta.get("start_count", 0) + 1
+            _save_meta(name, meta)
+            return True, "started"
+        except subprocess.CalledProcessError as e:
+            return False, e.stderr.decode(errors="replace")
+        except FileNotFoundError:
+            return False, "tmux not found"
 
-        # Stream session output to log file
-        CC_LOGS.mkdir(parents=True, exist_ok=True)
-        lp = _log_path(name)
-        ts = time.strftime("%Y-%m-%dT%H:%M:%S")
-        try:
-            with lp.open("ab") as _lf:
-                _lf.write(f"\n\n=== Session started: {ts} ===\n\n".encode())
-        except Exception:
-            pass
-        subprocess.run(
-            ["tmux", "pipe-pane", "-t", tmux_name(name), "-o",
-             f"cat >> {shlex.quote(str(lp))}"],
-            capture_output=True, timeout=5,
-        )
-        # Migration: if we resumed via UUID and Claude is running, read session name
-        if not _skip_conv_id and meta.get("cc_conversation_id") and not meta.get("cc_session_name"):
-            _cpid = _find_claude_pid(name)
-            _cname = _read_claude_session_name(_cpid) if _cpid else ""
-            if _cname and _validate_cc_session_name(_cname):
-                meta["cc_session_name"] = _cname
-                meta.pop("cc_conversation_id", None)
-                print(f"[start] {name}: migrated from uuid to name={_cname}")
-        meta.pop("start_error", None)
-        meta["last_started"] = int(time.time())
-        meta["start_count"] = meta.get("start_count", 0) + 1
-        _save_meta(name, meta)
-        return True, "started"
-    except subprocess.CalledProcessError as e:
-        return False, e.stderr.decode(errors="replace")
-    except FileNotFoundError:
-        return False, "tmux not found"
+
+def _poll_shell_prompt(name: str, timeout: float = 3.0) -> bool:
+    """Poll tmux_capture until _at_shell_prompt returns True. Best-effort."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        out = tmux_capture(name, 5)
+        if out and _at_shell_prompt(out):
+            return True
+        time.sleep(0.15)
+    return False
 
 
 def _send_after_ready(name: str, text: str, timeout: int = 30):
@@ -5514,9 +5528,9 @@ def _hard_kill_claude(name: str):
         except Exception:
             pass
     else:
-        # Can't find Claude PID -- fall back to old tmux kill
+        # Can't find Claude PID -- respawn pane to get a clean shell (keep tmux alive)
         try:
-            subprocess.run(["tmux", "kill-session", "-t", tmux_target(name)],
+            subprocess.run(["tmux", "respawn-pane", "-k", "-t", tmux_target(name), "bash"],
                            capture_output=True, timeout=5)
         except Exception:
             pass
@@ -5524,96 +5538,99 @@ def _hard_kill_claude(name: str):
 
 def stop_session(name: str) -> tuple[bool, str]:
     """Gracefully stop Claude in this session. Tmux stays alive."""
-    tmux_sess = tmux_name(name)
-    # Check tmux exists at all
-    try:
-        r = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"],
-                           capture_output=True, text=True)
-        if tmux_sess not in r.stdout.splitlines():
-            return True, "not running"
-    except FileNotFoundError:
-        return True, "not running"
-
-    output = tmux_capture(name, 10)
-    meta = _load_meta(name)
-
-    # Already at shell prompt -- Claude is not running
-    if _at_shell_prompt(output):
-        if not meta.get("cc_session_name"):
-            meta["cc_session_name"] = name
-            _save_meta(name, meta)
-        return True, "not running"
-
-    # Read session name from Claude's PID file
-    claude_pid = _find_claude_pid(name)
-    existing_name = _read_claude_session_name(claude_pid) if claude_pid else ""
-
-    if existing_name and _validate_cc_session_name(existing_name):
-        session_name = existing_name
-    else:
-        session_name = name
-        # Wait for Claude prompt before sending /rename
-        _wait_for_claude_prompt(name, timeout=5)
+    if not _VALID_SESSION_NAME_RE.match(name):
+        return False, "invalid session name"
+    with _get_session_lock(name):
+        tmux_sess = tmux_name(name)
+        # Check tmux exists at all
         try:
-            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l", f"/rename {name}"],
+            r = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"],
+                               capture_output=True, text=True)
+            if tmux_sess not in r.stdout.splitlines():
+                return True, "not running"
+        except FileNotFoundError:
+            return True, "not running"
+    
+        output = tmux_capture(name, 10)
+        meta = _load_meta(name)
+    
+        # Already at shell prompt -- Claude is not running
+        if _at_shell_prompt(output):
+            if not meta.get("cc_session_name"):
+                meta["cc_session_name"] = name
+                _save_meta(name, meta)
+            return True, "not running"
+    
+        # Read session name from Claude's PID file
+        claude_pid = _find_claude_pid(name)
+        existing_name = _read_claude_session_name(claude_pid) if claude_pid else ""
+    
+        if existing_name and _validate_cc_session_name(existing_name):
+            session_name = existing_name
+        else:
+            session_name = name
+            # Wait for Claude prompt before sending /rename
+            _wait_for_claude_prompt(name, timeout=5)
+            try:
+                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l", f"/rename {name}"],
+                               check=True, capture_output=True, timeout=5)
+                time.sleep(0.15)
+                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
+                               check=True, capture_output=True, timeout=5)
+                _wait_for_claude_prompt(name, timeout=3)  # let rename settle
+            except Exception:
+                pass
+    
+        meta["cc_session_name"] = session_name
+        _save_meta(name, meta)
+    
+        # Detach pipe-pane before sending shell-visible commands
+        try:
+            subprocess.run(["tmux", "pipe-pane", "-t", tmux_sess],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
+    
+        # Send /exit
+        try:
+            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-u"],
+                           capture_output=True, timeout=5)
+            time.sleep(0.1)
+            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l", "/exit"],
                            check=True, capture_output=True, timeout=5)
             time.sleep(0.15)
             subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
                            check=True, capture_output=True, timeout=5)
-            time.sleep(1)  # let rename settle
-        except Exception:
-            pass
-
-    meta["cc_session_name"] = session_name
-    _save_meta(name, meta)
-
-    # Detach pipe-pane before sending shell-visible commands
-    try:
-        subprocess.run(["tmux", "pipe-pane", "-t", tmux_sess],
-                       capture_output=True, timeout=5)
-    except Exception:
-        pass
-
-    # Send /exit
-    try:
-        subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-u"],
-                       capture_output=True, timeout=5)
-        time.sleep(0.1)
-        subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l", "/exit"],
-                       check=True, capture_output=True, timeout=5)
-        time.sleep(0.15)
-        subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
-                       check=True, capture_output=True, timeout=5)
-    except Exception as e:
-        print(f"[graceful-stop] {name}: failed to send /exit: {e}")
-
-    # Wait for shell prompt (up to 15s)
-    for _ in range(30):
-        time.sleep(0.5)
-        out = tmux_capture(name, 10)
-        if _at_shell_prompt(out):
-            print(f"[graceful-stop] {name}: exited gracefully (name={session_name})")
-            return True, "stopped"
-
-    # Timeout -- hard-kill Claude process but keep tmux alive
-    print(f"[graceful-stop] {name}: timeout after 15s, hard-killing pid {claude_pid}")
-    if claude_pid and claude_pid > 1:
+        except Exception as e:
+            print(f"[graceful-stop] {name}: failed to send /exit: {e}")
+    
+        # Wait for shell prompt (up to 15s)
+        for _ in range(30):
+            time.sleep(0.5)
+            out = tmux_capture(name, 10)
+            if _at_shell_prompt(out):
+                print(f"[graceful-stop] {name}: exited gracefully (name={session_name})")
+                return True, "stopped"
+    
+        # Timeout -- hard-kill Claude process but keep tmux alive
+        print(f"[graceful-stop] {name}: timeout after 15s, hard-killing pid {claude_pid}")
+        if claude_pid and claude_pid > 1:
+            try:
+                subprocess.run(["pkill", "-9", "-P", str(claude_pid)], capture_output=True, timeout=5)
+                os.kill(claude_pid, 9)
+            except Exception:
+                pass
+        # Reset terminal state
         try:
-            subprocess.run(["pkill", "-9", "-P", str(claude_pid)], capture_output=True, timeout=5)
-            os.kill(claude_pid, 9)
+            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l", "stty sane"],
+                           capture_output=True, timeout=5)
+            time.sleep(0.1)
+            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
+                           capture_output=True, timeout=5)
         except Exception:
             pass
-    # Reset terminal state
-    try:
-        subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l", "stty sane"],
-                       capture_output=True, timeout=5)
-        time.sleep(0.1)
-        subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
-                       capture_output=True, timeout=5)
-    except Exception:
-        pass
-    time.sleep(1)
-    return True, "stopped (hard-kill)"
+        time.sleep(1)
+        return True, "stopped (hard-kill)"
 
 
 def archive_session(name: str) -> tuple[bool, str]:
