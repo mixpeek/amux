@@ -46,6 +46,10 @@ amux serve  # → https://localhost:8822
 
 Claude Code runs one agent per terminal. amux runs dozens — with live monitoring, mobile access, self-healing, and inter-agent coordination that don't exist in Claude Code itself. amux does not modify or wrap Claude Code; it manages tmux sessions that run it headlessly.
 
+## Documentation
+
+- [Documentation](https://amux.io/docs/): Complete reference for amux — installation, CLI commands (register, start, exec, stop, send, peek, attach, board), web dashboard, REST API for sessions/board/notes/CRM/email/browser/scheduler, kanban board with atomic task claiming, notes system, CRM with interaction logs, Mail.app email integration, Playwright browser automation with auth profiles, cron scheduler, skills/slash commands, inter-session channels, file explorer, self-healing watchdog, PWA mobile support, authentication, TLS/HTTPS, configuration (server.env, defaults.env, MCP), and architecture overview.
+
 ## Guides
 
 - [The Hybrid Stack: Running Claude Code + Cursor + Your IDE Together](https://amux.io/guides/claude-code-cursor-hybrid-workflow/): The average developer uses 2.3 AI coding tools. This guide covers the three-layer architecture (IDE + terminal agent + orchestrator) for running Claude Code and Cursor on the same codebase — task routing rules, conflict prevention with file routing/branches/worktrees, cost optimization across model tiers, daily workflow patterns, and the hybrid workflows for features, debugging, and major migrations.

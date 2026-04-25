@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Documentation — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Complete documentation for amux — the open-source control plane for AI agents. CLI reference, REST API, dashboard, board, sessions, notes, CRM, email, browser automation, scheduler, and more.">
+  <meta name="keywords" content="amux documentation, amux docs, amux CLI, amux API, amux setup, amux tutorial, AI agent orchestration, Claude Code multiplexer">
+  <link rel="canonical" href="https://amux.io/docs/">
+  <meta property="og:title" content="Documentation — amux">
+  <meta property="og:description" content="Complete documentation for amux — CLI reference, REST API, dashboard, board, sessions, notes, CRM, browser automation, scheduler.">
+  <meta property="og:url" content="https://amux.io/docs/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Documentation","item":"https://amux.io/docs/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"amux Documentation","description":"Complete documentation for amux — the open-source control plane for AI agents.","datePublished":"2026-04-24","dateModified":"2026-04-24","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon-512.png"}}}</script>
+  <style>
+    .docs-toc { background: oklch(0.25 0.01 250); border-radius: 8px; padding: 20px 24px; margin: 24px 0 32px; }
+    .docs-toc ul { list-style: none; margin: 0; padding: 0; columns: 2; }
+    .docs-toc li { margin-bottom: 6px; break-inside: avoid; }
+    .docs-toc a { color: var(--link); font-size: 0.9rem; }
+    @media (max-width: 600px) { .docs-toc ul { columns: 1; } }
+    h2[id] { scroll-margin-top: 80px; }
+    h3[id] { scroll-margin-top: 80px; }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <span>Documentation</span></div>
+    <h1>Documentation</h1>
+<p class="subtitle">Everything you need to install, configure, and use amux.</p>
+
+<div class="docs-toc">
+<strong>On this page</strong>
+<ul>
+<li><a href="#install">Installation</a></li>
+<li><a href="#quickstart">Quick start</a></li>
+<li><a href="#concepts">Core concepts</a></li>
+<li><a href="#cli">CLI reference</a></li>
+<li><a href="#dashboard">Web dashboard</a></li>
+<li><a href="#board">Kanban board</a></li>
+<li><a href="#api">REST API</a></li>
+<li><a href="#notes">Notes</a></li>
+<li><a href="#crm">CRM</a></li>
+<li><a href="#email">Email</a></li>
+<li><a href="#browser">Browser automation</a></li>
+<li><a href="#scheduler">Scheduler</a></li>
+<li><a href="#skills">Skills &amp; slash commands</a></li>
+<li><a href="#channels">Channels</a></li>
+<li><a href="#files">File explorer</a></li>
+<li><a href="#self-healing">Self-healing</a></li>
+<li><a href="#mobile">Mobile &amp; PWA</a></li>
+<li><a href="#auth">Authentication</a></li>
+<li><a href="#tls">TLS &amp; HTTPS</a></li>
+<li><a href="#config">Configuration</a></li>
+<li><a href="#architecture">Architecture</a></li>
+</ul>
+</div>
+
+<h2 id="install">Installation</h2>
+
+<h3>Prerequisites</h3>
+<ul>
+<li><strong>Python 3.8+</strong></li>
+<li><strong>tmux</strong> &mdash; <code>brew install tmux</code> (macOS) or <code>apt install tmux</code> (Linux)</li>
+<li><strong>Claude Code CLI</strong> &mdash; installed and authenticated (<code>claude</code> command available)</li>
+</ul>
+
+<h3>Install</h3>
+
+<pre><code>git clone https://github.com/mixpeek/amux && cd amux
+./install.sh</code></pre>
+
+<p>This symlinks <code>amux</code> and <code>amux-server.py</code> to <code>/usr/local/bin</code>. Also installs a <code>cc</code> alias for convenience.</p>
+
+<p>Verify the installation:</p>
+
+<pre><code>amux --version</code></pre>
+
+<h3>Updating</h3>
+
+<pre><code>cd ~/path/to/amux && git pull && ./install.sh</code></pre>
+
+<p>The server auto-restarts when <code>amux-server.py</code> changes, so updates take effect immediately if the dashboard is running.</p>
+
+<h2 id="quickstart">Quick start</h2>
+
+<pre><code># 1. Register a session (points to your project directory)
+amux register myproject --dir ~/Dev/myproject --yolo
+
+# 2. Start the session (launches Claude Code in tmux)
+amux start myproject
+
+# 3. Start the web dashboard
+amux serve  # → https://localhost:8822
+
+# 4. Send a task to your agent
+amux send myproject "add unit tests for the auth module"
+
+# 5. Check what the agent is doing
+amux peek myproject</code></pre>
+
+<p>That's it. Open <code>https://localhost:8822</code> in your browser to see the dashboard with live status, token tracking, and a send bar.</p>
+
+<h2 id="concepts">Core concepts</h2>
+
+<h3>Sessions</h3>
+<p>A <strong>session</strong> is a Claude Code instance running inside a tmux pane. Each session has a name, a working directory, and optional flags (model, permissions, system prompt). Sessions persist across restarts &mdash; amux auto-resumes them when the server starts.</p>
+
+<h3>Board</h3>
+<p>The <strong>board</strong> is a kanban-style task tracker backed by SQLite. Agents and humans post tasks, claim them atomically, and move them through statuses (todo &rarr; doing &rarr; done). Agents use the board to coordinate work without stepping on each other.</p>
+
+<h3>Dashboard</h3>
+<p>The <strong>web dashboard</strong> is a PWA that shows all sessions, the board, notes, CRM, email, files, and more. It works on desktop and mobile, installs as a home-screen app on iOS/Android, and supports offline queuing via Background Sync.</p>
+
+<h3>REST API</h3>
+<p>Every dashboard feature is accessible via a REST API at <code>https://localhost:8822/api/</code>. Agents use this API to communicate with each other, read/write board tasks, access notes, and more.</p>
+
+<h2 id="cli">CLI reference</h2>
+
+<h3>Session management</h3>
+
+<table class="data-table">
+<thead><tr><th>Command</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>amux register &lt;name&gt; [flags]</code></td><td>Register a session with Claude Code flags</td></tr>
+<tr><td><code>amux start &lt;name&gt;</code></td><td>Start a registered session in tmux</td></tr>
+<tr><td><code>amux exec &lt;name&gt; [flags]</code></td><td>Register + start in one step</td></tr>
+<tr><td><code>amux stop &lt;name&gt;</code></td><td>Stop a running session</td></tr>
+<tr><td><code>amux rm &lt;name&gt;</code></td><td>Remove a session (stops it first if running)</td></tr>
+<tr><td><code>amux start-all</code></td><td>Start all registered sessions</td></tr>
+<tr><td><code>amux stop-all</code></td><td>Stop all running sessions</td></tr>
+</tbody>
+</table>
+
+<h3>Interaction</h3>
+
+<table class="data-table">
+<thead><tr><th>Command</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>amux attach &lt;name&gt;</code></td><td>Attach to a running session (detach: <kbd>Ctrl-b d</kbd>)</td></tr>
+<tr><td><code>amux peek &lt;name&gt; [lines]</code></td><td>View last N lines without attaching (default: 30)</td></tr>
+<tr><td><code>amux send &lt;name&gt; &lt;text&gt;</code></td><td>Send text + Enter to a session</td></tr>
+<tr><td><code>amux send &lt;name&gt; --keys 'C-c'</code></td><td>Send raw key sequence (e.g., Ctrl-C)</td></tr>
+</tbody>
+</table>
+
+<h3>Info</h3>
+
+<table class="data-table">
+<thead><tr><th>Command</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>amux ls</code></td><td>List all sessions with status and previews</td></tr>
+<tr><td><code>amux info &lt;name&gt;</code></td><td>Show session config details</td></tr>
+<tr><td><code>amux defaults [show|edit|reset]</code></td><td>Manage global default flags</td></tr>
+<tr><td><code>amux</code> (no args)</td><td>Interactive terminal dashboard</td></tr>
+</tbody>
+</table>
+
+<h3>Board CLI</h3>
+
+<table class="data-table">
+<thead><tr><th>Command</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>amux board ls</code></td><td>List all board items</td></tr>
+<tr><td><code>amux board add &lt;title&gt;</code></td><td>Create a new item</td></tr>
+<tr><td><code>amux board done &lt;ID&gt;</code></td><td>Mark as done</td></tr>
+<tr><td><code>amux board doing &lt;ID&gt;</code></td><td>Mark as in progress</td></tr>
+<tr><td><code>amux board todo &lt;ID&gt;</code></td><td>Move back to todo</td></tr>
+<tr><td><code>amux board status &lt;ID&gt; &lt;status&gt;</code></td><td>Set any custom status</td></tr>
+</tbody>
+</table>
+
+<h3>Server</h3>
+
+<table class="data-table">
+<thead><tr><th>Command</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>amux serve [port]</code></td><td>Start the web dashboard (default: 8822)</td></tr>
+</tbody>
+</table>
+
+<h3>Claude Code flags</h3>
+
+<p>Pass these when registering or exec-ing a session:</p>
+
+<pre><code>amux register api --model opus --yolo --dir ~/Dev/myapp
+amux exec frontend --append-system-prompt "React + Tailwind"</code></pre>
+
+<table class="data-table">
+<thead><tr><th>Flag</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>--model &lt;model&gt;</code></td><td>Model: <code>opus</code>, <code>sonnet</code>, <code>haiku</code>, or full ID</td></tr>
+<tr><td><code>--yolo</code></td><td>Alias for <code>--dangerously-skip-permissions</code></td></tr>
+<tr><td><code>--permission-mode &lt;m&gt;</code></td><td>acceptEdits, bypassPermissions, default, plan</td></tr>
+<tr><td><code>--system-prompt &lt;p&gt;</code></td><td>Override system prompt</td></tr>
+<tr><td><code>--append-system-prompt &lt;p&gt;</code></td><td>Append to system prompt</td></tr>
+<tr><td><code>--mcp-config &lt;path&gt;</code></td><td>MCP server config file</td></tr>
+<tr><td><code>--dir &lt;path&gt;</code></td><td>Working directory (default: cwd)</td></tr>
+<tr><td><code>--effort &lt;level&gt;</code></td><td>low, medium, high</td></tr>
+<tr><td><code>--verbose</code></td><td>Verbose mode</td></tr>
+</tbody>
+</table>
+
+<h3>Fuzzy matching</h3>
+
+<p>Session names support prefix matching and numeric shortcuts:</p>
+
+<pre><code>amux peek api          # matches 'api', 'api-server', etc.
+amux attach 3          # attach to session #3 from amux ls</code></pre>
+
+<h2 id="dashboard">Web dashboard</h2>
+
+<p>Start the dashboard with <code>amux serve</code>. It runs at <code>https://localhost:8822</code> by default.</p>
+
+<p>The dashboard provides:</p>
+
+<ul>
+<li><strong>Session cards</strong> &mdash; live status, last output preview, token usage, send bar</li>
+<li><strong>Kanban board</strong> &mdash; drag-and-drop task management with custom statuses</li>
+<li><strong>Notes</strong> &mdash; rich markdown editor (Quill) for documents and write-ups</li>
+<li><strong>CRM</strong> &mdash; contacts with interaction logs and follow-up tracking</li>
+<li><strong>Email</strong> &mdash; send and read email via Mail.app integration</li>
+<li><strong>Files</strong> &mdash; file explorer with syntax highlighting and markdown editing</li>
+<li><strong>Logs</strong> &mdash; filterable request log with category badges (session, board, notes, etc.)</li>
+<li><strong>Scheduler</strong> &mdash; cron job management UI</li>
+</ul>
+
+<p>The dashboard is a single HTML page served from <code>amux-server.py</code>. It uses Server-Sent Events (SSE) for live updates &mdash; sessions, board changes, and notifications push to all connected clients within ~2 seconds.</p>
+
+<h2 id="board">Kanban board</h2>
+
+<h3>Creating items</h3>
+
+<pre><code># CLI
+amux board add "Refactor auth module"
+
+# API
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Refactor auth module","status":"todo"}' \
+  https://localhost:8822/api/board</code></pre>
+
+<h3>Board item fields</h3>
+
+<table class="data-table">
+<thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>title</code></td><td>string (required)</td><td>Task title</td></tr>
+<tr><td><code>desc</code></td><td>string</td><td>Description (supports markdown)</td></tr>
+<tr><td><code>status</code></td><td>string</td><td>Any status column (default: todo)</td></tr>
+<tr><td><code>session</code></td><td>string</td><td>Which amux session owns this item</td></tr>
+<tr><td><code>due</code></td><td>string</td><td>Due date (YYYY-MM-DD) &mdash; exported to iCal feed</td></tr>
+<tr><td><code>tags</code></td><td>array</td><td>Freeform tags for filtering</td></tr>
+<tr><td><code>owner_type</code></td><td>string</td><td><code>human</code> or <code>agent</code></td></tr>
+</tbody>
+</table>
+
+<h3>Moving items</h3>
+
+<pre><code># CLI shortcuts
+amux board doing ITEM-ID
+amux board done ITEM-ID
+
+# API
+curl -sk -X PATCH -H 'Content-Type: application/json' \
+  -d '{"status":"done"}' \
+  https://localhost:8822/api/board/ITEM-ID</code></pre>
+
+<h3>Atomic task claiming</h3>
+
+<p>When multiple agents need to claim tasks without duplication, use the claim endpoint:</p>
+
+<pre><code>curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"session":"worker-1"}' \
+  https://localhost:8822/api/board/ITEM-ID/claim</code></pre>
+
+<p>This uses SQLite CAS (compare-and-swap) to guarantee only one agent claims each task. If another agent already claimed it, the request returns a conflict error.</p>
+
+<h3>Custom statuses</h3>
+
+<p>Add custom status columns beyond the defaults (todo, doing, done):</p>
+
+<pre><code>curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"review","color":"#f59e0b"}' \
+  https://localhost:8822/api/board/statuses</code></pre>
+
+<h3>Clearing done items</h3>
+
+<pre><code>curl -sk -X POST https://localhost:8822/api/board/clear-done</code></pre>
+
+<h3>Importing from GitHub</h3>
+
+<pre><code>amux board import gh:owner/repo#123</code></pre>
+
+<p>This fetches the GitHub issue, parses its body for actionable tasks, and creates board items for each one.</p>
+
+<h2 id="api">REST API</h2>
+
+<p>All endpoints are at <code>https://localhost:8822/api/</code>. Use <code>curl -sk</code> (self-signed TLS cert).</p>
+
+<h3>Sessions</h3>
+
+<table class="data-table">
+<thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td>GET</td><td><code>/api/sessions</code></td><td>List all sessions with status, config, and token usage</td></tr>
+<tr><td>POST</td><td><code>/api/sessions</code></td><td>Register a new session</td></tr>
+<tr><td>GET</td><td><code>/api/sessions/self</code></td><td>Get the calling session's info (for agents)</td></tr>
+<tr><td>POST</td><td><code>/api/sessions/&lt;name&gt;/start</code></td><td>Start a session</td></tr>
+<tr><td>POST</td><td><code>/api/sessions/&lt;name&gt;/stop</code></td><td>Stop a session</td></tr>
+<tr><td>POST</td><td><code>/api/sessions/&lt;name&gt;/send</code></td><td>Send text to a session</td></tr>
+<tr><td>GET</td><td><code>/api/sessions/&lt;name&gt;/peek</code></td><td>Get last N lines of output (<code>?lines=100</code>)</td></tr>
+</tbody>
+</table>
+
+<h3>Board</h3>
+
+<table class="data-table">
+<thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td>GET</td><td><code>/api/board</code></td><td>List all board items</td></tr>
+<tr><td>POST</td><td><code>/api/board</code></td><td>Create a board item</td></tr>
+<tr><td>PATCH</td><td><code>/api/board/&lt;id&gt;</code></td><td>Update a board item (status, title, desc, etc.)</td></tr>
+<tr><td>DELETE</td><td><code>/api/board/&lt;id&gt;</code></td><td>Delete a board item</td></tr>
+<tr><td>POST</td><td><code>/api/board/&lt;id&gt;/claim</code></td><td>Atomically claim a task for a session</td></tr>
+<tr><td>POST</td><td><code>/api/board/clear-done</code></td><td>Delete all items with status &ldquo;done&rdquo;</td></tr>
+<tr><td>POST</td><td><code>/api/board/statuses</code></td><td>Add a custom status column</td></tr>
+</tbody>
+</table>
+
+<h3>Notes</h3>
+
+<table class="data-table">
+<thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td>GET</td><td><code>/api/notes</code></td><td>List all notes</td></tr>
+<tr><td>GET</td><td><code>/api/notes/&lt;slug&gt;</code></td><td>Read a note</td></tr>
+<tr><td>POST</td><td><code>/api/notes/&lt;slug&gt;</code></td><td>Create or update a note</td></tr>
+<tr><td>DELETE</td><td><code>/api/notes/&lt;slug&gt;</code></td><td>Move a note to trash</td></tr>
+<tr><td>GET</td><td><code>/api/notes/trash</code></td><td>List trashed notes</td></tr>
+<tr><td>POST</td><td><code>/api/notes/trash/&lt;slug&gt;/restore</code></td><td>Restore a trashed note</td></tr>
+</tbody>
+</table>
+
+<h3>CRM</h3>
+
+<table class="data-table">
+<thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td>GET</td><td><code>/api/crm/contacts</code></td><td>List all contacts</td></tr>
+<tr><td>POST</td><td><code>/api/crm/contacts</code></td><td>Create a contact</td></tr>
+<tr><td>PATCH</td><td><code>/api/crm/contacts/&lt;id&gt;</code></td><td>Update a contact</td></tr>
+<tr><td>DELETE</td><td><code>/api/crm/contacts/&lt;id&gt;</code></td><td>Delete a contact</td></tr>
+<tr><td>POST</td><td><code>/api/crm/contacts/&lt;id&gt;/interactions</code></td><td>Log an interaction</td></tr>
+<tr><td>GET</td><td><code>/api/crm/followups</code></td><td>List pending follow-ups</td></tr>
+</tbody>
+</table>
+
+<h3>Email</h3>
+
+<table class="data-table">
+<thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td>GET</td><td><code>/api/email/inbox</code></td><td>List inbox messages</td></tr>
+<tr><td>POST</td><td><code>/api/email/send</code></td><td>Send an email</td></tr>
+<tr><td>POST</td><td><code>/api/email/reply</code></td><td>Reply to an email</td></tr>
+<tr><td>GET</td><td><code>/api/email/search</code></td><td>Search emails</td></tr>
+<tr><td>GET</td><td><code>/api/email/message/&lt;id&gt;</code></td><td>Get a specific message</td></tr>
+<tr><td>POST</td><td><code>/api/email/sync</code></td><td>Trigger an inbox sync</td></tr>
+</tbody>
+</table>
+
+<h3>Browser</h3>
+
+<table class="data-table">
+<thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td>POST</td><td><code>/api/browser/start</code></td><td>Start browser with auth profile</td></tr>
+<tr><td>POST</td><td><code>/api/browser/navigate</code></td><td>Navigate to URL</td></tr>
+<tr><td>GET</td><td><code>/api/browser/screenshot</code></td><td>Take a screenshot</td></tr>
+<tr><td>POST</td><td><code>/api/browser/action</code></td><td>Click, type, scroll, or eval JS</td></tr>
+<tr><td>POST</td><td><code>/api/browser/agent</code></td><td>Run an AI browser agent task</td></tr>
+<tr><td>POST</td><td><code>/api/browser/stop</code></td><td>Stop the browser</td></tr>
+<tr><td>GET</td><td><code>/api/browser/profiles</code></td><td>List saved auth profiles</td></tr>
+</tbody>
+</table>
+
+<h3>Other endpoints</h3>
+
+<table class="data-table">
+<thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td>GET</td><td><code>/api/events</code></td><td>SSE stream for live updates</td></tr>
+<tr><td>GET</td><td><code>/api/skills</code></td><td>List available skills</td></tr>
+<tr><td>GET</td><td><code>/api/logs</code></td><td>Query the request log</td></tr>
+<tr><td>GET</td><td><code>/api/metrics</code></td><td>Token usage metrics</td></tr>
+<tr><td>GET</td><td><code>/api/channels</code></td><td>List inter-session channels</td></tr>
+<tr><td>GET</td><td><code>/api/memory/global</code></td><td>Read global shared memory</td></tr>
+<tr><td>POST</td><td><code>/api/memory/global</code></td><td>Write global shared memory</td></tr>
+<tr><td>GET</td><td><code>/api/calendar.ics</code></td><td>iCal feed of board items with due dates</td></tr>
+<tr><td>GET</td><td><code>/api/ls</code></td><td>File listing (for file explorer)</td></tr>
+</tbody>
+</table>
+
+<h2 id="notes">Notes</h2>
+
+<p>Notes are markdown documents that any session can read and write. Use them for specs, plans, reports, research &mdash; anything meant to be <em>read</em> rather than <em>done</em>.</p>
+
+<pre><code># Create or update a note
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"content":"# Migration Plan\n\nStep 1: ..."}' \
+  https://localhost:8822/api/notes/migration-plan
+
+# Read a note
+curl -sk https://localhost:8822/api/notes/migration-plan
+
+# List all notes
+curl -sk https://localhost:8822/api/notes
+
+# Delete a note (moves to trash)
+curl -sk -X DELETE https://localhost:8822/api/notes/migration-plan</code></pre>
+
+<p>The dashboard has a full rich-text editor (Quill) for creating and editing notes visually. Notes can also be pinned for quick access.</p>
+
+<h2 id="crm">CRM</h2>
+
+<p>Built-in contact management with interaction logging and follow-up tracking.</p>
+
+<pre><code># Add a contact (CLI)
+amux crm add "Jane Smith" company=Acme email=jane@acme.com role=CTO
+
+# Add via API
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"Jane Smith","company":"Acme","email":"jane@acme.com","role":"CTO"}' \
+  https://localhost:8822/api/crm/contacts
+
+# Log an interaction
+amux crm log PPL-1 "Discussed partnership. Follow up in 2 weeks."
+
+# Check pending follow-ups
+amux crm fu
+
+# Update a contact
+amux crm update PPL-1 phone=555-0123 linkedin=linkedin.com/in/janesmith</code></pre>
+
+<p>Contact fields: name, company, role, email, phone, linkedin, twitter, notes. Interaction types: call, email, meeting, dm, event, other.</p>
+
+<h2 id="email">Email</h2>
+
+<p>Send and read email through the macOS Mail.app integration.</p>
+
+<pre><code># Send an email
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"to":"alice@example.com","subject":"Hello","body":"Hi Alice, ..."}' \
+  https://localhost:8822/api/email/send
+
+# Check inbox
+curl -sk https://localhost:8822/api/email/inbox
+
+# Search emails
+curl -sk "https://localhost:8822/api/email/search?q=invoice"</code></pre>
+
+<p>Email syncs automatically on a recurring interval. You can trigger a manual sync with <code>POST /api/email/sync</code>.</p>
+
+<h2 id="browser">Browser automation</h2>
+
+<p>A shared Playwright browser instance accessible to all sessions. Supports saved auth profiles so you don't need to log in every time.</p>
+
+<pre><code># Start browser with default auth profile
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"profile":"default","url":"https://example.com"}' \
+  https://localhost:8822/api/browser/start
+
+# Take a screenshot
+curl -sk https://localhost:8822/api/browser/screenshot
+# Returns {"path": "~/.amux/browser-screenshots/latest.jpg"}
+
+# Click at coordinates
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"action":"click","x":640,"y":400}' \
+  https://localhost:8822/api/browser/action
+
+# Type text
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"action":"type","text":"hello world"}' \
+  https://localhost:8822/api/browser/action
+
+# Run JavaScript
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"action":"eval","script":"document.title"}' \
+  https://localhost:8822/api/browser/action
+
+# AI agent mode — describe a task in plain English
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"task":"Find the latest invoice and download it","profile":"default"}' \
+  https://localhost:8822/api/browser/agent
+
+# Stop browser
+curl -sk -X POST https://localhost:8822/api/browser/stop</code></pre>
+
+<h3>Auth profiles</h3>
+
+<p>Auth profiles save cookies and local storage so the browser starts already logged in. Profiles are stored in <code>~/.amux/playwright-auth/</code>.</p>
+
+<pre><code># List available profiles
+curl -sk https://localhost:8822/api/browser/profiles</code></pre>
+
+<h2 id="scheduler">Scheduler</h2>
+
+<p>Run recurring tasks on cron schedules. The scheduler is built into the server &mdash; no external cron daemon needed.</p>
+
+<pre><code># Schedule a nightly security audit at midnight
+amux cron add "0 0 * * *" "Run OWASP top-10 scan on src/"
+
+# Schedule a weekly dependency check
+amux cron add "0 9 * * MON" "Check for outdated dependencies and create update PR"</code></pre>
+
+<p>The dashboard includes a scheduler management UI where you can view, edit, pause, and delete scheduled jobs.</p>
+
+<h2 id="skills">Skills &amp; slash commands</h2>
+
+<p>Skills are project-level custom commands that any agent can invoke. They live in the <code>skills/</code> directory and appear as slash commands in the dashboard.</p>
+
+<pre><code># List available skills
+curl -sk https://localhost:8822/api/skills
+
+# Run a skill
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"args":"--fix"}' \
+  https://localhost:8822/api/skills/lint</code></pre>
+
+<p>Skills can contain any logic &mdash; shell scripts, Python code, or complex multi-step workflows. They're the primary way to teach agents project-specific operations like &ldquo;deploy to staging&rdquo; or &ldquo;run the test suite.&rdquo;</p>
+
+<h2 id="channels">Channels</h2>
+
+<p>1:1 inter-session messaging with @mentions. Sessions can send messages to each other for real-time coordination.</p>
+
+<pre><code># Send a message from one session to another
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"text":"Auth module refactor is done, you can start on the API tests now"}' \
+  https://localhost:8822/api/sessions/worker-2/send
+
+# Peek at another session's recent output
+curl -sk "https://localhost:8822/api/sessions/worker-1/peek?lines=50"</code></pre>
+
+<p>Sessions discover each other via <code>GET /api/sessions</code> and coordinate through a combination of messages and board tasks.</p>
+
+<h2 id="files">File explorer</h2>
+
+<p>The dashboard includes a file explorer with:</p>
+
+<ul>
+<li>Directory browsing with syntax highlighting for code files</li>
+<li>Markdown editor with find-in-page</li>
+<li>File upload via drag-and-drop</li>
+<li>File creation, renaming, and deletion</li>
+</ul>
+
+<pre><code># List files in a directory
+curl -sk "https://localhost:8822/api/ls?dir=/Users/you/Dev/myproject"
+
+# Read a file
+curl -sk "https://localhost:8822/api/file?path=/Users/you/Dev/myproject/README.md"
+
+# Upload a file
+curl -sk -X POST -F "file=@local.txt" https://localhost:8822/api/fs/upload</code></pre>
+
+<h2 id="self-healing">Self-healing</h2>
+
+<p>amux monitors sessions and automatically handles common failure modes:</p>
+
+<ul>
+<li><strong>Context overflow</strong> &mdash; detects when Claude Code hits its context limit and triggers <code>/compact</code> to compress the conversation</li>
+<li><strong>Crash recovery</strong> &mdash; restarts crashed sessions and replays the last message</li>
+<li><strong>Stale detection</strong> &mdash; identifies stuck sessions and prompts them to continue</li>
+<li><strong>Auto-resume</strong> &mdash; when the server starts, it re-attaches to any tmux sessions that survived a restart</li>
+</ul>
+
+<p>The watchdog runs every 3 seconds and requires no configuration. It's on by default for all sessions registered with <code>--yolo</code>.</p>
+
+<h2 id="mobile">Mobile &amp; PWA</h2>
+
+<p>The dashboard is a Progressive Web App. Install it on your phone:</p>
+
+<ol>
+<li>Open <code>https://localhost:8822</code> (or your Tailscale/LAN IP) in Safari or Chrome</li>
+<li>Tap &ldquo;Add to Home Screen&rdquo;</li>
+<li>The app works offline &mdash; queued actions (send message, create task) sync when connectivity returns via Background Sync</li>
+</ol>
+
+<p>There's also a <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">native iOS app on the App Store</a>.</p>
+
+<h2 id="auth">Authentication</h2>
+
+<p>By default, the dashboard has no authentication (all endpoints are public). To enable auth:</p>
+
+<pre><code># Generate a token
+python3 -c "import secrets; print(secrets.token_urlsafe(32))" > ~/.amux/auth_token
+
+# The server reads this file on startup
+# All API requests now require: Authorization: Bearer &lt;token&gt;
+# Or the ?token=&lt;token&gt; query parameter</code></pre>
+
+<p>When auth is enabled, the dashboard prompts for the token on first visit and stores it in local storage.</p>
+
+<h2 id="tls">TLS &amp; HTTPS</h2>
+
+<p>amux generates a self-signed TLS certificate on first run. This enables:</p>
+
+<ul>
+<li>Service worker &amp; offline mode (requires HTTPS)</li>
+<li>Secure WebSocket connections</li>
+<li>iOS PWA installation</li>
+</ul>
+
+<p>If you have <strong>Tailscale</strong> installed, amux automatically uses your Tailscale certificate for trusted HTTPS &mdash; no certificate warnings on any device on your tailnet.</p>
+
+<p>To disable TLS: <code>amux serve --no-tls</code></p>
+
+<h2 id="config">Configuration</h2>
+
+<h3>Session config</h3>
+
+<p>Session configs are stored in <code>~/.amux/sessions/&lt;name&gt;.env</code>. Each file contains the flags passed at registration.</p>
+
+<h3>Server env</h3>
+
+<p>Persistent server configuration lives in <code>~/.amux/server.env</code>. Loaded at startup via <code>os.environ.setdefault</code>.</p>
+
+<pre><code># Example ~/.amux/server.env
+AMUX_S3_BUCKET=ethan-personal
+AMUX_S3_KEY=amux/calendar.ics
+AMUX_S3_REGION=us-east-2</code></pre>
+
+<p>After editing <code>server.env</code>, touch <code>amux-server.py</code> to trigger a reload.</p>
+
+<h3>Global defaults</h3>
+
+<p>Set default flags that apply to all new sessions:</p>
+
+<pre><code>amux defaults edit
+# Opens ~/.amux/defaults.env in your editor
+# Example: CC_MODEL=sonnet CC_YOLO=1</code></pre>
+
+<h3>MCP config</h3>
+
+<p>Configure MCP servers for all sessions in <code>mcp.json</code> at the project root, or per-session with <code>--mcp-config</code>.</p>
+
+<h2 id="architecture">Architecture</h2>
+
+<p>amux is a single Python file (<code>amux-server.py</code>) with no external dependencies beyond Python 3 and tmux. The same file runs locally and in the cloud.</p>
+
+<ul>
+<li><strong>Server</strong> &mdash; Python HTTP server with threading, serves the dashboard + API</li>
+<li><strong>Dashboard</strong> &mdash; inline HTML/CSS/JS, no build step, no bundler</li>
+<li><strong>Storage</strong> &mdash; SQLite for board, CRM, logs, scheduler. Flat files for session configs and notes.</li>
+<li><strong>Sessions</strong> &mdash; tmux panes running Claude Code CLI. Managed via <code>tmux send-keys</code> and <code>tmux capture-pane</code>.</li>
+<li><strong>Live updates</strong> &mdash; Server-Sent Events (SSE) with a 10-second ping heartbeat. Clients reconnect after 18 seconds of silence.</li>
+<li><strong>Auto-restart</strong> &mdash; the server watches its own file and calls <code>os.execv</code> on change</li>
+</ul>
+
+<h3>Data directory</h3>
+
+<p>All persistent data lives in <code>~/.amux/</code>:</p>
+
+<pre><code>~/.amux/
+├── sessions/          # Session .env configs
+├── board/             # SQLite database
+├── notes/             # Markdown note files
+├── crm/               # CRM data
+├── logs/              # Request logs
+├── tls/               # TLS certificates
+├── playwright-auth/   # Browser auth profiles
+├── server.env         # Server configuration
+├── defaults.env       # Global session defaults
+└── auth_token         # Auth token (if enabled)</code></pre>
+
+<div class="cta-box">
+  <h3>Get started with amux</h3>
+  <p>Run parallel AI coding agents with a web dashboard, kanban board, and full REST API. Open source. Single file. Zero dependencies.</p>
+  <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # &rarr; https://localhost:8822</code></pre>
+  <div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap;">
+    <a class="btn btn-primary" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">Get iOS App</a>
+    <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>
+  </div>
+</div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
