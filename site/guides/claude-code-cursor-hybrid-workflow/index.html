@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>The Hybrid Stack: Running Claude Code + Cursor + Your IDE Together</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Developers use 2.3 AI tools on average. Stop picking one — run Claude Code for deep multi-file work, Cursor for inline editing, and an orchestrator to coordinate them. Here's the workflow architecture, task routing rules, conflict prevention, and cost optimization for the hybrid AI coding stack.">
+  <meta name="keywords" content="Claude Code Cursor together, Claude Code Cursor workflow, AI coding tool stack, terminal agent IDE workflow, Claude Code vs Cursor, Cursor Claude Code same project, AI coding hybrid workflow, multiple AI coding tools, best AI coding setup 2026, Claude Code IDE integration">
+  <link rel="canonical" href="https://amux.io/guides/claude-code-cursor-hybrid-workflow/">
+  <meta property="og:title" content="The Hybrid Stack: Running Claude Code + Cursor + Your IDE Together">
+  <meta property="og:description" content="Stop picking between Claude Code and Cursor. Run them together — terminal agents for deep work, IDE for inline edits, orchestrator for coordination. Here's the complete hybrid workflow.">
+  <meta property="og:url" content="https://amux.io/guides/claude-code-cursor-hybrid-workflow/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="The Hybrid Stack: Claude Code + Cursor + IDE Together">
+  <meta name="twitter:description" content="The average developer uses 2.3 AI tools. Here's the workflow architecture for running them on the same codebase without conflicts.">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"The Hybrid Stack: Running Claude Code + Cursor + Your IDE Together","description":"Developers use 2.3 AI tools on average. Here's the workflow architecture for running Claude Code, Cursor, and other AI tools on the same codebase — with task routing, conflict prevention, and cost optimization.","datePublished":"2026-04-24","dateModified":"2026-04-24","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon-512.png"}},"image":"https://amux.io/og-image.png","mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/guides/claude-code-cursor-hybrid-workflow/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Hybrid Stack","item":"https://amux.io/guides/claude-code-cursor-hybrid-workflow/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can you run Claude Code and Cursor on the same codebase at the same time?","acceptedAnswer":{"@type":"Answer","text":"Yes. Claude Code runs in the terminal and Cursor runs in the IDE — they don't conflict at the process level. The risk is concurrent edits to the same files. Use git worktrees to give Claude Code agents isolated copies of the repo, or establish a file-level routing rule: Cursor edits the file you're focused on, Claude Code agents work on everything else. An orchestrator like amux coordinates which agent owns which files and prevents collisions."}},{"@type":"Question","name":"Should I use Claude Code or Cursor for coding?","acceptedAnswer":{"@type":"Answer","text":"Use both. They excel at different tasks. Cursor is faster for inline edits, autocomplete, and single-file changes where you're actively reading the code. Claude Code is stronger for multi-file refactors, architecture changes, debugging across modules, and any task that benefits from running multiple agents in parallel. The average developer already uses 2.3 AI tools — the question isn't which one, it's how to route tasks between them."}},{"@type":"Question","name":"How do you prevent git conflicts when using multiple AI coding tools?","acceptedAnswer":{"@type":"Answer","text":"Three strategies, from simplest to most robust: (1) File-level routing — Cursor edits files in your active editor tabs, Claude Code agents work on other files. (2) Branch-per-agent — each Claude Code session works on its own branch and merges when done. (3) Git worktrees — each agent gets an isolated working copy of the repo. amux creates worktrees automatically and handles cleanup. For most workflows, file-level routing plus branch-per-agent is sufficient."}},{"@type":"Question","name":"What's the best AI coding workflow in 2026?","acceptedAnswer":{"@type":"Answer","text":"The emerging best practice is a three-layer stack: an IDE tool (Cursor or Copilot) for interactive editing, a terminal agent (Claude Code) for deep multi-file work, and an orchestrator (amux) to run multiple terminal agents in parallel and coordinate with your IDE. This gives you fast autocomplete for the file you're editing, powerful agents for background tasks, and fleet management for overnight or batch operations. Cost-wise, route simple completions to cheaper models in the IDE and reserve expensive Opus-tier models for complex Claude Code tasks."}},{"@type":"Question","name":"How much does the hybrid Claude Code + Cursor stack cost?","acceptedAnswer":{"@type":"Answer","text":"The base cost is $20/month for Cursor Pro plus $100-200/month for Claude Code Max (or pay-per-token via API). The key to cost optimization is routing: simple inline edits and autocomplete in Cursor use cheaper models (often GPT-4o-mini or Claude Haiku), while complex multi-file tasks in Claude Code use Opus or Sonnet. Teams report that the hybrid approach costs 20-40% less than running everything through expensive models, because 60-70% of daily coding tasks are simple enough for the IDE's cheaper completions."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Hybrid Stack</span></div>
+    <h1>The Hybrid Stack: Running Claude Code + Cursor + Your IDE Together</h1>
+<p class="subtitle">The average developer uses 2.3 AI coding tools. Here's how to run them on the same codebase without conflicts.</p>
+
+<p>Every "Claude Code vs Cursor" article gets the question wrong.</p>
+
+<p>Developers aren't choosing between terminal agents and IDE assistants. They're using both. Surveys from early 2026 show the average AI-assisted developer runs <strong>2.3 tools</strong> — typically an IDE-integrated assistant for inline edits plus a terminal-based agent for heavy lifting. The real question isn't <em>which</em> tool to pick. It's how to architect the workflow so they don't step on each other.</p>
+
+<p>This guide covers the <strong>hybrid stack</strong> — the workflow architecture for running Claude Code, Cursor (or Windsurf, Copilot, Cline), and a fleet orchestrator on the same codebase. Task routing rules, conflict prevention, cost optimization, and the session management that makes it all work.</p>
+
+<h2>Why "vs" is the wrong question</h2>
+
+<p>Claude Code and Cursor aren't competing products — they're complementary layers that solve different problems:</p>
+
+<table class="data-table">
+<thead><tr><th>Dimension</th><th>IDE assistant (Cursor, Copilot, Windsurf)</th><th>Terminal agent (Claude Code)</th></tr></thead>
+<tbody>
+<tr><td><strong>Interaction model</strong></td><td>You drive. The AI assists. Autocomplete, inline edits, chat sidebar.</td><td>The agent drives. You review. Multi-file changes, autonomous execution.</td></tr>
+<tr><td><strong>Context</strong></td><td>Current file + open tabs + limited project context</td><td>Full repo access via grep, file reads, shell commands</td></tr>
+<tr><td><strong>Best at</strong></td><td>Fast edits, single-file changes, boilerplate, exploring unfamiliar code</td><td>Multi-file refactors, debugging across modules, architecture changes, test generation</td></tr>
+<tr><td><strong>Parallelism</strong></td><td>One instance per IDE window</td><td>Unlimited — run 10+ agents on different tasks simultaneously</td></tr>
+<tr><td><strong>Latency</strong></td><td>Instant autocomplete (50-200ms). Chat in 1-3s.</td><td>Thinks for 5-30s. Works for minutes. Returns finished code.</td></tr>
+<tr><td><strong>Unattended operation</strong></td><td>No — requires you to be in the editor</td><td>Yes — can run overnight, in CI, or headless</td></tr>
+</tbody>
+</table>
+
+<p>Using only an IDE assistant means you're single-threaded — you code one file while the AI assists on that file. Using only terminal agents means you lose the fast-feedback loop of inline autocomplete. The hybrid stack gives you both: <strong>fast interactive editing in the IDE</strong> and <strong>parallel deep work in the terminal</strong>.</p>
+
+<h2>The three-layer architecture</h2>
+
+<p>A production hybrid stack has three layers:</p>
+
+<pre><code>┌──────────────────────────────────────────────────────┐
+│  Layer 3: Orchestrator (amux)                        │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐   │
+│  │ Agent 1 │ │ Agent 2 │ │ Agent 3 │ │ Agent N │   │
+│  │ refactor│ │  tests  │ │ migrate │ │  audit  │   │
+│  └─────────┘ └─────────┘ └─────────┘ └─────────┘   │
+│  Kanban board · Session monitoring · Cost tracking   │
+├──────────────────────────────────────────────────────┤
+│  Layer 2: Terminal agent (Claude Code)               │
+│  Deep multi-file work · Autonomous execution         │
+│  Shell access · Full repo context · Subagents        │
+├──────────────────────────────────────────────────────┤
+│  Layer 1: IDE assistant (Cursor / Copilot / Windsurf)│
+│  Autocomplete · Inline edits · Chat sidebar          │
+│  Current file focus · Fast feedback loop             │
+└──────────────────────────────────────────────────────┘</code></pre>
+
+<p><strong>Layer 1</strong> handles the file you're actively editing — autocomplete, quick fixes, inline chat. This is where you spend 60-70% of your interactive coding time.</p>
+
+<p><strong>Layer 2</strong> handles tasks too complex for inline assistance — multi-file refactors, debugging a chain of function calls across modules, writing tests for an entire service, architecture changes that touch 20 files.</p>
+
+<p><strong>Layer 3</strong> multiplies Layer 2 by running multiple terminal agents in parallel, coordinating their work, preventing conflicts, and tracking costs. This is where you go from "one agent helping me" to "a fleet of agents working while I focus on the IDE."</p>
+
+<h2>Task routing: which tool handles what</h2>
+
+<p>The key to a smooth hybrid workflow is a clear decision boundary. Route tasks based on <strong>scope</strong> and <strong>autonomy</strong>:</p>
+
+<table class="data-table">
+<thead><tr><th>Task type</th><th>Route to</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>Autocomplete while typing</td><td>IDE (Cursor)</td><td>Sub-second latency. No context switch.</td></tr>
+<tr><td>Fix a type error in the current file</td><td>IDE inline chat</td><td>You're already looking at the file. One-shot fix.</td></tr>
+<tr><td>Write a new function in the file you're editing</td><td>IDE inline chat</td><td>You see the result immediately. Fast iteration.</td></tr>
+<tr><td>Explain unfamiliar code you're reading</td><td>IDE chat sidebar</td><td>Context is already in the open tab.</td></tr>
+<tr><td>Refactor a function + update all callers</td><td>Claude Code (single agent)</td><td>Touches multiple files. Agent can grep for callers.</td></tr>
+<tr><td>Debug a failing test that spans 3 modules</td><td>Claude Code (single agent)</td><td>Needs shell access to run tests and read logs.</td></tr>
+<tr><td>Write tests for an entire API surface</td><td>Claude Code (2-3 agents)</td><td>Each agent handles a different endpoint group. Parallel.</td></tr>
+<tr><td>Migrate from one ORM to another</td><td>Claude Code (5+ agents)</td><td>Each agent handles a service or module. Weeks of work in hours.</td></tr>
+<tr><td>Nightly security audit of the full codebase</td><td>Claude Code (scheduled fleet)</td><td>Runs unattended. Reports findings on the board by morning.</td></tr>
+</tbody>
+</table>
+
+<p>The mental model is simple: <strong>if you're looking at the code, use the IDE. If you're delegating work, use terminal agents.</strong></p>
+
+<h3>The escalation pattern</h3>
+
+<p>Tasks often start in the IDE and escalate to a terminal agent:</p>
+
+<pre><code># You start in Cursor: "fix this type error"
+# Cursor fixes it, but now 4 other files have type errors from the change
+# → Escalate to Claude Code: "fix all TypeScript errors from this interface change"
+
+# You start in Cursor: "add error handling to this function"
+# You realize the whole module has inconsistent error handling
+# → Escalate to Claude Code: "standardize error handling across src/api/"
+
+# Claude Code finishes a refactor, but one test still fails
+# → Drop back to Cursor to debug interactively with breakpoints</code></pre>
+
+<p>The escalation boundary is <strong>scope expansion</strong>. The moment a task grows beyond the file you're looking at, switch to a terminal agent.</p>
+
+<h2>Setting up the hybrid workflow</h2>
+
+<h3>Option 1: Cursor + Claude Code in the integrated terminal</h3>
+
+<p>The simplest setup. Open Cursor as your IDE and run Claude Code in its built-in terminal:</p>
+
+<pre><code># In Cursor's integrated terminal:
+claude
+
+# You now have:
+# - Cursor's autocomplete and chat in the editor panes
+# - Claude Code running in the terminal pane below
+# - Both see the same project directory</code></pre>
+
+<p>This works for one Claude Code agent. For multiple agents, you need an orchestrator.</p>
+
+<h3>Option 2: Cursor + amux (recommended)</h3>
+
+<p>Run Cursor for IDE editing and amux for parallel terminal agents:</p>
+
+<pre><code># Terminal 1: start amux with your project
+amux register myproject --dir ~/Dev/myproject --yolo --sessions 5
+amux start myproject
+amux serve  # → https://localhost:8822
+
+# Open your IDE separately
+cursor ~/Dev/myproject
+
+# Now you have:
+# - Cursor for the file you're actively editing
+# - 5 Claude Code agents available in amux for background work
+# - amux dashboard for monitoring all agents + kanban board
+# - Mobile PWA for checking status from your phone</code></pre>
+
+<p>This is the three-layer stack in practice. The IDE handles interactive editing. amux manages the agent fleet. You switch between them based on what the task requires.</p>
+
+<h3>Option 3: VS Code + Claude Code extension + amux</h3>
+
+<p>If you prefer VS Code to Cursor, use the Claude Code VS Code extension for IDE-level assistance and amux for fleet management:</p>
+
+<pre><code># Install Claude Code VS Code extension from the marketplace
+# It provides inline completions and a chat panel
+
+# In a separate terminal, run amux for parallel agents:
+amux register myproject --dir ~/Dev/myproject --yolo --sessions 5
+amux start myproject
+amux serve</code></pre>
+
+<h2>Preventing conflicts: the hard problem</h2>
+
+<p>The real challenge in a hybrid stack isn't running two tools — it's preventing them from editing the same file at the same time. Here are the strategies, from simplest to most robust:</p>
+
+<h3>Strategy 1: File-level routing (simplest)</h3>
+
+<p>The IDE owns files in your open tabs. Terminal agents work on everything else.</p>
+
+<pre><code># In your CLAUDE.md, tell agents what to avoid:
+# "Do not edit files that are currently open in the IDE.
+#  Ask before modifying: src/components/Dashboard.tsx,
+#  src/hooks/useAuth.ts" (files you're actively working in)
+
+# Or scope agents to specific directories:
+# "You are responsible for the src/api/ directory only.
+#  Do not modify files outside this directory."</code></pre>
+
+<p>This works because you naturally know which files you're editing. The weakness is that it requires manual coordination — you have to update the list when you switch files.</p>
+
+<h3>Strategy 2: Branch-per-agent (recommended)</h3>
+
+<p>Each Claude Code agent works on its own branch. Merges happen after review.</p>
+
+<pre><code># Agent 1: refactoring the auth module
+git checkout -b agent/auth-refactor
+
+# Agent 2: adding tests for the API
+git checkout -b agent/api-tests
+
+# Agent 3: migrating the database schema
+git checkout -b agent/db-migration
+
+# You: editing on main (or your feature branch) in Cursor
+
+# When agents complete, review and merge their branches
+git merge agent/auth-refactor
+git merge agent/api-tests</code></pre>
+
+<p>This completely eliminates file-level conflicts during work. Conflicts only surface at merge time, where they're easier to handle.</p>
+
+<h3>Strategy 3: Git worktrees (most robust)</h3>
+
+<p>Each agent gets a fully isolated working copy of the repo. No possibility of concurrent file edits.</p>
+
+<pre><code># amux creates worktrees automatically:
+amux register myproject --dir ~/Dev/myproject --yolo --worktrees
+
+# Each agent session gets its own worktree:
+# ~/Dev/myproject                    ← your IDE (Cursor)
+# ~/Dev/myproject-agent-1            ← Agent 1's isolated copy
+# ~/Dev/myproject-agent-2            ← Agent 2's isolated copy
+# ~/Dev/myproject-agent-3            ← Agent 3's isolated copy
+
+# Agents can run freely — they can't interfere with each other
+# or with your IDE's working directory</code></pre>
+
+<p>Worktrees are the gold standard for large teams or overnight batch operations where you can't monitor for conflicts interactively.</p>
+
+<h3>Conflict prevention decision matrix</h3>
+
+<table class="data-table">
+<thead><tr><th>Scenario</th><th>Recommended strategy</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>Solo dev, 1-2 agents</td><td>File-level routing</td><td>Simple. You know what you're editing.</td></tr>
+<tr><td>Solo dev, 3-5 agents</td><td>Branch-per-agent</td><td>Agents might overlap. Branches keep them separate.</td></tr>
+<tr><td>Solo dev, 5+ agents or overnight</td><td>Git worktrees</td><td>You can't monitor for conflicts. Full isolation needed.</td></tr>
+<tr><td>Team, shared repo</td><td>Git worktrees</td><td>Multiple humans + multiple agents = chaos without isolation.</td></tr>
+<tr><td>Monorepo with multiple services</td><td>Directory scoping + worktrees</td><td>Each agent owns a service. Worktrees prevent cross-boundary edits.</td></tr>
+</tbody>
+</table>
+
+<h2>The daily workflow</h2>
+
+<p>Here's what a typical day looks like with the hybrid stack:</p>
+
+<h3>Morning: review overnight agent work</h3>
+
+<pre><code># Check amux dashboard for overnight results
+# → https://localhost:8822 or mobile PWA
+
+# Review completed tasks on the board
+curl -sk $AMUX_URL/api/board | python3 -c "
+import json, sys
+items = json.load(sys.stdin)
+for i in items:
+    if i['status'] == 'done':
+        print(f\"✓ {i['title']}: {i.get('desc', '')}\")"
+
+# Merge branches from completed agent work
+git merge agent/test-backfill
+git merge agent/dependency-updates</code></pre>
+
+<h3>Daytime: interactive editing + background agents</h3>
+
+<pre><code># You work in Cursor on your current feature
+# Meanwhile, in amux:
+
+# Agent 1: writing tests for the code you shipped yesterday
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Write integration tests for /api/v2/users","session":"worker-1"}' \
+  $AMUX_URL/api/board
+
+# Agent 2: cleaning up tech debt in a module you won't touch today
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Refactor src/legacy/ error handling","session":"worker-2"}' \
+  $AMUX_URL/api/board
+
+# Agent 3: investigating a bug report while you focus on features
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Debug: /api/search returns 500 on empty query","session":"worker-3"}' \
+  $AMUX_URL/api/board</code></pre>
+
+<h3>End of day: queue overnight work</h3>
+
+<pre><code># Schedule agents to run while you sleep
+# Security audit at midnight:
+amux cron add "0 0 * * *" "Run OWASP top-10 audit on src/"
+
+# Test coverage expansion at 1am:
+amux cron add "0 1 * * *" "Write missing tests for files under 50% coverage"
+
+# Dependency update check at 2am:
+amux cron add "0 2 * * *" "Check for outdated dependencies and create update PR"</code></pre>
+
+<h2>Cost optimization in the hybrid stack</h2>
+
+<p>Running two AI tools doesn't have to mean paying double. The hybrid stack is actually <strong>cheaper</strong> than running everything through one tool — if you route tasks to the right price tier.</p>
+
+<table class="data-table">
+<thead><tr><th>Task type</th><th>Tool</th><th>Model tier</th><th>Cost per task</th></tr></thead>
+<tbody>
+<tr><td>Autocomplete (500x/day)</td><td>IDE (Cursor)</td><td>Small model (fast)</td><td>Included in $20/mo</td></tr>
+<tr><td>Inline chat fix (20x/day)</td><td>IDE (Cursor)</td><td>Mid-tier (Sonnet)</td><td>Included in $20/mo</td></tr>
+<tr><td>Multi-file refactor</td><td>Claude Code</td><td>Opus</td><td>$2-8 per task</td></tr>
+<tr><td>Test generation (per module)</td><td>Claude Code</td><td>Sonnet</td><td>$0.50-2 per module</td></tr>
+<tr><td>Nightly audit (scheduled)</td><td>Claude Code via amux</td><td>Sonnet</td><td>$1-3 per run</td></tr>
+</tbody>
+</table>
+
+<h3>Cost routing rules</h3>
+
+<pre><code># In your amux CLAUDE.md, configure model routing:
+# "Use Opus for: architecture decisions, complex debugging,
+#  multi-service refactors, security-critical code.
+#
+#  Use Sonnet for: test writing, documentation, simple refactors,
+#  code formatting, dependency updates.
+#
+#  Use Haiku for: linting, commit message generation,
+#  boilerplate scaffolding."</code></pre>
+
+<p>The numbers work out: a developer running Cursor Pro ($20/month) + Claude Code Max ($100/month) pays <strong>$120/month total</strong>. Running everything through one tool at a higher tier costs more — and you lose either the IDE's fast autocomplete or the terminal agent's deep work capability.</p>
+
+<h3>Max subscription vs API keys</h3>
+
+<table class="data-table">
+<thead><tr><th>Billing model</th><th>Monthly cost</th><th>Best for</th><th>Tradeoff</th></tr></thead>
+<tbody>
+<tr><td>Cursor Pro + Claude Code Max</td><td>$120-220</td><td>Interactive dev work + moderate parallel agents</td><td>Rate limited at ~50 Opus requests/day</td></tr>
+<tr><td>Cursor Pro + Claude API keys</td><td>$20 + usage</td><td>Heavy batch/overnight work (10+ agents)</td><td>No rate limit but costs scale with usage</td></tr>
+<tr><td>Cursor Pro + Max + API overflow</td><td>$120 + overflow</td><td>Interactive + burst capacity</td><td>Best of both — Max for daily, API for bursts</td></tr>
+</tbody>
+</table>
+
+<p>For most solo developers, Cursor Pro + Claude Code Max at <strong>$120/month</strong> covers everything. Switch to API keys when you need burst capacity (migration weekend, deadline sprint, running 10+ overnight agents).</p>
+
+<h2>Hybrid workflows for common tasks</h2>
+
+<h3>Building a new feature</h3>
+
+<pre><code># 1. Plan in Claude Code (one agent, Opus)
+#    "Read the codebase and design the data model, API endpoints,
+#     and component structure for a notifications system.
+#     Write a spec to /docs/notifications-spec.md"
+
+# 2. Scaffold in Claude Code (one agent, Sonnet)
+#    "Implement the spec from /docs/notifications-spec.md.
+#     Create the database migration, API routes, and React components."
+
+# 3. Polish in Cursor
+#    Open the scaffolded files. Use inline chat for:
+#    - Tweaking the UI styling
+#    - Adjusting the API response format
+#    - Adding error states you notice while reading the code
+
+# 4. Test in Claude Code (two agents, Sonnet)
+#    Agent 1: "Write unit tests for src/api/notifications/"
+#    Agent 2: "Write integration tests for the notification endpoints"</code></pre>
+
+<h3>Debugging a production issue</h3>
+
+<pre><code># 1. Investigate in Claude Code (one agent, Opus)
+#    "Users report 500 errors on /api/search since the last deploy.
+#     Check git log for recent changes, read the error logs,
+#     reproduce the issue, and identify the root cause."
+
+# 2. Fix in Cursor
+#    Agent identified the bug — a null check missing in searchHandler.ts
+#    Open the file in Cursor, fix interactively with inline chat,
+#    set breakpoints, test manually
+
+# 3. Verify in Claude Code (one agent, Sonnet)
+#    "Run the test suite for src/api/search/ and confirm no regressions.
+#     Write a regression test for the null input case."</code></pre>
+
+<h3>Major refactor or migration</h3>
+
+<pre><code># This is where the hybrid stack shines most.
+# A migration that takes one developer two weeks
+# can be done in a day with parallel agents.
+
+# 1. Plan in Claude Code (one Opus agent)
+#    "Analyze the codebase for all usages of SequelizeORM.
+#     Create a migration plan to Drizzle ORM, broken down
+#     by module. Write the plan to /docs/orm-migration.md"
+
+# 2. Execute in parallel (5-8 agents via amux, Sonnet)
+#    Each agent handles one module from the plan:
+for module in "users" "orders" "products" "search" "auth"; do
+  curl -sk -X POST -H 'Content-Type: application/json' \
+    -d "{\"title\":\"Migrate $module from Sequelize to Drizzle\",\"session\":\"migrate-$module\"}" \
+    $AMUX_URL/api/board
+done
+
+# 3. Review in Cursor
+#    Open each migrated module in Cursor
+#    Read through the changes with IDE features:
+#    - Type checking highlights
+#    - Go-to-definition to verify imports
+#    - Inline chat to ask "is this migration correct?"
+
+# 4. Integration test in Claude Code (one agent, Opus)
+#    "Run the full test suite. Fix any failures from the ORM migration.
+#     Ensure all modules work together with the new ORM."</code></pre>
+
+<h2>What to put in CLAUDE.md for hybrid workflows</h2>
+
+<p>Your CLAUDE.md needs to account for the fact that terminal agents share the codebase with your IDE:</p>
+
+<pre><code># CLAUDE.md for hybrid workflow
+
+## Coordination rules
+# - Always work on a feature branch, never on main
+# - Before editing a file, check if it has uncommitted changes (git status)
+#   If it does, another agent or the developer may be editing it — skip it
+# - After completing work, commit immediately with a descriptive message
+# - Post status updates to the board so the developer can track progress
+
+## File ownership
+# The developer (via Cursor) owns files in src/components/ during work hours
+# Agents should not modify files in that directory between 9am-6pm
+# unless explicitly assigned a task there
+
+## Merge protocol
+# - Use feature branches: agent/[task-name]
+# - Rebase onto main before marking task as done
+# - If rebase has conflicts, post them to the board instead of resolving</code></pre>
+
+<h2>When not to use the hybrid stack</h2>
+
+<p>The hybrid stack adds coordination overhead. It's not worth it for:</p>
+
+<ul>
+<li><strong>Solo projects under 5K lines</strong> — Cursor alone is sufficient. The codebase fits in context.</li>
+<li><strong>Pure frontend/UI work</strong> — You need to see the output in a browser. IDE + hot reload is faster than terminal agents.</li>
+<li><strong>Learning a new codebase</strong> — Use Cursor's chat sidebar to read and understand. Don't delegate to agents until you know the architecture.</li>
+<li><strong>Pair programming with another human</strong> — Two humans + multiple AI agents on the same files is chaos. Pick one tool.</li>
+</ul>
+
+<p>The hybrid stack earns its overhead when you have <strong>enough independent tasks</strong> to keep multiple agents busy — refactors, tests, migrations, audits, bug investigation — while you focus on the high-context work that requires your attention in the IDE.</p>
+
+<h2>Measuring hybrid stack effectiveness</h2>
+
+<table class="data-table">
+<thead><tr><th>Metric</th><th>What it measures</th><th>Healthy range</th><th>Warning sign</th></tr></thead>
+<tbody>
+<tr><td><strong>IDE-to-agent ratio</strong></td><td>% of tasks handled by IDE vs terminal agents</td><td>60-70% IDE, 30-40% agents</td><td>Below 20% agent = underutilizing fleet</td></tr>
+<tr><td><strong>Agent merge rate</strong></td><td>% of agent-produced branches that merge without rework</td><td>70-85%</td><td>Below 50% = poor task scoping or instructions</td></tr>
+<tr><td><strong>Conflict frequency</strong></td><td>How often IDE and agents edit the same file simultaneously</td><td>&lt; 1 per day</td><td>Multiple daily = broken routing rules</td></tr>
+<tr><td><strong>Cost per merged line</strong></td><td>Total AI spend / lines of code merged to main</td><td>$0.01-0.05 per line</td><td>Above $0.10 = wrong model routing</td></tr>
+<tr><td><strong>Throughput multiplier</strong></td><td>PRs merged per day vs pre-hybrid baseline</td><td>2-4x</td><td>Below 1.5x = coordination overhead exceeds benefit</td></tr>
+</tbody>
+</table>
+
+<p>Track these weekly. If agent merge rate drops, your CLAUDE.md needs better instructions. If conflict frequency rises, tighten your routing rules or switch to worktrees. If cost per line spikes, you're routing too many simple tasks to Opus.</p>
+
+<div class="cta-box">
+  <h3>Orchestrate your hybrid stack</h3>
+  <p>Run 5, 10, or 50 Claude Code agents in parallel while you focus in your IDE. Monitor everything from one dashboard. Prevent conflicts with git worktrees. Track costs per session.</p>
+  <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # &rarr; https://localhost:8822</code></pre>
+  <div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap;">
+    <a class="btn btn-primary" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">Get iOS App</a>
+    <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>
+  </div>
+</div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
