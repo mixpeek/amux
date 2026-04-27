@@ -1,0 +1,1487 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Claude Code Hooks Cookbook: 20 Production-Ready Recipes (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="20 copy-paste hook recipes for Claude Code — block secrets, enforce formatting, auto-run tests, coordinate parallel agents, and more. Each recipe includes the settings.json config and optional shell script.">
+  <meta name="keywords" content="claude code hooks, claude code hooks examples, claude code hooks cookbook, claude code PreToolUse, claude code PostToolUse, claude code settings.json hooks, claude code automation, claude code safety hooks, claude code production, claude code hook recipes, claude code autonomous agent hooks">
+  <link rel="canonical" href="https://amux.io/guides/claude-code-hooks-cookbook/">
+  <meta property="og:title" content="Claude Code Hooks Cookbook: 20 Production-Ready Recipes">
+  <meta property="og:description" content="Copy-paste hook configs for Claude Code — block secrets, enforce formatting, auto-run tests, coordinate parallel agents. Each recipe includes settings.json + optional script.">
+  <meta property="og:url" content="https://amux.io/guides/claude-code-hooks-cookbook/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Claude Code Hooks Cookbook: 20 Production-Ready Recipes">
+  <meta name="twitter:description" content="Copy-paste hook configs for safety, quality, automation, and coordination. Battle-tested across thousands of agent sessions.">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Hooks Cookbook","item":"https://amux.io/guides/claude-code-hooks-cookbook/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Claude Code Hooks Cookbook: 20 Production-Ready Recipes","description":"Copy-paste hook configs for Claude Code — block secrets, enforce formatting, auto-run tests, coordinate parallel agents.","datePublished":"2026-04-27","dateModified":"2026-04-27","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon-512.png"}},"image":"https://amux.io/og-image.png","mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/guides/claude-code-hooks-cookbook/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What are Claude Code hooks?","acceptedAnswer":{"@type":"Answer","text":"Hooks are shell commands that run automatically before or after Claude Code tool calls. They're configured in .claude/settings.json and can block actions (exit code 2), log activity, enforce rules, or trigger side effects. Hook events include PreToolUse (runs before a tool, can block it), PostToolUse (runs after a tool succeeds), Notification (fires on alerts), and Stop (runs when the agent finishes). Hooks receive JSON on stdin with tool details and can return feedback on stdout."}},{"@type":"Question","name":"Where do I put Claude Code hooks?","acceptedAnswer":{"@type":"Answer","text":"Hooks go in your settings file under the 'hooks' key. For project-level hooks shared with your team, use .claude/settings.json (committed to git). For personal hooks, use .claude/settings.local.json (gitignored). For global hooks across all projects, use ~/.claude/settings.json. The format is: {\"hooks\": {\"PreToolUse\": [{\"matcher\": \"ToolName\", \"hooks\": [{\"type\": \"command\", \"command\": \"your-script.sh\"}]}]}}."}},{"@type":"Question","name":"How do I block an action with a hook?","acceptedAnswer":{"@type":"Answer","text":"In a PreToolUse hook, have your script exit with code 2. This blocks the tool call and sends your stderr output back to the model as an error message. Exit code 0 allows the action. Any other exit code logs a warning but doesn't block. Example: a hook that checks for secrets in file writes exits 2 when it finds a match, preventing the secret from being written."}},{"@type":"Question","name":"What data does a hook receive?","acceptedAnswer":{"@type":"Answer","text":"Hooks receive JSON on stdin with the tool call details. The structure includes 'tool_name' (e.g., 'Bash', 'Edit', 'Write'), 'tool_input' (the parameters passed to the tool — for Bash this includes 'command', for Edit it includes 'file_path', 'old_string', 'new_string'), and for PostToolUse hooks, 'tool_output' with the result. Your script reads this from stdin and makes decisions based on the content."}},{"@type":"Question","name":"Can I use hooks with amux parallel agents?","acceptedAnswer":{"@type":"Answer","text":"Yes. Since hooks are defined in .claude/settings.json, every amux session running in the same project directory inherits the same hooks. This is powerful for fleet-wide policy enforcement — define hooks once, every parallel agent follows them. For coordination between agents, hooks can call the amux REST API to post status updates, claim board tasks, or notify other sessions."}},{"@type":"Question","name":"What's the difference between PreToolUse and PostToolUse hooks?","acceptedAnswer":{"@type":"Answer","text":"PreToolUse runs before the tool executes and can block it (exit code 2). Use it for safety gates: preventing secret leaks, blocking destructive commands, enforcing branch policies. PostToolUse runs after the tool succeeds. Use it for side effects: running tests after code changes, validating syntax, sending notifications, updating dashboards. PreToolUse is your guard; PostToolUse is your automation."}},{"@type":"Question","name":"How do I debug a hook that isn't working?","acceptedAnswer":{"@type":"Answer","text":"Three steps: (1) Test the script directly by piping sample JSON into it: echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}' | bash your-hook.sh. (2) Check that the matcher matches the tool name — matchers are case-sensitive and use | for alternatives (e.g., 'Edit|Write'). (3) Make sure the script is executable (chmod +x) and the shebang line is correct (#!/bin/bash). Hook stderr output appears in the Claude Code conversation as error feedback."}}]}</script>
+  <style>
+    .recipe-grid{display:grid;grid-template-columns:1fr;gap:1.5rem;margin:2rem 0}
+    .recipe-card{border:1px solid var(--border);border-radius:8px;overflow:hidden;transition:border-color .15s}
+    .recipe-card:hover{border-color:var(--green)}
+    .recipe-head{padding:0.75rem 1rem;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:0.5rem;flex-wrap:wrap}
+    .recipe-head h3{margin:0;font-size:0.95rem;font-weight:600;flex:1;min-width:200px}
+    .recipe-tags{display:flex;gap:0.4rem;flex-wrap:wrap}
+    .recipe-tag{font-size:0.68rem;padding:2px 8px;border-radius:12px;font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+    .tag-security{background:#ef4444;color:#fff}
+    .tag-quality{background:var(--green);color:#000}
+    .tag-automation{background:#3b82f6;color:#fff}
+    .tag-coordination{background:#a855f7;color:#fff}
+    .tag-workflow{background:#f59e0b;color:#000}
+    .recipe-body{padding:1rem}
+    .recipe-body p{margin:0 0 0.75rem;font-size:0.88rem;color:var(--muted);line-height:1.5}
+    .recipe-body p:last-child{margin-bottom:0}
+    .recipe-code{position:relative;margin:0.75rem 0}
+    .recipe-code pre{margin:0;padding:1rem;font-size:0.76rem;line-height:1.55;overflow-x:auto;background:var(--bg);border:1px solid var(--border);border-radius:6px;max-height:500px}
+    .recipe-copy{position:absolute;top:6px;right:6px;font-size:0.7rem;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--surface);color:var(--dim);cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all .15s;z-index:1}
+    .recipe-copy:hover{background:var(--green);color:#000;border-color:var(--green)}
+    .recipe-copy.copied{background:var(--green);color:#000;border-color:var(--green)}
+    .recipe-label{font-size:0.72rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin:0.75rem 0 0.25rem;display:block}
+    .recipe-note{font-size:0.82rem;color:var(--muted);padding:0.6rem 1rem;border-top:1px solid var(--border);line-height:1.45;background:var(--surface)}
+    .filter-bar{display:flex;flex-wrap:wrap;gap:0.5rem;margin:1.5rem 0}
+    .filter-btn{font-size:0.8rem;padding:5px 14px;border-radius:20px;border:1px solid var(--border);background:var(--bg);color:var(--muted);cursor:pointer;font-family:inherit;transition:all .15s}
+    .filter-btn:hover,.filter-btn.active{background:var(--green);color:#000;border-color:var(--green)}
+    .hook-anatomy{border:1px solid var(--border);border-radius:8px;overflow:hidden;margin:2rem 0}
+    .hook-anatomy pre{margin:0;padding:1.2rem;font-size:0.78rem;line-height:1.6;overflow-x:auto}
+    .event-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:1.5rem 0}
+    @media(max-width:600px){.event-grid{grid-template-columns:1fr}}
+    .event-card{border:1px solid var(--border);border-radius:8px;padding:1rem}
+    .event-card h4{margin:0 0 0.3rem;font-size:0.88rem}
+    .event-card p{margin:0;font-size:0.82rem;color:var(--muted);line-height:1.4}
+    .toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0}
+    .toc strong{font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)}
+    .toc ol{margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2}
+    .toc a{color:var(--dim);text-decoration:none}
+    .toc a:hover{color:var(--green)}
+    .count-badge{display:inline-block;font-size:0.7rem;padding:1px 6px;border-radius:10px;background:var(--green);color:#000;font-weight:600;margin-left:0.3rem;vertical-align:middle}
+    .cta-box{border:1px solid var(--green);border-radius:8px;padding:1.5rem;margin:2.5rem 0;background:oklch(0.25 0.02 145)}
+    .cta-box h3{margin:0 0 0.5rem;color:var(--green)}
+    .cta-box p{margin:0 0 1rem;font-size:0.9rem;color:var(--dim)}
+    .cta-box a{color:var(--green);text-decoration:underline}
+    .ref-table{width:100%;border-collapse:collapse;font-size:0.82rem;margin:1.5rem 0}
+    .ref-table th,.ref-table td{padding:0.6rem 0.8rem;border:1px solid var(--border);text-align:left}
+    .ref-table th{background:var(--surface);font-weight:600;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.03em}
+    .ref-table code{font-size:0.78rem}
+    @media(max-width:600px){
+      .recipe-head{flex-direction:column;align-items:flex-start}
+      .recipe-head h3{min-width:0}
+      .ref-table{font-size:0.75rem}
+      .ref-table th,.ref-table td{padding:0.4rem 0.5rem}
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Hooks Cookbook</span></div>
+    <h1>Claude Code Hooks Cookbook</h1>
+    <p class="subtitle">20 production-ready hook recipes &mdash; copy the JSON into your settings, drop the script into <code>.claude/hooks/</code>, and you&rsquo;re done. Battle-tested across thousands of parallel agent sessions.</p>
+
+    <p>Hooks are the enforcement layer of <a href="/guides/context-engineering/">context engineering</a>. Your <code>CLAUDE.md</code> tells the agent what to do; hooks <em>guarantee</em> it. A <code>CLAUDE.md</code> instruction is followed ~70% of the time. A hook enforces at 100% &mdash; the tool call physically cannot proceed if the hook blocks it.</p>
+    <p>Every recipe below is self-contained. Copy the <code>settings.json</code> snippet, save the optional script, and it works. No build step, no dependencies beyond <code>bash</code> and <code>python3</code>.</p>
+
+    <nav class="toc">
+      <strong>Contents</strong>
+      <ol>
+        <li><a href="#anatomy">How Hooks Work</a></li>
+        <li><a href="#security">Security &amp; Safety</a> <span class="count-badge">5</span></li>
+        <li><a href="#quality">Code Quality</a> <span class="count-badge">5</span></li>
+        <li><a href="#automation">Automation</a> <span class="count-badge">4</span></li>
+        <li><a href="#coordination">Agent Coordination</a> <span class="count-badge">3</span></li>
+        <li><a href="#workflow">Workflow</a> <span class="count-badge">3</span></li>
+        <li><a href="#reference">Quick Reference</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ============ HOW HOOKS WORK ============ -->
+    <h2 id="anatomy">How Hooks Work</h2>
+    <p>Hooks are shell commands configured in <code>.claude/settings.json</code> that fire on specific events. The agent doesn&rsquo;t decide whether to run them &mdash; they execute unconditionally.</p>
+
+    <div class="event-grid">
+      <div class="event-card">
+        <h4><code>PreToolUse</code></h4>
+        <p>Runs <strong>before</strong> a tool call. Exit <code>2</code> to block the action. Use for safety gates, policy enforcement, and input validation.</p>
+      </div>
+      <div class="event-card">
+        <h4><code>PostToolUse</code></h4>
+        <p>Runs <strong>after</strong> a tool call succeeds. Use for side effects: testing, linting, notifications, dashboard updates.</p>
+      </div>
+      <div class="event-card">
+        <h4><code>Notification</code></h4>
+        <p>Fires on agent notifications. Use for alerts, logging, or forwarding to Slack/Discord/email.</p>
+      </div>
+      <div class="event-card">
+        <h4><code>Stop</code></h4>
+        <p>Runs when the agent stops. Use for cleanup, final reports, or triggering the next step in a pipeline.</p>
+      </div>
+    </div>
+
+    <p>The <code>matcher</code> field filters which tool triggers the hook. Use <code>Bash</code>, <code>Edit</code>, <code>Write</code>, <code>Read</code>, or any tool name. Combine with <code>|</code> for multiple tools. Use <code>*</code> to match everything.</p>
+
+    <span class="recipe-label">Anatomy of a hook config</span>
+    <div class="hook-anatomy">
+      <pre><code>{
+  "hooks": {
+    "PreToolUse": [           <span style="color:var(--muted)">// event type</span>
+      {
+        "matcher": "Bash",    <span style="color:var(--muted)">// which tool(s) to intercept</span>
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/my-hook.sh"
+          }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+    </div>
+
+    <span class="recipe-label">What the hook script receives on stdin</span>
+    <div class="hook-anatomy">
+      <pre><code>{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "rm -rf /tmp/data"
+  }
+}
+
+<span style="color:var(--muted)">// PostToolUse also includes:</span>
+{
+  "tool_name": "Edit",
+  "tool_input": { "file_path": "src/main.py", "old_string": "...", "new_string": "..." },
+  "tool_output": "File edited successfully"
+}</code></pre>
+    </div>
+
+    <table class="ref-table">
+      <thead><tr><th>Exit Code</th><th>Effect (PreToolUse)</th><th>Effect (PostToolUse)</th></tr></thead>
+      <tbody>
+        <tr><td><code>0</code></td><td>Allow the tool call</td><td>Success &mdash; stdout fed back to model</td></tr>
+        <tr><td><code>2</code></td><td><strong>Block the tool call</strong> &mdash; stderr sent as error</td><td>N/A (tool already ran)</td></tr>
+        <tr><td>Other</td><td>Warning logged, tool proceeds</td><td>Warning logged</td></tr>
+      </tbody>
+    </table>
+
+    <!-- ============ FILTER BAR ============ -->
+    <div class="filter-bar" id="filter-bar">
+      <button class="filter-btn active" data-filter="all">All <span class="count-badge">20</span></button>
+      <button class="filter-btn" data-filter="security">Security <span class="count-badge">5</span></button>
+      <button class="filter-btn" data-filter="quality">Quality <span class="count-badge">5</span></button>
+      <button class="filter-btn" data-filter="automation">Automation <span class="count-badge">4</span></button>
+      <button class="filter-btn" data-filter="coordination">Coordination <span class="count-badge">3</span></button>
+      <button class="filter-btn" data-filter="workflow">Workflow <span class="count-badge">3</span></button>
+    </div>
+
+    <!-- ============ SECURITY ============ -->
+    <h2 id="security">Security &amp; Safety</h2>
+    <p>PreToolUse hooks that prevent dangerous actions before they happen. These are non-negotiable for unattended or autonomous agent runs.</p>
+
+    <div class="recipe-grid">
+
+      <!-- Recipe 1: Block secret leaks -->
+      <div class="recipe-card" data-category="security" id="recipe-block-secrets">
+        <div class="recipe-head">
+          <h3>1. Block Secret Leaks in File Writes</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-security">Security</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Scans every file write for API keys, tokens, passwords, and private keys. Blocks the write and tells the agent what it found.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/block-secrets.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/block-secrets.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+INPUT=$(cat)
+NEW=$(echo "$INPUT" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+# For Edit, check new_string; for Write, check content
+print(d.get('tool_input',{}).get('new_string',''))
+print(d.get('tool_input',{}).get('content',''))
+")
+
+PATTERNS=(
+  'AKIA[0-9A-Z]{16}'           # AWS access key
+  'sk-[a-zA-Z0-9]{20,}'        # OpenAI / Anthropic API key
+  'ghp_[a-zA-Z0-9]{36}'        # GitHub personal access token
+  'xoxb-[0-9]+-[a-zA-Z0-9]+'   # Slack bot token
+  '-----BEGIN .* PRIVATE KEY'   # PEM private key
+  'password\s*=\s*["\x27][^"\x27]{8,}' # Hardcoded password
+)
+
+for pat in "${PATTERNS[@]}"; do
+  if echo "$NEW" | grep -qE "$pat"; then
+    echo "BLOCKED: detected secret pattern: $pat" &gt;&amp;2
+    echo "Use an environment variable or .env file instead." &gt;&amp;2
+    exit 2
+  fi
+done
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Works with both <code>Edit</code> and <code>Write</code> tools. Add your own regex patterns for internal tokens.</div>
+      </div>
+
+      <!-- Recipe 2: Block destructive bash commands -->
+      <div class="recipe-card" data-category="security" id="recipe-block-destructive">
+        <div class="recipe-head">
+          <h3>2. Block Destructive Bash Commands</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-security">Security</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Blocks <code>rm -rf /</code>, <code>DROP TABLE</code>, <code>git push --force</code>, and other commands that cause irreversible damage.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/block-destructive.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/block-destructive.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+CMD=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))")
+
+BLOCKED=(
+  "rm -rf /"
+  "rm -rf ~"
+  "rm -rf \$HOME"
+  "rm -rf ."
+  "git push --force"
+  "git push -f"
+  "git reset --hard"
+  "DROP TABLE"
+  "DROP DATABASE"
+  "TRUNCATE TABLE"
+  ":(){:|:&amp;};:"
+  "mkfs."
+  "dd if="
+  "> /dev/sda"
+)
+
+for pattern in "${BLOCKED[@]}"; do
+  if echo "$CMD" | grep -qiF "$pattern"; then
+    echo "BLOCKED: destructive command detected: $pattern" &gt;&amp;2
+    echo "This command is on the blocklist. Ask the user for confirmation." &gt;&amp;2
+    exit 2
+  fi
+done
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Essential for YOLO mode and autonomous runs. Catches both exact matches and substrings.</div>
+      </div>
+
+      <!-- Recipe 3: Enforce branch policy -->
+      <div class="recipe-card" data-category="security" id="recipe-branch-policy">
+        <div class="recipe-head">
+          <h3>3. Enforce Branch Policy</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-security">Security</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Blocks direct commits to <code>main</code> and <code>master</code>. Forces agents to work on feature branches.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/enforce-branch.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/enforce-branch.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+CMD=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))")
+
+# Only check git commit commands
+echo "$CMD" | grep -q "git commit" || exit 0
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
+  echo "BLOCKED: cannot commit directly to $BRANCH" &gt;&amp;2
+  echo "Create a feature branch first: git checkout -b feat/your-feature" &gt;&amp;2
+  exit 2
+fi
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Combine with recipe #2 to also block <code>git push --force</code> to protected branches.</div>
+      </div>
+
+      <!-- Recipe 4: Block writes outside project directory -->
+      <div class="recipe-card" data-category="security" id="recipe-sandbox-writes">
+        <div class="recipe-head">
+          <h3>4. Sandbox File Writes to Project Directory</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-security">Security</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Prevents the agent from writing files outside the project root. Catches path traversal and accidental writes to system directories.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/sandbox-writes.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/sandbox-writes.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+FILE_PATH=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))")
+
+# Resolve to absolute path
+RESOLVED=$(cd "$PROJECT_ROOT" && python3 -c "import os; print(os.path.realpath('$FILE_PATH'))")
+
+if [[ ! "$RESOLVED" == "$PROJECT_ROOT"* ]]; then
+  echo "BLOCKED: write target is outside project directory" &gt;&amp;2
+  echo "Target: $RESOLVED" &gt;&amp;2
+  echo "Allowed: $PROJECT_ROOT/*" &gt;&amp;2
+  exit 2
+fi
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Critical for multi-tenant setups or when agents run in shared environments.</div>
+      </div>
+
+      <!-- Recipe 5: Block .env file modifications -->
+      <div class="recipe-card" data-category="security" id="recipe-protect-env">
+        <div class="recipe-head">
+          <h3>5. Protect .env and Credentials Files</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-security">Security</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Blocks edits to <code>.env</code>, <code>credentials.json</code>, <code>*.pem</code>, and other sensitive config files.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/protect-config.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/protect-config.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+FILE=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))")
+BASE=$(basename "$FILE")
+
+PROTECTED=(
+  ".env" ".env.local" ".env.production"
+  "credentials.json" "service-account.json"
+  ".npmrc" ".pypirc"
+)
+
+for p in "${PROTECTED[@]}"; do
+  if [[ "$BASE" == "$p" ]]; then
+    echo "BLOCKED: $BASE is a protected config file" &gt;&amp;2
+    echo "Editing credentials files is not allowed in automated runs." &gt;&amp;2
+    exit 2
+  fi
+done
+
+# Also block by extension
+case "$BASE" in
+  *.pem|*.key|*.p12|*.pfx|*.jks)
+    echo "BLOCKED: cannot modify certificate/key file: $BASE" &gt;&amp;2
+    exit 2 ;;
+esac
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Add your own filenames to the <code>PROTECTED</code> array for project-specific secrets.</div>
+      </div>
+
+    </div><!-- /security recipe-grid -->
+
+    <!-- ============ CODE QUALITY ============ -->
+    <h2 id="quality">Code Quality</h2>
+    <p>PostToolUse hooks that validate output after every change. These catch mistakes while the agent is still in context and can fix them immediately.</p>
+
+    <div class="recipe-grid">
+
+      <!-- Recipe 6: Validate Python syntax -->
+      <div class="recipe-card" data-category="quality" id="recipe-python-syntax">
+        <div class="recipe-head">
+          <h3>6. Validate Python Syntax After Every Edit</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-quality">Quality</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Parses edited Python files with <code>ast.parse()</code> after every write. Catches syntax errors before they snowball into broken imports across the project.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/check-python.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/check-python.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+FILE=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))")
+
+# Only check Python files
+[[ "$FILE" == *.py ]] || exit 0
+
+if ! python3 -c "import ast; ast.parse(open('$FILE').read())" 2>/tmp/hook-syntax-err.txt; then
+  echo "SYNTAX ERROR in $FILE:" &gt;&amp;2
+  cat /tmp/hook-syntax-err.txt &gt;&amp;2
+  exit 2
+fi
+echo "Syntax OK: $FILE"</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">This is the hook <a href="https://github.com/mixpeek/amux">amux</a> uses in production for its single-file Python server.</div>
+      </div>
+
+      <!-- Recipe 7: Auto-format on save -->
+      <div class="recipe-card" data-category="quality" id="recipe-auto-format">
+        <div class="recipe-head">
+          <h3>7. Auto-Format Code on Save</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-quality">Quality</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Runs the appropriate formatter after every file write &mdash; Black for Python, Prettier for JS/TS/CSS/HTML, <code>gofmt</code> for Go.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/auto-format.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/auto-format.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+FILE=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))")
+
+case "$FILE" in
+  *.py)
+    command -v black &gt;/dev/null &amp;&amp; black --quiet "$FILE" 2&gt;/dev/null
+    ;;
+  *.js|*.ts|*.tsx|*.jsx|*.css|*.html|*.json)
+    command -v prettier &gt;/dev/null &amp;&amp; prettier --write "$FILE" 2&gt;/dev/null
+    ;;
+  *.go)
+    command -v gofmt &gt;/dev/null &amp;&amp; gofmt -w "$FILE" 2&gt;/dev/null
+    ;;
+  *.rs)
+    command -v rustfmt &gt;/dev/null &amp;&amp; rustfmt "$FILE" 2&gt;/dev/null
+    ;;
+esac
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Uses <code>command -v</code> to skip silently if the formatter isn&rsquo;t installed. No crashes, no noise.</div>
+      </div>
+
+      <!-- Recipe 8: Run linter -->
+      <div class="recipe-card" data-category="quality" id="recipe-lint">
+        <div class="recipe-head">
+          <h3>8. Lint After Every Change</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-quality">Quality</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Runs ESLint, Ruff, or your language&rsquo;s linter after each edit. Feeds warnings back to the model so it fixes them in the same turn.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/lint-check.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/lint-check.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+FILE=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))")
+
+case "$FILE" in
+  *.py)
+    command -v ruff &gt;/dev/null &amp;&amp; ruff check "$FILE" --output-format text 2&gt;&amp;1 || true
+    ;;
+  *.js|*.ts|*.tsx|*.jsx)
+    command -v eslint &gt;/dev/null &amp;&amp; eslint "$FILE" --format compact 2&gt;&amp;1 || true
+    ;;
+esac
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Stdout goes back to the model as context. The agent sees lint warnings and fixes them without being asked.</div>
+      </div>
+
+      <!-- Recipe 9: TypeScript type check -->
+      <div class="recipe-card" data-category="quality" id="recipe-typecheck">
+        <div class="recipe-head">
+          <h3>9. TypeScript Type Check on Save</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-quality">Quality</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Runs <code>tsc --noEmit</code> after TypeScript file changes. Catches type errors early, before they cascade.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/typecheck.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/typecheck.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+FILE=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))")
+
+[[ "$FILE" == *.ts || "$FILE" == *.tsx ]] || exit 0
+command -v npx &gt;/dev/null || exit 0
+
+# Run tsc on just the changed file's project
+ERRORS=$(npx tsc --noEmit 2>&amp;1 | grep -c "error TS" || true)
+if [ "$ERRORS" -gt 0 ]; then
+  echo "TypeScript: $ERRORS type error(s) after editing $FILE"
+  npx tsc --noEmit 2>&amp;1 | head -20
+fi
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Runs the full project type check, not just the single file, to catch cross-module breakage.</div>
+      </div>
+
+      <!-- Recipe 10: File size limit -->
+      <div class="recipe-card" data-category="quality" id="recipe-file-size">
+        <div class="recipe-head">
+          <h3>10. Enforce Maximum File Size</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-quality">Quality</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Warns when a file exceeds a line count threshold. Catches the &ldquo;one-more-function&rdquo; drift that turns modules into 5,000-line monsters.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/file-size-check.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/file-size-check.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+FILE=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))")
+
+MAX_LINES=500  # adjust per project
+[ -f "$FILE" ] || exit 0
+
+LINES=$(wc -l &lt; "$FILE")
+if [ "$LINES" -gt "$MAX_LINES" ]; then
+  echo "WARNING: $FILE is $LINES lines (limit: $MAX_LINES)"
+  echo "Consider splitting into smaller modules."
+fi
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Outputs a warning, not a block &mdash; the agent sees it and can decide to refactor. Change <code>exit 0</code> to <code>exit 2</code> in a PreToolUse hook to make it a hard limit.</div>
+      </div>
+
+    </div><!-- /quality recipe-grid -->
+
+    <!-- ============ AUTOMATION ============ -->
+    <h2 id="automation">Automation</h2>
+    <p>Hooks that trigger side effects automatically &mdash; tests, notifications, log entries &mdash; so the agent doesn&rsquo;t have to remember to run them.</p>
+
+    <div class="recipe-grid">
+
+      <!-- Recipe 11: Auto-run tests -->
+      <div class="recipe-card" data-category="automation" id="recipe-auto-test">
+        <div class="recipe-head">
+          <h3>11. Auto-Run Tests After Code Changes</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-automation">Automation</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Runs the relevant test file after every source file edit. The agent gets test results in context and fixes failures immediately.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/auto-test.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/auto-test.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+FILE=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))")
+
+# Skip test files themselves (avoid infinite loops)
+echo "$FILE" | grep -qE "(test_|_test\.|\.test\.|\.spec\.)" &amp;&amp; exit 0
+
+# Python: look for matching test file
+if [[ "$FILE" == *.py ]]; then
+  DIR=$(dirname "$FILE")
+  BASE=$(basename "$FILE" .py)
+  for TEST_FILE in "${DIR}/test_${BASE}.py" "${DIR}/tests/test_${BASE}.py" "tests/test_${BASE}.py"; do
+    if [ -f "$TEST_FILE" ]; then
+      echo "Running: pytest $TEST_FILE -x -q"
+      pytest "$TEST_FILE" -x -q 2>&amp;1 | tail -10
+      exit 0
+    fi
+  done
+fi
+
+# JavaScript/TypeScript: look for .test. or .spec. files
+if [[ "$FILE" =~ \.(js|ts|tsx|jsx)$ ]]; then
+  DIR=$(dirname "$FILE")
+  BASE=$(basename "$FILE" | sed 's/\.[^.]*$//')
+  for TEST_FILE in "${DIR}/${BASE}.test."* "${DIR}/__tests__/${BASE}."*; do
+    if [ -f "$TEST_FILE" ]; then
+      echo "Running: npx jest $TEST_FILE --no-coverage"
+      npx jest "$TEST_FILE" --no-coverage 2>&amp;1 | tail -15
+      exit 0
+    fi
+  done
+fi
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">The agent sees test output on stdout and will fix failures in its next action. No &ldquo;remember to run the tests&rdquo; instruction needed.</div>
+      </div>
+
+      <!-- Recipe 12: Slack notification on commit -->
+      <div class="recipe-card" data-category="automation" id="recipe-slack-notify">
+        <div class="recipe-head">
+          <h3>12. Slack Notification on Commit</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-automation">Automation</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Sends a Slack message every time the agent creates a commit. Great for overnight runs &mdash; you see progress in real time.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/slack-on-commit.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/slack-on-commit.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+CMD=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))")
+
+# Only trigger on git commit commands
+echo "$CMD" | grep -q "git commit" || exit 0
+
+WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
+[ -n "$WEBHOOK_URL" ] || exit 0
+
+MSG=$(git log -1 --pretty=format:"%h %s" 2>/dev/null || echo "commit")
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+REPO=$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" || echo "repo")
+
+curl -s -X POST "$WEBHOOK_URL" \
+  -H 'Content-Type: application/json' \
+  -d "{\"text\":\"Agent committed to *${REPO}* (${BRANCH}): \`${MSG}\`\"}" \
+  &gt;/dev/null 2&gt;&amp;1 &amp;
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Set <code>SLACK_WEBHOOK_URL</code> in your environment. The curl runs in background (<code>&amp;</code>) so it doesn&rsquo;t slow down the agent.</div>
+      </div>
+
+      <!-- Recipe 13: Audit log -->
+      <div class="recipe-card" data-category="automation" id="recipe-audit-log">
+        <div class="recipe-head">
+          <h3>13. Audit Log of All Tool Calls</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-automation">Automation</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Logs every tool call to a JSONL file with timestamp, tool name, and input. Full audit trail for compliance or debugging.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/audit-log.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/audit-log.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+INPUT=$(cat)
+LOG_DIR="${HOME}/.claude/audit-logs"
+mkdir -p "$LOG_DIR"
+
+TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+SESSION="${AMUX_SESSION:-local}"
+
+echo "$INPUT" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+entry = {
+    'ts': '$TIMESTAMP',
+    'session': '$SESSION',
+    'tool': d.get('tool_name', ''),
+    'input': d.get('tool_input', {})
+}
+print(json.dumps(entry))
+" >> "$LOG_DIR/$(date +%Y-%m-%d).jsonl"
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">One file per day, JSONL format. Easy to grep, parse, or ship to your logging pipeline. The <code>*</code> matcher catches every tool.</div>
+      </div>
+
+      <!-- Recipe 14: Auto-stage on commit -->
+      <div class="recipe-card" data-category="automation" id="recipe-auto-stage">
+        <div class="recipe-head">
+          <h3>14. Auto-Add Changed Files Before Commit</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-automation">Automation</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Runs <code>git add</code> on modified tracked files before every commit, so the agent never forgets to stage its changes.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/auto-stage.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/auto-stage.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+CMD=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))")
+
+# Only trigger on git commit
+echo "$CMD" | grep -q "git commit" || exit 0
+
+# Stage all modified tracked files (not untracked)
+git add -u 2>/dev/null || true
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Uses <code>git add -u</code> (tracked files only) to avoid accidentally staging untracked secrets or build artifacts.</div>
+      </div>
+
+    </div><!-- /automation recipe-grid -->
+
+    <!-- ============ COORDINATION ============ -->
+    <h2 id="coordination">Agent Coordination</h2>
+    <p>Hooks that integrate with <a href="/">amux</a> or other orchestration systems to coordinate work across parallel agent sessions.</p>
+
+    <div class="recipe-grid">
+
+      <!-- Recipe 15: Report to amux dashboard -->
+      <div class="recipe-card" data-category="coordination" id="recipe-amux-status">
+        <div class="recipe-head">
+          <h3>15. Report Status to amux Dashboard</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-coordination">Coordination</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Posts a status update to the amux board every time the agent finishes a tool call. Gives you real-time visibility into what each agent is doing.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/amux-status.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/amux-status.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+AMUX_URL="${AMUX_URL:-https://localhost:8822}"
+SESSION="${AMUX_SESSION:-}"
+[ -n "$SESSION" ] || exit 0
+
+CMD=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('command','')[:100])" 2>/dev/null || echo "?")
+
+# Only report git commits and test runs
+echo "$CMD" | grep -qE "(git commit|pytest|npm test|jest)" || exit 0
+
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d "{\"title\":\"[$SESSION] $CMD\",\"status\":\"doing\",\"session\":\"$SESSION\"}" \
+  "$AMUX_URL/api/board" &gt;/dev/null 2&gt;&amp;1 &amp;
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Only reports significant actions (commits, test runs) to avoid flooding the board. Runs in background so it never blocks.</div>
+      </div>
+
+      <!-- Recipe 16: Notify other sessions -->
+      <div class="recipe-card" data-category="coordination" id="recipe-notify-sessions">
+        <div class="recipe-head">
+          <h3>16. Notify Other Sessions on File Change</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-coordination">Coordination</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>When an agent modifies a shared file (like a schema, API contract, or config), notify all other sessions via the amux messaging API so they can adapt.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/notify-file-change.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/notify-file-change.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+AMUX_URL="${AMUX_URL:-https://localhost:8822}"
+SESSION="${AMUX_SESSION:-}"
+[ -n "$SESSION" ] || exit 0
+
+FILE=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))")
+
+# Only notify for shared files — customize this list
+SHARED_PATTERNS=("schema" "migration" "api" "proto" "openapi" "package.json" "pyproject.toml")
+MATCH=false
+for pat in "${SHARED_PATTERNS[@]}"; do
+  echo "$FILE" | grep -qi "$pat" && MATCH=true
+done
+$MATCH || exit 0
+
+# Get all other sessions and notify them
+SESSIONS=$(curl -sk "$AMUX_URL/api/sessions" | python3 -c "
+import json, sys, os
+me = os.environ.get('AMUX_SESSION','')
+[print(s['name']) for s in json.load(sys.stdin) if s['name'] != me and s.get('status') == 'running']
+" 2>/dev/null)
+
+for s in $SESSIONS; do
+  curl -sk -X POST -H 'Content-Type: application/json' \
+    -d "{\"text\":\"@$SESSION modified shared file: $FILE — you may need to pull or adapt.\"}" \
+    "$AMUX_URL/api/sessions/$s/send" &gt;/dev/null 2&gt;&amp;1 &amp;
+done
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Customize <code>SHARED_PATTERNS</code> for your project. Common shared files: database schemas, API specs, shared configs, lock files.</div>
+      </div>
+
+      <!-- Recipe 17: Claim board task on start -->
+      <div class="recipe-card" data-category="coordination" id="recipe-claim-task">
+        <div class="recipe-head">
+          <h3>17. Auto-Claim Board Task on Session Start</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-coordination">Coordination</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>When a session starts, automatically claim the next unclaimed task from the amux board. Prevents two agents from working on the same thing.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/claim-next-task.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/claim-next-task.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+AMUX_URL="${AMUX_URL:-https://localhost:8822}"
+SESSION="${AMUX_SESSION:-}"
+[ -n "$SESSION" ] || exit 0
+
+# Find the first unclaimed todo item
+TASK_ID=$(curl -sk "$AMUX_URL/api/board" | python3 -c "
+import json, sys
+items = json.load(sys.stdin)
+for item in items:
+    if item['status'] == 'todo' and not item.get('session'):
+        print(item['id'])
+        break
+" 2>/dev/null)
+
+[ -n "$TASK_ID" ] || exit 0
+
+# Atomic claim via CAS
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d "{\"session\":\"$SESSION\"}" \
+  "$AMUX_URL/api/board/$TASK_ID/claim" &gt;/dev/null 2&gt;&amp;1
+
+echo "Claimed task $TASK_ID for session $SESSION"</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Uses the <code>Stop</code> hook event so each time an agent finishes its current work, it pulls the next task. The atomic <code>/claim</code> endpoint prevents race conditions.</div>
+      </div>
+
+    </div><!-- /coordination recipe-grid -->
+
+    <!-- ============ WORKFLOW ============ -->
+    <h2 id="workflow">Workflow</h2>
+    <p>Hooks that enforce development workflow policies &mdash; review requirements, deployment freezes, naming conventions.</p>
+
+    <div class="recipe-grid">
+
+      <!-- Recipe 18: Enforce conventional commits -->
+      <div class="recipe-card" data-category="workflow" id="recipe-conventional-commits">
+        <div class="recipe-head">
+          <h3>18. Enforce Conventional Commit Messages</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-workflow">Workflow</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Blocks commits that don&rsquo;t follow the <code>type(scope): description</code> format. Keeps your git log machine-parseable for changelogs.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/conventional-commit.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/conventional-commit.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+CMD=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))")
+
+# Only check git commit commands
+echo "$CMD" | grep -q 'git commit' || exit 0
+
+# Extract the commit message from -m flag
+MSG=$(echo "$CMD" | python3 -c "
+import sys, re
+cmd = sys.stdin.read()
+m = re.search(r'-m\s+[\"'\''](.*?)[\"'\'']', cmd)
+if m: print(m.group(1).split('\n')[0])
+else: print('')
+")
+
+[ -n "$MSG" ] || exit 0
+
+PATTERN='^(feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert)(\(.+\))?: .{3,}'
+if ! echo "$MSG" | grep -qE "$PATTERN"; then
+  echo "BLOCKED: commit message doesn't follow conventional format" &gt;&amp;2
+  echo "Expected: type(scope): description" &gt;&amp;2
+  echo "Types: feat, fix, docs, style, refactor, perf, test, chore, ci, build, revert" &gt;&amp;2
+  echo "Got: $MSG" &gt;&amp;2
+  exit 2
+fi
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">The agent will retry with a conforming message when blocked. Remove <code>(scope)</code> from the pattern if you don&rsquo;t use scopes.</div>
+      </div>
+
+      <!-- Recipe 19: Deploy freeze -->
+      <div class="recipe-card" data-category="workflow" id="recipe-deploy-freeze">
+        <div class="recipe-head">
+          <h3>19. Block Pushes During Deploy Freeze</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-workflow">Workflow</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>Prevents <code>git push</code> during a defined freeze window. Drop a <code>.deploy-freeze</code> file to activate, remove it to deactivate.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/deploy-freeze.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/deploy-freeze.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+CMD=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))")
+
+echo "$CMD" | grep -q "git push" || exit 0
+
+PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+FREEZE_FILE="$PROJECT_ROOT/.deploy-freeze"
+
+if [ -f "$FREEZE_FILE" ]; then
+  REASON=$(cat "$FREEZE_FILE" 2>/dev/null || echo "No reason given")
+  echo "BLOCKED: deploy freeze is active" &gt;&amp;2
+  echo "Reason: $REASON" &gt;&amp;2
+  echo "Remove .deploy-freeze to lift the freeze." &gt;&amp;2
+  exit 2
+fi
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Create <code>.deploy-freeze</code> with a reason: <code>echo "Mobile release cut — freeze until May 2" > .deploy-freeze</code>. Add it to <code>.gitignore</code>.</div>
+      </div>
+
+      <!-- Recipe 20: Require tests for new files -->
+      <div class="recipe-card" data-category="workflow" id="recipe-require-tests">
+        <div class="recipe-head">
+          <h3>20. Require Test File for New Source Files</h3>
+          <div class="recipe-tags"><span class="recipe-tag tag-workflow">Workflow</span></div>
+        </div>
+        <div class="recipe-body">
+          <p>When the agent creates a new source file, check that a corresponding test file also exists. Warns if test coverage is missing.</p>
+          <span class="recipe-label">settings.json</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [{
+          "type": "command",
+          "command": ".claude/hooks/require-tests.sh"
+        }]
+      }
+    ]
+  }
+}</code></pre>
+          </div>
+          <span class="recipe-label">.claude/hooks/require-tests.sh</span>
+          <div class="recipe-code">
+            <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+            <pre><code>#!/bin/bash
+set -euo pipefail
+FILE=$(cat | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))")
+
+# Skip test files, configs, and non-code files
+echo "$FILE" | grep -qE "(test_|_test\.|\.test\.|\.spec\.|__)" &amp;&amp; exit 0
+echo "$FILE" | grep -qE "\.(py|js|ts|tsx|jsx)$" || exit 0
+echo "$FILE" | grep -qiE "(config|setup|__init__|index)" &amp;&amp; exit 0
+
+DIR=$(dirname "$FILE")
+BASE=$(basename "$FILE" | sed 's/\.[^.]*$//')
+
+# Check for common test file patterns
+FOUND=false
+for PATTERN in "test_${BASE}" "${BASE}_test" "${BASE}.test" "${BASE}.spec"; do
+  find "$DIR" "$(dirname "$DIR")/tests" "$(dirname "$DIR")/__tests__" \
+    -name "${PATTERN}.*" -type f 2>/dev/null | grep -q . &amp;&amp; FOUND=true
+done
+
+if ! $FOUND; then
+  echo "WARNING: No test file found for $FILE"
+  echo "Consider creating a test file: test_${BASE}.py or ${BASE}.test.ts"
+fi
+exit 0</code></pre>
+          </div>
+        </div>
+        <div class="recipe-note">Outputs a warning, not a block. The agent receives the hint and often creates the test file in its next action.</div>
+      </div>
+
+    </div><!-- /workflow recipe-grid -->
+
+    <!-- ============ QUICK REFERENCE ============ -->
+    <h2 id="reference">Quick Reference</h2>
+
+    <table class="ref-table">
+      <thead><tr><th>#</th><th>Recipe</th><th>Event</th><th>Matcher</th><th>Blocks?</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Block Secret Leaks</td><td>PreToolUse</td><td><code>Edit|Write</code></td><td>Yes</td></tr>
+        <tr><td>2</td><td>Block Destructive Commands</td><td>PreToolUse</td><td><code>Bash</code></td><td>Yes</td></tr>
+        <tr><td>3</td><td>Enforce Branch Policy</td><td>PreToolUse</td><td><code>Bash</code></td><td>Yes</td></tr>
+        <tr><td>4</td><td>Sandbox File Writes</td><td>PreToolUse</td><td><code>Edit|Write</code></td><td>Yes</td></tr>
+        <tr><td>5</td><td>Protect .env Files</td><td>PreToolUse</td><td><code>Edit|Write</code></td><td>Yes</td></tr>
+        <tr><td>6</td><td>Validate Python Syntax</td><td>PostToolUse</td><td><code>Edit|Write</code></td><td>Warn</td></tr>
+        <tr><td>7</td><td>Auto-Format on Save</td><td>PostToolUse</td><td><code>Edit|Write</code></td><td>No</td></tr>
+        <tr><td>8</td><td>Lint After Change</td><td>PostToolUse</td><td><code>Edit|Write</code></td><td>Warn</td></tr>
+        <tr><td>9</td><td>TypeScript Type Check</td><td>PostToolUse</td><td><code>Edit|Write</code></td><td>Warn</td></tr>
+        <tr><td>10</td><td>File Size Limit</td><td>PostToolUse</td><td><code>Edit|Write</code></td><td>Warn</td></tr>
+        <tr><td>11</td><td>Auto-Run Tests</td><td>PostToolUse</td><td><code>Edit|Write</code></td><td>No</td></tr>
+        <tr><td>12</td><td>Slack on Commit</td><td>PostToolUse</td><td><code>Bash</code></td><td>No</td></tr>
+        <tr><td>13</td><td>Audit Log</td><td>PreToolUse</td><td><code>*</code></td><td>No</td></tr>
+        <tr><td>14</td><td>Auto-Stage Before Commit</td><td>PreToolUse</td><td><code>Bash</code></td><td>No</td></tr>
+        <tr><td>15</td><td>Report to amux</td><td>PostToolUse</td><td><code>Bash</code></td><td>No</td></tr>
+        <tr><td>16</td><td>Notify Sessions on File Change</td><td>PostToolUse</td><td><code>Edit|Write</code></td><td>No</td></tr>
+        <tr><td>17</td><td>Auto-Claim Board Task</td><td>Stop</td><td><code>*</code></td><td>No</td></tr>
+        <tr><td>18</td><td>Conventional Commits</td><td>PreToolUse</td><td><code>Bash</code></td><td>Yes</td></tr>
+        <tr><td>19</td><td>Deploy Freeze</td><td>PreToolUse</td><td><code>Bash</code></td><td>Yes</td></tr>
+        <tr><td>20</td><td>Require Tests for New Files</td><td>PostToolUse</td><td><code>Write</code></td><td>Warn</td></tr>
+      </tbody>
+    </table>
+
+    <!-- ============ COMBINING HOOKS ============ -->
+    <h2>Combining Multiple Hooks</h2>
+    <p>You can stack multiple hooks on the same event. They run in order &mdash; if any PreToolUse hook exits <code>2</code>, the action is blocked regardless of what other hooks return.</p>
+
+    <span class="recipe-label">Example: security + quality stack</span>
+    <div class="recipe-code">
+      <button class="recipe-copy" onclick="copyCode(this)">Copy</button>
+      <pre><code>{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          { "type": "command", "command": ".claude/hooks/block-secrets.sh" },
+          { "type": "command", "command": ".claude/hooks/protect-config.sh" },
+          { "type": "command", "command": ".claude/hooks/sandbox-writes.sh" }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": ".claude/hooks/block-destructive.sh" },
+          { "type": "command", "command": ".claude/hooks/enforce-branch.sh" },
+          { "type": "command", "command": ".claude/hooks/deploy-freeze.sh" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          { "type": "command", "command": ".claude/hooks/check-python.sh" },
+          { "type": "command", "command": ".claude/hooks/auto-format.sh" },
+          { "type": "command", "command": ".claude/hooks/lint-check.sh" },
+          { "type": "command", "command": ".claude/hooks/auto-test.sh" }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+    </div>
+
+    <!-- ============ FAQ ============ -->
+    <h2 id="faq">FAQ</h2>
+
+    <details style="border:1px solid var(--border);border-radius:6px;margin-bottom:0.75rem;overflow:hidden">
+      <summary style="padding:0.8rem 1rem;cursor:pointer;font-weight:500;background:var(--surface)">What are Claude Code hooks?</summary>
+      <div style="padding:0.8rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.6">Hooks are shell commands that run automatically before or after Claude Code tool calls. They&rsquo;re configured in <code>.claude/settings.json</code> and can block actions (exit code 2), log activity, enforce rules, or trigger side effects. Hook events include <code>PreToolUse</code>, <code>PostToolUse</code>, <code>Notification</code>, and <code>Stop</code>. Hooks receive JSON on stdin with tool details and can return feedback on stdout.</div>
+    </details>
+    <details style="border:1px solid var(--border);border-radius:6px;margin-bottom:0.75rem;overflow:hidden">
+      <summary style="padding:0.8rem 1rem;cursor:pointer;font-weight:500;background:var(--surface)">Where do I put hooks?</summary>
+      <div style="padding:0.8rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.6">For project-level hooks shared with your team, use <code>.claude/settings.json</code> (committed to git). For personal hooks, use <code>.claude/settings.local.json</code> (gitignored). For global hooks across all projects, use <code>~/.claude/settings.json</code>.</div>
+    </details>
+    <details style="border:1px solid var(--border);border-radius:6px;margin-bottom:0.75rem;overflow:hidden">
+      <summary style="padding:0.8rem 1rem;cursor:pointer;font-weight:500;background:var(--surface)">How do I block an action with a hook?</summary>
+      <div style="padding:0.8rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.6">In a <code>PreToolUse</code> hook, have your script exit with code <code>2</code>. This blocks the tool call and sends your stderr output back to the model as an error message. Exit code <code>0</code> allows the action. Any other exit code logs a warning but doesn&rsquo;t block.</div>
+    </details>
+    <details style="border:1px solid var(--border);border-radius:6px;margin-bottom:0.75rem;overflow:hidden">
+      <summary style="padding:0.8rem 1rem;cursor:pointer;font-weight:500;background:var(--surface)">What data does a hook receive on stdin?</summary>
+      <div style="padding:0.8rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.6">JSON with <code>tool_name</code> (e.g. &ldquo;Bash&rdquo;, &ldquo;Edit&rdquo;, &ldquo;Write&rdquo;) and <code>tool_input</code> (the parameters). For Bash, <code>tool_input.command</code> is the shell command. For Edit, you get <code>file_path</code>, <code>old_string</code>, <code>new_string</code>. PostToolUse hooks also receive <code>tool_output</code> with the result.</div>
+    </details>
+    <details style="border:1px solid var(--border);border-radius:6px;margin-bottom:0.75rem;overflow:hidden">
+      <summary style="padding:0.8rem 1rem;cursor:pointer;font-weight:500;background:var(--surface)">Can I use hooks with parallel agents?</summary>
+      <div style="padding:0.8rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.6">Yes. Hooks in <code>.claude/settings.json</code> are inherited by every agent running in that project. This is how you enforce fleet-wide policies &mdash; define once, every session follows. For inter-agent coordination, hooks can call the <a href="/">amux</a> REST API to post status updates, claim tasks, or message other sessions.</div>
+    </details>
+    <details style="border:1px solid var(--border);border-radius:6px;margin-bottom:0.75rem;overflow:hidden">
+      <summary style="padding:0.8rem 1rem;cursor:pointer;font-weight:500;background:var(--surface)">How do I debug a hook?</summary>
+      <div style="padding:0.8rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.6">Test it directly: <code>echo '{"tool_name":"Bash","tool_input":{"command":"ls"}}' | bash .claude/hooks/your-hook.sh</code>. Check the exit code with <code>echo $?</code>. Make sure the script is executable (<code>chmod +x</code>) and the matcher matches the tool name (case-sensitive, <code>|</code> for alternatives).</div>
+    </details>
+    <details style="border:1px solid var(--border);border-radius:6px;margin-bottom:0.75rem;overflow:hidden">
+      <summary style="padding:0.8rem 1rem;cursor:pointer;font-weight:500;background:var(--surface)">What&rsquo;s the difference between PreToolUse and PostToolUse?</summary>
+      <div style="padding:0.8rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.6"><code>PreToolUse</code> runs before the tool and can block it (exit 2). Use for safety: secrets, destructive commands, branch policy. <code>PostToolUse</code> runs after success. Use for automation: testing, formatting, notifications. PreToolUse is your guard; PostToolUse is your automation layer.</div>
+    </details>
+
+    <!-- ============ CTA ============ -->
+    <div class="cta-box">
+      <h3>Hooks + amux = production-grade agents</h3>
+      <p>Hooks enforce local policy. amux adds fleet-wide observability, task coordination, and self-healing. Together, they turn raw Claude Code sessions into infrastructure you can run overnight.</p>
+      <p><a href="/guides/getting-started/">Get started with amux</a> &nbsp;&middot;&nbsp; <a href="/guides/context-engineering/">Context engineering guide</a> &nbsp;&middot;&nbsp; <a href="/guides/claude-md-templates/">CLAUDE.md templates</a></p>
+    </div>
+
+    <h2>Related Guides</h2>
+    <ul style="font-size:0.9rem;line-height:2">
+      <li><a href="/guides/context-engineering/">Context Engineering for AI Coding Agents</a> &mdash; the full framework for structuring what agents see</li>
+      <li><a href="/guides/claude-md-templates/">CLAUDE.md Templates</a> &mdash; 20+ ready-to-use project configs</li>
+      <li><a href="/guides/vibe-coding-quality-gates/">Quality Gates: From Vibe Coding to Production</a> &mdash; multi-agent validation pipelines</li>
+      <li><a href="/guides/self-healing-configuration/">Self-Healing Configuration</a> &mdash; auto-compaction, restart, and prompt recovery</li>
+      <li><a href="/guides/setting-up-yolo-mode/">Setting Up YOLO Mode</a> &mdash; configure auto-approval for unattended runs</li>
+    </ul>
+  </main>
+
+  <footer class="site-footer">
+    <div class="foot-inner">
+      <div class="foot-grid">
+        <div class="foot-col">
+          <h4>Product</h4>
+          <a href="/features/">Features</a>
+          <a href="/pricing/">Pricing</a>
+          <a href="/changelog/">Changelog</a>
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank">iOS App</a>
+        </div>
+        <div class="foot-col">
+          <h4>Resources</h4>
+          <a href="/docs/">Documentation</a>
+          <a href="/guides/">Guides</a>
+          <a href="/blog/">Blog</a>
+          <a href="/faq/">FAQ</a>
+        </div>
+        <div class="foot-col">
+          <h4>Community</h4>
+          <a href="https://github.com/mixpeek/amux" target="_blank">GitHub</a>
+          <a href="https://github.com/mixpeek/amux/issues" target="_blank">Issues</a>
+          <a href="https://github.com/mixpeek/amux/discussions" target="_blank">Discussions</a>
+        </div>
+        <div class="foot-col">
+          <h4>Company</h4>
+          <a href="/privacy/">Privacy</a>
+          <a href="https://mixpeek.com" target="_blank">Mixpeek</a>
+        </div>
+      </div>
+      <div class="foot-bottom">
+        <span>Open-source control plane for AI agents. Runtime, observability, orchestration, and cost control &mdash; in one file.</span>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // GitHub stars
+    fetch('https://api.github.com/repos/mixpeek/amux')
+      .then(r=>r.json())
+      .then(d=>{const el=document.getElementById('gh-stars');if(el&&d.stargazers_count)el.textContent=d.stargazers_count>=1000?(d.stargazers_count/1000).toFixed(1)+'k':d.stargazers_count})
+      .catch(()=>{});
+
+    // Copy button
+    function copyCode(btn){
+      const pre=btn.parentElement.querySelector('pre');
+      navigator.clipboard.writeText(pre.textContent).then(()=>{
+        btn.textContent='Copied!';btn.classList.add('copied');
+        setTimeout(()=>{btn.textContent='Copy';btn.classList.remove('copied')},1500);
+      });
+    }
+
+    // Filter
+    document.getElementById('filter-bar').addEventListener('click',function(e){
+      const btn=e.target.closest('.filter-btn');
+      if(!btn)return;
+      const filter=btn.dataset.filter;
+      document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelectorAll('.recipe-card').forEach(card=>{
+        if(filter==='all'||card.dataset.category===filter){
+          card.style.display='';
+        }else{
+          card.style.display='none';
+        }
+      });
+    });
+  </script>
+</body>
+</html>
