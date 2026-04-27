@@ -13705,7 +13705,8 @@ const ALL_TABS = [
   { id: 'metrics',       label: 'Metrics' },
   { id: 'torrents',      label: 'Torrents' },
   { id: 'terminal',      label: 'Terminal' },
-  { id: 'browser',       label: 'Browser' },
+  { id: 'journal',       label: 'Journal' },
+  { id: 'habits',        label: 'Habits' },
 ];
 
 let hiddenTabs = (function() {
