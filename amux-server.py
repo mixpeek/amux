@@ -1559,8 +1559,10 @@ def _snapshot_all_sessions():
             actions = _session_auto_actions.setdefault(name, {})
 
             # ── 1. Proactive: auto-compact when context is low ──────────────
+            # Skip if the context % appears in /status output (user was just checking)
             ctx_match = re.search(r'context left until auto-compact[:\s]+(\d+)%', clean, re.IGNORECASE)
-            if ctx_match:
+            _from_status_cmd = bool(ctx_match and re.search(r'❯\s*/status', clean))
+            if ctx_match and not _from_status_cmd:
                 pct = int(ctx_match.group(1))
                 _ac_row = get_db().execute("SELECT value FROM prefs WHERE key='auto_compact_enabled'").fetchone()
                 _ac_enabled = (_ac_row is None) or (_ac_row[0] != "0")  # default ON
