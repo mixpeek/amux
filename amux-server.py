@@ -14111,24 +14111,79 @@ async function copyMoshCmd(name) {
   }
 }
 
+// Module-level guard so multiple Restart entry points (card menu, peek menu)
+// can't pile up overlapping polling loops + queued /start commands.
+const _restartingSessions = new Set();
+
 async function doRestart(name) {
-  await apiCall(API + '/api/sessions/' + name + '/stop', { method: 'POST' });
-  // Poll until stopped (up to 20s for graceful /exit). If it never stops,
-  // bail out instead of racing doStart against a still-running session.
-  let stopped = false;
-  for (let i = 0; i < 40; i++) {
-    await new Promise(r => setTimeout(r, 500));
-    await fetchSessions();
-    if (!sessions.find(s => s.name === name && s.running)) {
-      stopped = true;
-      break;
-    }
-  }
-  if (!stopped) {
-    showToast("Stop didn't take effect, try again");
+  if (_restartingSessions.has(name)) {
+    showToast('Restart already in progress');
     return;
   }
-  await doStart(name);
+  _restartingSessions.add(name);
+  try {
+    const encodedName = encodeURIComponent(name);
+    const SINGLE_URL = API + '/api/sessions/' + encodedName;
+    const STOP_URL = SINGLE_URL + '/stop';
+
+    // Pre-check: if Claude already isn't running (crashed, externally killed),
+    // skip /stop entirely and go straight to doStart. Without this, the queued
+    // _bg_stop worker can race a freshly-launched Claude and kill it.
+    // Use raw fetch so we can distinguish 404 from 5xx; apiCall flattens both.
+    try {
+      const pre = await fetch(SINGLE_URL);
+      if (pre.status === 404) {
+        showToast('Session no longer exists');
+        return;
+      }
+      if (pre.ok) {
+        const data = await pre.json();
+        if (!data.running) {
+          await doStart(name);
+          return;
+        }
+      }
+    } catch (e) {
+      // Network blip on pre-check — fall through to standard stop+poll flow.
+    }
+
+    const stopResp = await apiCall(STOP_URL, { method: 'POST' });
+    if (!stopResp) return; // apiCall already surfaced the error
+
+    // Poll the SINGLE-session endpoint, not the list. The list endpoint reports
+    // running == "tmux session exists", which never flips false because
+    // stop_session keeps tmux alive. The single endpoint uses is_running()
+    // which correctly returns false once Claude exits.
+    // Worst case server-side stop is ~21s (rename + 15s exit + 1s settle), so
+    // poll for 30s with a 1s warmup before the first poll.
+    await new Promise(r => setTimeout(r, 1000));
+    let stopped = false;
+    const MAX_POLLS = 58; // 1s warmup + 58 * 500ms ≈ 30s total
+    for (let i = 0; i < MAX_POLLS; i++) {
+      try {
+        const r = await fetch(SINGLE_URL);
+        if (r.status === 404) {
+          showToast('Session no longer exists');
+          return;
+        }
+        if (r.ok) {
+          const data = await r.json();
+          if (!data.running) { stopped = true; break; }
+        }
+      } catch (e) {
+        // Network blip — keep polling.
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+    if (!stopped) {
+      showToast("Stop didn't take effect, try again");
+      return;
+    }
+    await fetchSessions(); // refresh card UI before doStart
+    await doStart(name);
+  } finally {
+    _restartingSessions.delete(name);
+  }
 }
 
 // ── Sending indicator ──
