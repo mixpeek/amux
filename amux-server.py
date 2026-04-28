@@ -14134,7 +14134,7 @@ async function doRestart(name) {
     let alreadyStopped = false;
     let sessionGone = false;
     try {
-      const pre = await fetch(INFO_URL);
+      const pre = await fetch(INFO_URL, { signal: AbortSignal.timeout(5000) });
       if (pre.status === 404) {
         sessionGone = true;
       } else if (pre.ok) {
@@ -14168,7 +14168,7 @@ async function doRestart(name) {
     const MAX_POLLS = 58; // 1s warmup + 58 * 500ms ≈ 30s total
     for (let i = 0; i < MAX_POLLS; i++) {
       try {
-        const r = await fetch(INFO_URL);
+        const r = await fetch(INFO_URL, { signal: AbortSignal.timeout(3000) });
         if (r.status === 404) {
           showToast('Session no longer exists');
           return;
