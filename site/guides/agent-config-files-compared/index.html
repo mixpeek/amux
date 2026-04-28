@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>CLAUDE.md vs .cursorrules vs AGENTS.md vs copilot-instructions — Every AI Agent Config File Compared (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="The complete comparison of AI coding agent configuration files — CLAUDE.md, .cursorrules, .cursor/rules/, AGENTS.md, .github/copilot-instructions.md, .windsurfrules, and .clinerules. Syntax, features, limitations, and how to set up one repo for multiple tools.">
+  <meta name="keywords" content="CLAUDE.md, cursorrules, .cursorrules, cursor rules, AGENTS.md, copilot-instructions, .github copilot-instructions.md, windsurfrules, clinerules, AI agent config file, claude code configuration, cursor configuration, AI coding agent setup, agent instructions file, claude md vs cursor rules, AI tool configuration comparison 2026">
+  <link rel="canonical" href="https://amux.io/guides/agent-config-files-compared/">
+  <meta property="og:title" content="CLAUDE.md vs .cursorrules vs AGENTS.md — Every AI Agent Config File Compared">
+  <meta property="og:description" content="Side-by-side comparison of every AI coding agent config format. Syntax, features, limitations, and unified multi-tool setup.">
+  <meta property="og:url" content="https://amux.io/guides/agent-config-files-compared/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="CLAUDE.md vs .cursorrules vs AGENTS.md — Every Config File Compared">
+  <meta name="twitter:description" content="Side-by-side comparison of every AI coding agent config format. One repo, multiple tools, unified setup.">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Agent Config Files Compared","item":"https://amux.io/guides/agent-config-files-compared/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"CLAUDE.md vs .cursorrules vs AGENTS.md — Every AI Agent Config File Compared","description":"Side-by-side comparison of AI coding agent configuration files: syntax, features, limitations, and how to set up one repo for multiple tools.","datePublished":"2026-04-28","dateModified":"2026-04-28","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon-512.png"}},"image":"https://amux.io/og-image.png","mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/guides/agent-config-files-compared/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is a CLAUDE.md file?","acceptedAnswer":{"@type":"Answer","text":"CLAUDE.md is a markdown file that gives Claude Code persistent project instructions. It's loaded at the start of every conversation, supports nested files per directory, and can include rules for coding style, test commands, forbidden patterns, and deployment workflows. It lives at your project root (committed to git) or at ~/.claude/CLAUDE.md for personal global preferences."}},{"@type":"Question","name":"What is a .cursorrules file?","acceptedAnswer":{"@type":"Answer","text":".cursorrules is a text file at your project root that gives Cursor AI persistent instructions. It was the original config format for Cursor, now being replaced by the newer .cursor/rules/ directory format which supports multiple rule files with glob-based scoping. The legacy .cursorrules is still supported but Cursor recommends migrating to the directory format."}},{"@type":"Question","name":"What is AGENTS.md?","acceptedAnswer":{"@type":"Answer","text":"AGENTS.md is an emerging open standard for AI agent instructions, proposed as a vendor-neutral alternative to tool-specific config files. It uses markdown with YAML frontmatter for metadata (supported tools, version, scope) and is designed to work across Claude Code, Cursor, Copilot, and other AI tools. Adoption is still early but growing as developers use 2+ AI tools on the same codebase."}},{"@type":"Question","name":"What is .github/copilot-instructions.md?","acceptedAnswer":{"@type":"Answer","text":".github/copilot-instructions.md is GitHub Copilot's project-level instruction file. It provides custom instructions that apply to all Copilot interactions in the repository. It supports markdown, is scoped to the repo level (no per-directory overrides), and is committed to git. GitHub also supports organization-level instructions and per-language instruction files."}},{"@type":"Question","name":"Can I use CLAUDE.md and .cursorrules in the same repo?","acceptedAnswer":{"@type":"Answer","text":"Yes. Each tool reads only its own config file, so they coexist without conflict. Many teams maintain both CLAUDE.md (for Claude Code) and .cursor/rules/ (for Cursor) in the same repo. The key is to keep them in sync — when you update a rule in one, update it in the other. Some teams use a shared source-of-truth file and generate tool-specific configs from it."}},{"@type":"Question","name":"Which AI coding agent config file should I use?","acceptedAnswer":{"@type":"Answer","text":"Use the config file for whatever tool you use. If your team uses multiple tools (the average developer uses 2.3), maintain config files for each. Start with CLAUDE.md if you use Claude Code, .cursor/rules/ if you use Cursor, or .github/copilot-instructions.md if you use Copilot. If you want a single source of truth, consider AGENTS.md as a vendor-neutral layer, though tool-specific files give you access to each tool's unique features like hooks and glob-based scoping."}},{"@type":"Question","name":"What is .windsurfrules?","acceptedAnswer":{"@type":"Answer","text":".windsurfrules is the Windsurf (formerly Codeium) equivalent of .cursorrules. It's a plain text file at your project root that provides persistent instructions to Windsurf's Cascade AI. The format is similar to .cursorrules — plain markdown or text with project rules. Windsurf 2.0 also introduced Spaces for team-shared rules."}},{"@type":"Question","name":"How do I keep multiple config files in sync?","acceptedAnswer":{"@type":"Answer","text":"Three approaches: (1) Manual sync — maintain each file separately, review them together in PRs. Works for small teams. (2) Shared template — keep a canonical rules.md and copy sections into each tool's format. (3) Script generation — write a build script that reads a single source file and generates CLAUDE.md, .cursor/rules/*.mdc, and copilot-instructions.md from it. The tradeoff is convenience vs losing tool-specific features."}}]}</script>
+  <style>
+    .matrix-table{width:100%;border-collapse:collapse;font-size:0.82rem;margin:2rem 0;overflow-x:auto;display:block}
+    .matrix-table th,.matrix-table td{padding:0.6rem 0.7rem;border:1px solid var(--border);text-align:left;white-space:nowrap}
+    .matrix-table th{background:var(--surface);font-weight:600;font-size:0.76rem;text-transform:uppercase;letter-spacing:0.03em;position:sticky;top:0}
+    .matrix-table .yes{color:var(--green);font-weight:600}
+    .matrix-table .no{color:var(--muted)}
+    .matrix-table .partial{color:#f59e0b;font-weight:500}
+    .tool-card{border:1px solid var(--border);border-radius:8px;overflow:hidden;margin:2rem 0}
+    .tool-card-head{padding:0.8rem 1.2rem;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:0.75rem}
+    .tool-card-head h3{margin:0;font-size:1rem}
+    .tool-badge{font-size:0.68rem;padding:2px 8px;border-radius:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.03em}
+    .badge-green{background:var(--green);color:#000}
+    .badge-blue{background:#3b82f6;color:#fff}
+    .badge-purple{background:#a855f7;color:#fff}
+    .badge-amber{background:#f59e0b;color:#000}
+    .badge-red{background:#ef4444;color:#fff}
+    .badge-gray{background:var(--muted);color:#000}
+    .tool-card-body{padding:1.2rem}
+    .tool-card-body p{font-size:0.88rem;color:var(--dim);line-height:1.6;margin:0 0 0.75rem}
+    .tool-card-body p:last-child{margin-bottom:0}
+    .tool-meta{display:grid;grid-template-columns:1fr 1fr;gap:0.5rem 1.5rem;font-size:0.82rem;margin:1rem 0;padding:0.8rem;background:var(--bg);border-radius:6px}
+    .tool-meta dt{color:var(--muted);font-weight:500}
+    .tool-meta dd{margin:0;color:var(--dim)}
+    .code-block{position:relative;margin:1rem 0}
+    .code-block pre{margin:0;padding:1rem;font-size:0.76rem;line-height:1.55;overflow-x:auto;background:var(--bg);border:1px solid var(--border);border-radius:6px;max-height:450px}
+    .code-copy{position:absolute;top:6px;right:6px;font-size:0.7rem;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--surface);color:var(--dim);cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all .15s;z-index:1}
+    .code-copy:hover{background:var(--green);color:#000;border-color:var(--green)}
+    .code-copy.copied{background:var(--green);color:#000;border-color:var(--green)}
+    .code-label{font-size:0.72rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin:1rem 0 0.25rem;display:block}
+    .toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0}
+    .toc strong{font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)}
+    .toc ol{margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2}
+    .toc a{color:var(--dim);text-decoration:none}
+    .toc a:hover{color:var(--green)}
+    .tree-block{font-family:'JetBrains Mono',monospace;font-size:0.78rem;line-height:1.6;padding:1rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin:1.5rem 0;overflow-x:auto}
+    .tree-block .file-highlight{color:var(--green);font-weight:600}
+    .cta-box{border:1px solid var(--green);border-radius:8px;padding:1.5rem;margin:2.5rem 0;background:oklch(0.25 0.02 145)}
+    .cta-box h3{margin:0 0 0.5rem;color:var(--green)}
+    .cta-box p{margin:0 0 1rem;font-size:0.9rem;color:var(--dim)}
+    .cta-box a{color:var(--green);text-decoration:underline}
+    .decision-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:1.5rem 0}
+    @media(max-width:600px){
+      .decision-grid{grid-template-columns:1fr}
+      .tool-meta{grid-template-columns:1fr}
+      .matrix-table{font-size:0.72rem}
+      .matrix-table th,.matrix-table td{padding:0.4rem 0.5rem}
+    }
+    .decision-card{border:1px solid var(--border);border-radius:8px;padding:1rem}
+    .decision-card h4{margin:0 0 0.5rem;font-size:0.9rem}
+    .decision-card p{margin:0;font-size:0.82rem;color:var(--muted);line-height:1.4}
+    .decision-card code{font-size:0.78rem}
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Agent Config Files Compared</span></div>
+    <h1>Every AI Coding Agent Config File, Compared</h1>
+    <p class="subtitle"><code>CLAUDE.md</code> vs <code>.cursorrules</code> vs <code>AGENTS.md</code> vs <code>copilot-instructions.md</code> vs <code>.windsurfrules</code> &mdash; what each does, how they differ, and how to set up one repo for all of them.</p>
+
+    <p>The average developer uses 2.3 AI coding tools. Each tool has its own config file format, its own syntax, and its own quirks. You end up with instructions scattered across <code>CLAUDE.md</code>, <code>.cursorrules</code>, <code>.github/copilot-instructions.md</code>, and whatever Windsurf calls theirs this month.</p>
+    <p>This guide covers every format &mdash; what it does, where it lives, what it supports, and what it doesn&rsquo;t. Then it shows you how to keep a single repo working with multiple tools without duplicating rules by hand.</p>
+
+    <nav class="toc">
+      <strong>Contents</strong>
+      <ol>
+        <li><a href="#matrix">Feature Comparison Matrix</a></li>
+        <li><a href="#claude-md">CLAUDE.md (Claude Code)</a></li>
+        <li><a href="#cursorrules">.cursorrules &amp; .cursor/rules/ (Cursor)</a></li>
+        <li><a href="#copilot">.github/copilot-instructions.md (GitHub Copilot)</a></li>
+        <li><a href="#agents-md">AGENTS.md (Emerging Standard)</a></li>
+        <li><a href="#windsurfrules">.windsurfrules (Windsurf)</a></li>
+        <li><a href="#clinerules">.clinerules (Cline / Roo Code)</a></li>
+        <li><a href="#aider">.aider.conf.yml (Aider)</a></li>
+        <li><a href="#unified">Unified Setup: One Repo, Multiple Tools</a></li>
+        <li><a href="#decision">Which Format Should You Use?</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ============ COMPARISON MATRIX ============ -->
+    <h2 id="matrix">Feature Comparison Matrix</h2>
+    <p>The full side-by-side. Green means fully supported, amber means partial, gray means not available.</p>
+
+    <table class="matrix-table">
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th>CLAUDE.md</th>
+          <th>.cursor/rules/</th>
+          <th>copilot-instructions</th>
+          <th>AGENTS.md</th>
+          <th>.windsurfrules</th>
+          <th>.clinerules</th>
+          <th>.aider.conf.yml</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Tool</strong></td>
+          <td>Claude Code</td>
+          <td>Cursor</td>
+          <td>GitHub Copilot</td>
+          <td>Multi-tool</td>
+          <td>Windsurf</td>
+          <td>Cline / Roo</td>
+          <td>Aider</td>
+        </tr>
+        <tr>
+          <td>Format</td>
+          <td>Markdown</td>
+          <td>MDC (frontmatter)</td>
+          <td>Markdown</td>
+          <td>Markdown + YAML</td>
+          <td>Plain text</td>
+          <td>Markdown</td>
+          <td>YAML</td>
+        </tr>
+        <tr>
+          <td>Nested / per-directory</td>
+          <td class="yes">Yes</td>
+          <td class="yes">Yes (glob-scoped)</td>
+          <td class="no">No</td>
+          <td class="partial">Proposed</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+        </tr>
+        <tr>
+          <td>Global user config</td>
+          <td class="yes">~/.claude/CLAUDE.md</td>
+          <td class="partial">Settings only</td>
+          <td class="partial">Org-level</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="partial">Settings</td>
+          <td class="yes">.aider.conf.yml</td>
+        </tr>
+        <tr>
+          <td>Glob-based scoping</td>
+          <td class="partial">Via rules/*.md</td>
+          <td class="yes">alwaysApply + globs</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+        </tr>
+        <tr>
+          <td>Hooks (shell commands)</td>
+          <td class="yes">Pre/PostToolUse, Stop</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+        </tr>
+        <tr>
+          <td>Permission controls</td>
+          <td class="yes">allow / deny lists</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="partial">Auto-approve</td>
+          <td class="no">No</td>
+        </tr>
+        <tr>
+          <td>Loaded automatically</td>
+          <td class="yes">Every conversation</td>
+          <td class="yes">Every conversation</td>
+          <td class="yes">Every interaction</td>
+          <td class="partial">Tool-dependent</td>
+          <td class="yes">Every session</td>
+          <td class="yes">Every session</td>
+          <td class="yes">Every run</td>
+        </tr>
+        <tr>
+          <td>Version control</td>
+          <td class="yes">Committed to git</td>
+          <td class="yes">Committed to git</td>
+          <td class="yes">Committed to git</td>
+          <td class="yes">Committed to git</td>
+          <td class="yes">Committed to git</td>
+          <td class="yes">Committed to git</td>
+          <td class="yes">Committed to git</td>
+        </tr>
+        <tr>
+          <td>Skills / on-demand docs</td>
+          <td class="yes">.claude/skills/</td>
+          <td class="partial">@docs references</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+        </tr>
+        <tr>
+          <td>Subagent definitions</td>
+          <td class="yes">.claude/agents/</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="no">No</td>
+          <td class="partial">Custom modes</td>
+          <td class="no">No</td>
+        </tr>
+        <tr>
+          <td>MCP tool config</td>
+          <td class="yes">.claude/settings.json</td>
+          <td class="yes">.cursor/mcp.json</td>
+          <td class="partial">Via extension</td>
+          <td class="no">No</td>
+          <td class="partial">Plugin system</td>
+          <td class="yes">MCP settings</td>
+          <td class="no">No</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- ============ CLAUDE.MD ============ -->
+    <h2 id="claude-md">CLAUDE.md <span class="tool-badge badge-green">Claude Code</span></h2>
+
+    <div class="tool-card">
+      <div class="tool-card-head">
+        <h3>CLAUDE.md</h3>
+        <span class="tool-badge badge-green">Most features</span>
+      </div>
+      <div class="tool-card-body">
+        <p>The richest config system of any AI coding tool. CLAUDE.md is a markdown file loaded at the start of every Claude Code conversation. It supports three scoping levels, glob-based rule files, hooks that run shell commands on tool events, permission allow/deny lists, on-demand skills, and subagent definitions.</p>
+
+        <dl class="tool-meta">
+          <dt>Location</dt>
+          <dd><code>PROJECT_ROOT/CLAUDE.md</code></dd>
+          <dt>Global</dt>
+          <dd><code>~/.claude/CLAUDE.md</code></dd>
+          <dt>Per-directory</dt>
+          <dd><code>subdir/CLAUDE.md</code></dd>
+          <dt>Format</dt>
+          <dd>Markdown (any valid markdown)</dd>
+          <dt>Max recommended</dt>
+          <dd>~500 lines (loaded every turn)</dd>
+          <dt>Commit to git?</dt>
+          <dd>Yes (project), No (global)</dd>
+        </dl>
+
+        <span class="code-label">Project CLAUDE.md example</span>
+        <div class="code-block">
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+          <pre><code># Project Name
+
+## Build &amp; test
+- Build: `npm run build`
+- Test: `npm test`
+- Lint: `npm run lint`
+- Single test: `npm test -- --grep "test name"`
+
+## Code style
+- TypeScript strict mode, no `any`
+- Prefer named exports over default
+- Use Zod for runtime validation at API boundaries
+- Error messages must include the operation that failed
+
+## Forbidden patterns
+- Never use `console.log` in production code — use the logger
+- Never import from `src/internal/` outside that directory
+- Never commit `.env` files or hardcoded secrets
+
+## Architecture
+- `src/api/` — HTTP handlers (Express)
+- `src/services/` — Business logic (no HTTP imports)
+- `src/db/` — Database queries (Drizzle ORM)
+- Services never import from api/; api/ imports from services/</code></pre>
+        </div>
+
+        <span class="code-label">File tree for a full CLAUDE.md setup</span>
+        <div class="tree-block">
+<span class="file-highlight">CLAUDE.md</span>                          &larr; project-wide rules (committed)
+~/.claude/<span class="file-highlight">CLAUDE.md</span>                  &larr; personal global preferences
+.claude/settings.json               &larr; hooks, permissions, model config
+.claude/settings.local.json         &larr; personal overrides (gitignored)
+.claude/rules/<span class="file-highlight">api-routes.md</span>          &larr; glob-scoped rules (globs: ["src/api/**"])
+.claude/rules/<span class="file-highlight">database.md</span>            &larr; glob-scoped rules (globs: ["src/db/**"])
+.claude/skills/<span class="file-highlight">deploy.md</span>             &larr; on-demand skill (loaded when relevant)
+.claude/agents/<span class="file-highlight">code-reviewer.md</span>      &larr; subagent definition
+src/api/CLAUDE.md                   &larr; per-directory override
+        </div>
+
+        <p><strong>What makes it unique:</strong> Hooks. CLAUDE.md is the only config system that can run shell commands before/after tool calls. A <code>PreToolUse</code> hook can block an action (exit code 2), enforce branch policy, or scan for secrets. A <code>PostToolUse</code> hook can auto-run tests, format code, or notify a dashboard. No other tool has this. See the <a href="/guides/claude-code-hooks-cookbook/">Hooks Cookbook</a> for 20 production recipes.</p>
+        <p><strong>Limitations:</strong> Only works with Claude Code. Every line costs context tokens on every conversation, so bloated files waste money. No conditional logic &mdash; you can&rsquo;t say &ldquo;only apply this rule on Mondays.&rdquo;</p>
+      </div>
+    </div>
+
+    <!-- ============ CURSORRULES ============ -->
+    <h2 id="cursorrules">.cursorrules &amp; .cursor/rules/ <span class="tool-badge badge-blue">Cursor</span></h2>
+
+    <div class="tool-card">
+      <div class="tool-card-head">
+        <h3>.cursorrules &rarr; .cursor/rules/</h3>
+        <span class="tool-badge badge-blue">Glob scoping</span>
+      </div>
+      <div class="tool-card-body">
+        <p>Cursor has two config systems: the legacy <code>.cursorrules</code> file (single file, plain text) and the newer <code>.cursor/rules/</code> directory (multiple files, MDC format with frontmatter). The directory format is the recommended path forward.</p>
+
+        <dl class="tool-meta">
+          <dt>Legacy location</dt>
+          <dd><code>.cursorrules</code> (project root)</dd>
+          <dt>New location</dt>
+          <dd><code>.cursor/rules/*.mdc</code></dd>
+          <dt>Format</dt>
+          <dd>MDC (markdown + YAML frontmatter)</dd>
+          <dt>Glob scoping</dt>
+          <dd>Yes, via <code>globs</code> in frontmatter</dd>
+          <dt>Global</dt>
+          <dd>No (user settings only)</dd>
+          <dt>Commit to git?</dt>
+          <dd>Yes</dd>
+        </dl>
+
+        <span class="code-label">Legacy .cursorrules</span>
+        <div class="code-block">
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+          <pre><code>You are an expert TypeScript developer.
+
+- Use functional components with hooks, never class components
+- Prefer named exports
+- Use Tailwind CSS for styling, no inline styles
+- Always add loading and error states to data-fetching components
+- Write tests for all business logic in src/services/</code></pre>
+        </div>
+
+        <span class="code-label">.cursor/rules/api-style.mdc (new format)</span>
+        <div class="code-block">
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+          <pre><code>---
+description: API route conventions for Express handlers
+globs: ["src/api/**/*.ts"]
+alwaysApply: false
+---
+
+# API Route Style
+
+- Every handler must validate input with Zod schemas
+- Return { data, error, status } response envelope
+- Log errors with structuredLogger, never console.log
+- Rate limit all public endpoints
+- Include OpenAPI JSDoc annotations</code></pre>
+        </div>
+
+        <span class="code-label">File tree</span>
+        <div class="tree-block">
+<span class="file-highlight">.cursorrules</span>                       &larr; legacy (still works, lower priority)
+.cursor/rules/<span class="file-highlight">general.mdc</span>            &larr; alwaysApply: true (loaded every time)
+.cursor/rules/<span class="file-highlight">api-style.mdc</span>          &larr; scoped to src/api/**/*.ts
+.cursor/rules/<span class="file-highlight">database.mdc</span>           &larr; scoped to src/db/**/*.ts
+.cursor/rules/<span class="file-highlight">testing.mdc</span>            &larr; scoped to **/*.test.ts
+        </div>
+
+        <p><strong>What makes it unique:</strong> The <code>alwaysApply</code> flag. Rules with <code>alwaysApply: false</code> are loaded only when the agent works on files matching the <code>globs</code> pattern. This is similar to CLAUDE.md&rsquo;s <code>.claude/rules/</code> but with explicit opt-in/opt-out control. The <code>@docs</code> feature lets you reference external documentation URLs that get pulled into context.</p>
+        <p><strong>Limitations:</strong> No hooks, no permission system, no subagent definitions. The legacy <code>.cursorrules</code> format has no scoping &mdash; everything applies everywhere. The MDC format requires learning a new file extension. No per-directory nesting like CLAUDE.md.</p>
+      </div>
+    </div>
+
+    <!-- ============ COPILOT ============ -->
+    <h2 id="copilot">.github/copilot-instructions.md <span class="tool-badge badge-purple">GitHub Copilot</span></h2>
+
+    <div class="tool-card">
+      <div class="tool-card-head">
+        <h3>copilot-instructions.md</h3>
+        <span class="tool-badge badge-purple">Simplest</span>
+      </div>
+      <div class="tool-card-body">
+        <p>The simplest config file of the bunch. A single markdown file that gives Copilot project-level context. GitHub also supports organization-level instructions and per-language files, but the repo-level file is what most teams use.</p>
+
+        <dl class="tool-meta">
+          <dt>Location</dt>
+          <dd><code>.github/copilot-instructions.md</code></dd>
+          <dt>Per-language</dt>
+          <dd><code>.github/copilot-instructions-{lang}.md</code></dd>
+          <dt>Org-level</dt>
+          <dd>Via GitHub org settings</dd>
+          <dt>Format</dt>
+          <dd>Markdown (plain)</dd>
+          <dt>Glob scoping</dt>
+          <dd>No</dd>
+          <dt>Commit to git?</dt>
+          <dd>Yes</dd>
+        </dl>
+
+        <span class="code-label">.github/copilot-instructions.md</span>
+        <div class="code-block">
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+          <pre><code># Project Instructions for Copilot
+
+This is a Next.js 15 app with TypeScript, Drizzle ORM, and Tailwind CSS.
+
+## Conventions
+- Use server components by default, client components only when needed
+- All database queries go through src/db/queries/ — never raw SQL in components
+- Use next-safe-action for server actions with Zod validation
+- Error boundaries in every route segment
+
+## Do not
+- Suggest class components
+- Use CSS modules or styled-components
+- Import from node_modules directly when a wrapper exists in src/lib/</code></pre>
+        </div>
+
+        <p><strong>What makes it unique:</strong> Organization-level instructions. Enterprise teams can set instructions that apply across all repos in the org, with per-repo files adding specifics. This is the only config system with org-level inheritance.</p>
+        <p><strong>Limitations:</strong> No per-directory scoping, no glob matching, no hooks, no permissions, no skill loading. It&rsquo;s a single flat file &mdash; effective for simple rules, but it can&rsquo;t express complex per-module policies. GitHub&rsquo;s own documentation acknowledges that &ldquo;instructions are not guaranteed to be followed&rdquo; &mdash; there&rsquo;s no enforcement mechanism.</p>
+      </div>
+    </div>
+
+    <!-- ============ AGENTS.MD ============ -->
+    <h2 id="agents-md">AGENTS.md <span class="tool-badge badge-amber">Emerging Standard</span></h2>
+
+    <div class="tool-card">
+      <div class="tool-card-head">
+        <h3>AGENTS.md</h3>
+        <span class="tool-badge badge-amber">Vendor-neutral</span>
+      </div>
+      <div class="tool-card-body">
+        <p>AGENTS.md is an emerging open proposal for a vendor-neutral agent config file. The idea: instead of maintaining <code>CLAUDE.md</code> + <code>.cursorrules</code> + <code>copilot-instructions.md</code> separately, you write one <code>AGENTS.md</code> that all tools can read. Adoption is early but growing, driven by developers frustrated with maintaining 3+ config files for the same rules.</p>
+
+        <dl class="tool-meta">
+          <dt>Location</dt>
+          <dd><code>AGENTS.md</code> (project root)</dd>
+          <dt>Format</dt>
+          <dd>Markdown + optional YAML frontmatter</dd>
+          <dt>Standard</dt>
+          <dd>Community proposal (not owned by any vendor)</dd>
+          <dt>Tool support</dt>
+          <dd>Growing (some tools read it, most don&rsquo;t yet)</dd>
+          <dt>Nested</dt>
+          <dd>Proposed but not standardized</dd>
+          <dt>Commit to git?</dt>
+          <dd>Yes</dd>
+        </dl>
+
+        <span class="code-label">AGENTS.md example</span>
+        <div class="code-block">
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+          <pre><code>---
+version: "1.0"
+tools: ["claude-code", "cursor", "copilot"]
+scope: project
+---
+
+# Agent Instructions
+
+## Project Overview
+Next.js 15 application with TypeScript, Drizzle ORM, Tailwind CSS.
+
+## Build Commands
+- Dev server: `npm run dev`
+- Build: `npm run build`
+- Test: `npm test`
+
+## Code Standards
+- TypeScript strict mode, no implicit any
+- Functional components with hooks
+- Named exports only
+- Zod for all API input validation
+
+## Architecture Rules
+- src/api/ handles HTTP only — no business logic
+- src/services/ handles business logic — no HTTP imports
+- src/db/ handles data access — Drizzle ORM queries only
+- Never import across layer boundaries in the wrong direction</code></pre>
+        </div>
+
+        <p><strong>What makes it unique:</strong> Vendor neutrality. If adoption grows, it could become the <code>.editorconfig</code> of AI tools &mdash; one file, every tool respects it. The YAML frontmatter lets you declare which tools should read it and version the format.</p>
+        <p><strong>Limitations:</strong> Adoption is early. Most tools don&rsquo;t read it natively yet. No hooks, no permissions, no scoping, no skill loading. It only covers the subset of features that all tools have in common (plain text instructions), so you lose tool-specific features like Claude Code hooks or Cursor&rsquo;s <code>@docs</code> references. In practice, teams that adopt AGENTS.md still maintain tool-specific files for advanced features.</p>
+      </div>
+    </div>
+
+    <!-- ============ WINDSURFRULES ============ -->
+    <h2 id="windsurfrules">.windsurfrules <span class="tool-badge badge-red">Windsurf</span></h2>
+
+    <div class="tool-card">
+      <div class="tool-card-head">
+        <h3>.windsurfrules</h3>
+        <span class="tool-badge badge-red">Windsurf / Codeium</span>
+      </div>
+      <div class="tool-card-body">
+        <p>Windsurf (formerly Codeium) uses a <code>.windsurfrules</code> file at your project root. The format is nearly identical to the legacy <code>.cursorrules</code> &mdash; plain text or markdown with project instructions. Windsurf 2.0 added Spaces for team-shared rules, but the file-based config remains the standard.</p>
+
+        <dl class="tool-meta">
+          <dt>Location</dt>
+          <dd><code>.windsurfrules</code> (project root)</dd>
+          <dt>Format</dt>
+          <dd>Plain text / markdown</dd>
+          <dt>Glob scoping</dt>
+          <dd>No</dd>
+          <dt>Global config</dt>
+          <dd>No (use Spaces for team sharing)</dd>
+          <dt>Commit to git?</dt>
+          <dd>Yes</dd>
+        </dl>
+
+        <span class="code-label">.windsurfrules example</span>
+        <div class="code-block">
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+          <pre><code>You are working on a Python FastAPI application.
+
+Project structure:
+- app/routers/ — API endpoints
+- app/models/ — Pydantic models and SQLAlchemy ORM
+- app/services/ — Business logic
+- tests/ — Pytest test files
+
+Rules:
+- Use async/await for all endpoint handlers
+- All routes must have response_model defined
+- Use dependency injection for database sessions
+- Write docstrings for all public functions
+- Run `pytest -x` after making changes</code></pre>
+        </div>
+
+        <p><strong>Limitations:</strong> No per-directory scoping, no hooks, no permissions, no glob matching. The simplest format alongside Copilot&rsquo;s. If you&rsquo;re migrating from Cursor, you can often copy your <code>.cursorrules</code> content directly into <code>.windsurfrules</code>.</p>
+      </div>
+    </div>
+
+    <!-- ============ CLINERULES ============ -->
+    <h2 id="clinerules">.clinerules <span class="tool-badge badge-gray">Cline / Roo Code</span></h2>
+
+    <div class="tool-card">
+      <div class="tool-card-head">
+        <h3>.clinerules</h3>
+        <span class="tool-badge badge-gray">Cline / Roo Code</span>
+      </div>
+      <div class="tool-card-body">
+        <p>Cline (formerly Roo Code) uses <code>.clinerules</code> at the project root, plus optional <code>.clinerules-{mode}</code> files for its custom modes feature. Custom modes let you define specialized agent personas (e.g., architect, code reviewer, security auditor) with their own rules and auto-approve settings.</p>
+
+        <dl class="tool-meta">
+          <dt>Location</dt>
+          <dd><code>.clinerules</code> (project root)</dd>
+          <dt>Mode-specific</dt>
+          <dd><code>.clinerules-architect</code>, <code>.clinerules-reviewer</code></dd>
+          <dt>Format</dt>
+          <dd>Markdown</dd>
+          <dt>Global config</dt>
+          <dd>Via VS Code settings</dd>
+          <dt>Commit to git?</dt>
+          <dd>Yes</dd>
+        </dl>
+
+        <span class="code-label">.clinerules example</span>
+        <div class="code-block">
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+          <pre><code># Project Rules
+
+## Stack
+- Python 3.12, FastAPI, SQLAlchemy 2.0, Alembic
+- Frontend: React 19, TypeScript, Vite
+
+## Conventions
+- Use type hints everywhere
+- Alembic for all schema changes — never raw ALTER TABLE
+- API responses use standard envelope: { data, error, meta }
+- Tests required for all service functions</code></pre>
+        </div>
+
+        <p><strong>What makes it unique:</strong> Custom modes. You can define a <code>.clinerules-security</code> that turns Cline into a security auditor with different auto-approve rules and a security-focused system prompt. This is conceptually similar to Claude Code&rsquo;s <code>.claude/agents/</code> subagent definitions.</p>
+        <p><strong>Limitations:</strong> No per-directory nesting, no glob scoping, no hooks. The mode-based system is powerful but Cline-specific &mdash; rules don&rsquo;t transfer to other tools.</p>
+      </div>
+    </div>
+
+    <!-- ============ AIDER ============ -->
+    <h2 id="aider">.aider.conf.yml <span class="tool-badge badge-gray">Aider</span></h2>
+
+    <div class="tool-card">
+      <div class="tool-card-head">
+        <h3>.aider.conf.yml</h3>
+        <span class="tool-badge badge-gray">Aider</span>
+      </div>
+      <div class="tool-card-body">
+        <p>Aider uses a YAML config file that controls both behavior settings and custom instructions. It&rsquo;s the only config that uses YAML instead of markdown, which makes it more structured but less readable for prose instructions.</p>
+
+        <dl class="tool-meta">
+          <dt>Location</dt>
+          <dd><code>.aider.conf.yml</code> (project root)</dd>
+          <dt>Global</dt>
+          <dd><code>~/.aider.conf.yml</code></dd>
+          <dt>Format</dt>
+          <dd>YAML</dd>
+          <dt>Conventions file</dt>
+          <dd><code>CONVENTIONS.md</code> (loaded via read: flag)</dd>
+          <dt>Commit to git?</dt>
+          <dd>Yes</dd>
+        </dl>
+
+        <span class="code-label">.aider.conf.yml example</span>
+        <div class="code-block">
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+          <pre><code>model: claude-sonnet-4-6
+auto-commits: true
+auto-lint: true
+lint-cmd: "ruff check --fix"
+test-cmd: "pytest -x"
+read:
+  - CONVENTIONS.md
+  - docs/ARCHITECTURE.md</code></pre>
+        </div>
+
+        <p><strong>What makes it unique:</strong> Built-in lint and test integration. The <code>auto-lint</code> and <code>lint-cmd</code> settings run your linter automatically after every edit &mdash; similar to what Claude Code achieves with PostToolUse hooks, but declarative instead of imperative. The <code>read:</code> directive loads additional context files without them being editable.</p>
+        <p><strong>Limitations:</strong> Instructions go in a separate <code>CONVENTIONS.md</code>, not in the YAML file itself. No per-directory scoping, no glob matching, no hooks beyond lint/test. YAML is awkward for long prose instructions. No MCP or tool integration.</p>
+      </div>
+    </div>
+
+    <!-- ============ UNIFIED SETUP ============ -->
+    <h2 id="unified">Unified Setup: One Repo, Multiple Tools</h2>
+
+    <p>Most teams use 2&ndash;3 AI tools. Here&rsquo;s how to set up a single repo that works with all of them without duplicating rules across files.</p>
+
+    <h3>Approach 1: Maintain each file separately</h3>
+    <p>The simplest approach. Each tool gets its own config file. Rules may overlap, but you review them together in PRs.</p>
+
+    <div class="tree-block">
+<span class="file-highlight">CLAUDE.md</span>                          &larr; Claude Code rules
+<span class="file-highlight">.cursorrules</span>                       &larr; Cursor rules (or .cursor/rules/)
+.github/<span class="file-highlight">copilot-instructions.md</span>    &larr; Copilot rules
+<span class="file-highlight">.windsurfrules</span>                     &larr; Windsurf rules (if used)
+    </div>
+
+    <p><strong>Pros:</strong> Each file uses the tool&rsquo;s full feature set (hooks in CLAUDE.md, glob scoping in Cursor, org-level in Copilot). No build step. Simple to understand.<br>
+    <strong>Cons:</strong> Rules drift apart. When you update a convention in one file, you might forget the others.</p>
+
+    <h3>Approach 2: Shared source file + symlinks</h3>
+    <p>Keep a canonical <code>CODING_RULES.md</code> and include it in each tool&rsquo;s config. Tool-specific features go in their own files.</p>
+
+    <div class="tree-block">
+<span class="file-highlight">CODING_RULES.md</span>                    &larr; shared rules (single source of truth)
+<span class="file-highlight">CLAUDE.md</span>                          &larr; includes CODING_RULES.md content + hooks
+.cursor/rules/<span class="file-highlight">shared.mdc</span>            &larr; includes CODING_RULES.md content + globs
+.github/<span class="file-highlight">copilot-instructions.md</span>    &larr; includes CODING_RULES.md content
+    </div>
+
+    <p>In CLAUDE.md, reference the shared rules:</p>
+    <div class="code-block">
+      <button class="code-copy" onclick="copyCode(this)">Copy</button>
+      <pre><code># Project Rules
+
+See CODING_RULES.md for shared conventions.
+
+## Claude Code-specific
+
+### Hooks
+- PostToolUse runs `./scripts/check-python-syntax.sh` on every edit
+- PreToolUse blocks git push --force
+
+### Permissions
+- Allow: Bash(npm test*), Bash(git commit*), Edit(src/**)</code></pre>
+    </div>
+
+    <h3>Approach 3: Generate from a single source</h3>
+    <p>A build script reads one source file and generates tool-specific configs. Best for teams with 5+ developers where config drift is a real problem.</p>
+
+    <div class="code-block">
+      <button class="code-copy" onclick="copyCode(this)">Copy</button>
+      <pre><code>#!/bin/bash
+# scripts/sync-agent-config.sh
+# Generates tool-specific config files from a single source
+
+SOURCE="CODING_RULES.md"
+
+# Claude Code: copy as-is (markdown), prepend tool-specific header
+{
+  cat .claude/claude-header.md
+  echo ""
+  cat "$SOURCE"
+} > CLAUDE.md
+
+# Cursor: wrap in MDC frontmatter
+{
+  echo "---"
+  echo "description: Shared project coding rules"
+  echo "alwaysApply: true"
+  echo "---"
+  echo ""
+  cat "$SOURCE"
+} > .cursor/rules/shared.mdc
+
+# Copilot: copy as-is
+cp "$SOURCE" .github/copilot-instructions.md
+
+# Windsurf: copy as-is
+cp "$SOURCE" .windsurfrules
+
+echo "Synced agent config files from $SOURCE"</code></pre>
+    </div>
+
+    <p>Add this to your CI or pre-commit hook to catch drift.</p>
+
+    <!-- ============ DECISION ============ -->
+    <h2 id="decision">Which Format Should You Use?</h2>
+
+    <div class="decision-grid">
+      <div class="decision-card">
+        <h4>You use one tool only</h4>
+        <p>Use that tool&rsquo;s native format. <code>CLAUDE.md</code> for Claude Code, <code>.cursor/rules/</code> for Cursor, etc. You get full feature access and zero complexity.</p>
+      </div>
+      <div class="decision-card">
+        <h4>You use 2&ndash;3 tools, small team</h4>
+        <p>Maintain separate files (Approach 1). The duplication is manageable. Review them together in PRs. Use a shared <code>CODING_RULES.md</code> reference for the rules both tools should follow.</p>
+      </div>
+      <div class="decision-card">
+        <h4>You use 2&ndash;3 tools, large team</h4>
+        <p>Generate from a single source (Approach 3). Add the sync script to CI. Tool-specific features (hooks, glob scoping) go in separate config files that aren&rsquo;t generated.</p>
+      </div>
+      <div class="decision-card">
+        <h4>You want maximum capability</h4>
+        <p><code>CLAUDE.md</code> with Claude Code. It&rsquo;s the only config system with hooks, permissions, skills, subagents, and per-directory nesting. If you need enforcement (not just instructions), this is the only option.</p>
+      </div>
+    </div>
+
+    <!-- ============ FAQ ============ -->
+    <h2 id="faq">FAQ</h2>
+
+    <details style="border:1px solid var(--border);border-radius:6px;margin-bottom:0.75rem;overflow:hidden">
+      <summary style="padding:0.8rem 1rem;cursor:pointer;font-weight:500;background:var(--surface)">Can I use CLAUDE.md and .cursorrules in the same repo?</summary>
+      <div style="padding:0.8rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.6">Yes. Each tool reads only its own config file. They coexist without conflict. Many teams maintain both. The key is keeping shared rules in sync &mdash; update one, update the other.</div>
+    </details>
+    <details style="border:1px solid var(--border);border-radius:6px;margin-bottom:0.75rem;overflow:hidden">
+      <summary style="padding:0.8rem 1rem;cursor:pointer;font-weight:500;background:var(--surface)">Does AGENTS.md replace CLAUDE.md?</summary>
+      <div style="padding:0.8rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.6">No, not today. AGENTS.md is a vendor-neutral proposal for shared instructions, but it can&rsquo;t express tool-specific features like hooks, permissions, glob scoping, or skill loading. Think of AGENTS.md as the lowest common denominator &mdash; good for basic rules that all tools should follow, but you still need CLAUDE.md (or .cursor/rules/) for advanced features. If AGENTS.md adoption grows, tools may add native support for it as a base layer.</div>
+    </details>
+    <details style="border:1px solid var(--border);border-radius:6px;margin-bottom:0.75rem;overflow:hidden">
+      <summary style="padding:0.8rem 1rem;cursor:pointer;font-weight:500;background:var(--surface)">Which config file has the most features?</summary>
+      <div style="padding:0.8rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.6">CLAUDE.md, by a wide margin. It&rsquo;s the only format with hooks (shell commands that run on tool events), permission allow/deny lists, on-demand skills, subagent definitions, and three-level scoping (global → project → directory). Cursor&rsquo;s <code>.cursor/rules/</code> is second with glob-based scoping and MDC frontmatter. Everything else is a flat markdown file with no enforcement mechanism.</div>
+    </details>
+    <details style="border:1px solid var(--border);border-radius:6px;margin-bottom:0.75rem;overflow:hidden">
+      <summary style="padding:0.8rem 1rem;cursor:pointer;font-weight:500;background:var(--surface)">How long should my config file be?</summary>
+      <div style="padding:0.8rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.6">As short as possible while covering the rules the AI gets wrong without guidance. For CLAUDE.md: under 500 lines (loaded every conversation, costs tokens). For .cursorrules / copilot-instructions: under 300 lines. If your config is getting long, split into scoped files (Cursor globs, CLAUDE.md per-directory) or use on-demand loading (CLAUDE.md skills).</div>
+    </details>
+    <details style="border:1px solid var(--border);border-radius:6px;margin-bottom:0.75rem;overflow:hidden">
+      <summary style="padding:0.8rem 1rem;cursor:pointer;font-weight:500;background:var(--surface)">Should I commit these files to git?</summary>
+      <div style="padding:0.8rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.6">Yes, commit all project-level config files. They&rsquo;re part of your development infrastructure, like <code>.eslintrc</code> or <code>pyproject.toml</code>. The only exception is personal preferences &mdash; <code>~/.claude/CLAUDE.md</code> (global Claude Code) or <code>.claude/settings.local.json</code> (personal hooks/permissions). Those stay out of the repo.</div>
+    </details>
+    <details style="border:1px solid var(--border);border-radius:6px;margin-bottom:0.75rem;overflow:hidden">
+      <summary style="padding:0.8rem 1rem;cursor:pointer;font-weight:500;background:var(--surface)">Do these config files work with amux parallel agents?</summary>
+      <div style="padding:0.8rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.6">Yes. Every <a href="/">amux</a> session runs Claude Code in your project directory, so all sessions inherit the same <code>CLAUDE.md</code> and hooks. This is one of the key advantages of file-based config for multi-agent workflows: define rules once, every parallel agent follows them. For agent-specific overrides, use per-directory CLAUDE.md files in each agent&rsquo;s worktree.</div>
+    </details>
+
+    <!-- ============ CTA ============ -->
+    <div class="cta-box">
+      <h3>Config files are the foundation. Hooks are the enforcement.</h3>
+      <p>A config file tells the agent what to do. Hooks guarantee it. See the <a href="/guides/claude-code-hooks-cookbook/">Hooks Cookbook</a> for 20 production recipes, or browse <a href="/guides/claude-md-templates/">CLAUDE.md Templates</a> for copy-paste configs for every project type.</p>
+      <p><a href="/guides/context-engineering/">Context Engineering Guide</a> &nbsp;&middot;&nbsp; <a href="/guides/claude-md-templates/">CLAUDE.md Templates</a> &nbsp;&middot;&nbsp; <a href="/guides/claude-code-hooks-cookbook/">Hooks Cookbook</a></p>
+    </div>
+
+    <h2>Related Guides</h2>
+    <ul style="font-size:0.9rem;line-height:2">
+      <li><a href="/guides/claude-md-templates/">CLAUDE.md Templates</a> &mdash; 20+ copy-paste configs for every project type</li>
+      <li><a href="/guides/claude-code-hooks-cookbook/">Claude Code Hooks Cookbook</a> &mdash; 20 production-ready hook recipes</li>
+      <li><a href="/guides/context-engineering/">Context Engineering for AI Coding Agents</a> &mdash; the full framework for structuring what agents see</li>
+      <li><a href="/guides/claude-code-cursor-hybrid-workflow/">The Hybrid Stack: Claude Code + Cursor Together</a> &mdash; running multiple tools on the same codebase</li>
+      <li><a href="/guides/setting-up-yolo-mode/">Setting Up YOLO Mode</a> &mdash; auto-approve for unattended runs</li>
+    </ul>
+  </main>
+
+  <footer class="site-footer">
+    <div class="foot-inner">
+      <div class="foot-grid">
+        <div class="foot-col">
+          <h4>Product</h4>
+          <a href="/features/">Features</a>
+          <a href="/pricing/">Pricing</a>
+          <a href="/changelog/">Changelog</a>
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank">iOS App</a>
+        </div>
+        <div class="foot-col">
+          <h4>Resources</h4>
+          <a href="/docs/">Documentation</a>
+          <a href="/guides/">Guides</a>
+          <a href="/blog/">Blog</a>
+          <a href="/faq/">FAQ</a>
+        </div>
+        <div class="foot-col">
+          <h4>Community</h4>
+          <a href="https://github.com/mixpeek/amux" target="_blank">GitHub</a>
+          <a href="https://github.com/mixpeek/amux/issues" target="_blank">Issues</a>
+          <a href="https://github.com/mixpeek/amux/discussions" target="_blank">Discussions</a>
+        </div>
+        <div class="foot-col">
+          <h4>Company</h4>
+          <a href="/privacy/">Privacy</a>
+          <a href="https://mixpeek.com" target="_blank">Mixpeek</a>
+        </div>
+      </div>
+      <div class="foot-bottom">
+        <span>Open-source control plane for AI agents. Runtime, observability, orchestration, and cost control &mdash; in one file.</span>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    fetch('https://api.github.com/repos/mixpeek/amux')
+      .then(r=>r.json())
+      .then(d=>{const el=document.getElementById('gh-stars');if(el&&d.stargazers_count)el.textContent=d.stargazers_count>=1000?(d.stargazers_count/1000).toFixed(1)+'k':d.stargazers_count})
+      .catch(()=>{});
+
+    function copyCode(btn){
+      const pre=btn.parentElement.querySelector('pre');
+      navigator.clipboard.writeText(pre.textContent).then(()=>{
+        btn.textContent='Copied!';btn.classList.add('copied');
+        setTimeout(()=>{btn.textContent='Copy';btn.classList.remove('copied')},1500);
+      });
+    }
+  </script>
+</body>
+</html>
