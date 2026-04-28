@@ -14123,37 +14123,44 @@ async function doRestart(name) {
   _restartingSessions.add(name);
   try {
     const encodedName = encodeURIComponent(name);
-    const SINGLE_URL = API + '/api/sessions/' + encodedName;
-    const STOP_URL = SINGLE_URL + '/stop';
+    const INFO_URL = API + '/api/sessions/' + encodedName + '/info';
+    const STOP_URL = API + '/api/sessions/' + encodedName + '/stop';
 
     // Pre-check: if Claude already isn't running (crashed, externally killed),
-    // skip /stop entirely and go straight to doStart. Without this, the queued
-    // _bg_stop worker can race a freshly-launched Claude and kill it.
+    // skip /stop entirely. Without this, the queued _bg_stop worker can race a
+    // freshly-launched Claude and kill it.
     // Use raw fetch so we can distinguish 404 from 5xx; apiCall flattens both.
+    // (window.fetch is monkey-patched at line 11878 to inject auth headers.)
+    let alreadyStopped = false;
+    let sessionGone = false;
     try {
-      const pre = await fetch(SINGLE_URL);
+      const pre = await fetch(INFO_URL);
       if (pre.status === 404) {
-        showToast('Session no longer exists');
-        return;
-      }
-      if (pre.ok) {
+        sessionGone = true;
+      } else if (pre.ok) {
         const data = await pre.json();
-        if (!data.running) {
-          await doStart(name);
-          return;
-        }
+        if (!data.running) alreadyStopped = true;
       }
     } catch (e) {
       // Network blip on pre-check — fall through to standard stop+poll flow.
+    }
+    if (sessionGone) {
+      showToast('Session no longer exists');
+      return;
+    }
+    if (alreadyStopped) {
+      await fetchSessions();
+      await doStart(name);
+      return;
     }
 
     const stopResp = await apiCall(STOP_URL, { method: 'POST' });
     if (!stopResp) return; // apiCall already surfaced the error
 
-    // Poll the SINGLE-session endpoint, not the list. The list endpoint reports
-    // running == "tmux session exists", which never flips false because
-    // stop_session keeps tmux alive. The single endpoint uses is_running()
-    // which correctly returns false once Claude exits.
+    // Poll the SINGLE-session info endpoint, not the list. The list endpoint
+    // reports running == "tmux session exists", which never flips false because
+    // stop_session keeps tmux alive. /info uses is_running() which correctly
+    // returns false once Claude exits.
     // Worst case server-side stop is ~21s (rename + 15s exit + 1s settle), so
     // poll for 30s with a 1s warmup before the first poll.
     await new Promise(r => setTimeout(r, 1000));
@@ -14161,7 +14168,7 @@ async function doRestart(name) {
     const MAX_POLLS = 58; // 1s warmup + 58 * 500ms ≈ 30s total
     for (let i = 0; i < MAX_POLLS; i++) {
       try {
-        const r = await fetch(SINGLE_URL);
+        const r = await fetch(INFO_URL);
         if (r.status === 404) {
           showToast('Session no longer exists');
           return;
