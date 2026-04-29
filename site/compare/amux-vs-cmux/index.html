@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs cmux: Complete Comparison for AI Agent Multiplexers (2026) — amux</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs cmux head-to-head: feature matrix, architecture differences, platform support, and when to choose each. The complete 2026 comparison of these two AI agent multiplexers.">
+  <meta name="keywords" content="amux vs cmux, cmux alternative, cmux review, cmux comparison, ai agent multiplexer comparison, parallel claude code tools, claude code session manager, best agent multiplexer 2026, cmux linux alternative, cmux open source">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-cmux/">
+  <meta property="og:title" content="amux vs cmux: Complete Comparison (2026) — amux">
+  <meta property="og:description" content="The complete head-to-head: feature matrix, architecture, platform support, and workflows for choosing between amux and cmux.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-cmux/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs cmux","item":"https://amux.io/compare/amux-vs-cmux/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs cmux: The Complete Comparison for AI Agent Multiplexers","description":"Head-to-head comparison of amux and cmux — two AI agent multiplexers for running parallel coding sessions. Feature matrix, architecture, platform support, workflows.","url":"https://amux.io/compare/amux-vs-cmux/","datePublished":"2026-04-29","dateModified":"2026-04-29","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and cmux?","acceptedAnswer":{"@type":"Answer","text":"cmux is a native macOS terminal application built with Swift and libghostty that replaces your existing terminal — it is the terminal. amux is a Python server with a web dashboard that runs alongside your existing terminal and manages tmux sessions via a REST API. cmux is a desktop app you look at. amux is a platform you access from any browser, including your phone."}},{"@type":"Question","name":"Does cmux work on Linux?","acceptedAnswer":{"@type":"Answer","text":"No. cmux is macOS-only (Swift + AppKit). Community forks like wmux (Windows) and cmux-linux exist but are not officially supported. amux runs anywhere Python and tmux run — macOS, Linux, cloud VMs, and WSL on Windows."}},{"@type":"Question","name":"Can I access cmux from my phone?","acceptedAnswer":{"@type":"Answer","text":"Not currently. cmux is a desktop application with no web interface. An iOS companion app is listed on the Founder's Edition roadmap but is not yet available. amux has a full web dashboard that works as a mobile PWA — install it on your phone home screen and monitor agents from anywhere."}},{"@type":"Question","name":"Does cmux have a REST API?","acceptedAnswer":{"@type":"Answer","text":"cmux has a Unix socket API at /tmp/cmux.sock for local programmatic control, but no REST API. This means external tools, cron jobs, and remote scripts cannot talk to cmux over the network. amux exposes a full HTTPS REST API for sessions, board, notes, browser automation, email, and more — accessible from any device on the network."}},{"@type":"Question","name":"Which supports more AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"Both support any terminal-based AI coding agent (Claude Code, Codex, Gemini CLI, Aider, Goose, etc.). cmux provides first-class support via its embedded browser's agent-aware features. amux's self-healing watchdog and token tracking are Claude Code-specific, though other agents run fine as regular sessions."}},{"@type":"Question","name":"Is cmux free?","acceptedAnswer":{"@type":"Answer","text":"cmux's core is GPL-3.0 open source and free. A paid Founder's Edition subscription adds priority support, early access to cmux AI, iOS app sync, cloud VMs, and voice mode. amux is MIT-licensed and fully free with no paid tier."}},{"@type":"Question","name":"Which is better for overnight agent runs?","acceptedAnswer":{"@type":"Answer","text":"amux. Its self-healing watchdog auto-restarts crashed agents, auto-compacts context overflows, detects stuck sessions, and handles rate limits. cmux has no equivalent recovery system — if an agent crashes at 2am, it stays dead. cmux also does not restore live terminal processes across app restarts (layout only)."}},{"@type":"Question","name":"Can I use amux and cmux together?","acceptedAnswer":{"@type":"Answer","text":"Not in a meaningful way. cmux is a standalone terminal application that manages its own panes. amux manages tmux sessions. They operate in separate worlds. Most developers pick one based on whether they prioritize the desktop experience (cmux) or the platform experience (amux)."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/compare/">Compare</a> <span class="sep">&rsaquo;</span> <span>amux vs cmux</span></div>
+    <h1>amux vs cmux</h1>
+    <p class="subtitle">One is a native macOS terminal app. The other is a web-accessible orchestration platform. Both run parallel AI coding agents. Here's exactly when to pick which.</p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#tldr" style="color:var(--dim);text-decoration:none;">TL;DR</a></li>
+        <li><a href="#what" style="color:var(--dim);text-decoration:none;">What Each Tool Is</a></li>
+        <li><a href="#matrix" style="color:var(--dim);text-decoration:none;">Feature Matrix</a></li>
+        <li><a href="#architecture" style="color:var(--dim);text-decoration:none;">Architecture Differences</a></li>
+        <li><a href="#platform" style="color:var(--dim);text-decoration:none;">Platform Support</a></li>
+        <li><a href="#workflows" style="color:var(--dim);text-decoration:none;">Workflow Comparison</a></li>
+        <li><a href="#dashboards" style="color:var(--dim);text-decoration:none;">Dashboards &amp; Remote Access</a></li>
+        <li><a href="#browser" style="color:var(--dim);text-decoration:none;">Browser Automation</a></li>
+        <li><a href="#unattended" style="color:var(--dim);text-decoration:none;">Unattended Operation &amp; Self-Healing</a></li>
+        <li><a href="#api" style="color:var(--dim);text-decoration:none;">API &amp; Extensibility</a></li>
+        <li><a href="#orchestration" style="color:var(--dim);text-decoration:none;">Agent-to-Agent Orchestration</a></li>
+        <li><a href="#licensing" style="color:var(--dim);text-decoration:none;">Licensing &amp; Pricing</a></li>
+        <li><a href="#which" style="color:var(--dim);text-decoration:none;">Which Should You Choose?</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="tldr">TL;DR</h2>
+    <p>amux and cmux both run parallel AI coding agents, but they are fundamentally different tools built on different architectures for different workflows.</p>
+    <ul>
+      <li><strong>cmux</strong> is a <em>native macOS terminal application</em> built with Swift and libghostty. It replaces your terminal entirely &mdash; GPU-accelerated rendering, vertical tabs, embedded browser, notification rings, and native macOS integration. Desktop-first, visually polished, macOS-only.</li>
+      <li><strong>amux</strong> is an <em>orchestration platform</em> built as a single Python file. It runs a local HTTPS server with a web dashboard, REST API, self-healing watchdog, kanban board, and mobile PWA. Platform-agnostic, API-first, accessible from any device.</li>
+    </ul>
+    <p><strong>Pick cmux</strong> if you work on macOS, want a beautiful native terminal experience, and prefer managing agents visually at your desk.<br>
+    <strong>Pick amux</strong> if you need cross-platform support, remote access from your phone, self-healing overnight runs, agent-to-agent orchestration, or a REST API for custom automation.</p>
+
+    <h2 id="what">What Each Tool Is</h2>
+
+    <h3>cmux</h3>
+    <p>cmux is an open-source native macOS terminal application from Manaflow (YC S24) that manages parallel AI coding sessions. It uses libghostty &mdash; the GPU-accelerated rendering library from Mitchell Hashimoto's Ghostty terminal &mdash; to draw terminal output, and embeds a WebKit browser for agent-driven web interaction.</p>
+    <p>Key features:</p>
+    <ul>
+      <li>GPU-accelerated terminal rendering via libghostty with Ghostty config compatibility</li>
+      <li>Vertical tabs sidebar showing git branch, PR status, working directory, and listening ports per workspace</li>
+      <li>Notification rings on pane borders when an agent needs attention, with macOS desktop notifications</li>
+      <li>Embedded scriptable WebKit browser that agents can snapshot, click, fill forms, and evaluate JS against</li>
+      <li>Split panes (horizontal and vertical) within each workspace tab</li>
+      <li>Native Claude Code Teams integration via <code>cmux claude-teams</code></li>
+      <li>Session layout restore on app restart (directories, scrollback, browser URLs &mdash; not live processes)</li>
+      <li>SSH support with SCP drag-and-drop and localhost routing</li>
+    </ul>
+    <p>cmux is not a wrapper around tmux. It <em>is</em> the terminal &mdash; a standalone macOS app built with Swift and AppKit that replaces iTerm2, Terminal.app, or whatever terminal you currently use.</p>
+
+    <h3>amux</h3>
+    <p>amux is an open-source agent orchestration platform built around <code>amux-server.py</code> &mdash; a single Python file that runs a local HTTPS server, manages tmux sessions, and serves a web dashboard. It treats parallel agents as a fleet that needs to be monitored, recovered, coordinated, and accessed from anywhere.</p>
+    <p>Key features:</p>
+    <ul>
+      <li>Web dashboard at <code>https://localhost:8822</code> with live session status, token spend, and a send bar</li>
+      <li>Mobile PWA for monitoring and controlling the fleet from your phone</li>
+      <li>Self-healing watchdog: auto-restart crashed agents, auto-compact context overflow, detect stuck sessions</li>
+      <li>SQLite-backed kanban task board with atomic claiming so agents don't duplicate work</li>
+      <li>Full REST API for sessions, board, notes, CRM, email, browser automation, and cron</li>
+      <li>Inter-session messaging and agent-to-agent orchestration via the shared board</li>
+      <li>Per-session token and cost tracking with cumulative spend visibility</li>
+      <li>Browser automation via Playwright with saved auth profiles</li>
+      <li>Notes, CRM, email integration, and calendar primitives</li>
+    </ul>
+    <p>amux runs alongside your existing terminal. It manages tmux sessions in the background and serves a dashboard you access from any browser. The server persists across reboots and auto-restarts when the file is modified.</p>
+
+    <h2 id="matrix">Feature Matrix</h2>
+
+    <table style="width:100%;border-collapse:collapse;font-size:0.88rem;margin:1.5rem 0;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left;padding:0.6rem;">Feature</th>
+          <th style="text-align:left;padding:0.6rem;">amux</th>
+          <th style="text-align:left;padding:0.6rem;">cmux</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Parallel AI agent sessions</td>
+          <td style="padding:0.6rem;color:var(--green);">Yes</td>
+          <td style="padding:0.6rem;color:var(--green);">Yes</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Architecture</td>
+          <td style="padding:0.6rem;">Python server + tmux</td>
+          <td style="padding:0.6rem;">Native macOS app (Swift + libghostty)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Platform</td>
+          <td style="padding:0.6rem;color:var(--green);">macOS, Linux, cloud VMs, WSL</td>
+          <td style="padding:0.6rem;">macOS only</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Terminal rendering</td>
+          <td style="padding:0.6rem;">Your existing terminal + tmux</td>
+          <td style="padding:0.6rem;color:var(--green);">GPU-accelerated (libghostty)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Web dashboard</td>
+          <td style="padding:0.6rem;color:var(--green);">Yes (https://localhost:8822)</td>
+          <td style="padding:0.6rem;">No (desktop app only)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Mobile access</td>
+          <td style="padding:0.6rem;color:var(--green);">PWA + iOS app</td>
+          <td style="padding:0.6rem;">No (iOS app on roadmap)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">REST API</td>
+          <td style="padding:0.6rem;color:var(--green);">Full HTTPS API for everything</td>
+          <td style="padding:0.6rem;">Unix socket API (local only)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Self-healing watchdog</td>
+          <td style="padding:0.6rem;color:var(--green);">Auto-restart, auto-compact, stuck detection</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Token / cost tracking</td>
+          <td style="padding:0.6rem;color:var(--green);">Per-session and cumulative</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Kanban task board</td>
+          <td style="padding:0.6rem;color:var(--green);">SQLite-backed, atomic claiming</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Agent-to-agent messaging</td>
+          <td style="padding:0.6rem;color:var(--green);">REST API + shared board</td>
+          <td style="padding:0.6rem;">No (agents are independent panes)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Embedded browser</td>
+          <td style="padding:0.6rem;">Playwright via API (headless)</td>
+          <td style="padding:0.6rem;color:var(--green);">WebKit pane (visible, agent-scriptable)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Notification system</td>
+          <td style="padding:0.6rem;">SSE + web push</td>
+          <td style="padding:0.6rem;color:var(--green);">Visual rings + macOS notifications</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Session restore</td>
+          <td style="padding:0.6rem;color:var(--green);">Full (tmux sessions persist)</td>
+          <td style="padding:0.6rem;">Layout only (processes don't survive restart)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Notes / CRM / email</td>
+          <td style="padding:0.6rem;color:var(--green);">Yes</td>
+          <td style="padding:0.6rem;">No (out of scope)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Cron / scheduled triggers</td>
+          <td style="padding:0.6rem;color:var(--green);">Built-in</td>
+          <td style="padding:0.6rem;">No</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">SSH integration</td>
+          <td style="padding:0.6rem;">Via tmux + SSH</td>
+          <td style="padding:0.6rem;color:var(--green);">Built-in with SCP drag-and-drop</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Claude Code Teams integration</td>
+          <td style="padding:0.6rem;">Via session management</td>
+          <td style="padding:0.6rem;color:var(--green);">Native <code>cmux claude-teams</code> command</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Cloud deployment</td>
+          <td style="padding:0.6rem;color:var(--green);">Single-file VM deploy with Terraform</td>
+          <td style="padding:0.6rem;">Desktop only</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">License</td>
+          <td style="padding:0.6rem;color:var(--green);">MIT</td>
+          <td style="padding:0.6rem;">GPL-3.0 (commercial license available)</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem;">Best for</td>
+          <td style="padding:0.6rem;">Unattended fleets, cross-platform, custom automation</td>
+          <td style="padding:0.6rem;">Beautiful desktop experience, macOS power users</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2 id="architecture">Architecture Differences</h2>
+    <p>amux and cmux are built on fundamentally different architectures. This is not a matter of features bolted onto similar foundations &mdash; the foundations themselves are different.</p>
+
+    <h3>cmux architecture</h3>
+    <pre><code>┌──────────────────────────────────────────────────────────┐
+│  cmux.app  (Swift + AppKit, native macOS)                │
+│                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │
+│  │libghostty│  │  WebKit  │  │ Vertical │  │ Notifi- │ │
+│  │ terminal │  │ browser  │  │   tabs   │  │ cations │ │
+│  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │
+│                                                          │
+│  ┌─────────────────────────────────────────────────────┐ │
+│  │  Unix socket API  (/tmp/cmux.sock)                  │ │
+│  └─────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+            ┌──────────────────────┐
+            │  Your AI agents run  │
+            │  inside cmux panes   │
+            └──────────────────────┘</code></pre>
+    <p>cmux is the process that renders the terminal. Your agents run inside cmux the same way they'd run inside iTerm2 or Terminal.app. There is no separate server, no daemon, no tmux layer &mdash; cmux is the container.</p>
+
+    <h3>amux architecture</h3>
+    <pre><code>┌──────────────────────────────────────────────────────────┐
+│           amux-server.py (long-running)                   │
+│                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │
+│  │ Web UI   │  │ REST API │  │ Watchdog │  │  Board  │ │
+│  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │
+│                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │
+│  │  Notes   │  │   CRM    │  │  Tokens  │  │  Cron   │ │
+│  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │
+└──────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+        ┌────────┐  ┌────────┐  ┌────────┐
+        │ tmux 1 │  │ tmux 2 │  │ tmux N │
+        │ Claude │  │ Claude │  │ Claude │
+        └────────┘  └────────┘  └────────┘</code></pre>
+    <p>amux is a server that manages tmux sessions. It does not render the terminal &mdash; it delegates that to tmux and whatever terminal you already use. The server is the source of truth for sessions, tasks, costs, and notes, and it exposes everything over HTTPS.</p>
+
+    <h3>What this means in practice</h3>
+    <p>cmux's native architecture gives it a visual experience that no server-based tool can match. GPU-accelerated rendering, notification rings directly on pane borders, an embedded browser you can see next to your terminal output &mdash; these require being the window manager.</p>
+    <p>amux's server architecture gives it platform independence and remote access that no desktop app can match. The dashboard works in any browser, the API is callable from anywhere on the network, and tmux sessions survive app crashes, machine reboots, and SSH disconnects. You can close your laptop, walk away, and the fleet keeps running.</p>
+
+    <h2 id="platform">Platform Support</h2>
+    <p>This is the most important difference for many developers.</p>
+    <p><strong>cmux runs on macOS only.</strong> It is a Swift + AppKit application that requires macOS. There are unofficial community forks (wmux for Windows, cmux-linux) but they are not maintained by the cmux team and lag behind the main release.</p>
+    <p><strong>amux runs anywhere Python and tmux run.</strong> macOS, Linux (Ubuntu, Debian, Arch, etc.), cloud VMs (GCP, AWS, any VPS), WSL on Windows. The single-file architecture means <code>scp amux-server.py your-server:</code> is a deployment.</p>
+    <p>If you develop on Linux, work on remote servers, or want to run agents on a cloud VM, amux is your only option between these two tools. If you're on macOS and plan to stay on macOS, both work.</p>
+
+    <h2 id="workflows">Workflow Comparison</h2>
+    <p>Same goal: run 5 parallel agents, each working on a different module's test suite.</p>
+
+    <h3>The cmux way</h3>
+    <pre><code># Open cmux (it's your terminal now)
+# Cmd+T creates a new workspace tab for each task
+# In each tab, run Claude Code:
+claude "Add auth tests, target 90% coverage"
+
+# cmux shows:
+#   - Vertical sidebar with all 5 tabs
+#   - Git branch and PR status per tab
+#   - Blue notification rings when agents need attention
+#   - Jump to next unread: Cmd+Shift+U
+
+# To check a running agent, click its tab
+# Split pane horizontally: Cmd+D
+# Open embedded browser next to terminal: Cmd+Shift+B</code></pre>
+    <p><strong>Strengths:</strong> Beautiful UI, instant visual feedback, notification rings catch your attention without context-switching, embedded browser lets agents interact with web UIs natively.<br>
+    <strong>Limitations:</strong> You must be at your Mac to see what's happening. No way to check from your phone or another machine. If an agent crashes, you notice by looking at the tab &mdash; nothing auto-recovers it.</p>
+
+    <h3>The amux way</h3>
+    <pre><code># Register sessions
+for module in auth api payment notification search; do
+  amux register $module --dir ~/Dev/project --yolo
+done
+
+# Queue tasks on the board
+amux board add "Add auth tests, target 90% coverage" --session auth
+amux board add "Add API tests, target 85% coverage" --session api
+amux board add "Add payment tests, target 90% coverage" --session payment
+amux board add "Add notification tests, target 80% coverage" --session notification
+amux board add "Add search tests, target 85% coverage" --session search
+
+# Start all and open dashboard
+amux start --all
+amux serve  # → https://localhost:8822
+
+# Monitor from any device: laptop, phone, tablet
+# Watchdog auto-restarts crashes, auto-compacts context overflows
+# Check progress from bed at midnight via PWA on your phone</code></pre>
+    <p><strong>Strengths:</strong> Tasks are persisted on the board, accessible from any device, self-healing handles failures overnight, agents can delegate to each other via the shared board.<br>
+    <strong>Limitations:</strong> More setup ceremony. No GPU-rendered terminal UI &mdash; the dashboard shows session output, but it's a web view, not a native terminal.</p>
+
+    <h3>The takeaway</h3>
+    <p>cmux optimizes for the <em>at-your-desk interactive experience</em>. It's the best way to visually manage parallel agents if you're sitting in front of your Mac. amux optimizes for the <em>platform experience</em>. It's the best way to run agents as a fleet you can monitor and control from anywhere, whether you're at your desk or not.</p>
+
+    <h2 id="dashboards">Dashboards &amp; Remote Access</h2>
+    <p><strong>cmux has no dashboard and no remote access.</strong> It is a desktop application. To see your agents, you look at the app on your Mac. To check agents remotely, you SSH into your machine and... you can't use cmux over SSH, because it's a GUI app. You could use the Unix socket API to query status programmatically, but there's no web interface.</p>
+    <p><strong>amux has a full web dashboard</strong> accessible from any browser on any device. Open <code>https://localhost:8822</code> (or your machine's IP/Tailscale address) and see:</p>
+    <ul>
+      <li>All sessions with live status (running, idle, crashed, stuck)</li>
+      <li>Per-session token spend and cumulative cost</li>
+      <li>Last N lines of output from every agent, scrollable</li>
+      <li>A send bar to type messages directly into any agent</li>
+      <li>The kanban board with drag-and-drop task management</li>
+    </ul>
+    <p>The dashboard works as a PWA on your phone. Install it to your home screen and it behaves like a native app with safe-area insets and touch-optimized controls. With Tailscale, you can access it from anywhere on the internet without exposing ports.</p>
+    <p>If you ever want to start agents before bed and check on them from your phone in the morning, amux is the only option.</p>
+
+    <h2 id="browser">Browser Automation</h2>
+    <p>Both tools have browser capabilities, but they work very differently.</p>
+
+    <h3>cmux: embedded visible browser</h3>
+    <p>cmux embeds a WebKit browser as a split pane next to your terminal. Agents can see the rendered page, snapshot the accessibility tree, click elements, fill forms, and evaluate JavaScript &mdash; all while you watch. The browser uses a "Snapshot + Refs" strategy for token efficiency, giving agents a concise reference list instead of the full DOM.</p>
+    <p>This is ideal for interactive use where you want to see what the agent is doing in the browser in real time. The downside: the browser is tied to the cmux desktop app and cannot be accessed remotely or programmatically from external tools.</p>
+
+    <h3>amux: headless Playwright via REST API</h3>
+    <p>amux drives a Playwright browser via its REST API. Start a browser with a saved auth profile, navigate, screenshot, click, type, evaluate JS &mdash; all via HTTP calls. The browser runs headless (or headed if you want), and screenshots are viewable from the dashboard.</p>
+    <p>This is ideal for automated workflows, CI/CD, and unattended operation. Any agent can drive the browser via the API, and multiple sessions can share the same browser instance. The trade-off: you don't see the browser visually alongside your terminal the way cmux shows it.</p>
+
+    <h2 id="unattended">Unattended Operation &amp; Self-Healing</h2>
+    <p>Running agents overnight or while you're away from your desk is where these two tools diverge most sharply.</p>
+
+    <h3>cmux: no recovery</h3>
+    <p>cmux does not monitor agent health or recover from failures. If an agent crashes, the pane shows the error and the agent is dead until you restart it. If the agent hits its context limit, cmux doesn't notice. If cmux itself is quit and reopened, it restores the layout (directories, scrollback, browser URLs) but <em>does not restore live terminal processes</em> &mdash; your agents are gone.</p>
+    <p>For interactive use at your desk, this is fine &mdash; you see the crash immediately and restart it. For overnight runs, a crash at 2am means 6 hours of dead time.</p>
+
+    <h3>amux: self-healing watchdog</h3>
+    <p>amux's watchdog runs continuously and handles common failure modes:</p>
+    <ul>
+      <li><strong>Crash:</strong> Process dies &rarr; auto-restart, replay last user message</li>
+      <li><strong>Context overflow:</strong> Detected via output pattern &rarr; trigger <code>/compact</code> and continue</li>
+      <li><strong>Stuck:</strong> No new output for N minutes &rarr; send a nudge or restart</li>
+      <li><strong>Permission prompts:</strong> Auto-respond in YOLO mode</li>
+      <li><strong>Rate limits:</strong> Back off and retry transparently</li>
+    </ul>
+    <p>Because amux uses tmux underneath, sessions persist across everything: the amux server restarting, your terminal closing, SSH disconnects, even machine reboots (if tmux is configured to persist). The watchdog picks sessions back up automatically.</p>
+    <p>If you run agents for hours at a time, the self-healing watchdog is the single most important feature differentiator between these two tools.</p>
+
+    <h2 id="api">API &amp; Extensibility</h2>
+    <p>Both tools offer programmatic control, but the scope and accessibility differ significantly.</p>
+
+    <h3>cmux: Unix socket API</h3>
+    <p>cmux exposes a JSON-over-Unix-socket API at <code>/tmp/cmux.sock</code>. You can create workspaces, split panes, send keystrokes, open URLs, set sidebar metadata (status pills, progress bars), and manage notifications. The <code>cmux</code> CLI wraps this socket API.</p>
+    <p>The socket API is <strong>local only</strong>. External tools, remote scripts, cron jobs, and mobile apps cannot reach it over the network. It is designed for same-machine integration.</p>
+
+    <h3>amux: full HTTPS REST API</h3>
+    <p>amux exposes a comprehensive REST API over HTTPS covering:</p>
+    <ul>
+      <li>Session management (list, create, start, stop, send messages, peek at output)</li>
+      <li>Kanban board (CRUD, atomic task claiming, status transitions)</li>
+      <li>Notes (documents, write-ups, reference material)</li>
+      <li>CRM (contacts, interactions, follow-ups)</li>
+      <li>Browser automation (start, navigate, screenshot, click, type, eval)</li>
+      <li>Email (send and read via Mail.app)</li>
+      <li>Calendar (iCal export with S3 sync)</li>
+      <li>Cron and scheduled triggers</li>
+    </ul>
+    <p>The API is network-accessible, so cron jobs, CI/CD pipelines, mobile apps, other agents, and remote scripts can all interact with amux. This is what enables the agent-to-agent orchestration pattern where one agent creates board tasks for another.</p>
+
+    <h2 id="orchestration">Agent-to-Agent Orchestration</h2>
+    <p><strong>cmux agents are independent.</strong> Each pane runs its own agent in isolation. There is no mechanism for one agent to discover, communicate with, or delegate work to another agent. Coordination happens through you, the developer, looking at the tabs and deciding what to do.</p>
+    <p><strong>amux agents can orchestrate each other.</strong> Every agent has access to the REST API and can:</p>
+    <ul>
+      <li>Discover other sessions via <code>GET /api/sessions</code></li>
+      <li>Send messages to other agents via <code>POST /api/sessions/{name}/send</code></li>
+      <li>Create tasks on the shared board for other agents to claim</li>
+      <li>Atomically claim tasks so no two agents work on the same thing</li>
+      <li>Read notes and CRM data for shared context</li>
+    </ul>
+    <p>This enables workflows where a lead agent decomposes a task, creates board items for sub-agents, and the sub-agents claim and complete them independently. The shared board is the coordination mechanism &mdash; no custom integration code required.</p>
+
+    <h2 id="licensing">Licensing &amp; Pricing</h2>
+    <table style="width:100%;border-collapse:collapse;font-size:0.88rem;margin:1.5rem 0;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left;padding:0.6rem;"></th>
+          <th style="text-align:left;padding:0.6rem;">amux</th>
+          <th style="text-align:left;padding:0.6rem;">cmux</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">License</td>
+          <td style="padding:0.6rem;">MIT</td>
+          <td style="padding:0.6rem;">GPL-3.0</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Core product</td>
+          <td style="padding:0.6rem;">Free, all features included</td>
+          <td style="padding:0.6rem;">Free, all features included</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;">Paid tier</td>
+          <td style="padding:0.6rem;">None</td>
+          <td style="padding:0.6rem;">Founder's Edition (priority support, early access, cloud VMs, voice mode)</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem;">Commercial use</td>
+          <td style="padding:0.6rem;">Unrestricted (MIT)</td>
+          <td style="padding:0.6rem;">GPL requires source disclosure; commercial license available</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>amux's MIT license is the most permissive &mdash; use it anywhere, modify it, embed it, sell products built on it, no strings attached. cmux's GPL-3.0 requires derivative works to also be GPL-licensed; organizations that can't comply can purchase a commercial license from Manaflow.</p>
+
+    <h2 id="which">Which Should You Choose?</h2>
+
+    <h3>Choose cmux if...</h3>
+    <ul>
+      <li>You work exclusively on macOS and don't need Linux or cloud VM support</li>
+      <li>You want the best visual terminal experience &mdash; GPU rendering, notification rings, embedded browser</li>
+      <li>You work interactively at your desk and don't need remote monitoring</li>
+      <li>You prefer a standalone desktop app over a server + dashboard</li>
+      <li>You want native Claude Code Teams integration with <code>cmux claude-teams</code></li>
+      <li>You value visual polish and native macOS integration (drag-and-drop SSH, Ghostty themes)</li>
+      <li>Your sessions are interactive and you'll be there to handle failures yourself</li>
+    </ul>
+
+    <h3>Choose amux if...</h3>
+    <ul>
+      <li>You need cross-platform support &mdash; Linux servers, cloud VMs, or WSL</li>
+      <li>You want to run agents unattended &mdash; overnight, while in meetings, while away from your desk</li>
+      <li>You need a web dashboard you can check from any device, including your phone</li>
+      <li>You want self-healing recovery from crashes, context overflows, and stuck sessions</li>
+      <li>You need agent-to-agent orchestration &mdash; shared board, delegation, task claiming</li>
+      <li>You need a REST API for custom automation, cron jobs, or CI/CD integration</li>
+      <li>You want token spend visibility per session</li>
+      <li>You need a kanban board, notes, CRM, or email integration alongside your agents</li>
+      <li>You're running 10+ agents and need fleet-level observability</li>
+      <li>You want a single-file deployment you can <code>scp</code> to any server</li>
+    </ul>
+
+    <h3>The honest summary</h3>
+    <p>cmux and amux are not really competing for the same user. They solve the same high-level problem &mdash; "I want to run multiple AI coding agents" &mdash; but their answers reflect very different philosophies.</p>
+    <p><strong>cmux says:</strong> "The terminal is the interface. Make it beautiful, fast, and integrated. If you're running agents, you should be <em>looking</em> at them."</p>
+    <p><strong>amux says:</strong> "The platform is the interface. Make it accessible from anywhere, resilient to failures, and programmable. If you're running agents, you should be able to <em>forget about them</em> and check in when it's convenient."</p>
+    <p>If your workflow is "sit at my Mac and manage agents visually," cmux is genuinely excellent at that. If your workflow is "start agents, walk away, check from my phone, and trust that crashes are handled," amux is built for exactly that.</p>
+
+    <h2 id="faq">Frequently Asked Questions</h2>
+
+    <h3>What is the main difference between amux and cmux?</h3>
+    <p>cmux is a native macOS terminal application that replaces your existing terminal &mdash; GPU-accelerated rendering, embedded browser, visual notifications. amux is a Python server with a web dashboard that manages tmux sessions and is accessible from any device. cmux is a desktop app you look at. amux is a platform you access from anywhere.</p>
+
+    <h3>Does cmux work on Linux?</h3>
+    <p>No. cmux is macOS-only (Swift + AppKit). Unofficial community forks exist for Linux and Windows but are not maintained by the cmux team. amux runs anywhere Python and tmux run &mdash; macOS, Linux, cloud VMs, WSL.</p>
+
+    <h3>Can I access cmux from my phone?</h3>
+    <p>Not currently. cmux is a desktop application with no web interface. An iOS companion app is on the Founder's Edition roadmap. amux has a full web dashboard that works as a mobile PWA &mdash; install it on your phone home screen and monitor agents from anywhere.</p>
+
+    <h3>Does cmux have a REST API?</h3>
+    <p>cmux has a Unix socket API at <code>/tmp/cmux.sock</code> for local programmatic control, but no REST API. External tools, cron jobs, and remote scripts cannot talk to cmux over the network. amux exposes a full HTTPS REST API for everything.</p>
+
+    <h3>Which supports more AI coding agents?</h3>
+    <p>Both support any terminal-based AI agent: Claude Code, Codex CLI, Gemini CLI, Aider, Goose, and more. cmux provides first-class support via its embedded browser's agent-aware features. amux's self-healing watchdog and token tracking are Claude Code-specific, though other agents run fine as regular sessions.</p>
+
+    <h3>Is cmux free?</h3>
+    <p>cmux's core is GPL-3.0 open source and free. A paid Founder's Edition adds priority support, early access to the cmux AI context engine, iOS app sync, cloud VMs, and voice mode. amux is MIT-licensed and fully free with no paid tier.</p>
+
+    <h3>Which is better for overnight agent runs?</h3>
+    <p>amux, by a wide margin. Its self-healing watchdog auto-restarts crashed agents, auto-compacts context overflows, detects stuck sessions, and handles rate limits. cmux has no recovery system &mdash; if an agent crashes at 2am, it stays dead until you manually restart it.</p>
+
+    <h3>Can I use amux and cmux together?</h3>
+    <p>Not in a meaningful way. cmux is a standalone terminal app that manages its own panes. amux manages tmux sessions. They operate independently. Most developers pick one based on whether they prioritize the desktop experience (cmux) or the platform experience (amux).</p>
+
+    <h3>Which has more GitHub stars?</h3>
+    <p>As of April 2026, cmux has approximately 15,800 stars. cmux launched on Hacker News in February 2026 and reached #2, which accelerated its growth. amux has a smaller but growing community. Stars measure awareness, not fitness for your use case &mdash; evaluate based on your platform, workflow, and feature requirements.</p>
+
+    <h3>Are there other parallel AI agent tools I should consider?</h3>
+    <p>Yes. Look at <a href="/compare/amux-vs-dmux/">dmux</a> (worktree-focused CLI), <a href="/compare/amux-vs-claude-code-agent-teams/">Claude Code Agent Teams</a> (Anthropic's built-in feature), <a href="/compare/amux-vs-codex/">OpenAI Codex</a> (cloud-based), and the broader <a href="/compare/">comparison index</a>.</p>
+
+    <div class="cta-box" style="margin-top:3rem;"><h3>Try amux</h3><p>Run dozens of Claude Code agents in parallel with self-healing, mobile monitoring, and token tracking. Works on macOS, Linux, and cloud VMs. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
