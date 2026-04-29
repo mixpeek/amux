@@ -4963,6 +4963,14 @@ def _git_info(work_dir: str, detail: bool = False) -> dict:
         rn_s = subprocess.run(["git", "-C", work_dir, "diff", "--cached", "--numstat"], capture_output=True, text=True, timeout=5)
         result["files_unstaged"] = _parse_numstat(rn_u.stdout) if rn_u.returncode == 0 else []
         result["files_staged"] = _parse_numstat(rn_s.stdout) if rn_s.returncode == 0 else []
+        # Files in committed changes ahead of base branch (for worktree diff viewer)
+        if result.get("ahead_base") and result.get("ahead"):
+            rn_c = subprocess.run(
+                ["git", "-C", work_dir, "diff", f"{result['ahead_base']}..HEAD", "--numstat"],
+                capture_output=True, text=True, timeout=5)
+            result["files_committed"] = _parse_numstat(rn_c.stdout) if rn_c.returncode == 0 else []
+        else:
+            result["files_committed"] = []
         # Remote origin URL (for PR link construction)
         rurl = subprocess.run(
             ["git", "-C", work_dir, "remote", "get-url", "origin"],
@@ -14879,7 +14887,7 @@ function _renderPeekGit(d) {
   prBtn.style.display = prUrl ? '' : 'none';
   prBtn.dataset.url = prUrl;
 
-  // Build unified file map
+  // Build unified file map for uncommitted changes
   const fileMap = {};
   (d.files_staged || []).forEach(f => { fileMap[f.file] = {file: f.file, added: f.added, deleted: f.deleted, staged: true}; });
   (d.files_unstaged || []).forEach(f => {
@@ -14888,12 +14896,22 @@ function _renderPeekGit(d) {
   });
   (d.status || []).forEach(l => {
     const flag = l.slice(0,2).trim();
-    if (flag === '??') return; // skip untracked files
+    if (flag === '??') return;
     const file = l.slice(2).trimStart();
     if (!fileMap[file]) fileMap[file] = {file, added: 0, deleted: 0, staged: false, statusFlag: flag};
     else fileMap[file].statusFlag = flag;
   });
   let files = Object.values(fileMap);
+
+  // Build committed file list (files in commits ahead of base branch)
+  const committedMap = {};
+  const aheadBase = d.ahead_base || 'main';
+  (d.files_committed || []).forEach(f => {
+    if (!fileMap[f.file]) {
+      committedMap[f.file] = {file: f.file, added: f.added, deleted: f.deleted, committed: true, base: aheadBase};
+    }
+  });
+  let committedFiles = Object.values(committedMap);
 
   // Show/hide filter toggle button
   const filterBtn = document.getElementById('peek-git-filter-btn');
@@ -14906,23 +14924,26 @@ function _renderPeekGit(d) {
 
   // Filter to session's tracked files if available and not showing all
   const allFiles = files;
+  const allCommitted = committedFiles;
   if (_peekTrackedFiles && !_peekGitShowAll) {
     files = files.filter(f => _peekTrackedFiles.has(f.file));
-    // Auto-switch to All view if session filter hides everything but there are changes
-    if (files.length === 0 && allFiles.length > 0) {
+    committedFiles = committedFiles.filter(f => _peekTrackedFiles.has(f.file));
+    if (files.length === 0 && committedFiles.length === 0 && (allFiles.length > 0 || allCommitted.length > 0)) {
       _peekGitShowAll = true;
       files = allFiles;
+      committedFiles = allCommitted;
     }
   }
 
   // LEFT: dir tree panel
-  _renderGitTreePanel(files, d.ahead || [], d.ahead_base || 'main');
+  _renderGitTreePanel(files, committedFiles, d.ahead || [], aheadBase);
 
   // Reset diff panel
+  const hasFiles = files.length > 0 || committedFiles.length > 0;
   document.getElementById('peek-git-diff-file-hdr').style.display = 'none';
   document.getElementById('peek-git-diff-scroll').style.display = 'none';
   document.getElementById('peek-git-diff-empty').style.display = 'flex';
-  document.getElementById('peek-git-diff-empty').textContent = files.length ? 'Select a file to view diff' : 'Working tree clean';
+  document.getElementById('peek-git-diff-empty').textContent = hasFiles ? 'Select a file to view diff' : 'Working tree clean';
 }
 
 function _buildFileTree(files) {
@@ -14966,17 +14987,16 @@ function _renderTreeNode(node, container, depth) {
     el.className = 'git-tree-file';
     el.style.paddingLeft = (8 + indent) + 'px';
     el.dataset.file = f.file;
-    el.onclick = () => peekGitSelectFile(f.file, f.staged && !f.mixed);
-    const flag = f.statusFlag || (f.staged ? 'A' : f.added && !f.deleted ? 'A' : 'M');
+    el.onclick = () => peekGitSelectFile(f.file, f.staged && !f.mixed, f.base || '');
+    const flag = f.statusFlag || (f.committed ? 'M' : f.staged ? 'A' : f.added && !f.deleted ? 'A' : 'M');
     const flagClass = flag === 'A' ? 'A' : flag === 'D' ? 'D' : flag.includes('U') ? 'uu' : 'M';
     el.innerHTML = `<span class="git-tree-flag ${flagClass}">${esc(flag[0])}</span><span style="overflow:hidden;text-overflow:ellipsis;">${esc(f.file.split('/').pop())}</span>`;
     container.appendChild(el);
   });
 }
 
-function _renderGitTreePanel(files, ahead, aheadBase) {
+function _renderGitTreePanel(files, committedFiles, ahead, aheadBase) {
   const treeEl = document.getElementById('peek-git-tree-panel');
-  // Preserve the resize handle
   const handle = document.getElementById('git-tree-resize-handle');
   treeEl.innerHTML = '';
   if (handle) treeEl.appendChild(handle);
@@ -14985,7 +15005,7 @@ function _renderGitTreePanel(files, ahead, aheadBase) {
   if (ahead.length) {
     const lbl = document.createElement('div');
     lbl.className = 'git-section-label';
-    lbl.textContent = ahead.length + ' commit' + (ahead.length===1?'':'s') + ' ahead';
+    lbl.textContent = ahead.length + ' commit' + (ahead.length===1?'':'s') + ' ahead of ' + aheadBase;
     treeEl.appendChild(lbl);
     ahead.slice(0, 6).forEach(l => {
       const [hash, ...rest] = l.split(' ');
@@ -14999,21 +15019,32 @@ function _renderGitTreePanel(files, ahead, aheadBase) {
     });
   }
 
-  if (!files.length && !ahead.length) {
+  const hasAny = files.length || committedFiles.length || ahead.length;
+  if (!hasAny) {
     const msg = document.createElement('div');
     msg.style.cssText = 'color:var(--dim);font-size:0.85rem;padding:20px 16px;text-align:center;';
-    msg.textContent = 'Working tree clean — no uncommitted changes.';
+    msg.textContent = 'Working tree clean — no changes.';
     treeEl.appendChild(msg);
     return;
   }
-  if (!files.length) return;
 
+  // Committed files section (changes vs base branch)
+  if (committedFiles.length) {
+    const lbl = document.createElement('div');
+    lbl.className = 'git-section-label';
+    lbl.textContent = 'Changed files vs ' + aheadBase;
+    treeEl.appendChild(lbl);
+    const tree = _buildFileTree(committedFiles);
+    _renderTreeNode(tree, treeEl, 0);
+  }
+
+  // Uncommitted changes section
+  if (!files.length) return;
   const lbl2 = document.createElement('div');
   lbl2.className = 'git-section-label';
-  lbl2.textContent = 'Changes';
+  lbl2.textContent = committedFiles.length ? 'Uncommitted changes' : 'Changes';
   treeEl.appendChild(lbl2);
 
-  // Build and render recursive tree
   const tree = _buildFileTree(files);
   _renderTreeNode(tree, treeEl, 0);
 
@@ -15059,9 +15090,8 @@ function _gitDiffBack() {
   if (treePanel) treePanel.classList.remove('collapsed');
 }
 
-async function peekGitSelectFile(file, staged) {
+async function peekGitSelectFile(file, staged, base) {
   _gitActiveFile(file);
-  // Mobile: collapse tree panel to show diff
   const treePanel = document.getElementById('peek-git-tree-panel');
   if (treePanel && window.innerWidth <= 600) treePanel.classList.add('collapsed');
   const diffScroll = document.getElementById('peek-git-diff-scroll');
@@ -15073,8 +15103,10 @@ async function peekGitSelectFile(file, staged) {
   fileHdr.textContent = file;
   fileHdr.style.display = '';
   try {
-    const url = API + '/api/sessions/' + encodeURIComponent(peekSession) + '/git/diff?file=' +
-      encodeURIComponent(file) + (staged ? '&staged=1' : '');
+    let url = API + '/api/sessions/' + encodeURIComponent(peekSession) + '/git/diff?file=' +
+      encodeURIComponent(file);
+    if (base) url += '&base=' + encodeURIComponent(base);
+    else if (staged) url += '&staged=1';
     const r = await fetch(url);
     const d = await r.json();
     if (!d.diff) { diffEmpty.textContent = 'No diff available.'; return; }
@@ -34580,8 +34612,11 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 if action_subid == "diff":
                     file_path = qs.get("file", [""])[0]
                     staged = qs.get("staged", ["0"])[0] == "1"
+                    base = qs.get("base", [""])[0]
                     cmd = ["git", "-C", wd, "diff"]
-                    if staged:
+                    if base:
+                        cmd.append(f"{base}..HEAD")
+                    elif staged:
                         cmd.append("--cached")
                     if file_path:
                         cmd.extend(["--", file_path])
