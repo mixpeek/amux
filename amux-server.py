@@ -2340,6 +2340,14 @@ CREATE TABLE IF NOT EXISTS graph_edges (
 );
 CREATE INDEX IF NOT EXISTS idx_graph_nodes_graph ON graph_nodes(graph_id);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_graph ON graph_edges(graph_id);
+CREATE TABLE IF NOT EXISTS cmd_history (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    text     TEXT NOT NULL,
+    type     TEXT NOT NULL DEFAULT 'direct',
+    session  TEXT NOT NULL DEFAULT '',
+    ts       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cmd_history_ts ON cmd_history(ts DESC);
 """
 
 
@@ -17754,6 +17762,30 @@ function slashAcHighlight() {
 let _cmdHistory = JSON.parse(localStorage.getItem('amux_cmd_history') || '[]');
 let _cmdHistoryIdx = -1;   // -1 = not browsing history
 let _cmdHistoryDraft = ''; // saved current input when starting to browse
+let _cmdHistoryServerLoaded = false;
+
+async function _loadCmdHistoryFromServer() {
+  try {
+    const r = await fetch(API + '/api/history?limit=500');
+    if (!r.ok) return;
+    const rows = await r.json();
+    if (!rows.length && _cmdHistory.length) {
+      // First load with empty server but local data — migrate localStorage entries up
+      const entries = _cmdHistory.map(e => typeof e === 'string' ? { text: e, type: 'direct', session: '', time: Date.now() } : e);
+      await fetch(API + '/api/history/import', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ entries })
+      });
+      _cmdHistoryServerLoaded = true;
+      return;
+    }
+    // Server is authoritative — merge and deduplicate
+    _cmdHistory = rows.reverse().map(r => ({ text: r.text, type: r.type, session: r.session, time: r.ts, id: r.id }));
+    localStorage.setItem('amux_cmd_history', JSON.stringify(_cmdHistory));
+    _cmdHistoryServerLoaded = true;
+  } catch(e) {}
+}
+_loadCmdHistoryFromServer();
 
 function cmdHistoryAdd(text, opts) {
   if (!text.trim()) return;
@@ -17763,6 +17795,11 @@ function cmdHistoryAdd(text, opts) {
   _cmdHistory.push(entry);
   if (_cmdHistory.length > 500) _cmdHistory = _cmdHistory.slice(-500);
   localStorage.setItem('amux_cmd_history', JSON.stringify(_cmdHistory));
+  // Persist to server
+  fetch(API + '/api/history', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ text: entry.text, type: entry.type, session: entry.session, ts: entry.time })
+  }).catch(() => {});
   _cmdHistoryIdx = -1;
 }
 
@@ -31008,6 +31045,60 @@ class CCHandler(BaseHTTPRequestHandler):
             db.execute("INSERT INTO prefs (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=?", (key, value, value))
             db.commit()
             return self._json({"ok": True, "key": key, "value": value})
+
+        # ── Command history API (server-side) ──
+        if path == "/api/history" or path.startswith("/api/history/"):
+            if method == "GET" and path == "/api/history":
+                limit = int(qs.get("limit", ["500"])[0])
+                offset = int(qs.get("offset", ["0"])[0])
+                session = qs.get("session", [""])[0]
+                db = get_db()
+                if session:
+                    rows = db.execute(
+                        "SELECT id, text, type, session, ts FROM cmd_history WHERE session=? ORDER BY ts DESC LIMIT ? OFFSET ?",
+                        (session, limit, offset)).fetchall()
+                else:
+                    rows = db.execute(
+                        "SELECT id, text, type, session, ts FROM cmd_history ORDER BY ts DESC LIMIT ? OFFSET ?",
+                        (limit, offset)).fetchall()
+                return self._json([dict(r) for r in rows])
+            if method == "POST" and path == "/api/history":
+                body = self._read_body()
+                text = body.get("text", "").strip()
+                if not text:
+                    return self._json({"error": "text required"}, 400)
+                htype = body.get("type", "direct")
+                session = body.get("session", "")
+                ts = body.get("ts") or int(time.time() * 1000)
+                db = get_db()
+                cur = db.execute(
+                    "INSERT INTO cmd_history (text, type, session, ts) VALUES (?, ?, ?, ?)",
+                    (text, htype, session, ts))
+                db.commit()
+                return self._json({"ok": True, "id": cur.lastrowid})
+            if method == "POST" and path == "/api/history/import":
+                body = self._read_body()
+                entries = body.get("entries", [])
+                if not entries:
+                    return self._json({"error": "entries required"}, 400)
+                db = get_db()
+                count = 0
+                for e in entries:
+                    text = (e.get("text") or "").strip()
+                    if not text:
+                        continue
+                    db.execute(
+                        "INSERT INTO cmd_history (text, type, session, ts) VALUES (?, ?, ?, ?)",
+                        (text, e.get("type", "direct"), e.get("session", ""),
+                         e.get("time") or e.get("ts") or int(time.time() * 1000)))
+                    count += 1
+                db.commit()
+                return self._json({"ok": True, "imported": count})
+            if method == "DELETE" and path == "/api/history":
+                db = get_db()
+                db.execute("DELETE FROM cmd_history")
+                db.commit()
+                return self._json({"ok": True})
 
         # ── Branding / white-label API ──
         if path == "/api/branding":
