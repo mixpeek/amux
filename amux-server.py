@@ -1666,14 +1666,17 @@ def _snapshot_all_sessions():
 
             # ── 4. Auto-restart: Claude exited to shell prompt ────────────────
             # Triggered when: CC_AUTO_CONTINUE=1 AND terminal shows a bare shell
-            # prompt (no Claude UI) AND Claude was alive recently (< 10 min ago).
-            # Rate-limited to once per 90s to avoid restart storms.
+            # prompt (no Claude UI). Rate-limited to once per 90s.
+            # Also fires after server restart (last_claude_alive unknown) if
+            # "Killed" appears in scrollback — handles OOM kills across restarts.
             if _at_shell_prompt(clean) and not actions.get("restarting"):
                 cfg_ar = parse_env_file(f)
                 if cfg_ar.get("CC_AUTO_CONTINUE") in ("1", "true", "yes"):
                     last_alive = actions.get("last_claude_alive", 0)
                     last_restart = actions.get("last_auto_restart", 0)
-                    if last_alive and now - last_alive < 600 and now - last_restart > 90:
+                    _killed_in_output = "Killed" in clean and ("$ " in clean or "%" in clean)
+                    if ((last_alive and now - last_alive < 600) or
+                            (not last_alive and _killed_in_output)) and now - last_restart > 90:
                         actions["restarting"] = True
                         actions["last_auto_restart"] = now
                         def _do_restart(sname=name, _actions=actions):
