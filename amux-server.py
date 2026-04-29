@@ -1522,10 +1522,12 @@ def _claude_ui_visible(clean_output: str) -> bool:
             return True
         if "codex" in ls and ("full-auto" in ls or "suggest" in ls or "workspace" in ls):
             return True
-    # Check last 12 lines for an active spinner (dingbat + ellipsis)
+    # Check last 12 lines for an active spinner (dingbat-prefixed status line
+    # like "\u273b Crunched for 1m 38s"). Exclude U+276F \u276f \u2014 that's Claude's input
+    # prompt; after /exit, "\u276f /exit" stays in scrollback and false-positives.
     for l in lines[-12:]:
         s = l.strip()
-        if s and "\u2700" <= s[0] <= "\u27bf":
+        if s and "\u2700" <= s[0] <= "\u27bf" and s[0] != "\u276f":
             return True
     # Codex prompt: line starting with > (only if "codex" banner seen in output)
     has_codex = any("codex" in l.lower() for l in lines[:15])
@@ -14421,24 +14423,51 @@ async function copyMoshCmd(name) {
   }
 }
 
+const _restartingSessions = new Set();
+function _fetchTimeout(url, ms) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms);
+  return fetch(url, { signal: ctl.signal }).finally(() => clearTimeout(t));
+}
 async function doRestart(name) {
-  await apiCall(API + '/api/sessions/' + name + '/stop', { method: 'POST' });
-  // Poll until stopped (up to 20s for graceful /exit). If it never stops,
-  // bail out instead of racing doStart against a still-running session.
-  let stopped = false;
-  for (let i = 0; i < 40; i++) {
-    await new Promise(r => setTimeout(r, 500));
-    await fetchSessions();
-    if (!sessions.find(s => s.name === name && s.running)) {
-      stopped = true;
-      break;
-    }
-  }
-  if (!stopped) {
-    showToast("Stop didn't take effect, try again");
+  if (_restartingSessions.has(name)) {
+    showToast('Restart already in progress');
     return;
   }
-  await doStart(name);
+  _restartingSessions.add(name);
+  try {
+    const encodedName = encodeURIComponent(name);
+    const INFO_URL = API + '/api/sessions/' + encodedName + '/info';
+    const STOP_URL = API + '/api/sessions/' + encodedName + '/stop';
+    let alreadyStopped = false;
+    let sessionGone = false;
+    try {
+      const pre = await _fetchTimeout(INFO_URL, 5000);
+      if (pre.status === 404) sessionGone = true;
+      else if (pre.ok) { const data = await pre.json(); if (!data.running) alreadyStopped = true; }
+    } catch (e) {}
+    if (sessionGone) { showToast('Session no longer exists'); return; }
+    if (alreadyStopped) { await fetchSessions(); await doStart(name); return; }
+    const stopResp = await apiCall(STOP_URL, { method: 'POST' });
+    if (!stopResp) return;
+    await new Promise(r => setTimeout(r, 1000));
+    let stopped = false;
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      try {
+        const r = await _fetchTimeout(INFO_URL, 3000);
+        if (r.status === 404) { showToast('Session no longer exists'); return; }
+        if (r.ok) { const data = await r.json(); if (!data.running) { stopped = true; break; } }
+      } catch (e) {}
+      if (Date.now() >= deadline) break;
+      await new Promise(r => setTimeout(r, 500));
+    }
+    if (!stopped) { showToast("Stop didn't take effect, try again"); return; }
+    await fetchSessions();
+    await doStart(name);
+  } finally {
+    _restartingSessions.delete(name);
+  }
 }
 
 // ── Sending indicator ──
