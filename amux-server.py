@@ -1673,13 +1673,14 @@ def _snapshot_all_sessions():
             # Track last time Claude UI was visible (used by auto-restart below)
             if _claude_ui_visible(clean):
                 actions["last_claude_alive"] = now
+                actions.pop("hibernated", None)
 
             # ── 4. Auto-restart: Claude exited to shell prompt ────────────────
             # Triggered when: CC_AUTO_CONTINUE=1 AND terminal shows a bare shell
             # prompt (no Claude UI). Rate-limited to once per 90s.
             # Also fires after server restart (last_claude_alive unknown) if
             # "Killed" appears in scrollback — handles OOM kills across restarts.
-            if _at_shell_prompt(clean) and not actions.get("restarting"):
+            if _at_shell_prompt(clean) and not actions.get("restarting") and not actions.get("hibernated"):
                 cfg_ar = parse_env_file(f)
                 if cfg_ar.get("CC_AUTO_CONTINUE") in ("1", "true", "yes"):
                     last_alive = actions.get("last_claude_alive", 0)
@@ -1742,6 +1743,27 @@ def _snapshot_all_sessions():
                                                         f"{elapsed_secs // 3600}h old")
                     except Exception:
                         pass
+
+            # ── 6. Auto-hibernate: stop idle sessions to reclaim memory ───────
+            # Claude processes hold 400-750 MB each even when idle. With 30+
+            # sessions that causes OOM kills. Stop Claude in sessions idle for
+            # >30 min. The conversation is preserved — next send auto-wakes it.
+            _HIBERNATE_IDLE_SECS = 1800  # 30 minutes
+            if status == "idle" and not actions.get("restarting"):
+                last_activity = actions.get("last_claude_alive", 0)
+                meta_h = _load_meta(name)
+                last_send = meta_h.get("last_send", 0)
+                last_real_activity = max(last_activity, last_send)
+                if last_real_activity and now - last_real_activity > _HIBERNATE_IDLE_SECS:
+                    if not actions.get("hibernated"):
+                        actions["hibernated"] = True
+                        def _do_hibernate(sname=name):
+                            try:
+                                stop_session(sname)
+                                print(f"[hibernate] {sname}: stopped after {int(now - last_real_activity)}s idle")
+                            except Exception:
+                                pass
+                        threading.Thread(target=_do_hibernate, daemon=True).start()
 
             # ── 3a. Post-compact continuation ──────────────────────────────────
             # After we trigger auto-compact, the session goes idle at the ❯ prompt.
@@ -6001,8 +6023,23 @@ def _get_send_lock(name: str) -> threading.Lock:
         return _send_locks[name]
 
 
+_auto_waking = set()
+
 def send_text(name: str, text: str) -> tuple[bool, str]:
     if not is_running(name):
+        if name in _auto_waking:
+            return False, "not running"
+        env_file = CC_SESSIONS / f"{name}.env"
+        if env_file.exists():
+            _auto_waking.add(name)
+            try:
+                ok, msg = start_session(name)
+                if not ok:
+                    return False, f"auto-wake failed: {msg}"
+                _send_after_ready(name, text)
+                return True, "sent (auto-woke)"
+            finally:
+                _auto_waking.discard(name)
         return False, "not running"
     lock = _get_send_lock(name)
     with lock:
