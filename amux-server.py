@@ -1539,6 +1539,14 @@ def _claude_ui_visible(clean_output: str) -> bool:
     return False
 
 
+def _at_resume_picker(clean_output: str) -> bool:
+    """Return True if Claude's --resume picker is showing (interactive session selector)."""
+    return bool(clean_output and
+                ("Resume Session" in clean_output or "Type to Search" in clean_output or
+                 "Enter to select" in clean_output or "Esc to cancel" in clean_output) and
+                "⌕" in clean_output)  # ⌕ search icon in the picker
+
+
 def _at_shell_prompt(clean_output: str) -> bool:
     """Return True if the terminal looks like a bare shell prompt (no Claude UI)."""
     if _claude_ui_visible(clean_output):
@@ -5671,13 +5679,38 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 if _out and _claude_ui_visible(_out):
                     _claude_launched = True
                     break
-                # If we see a shell prompt within 5s, --resume may have failed
+                # If we see a shell prompt or resume picker, --resume failed
                 if _i >= 10 and _out and _at_shell_prompt(_out):
+                    break
+                if _i >= 6 and _out and _at_resume_picker(_out):
                     break
     
             if not _claude_launched and not _skip_conv_id and provider == "claude":
-                # Check if Claude exited immediately (--resume failure)
+                # Check if stuck in resume picker (--resume showed interactive selector)
                 _out_check = tmux_capture(name, 10)
+                if _at_resume_picker(_out_check):
+                    print(f"[start] {name}: stuck in resume picker, escaping and starting fresh")
+                    # Send Escape to close picker, then Ctrl-C to exit claude
+                    subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Escape"],
+                                   capture_output=True, timeout=5)
+                    time.sleep(0.5)
+                    subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-c"],
+                                   capture_output=True, timeout=5)
+                    time.sleep(2)
+                    # Wait for shell prompt
+                    for _w in range(10):
+                        _out_w = tmux_capture(name, 10)
+                        if _out_w and _at_shell_prompt(_out_w):
+                            break
+                        time.sleep(0.5)
+                    # Clear stale session name
+                    meta.pop("cc_session_name", None)
+                    meta.pop("cc_conversation_id", None)
+                    _save_meta(name, meta)
+                    # Mark as at shell prompt so the fallback below fires
+                    _out_check = tmux_capture(name, 10)
+
+                # Check if Claude exited immediately (--resume failure)
                 if _at_shell_prompt(_out_check):
                     print(f"[start] {name}: --resume failed, starting fresh")
                     # Clear stale session name and retry with --name
