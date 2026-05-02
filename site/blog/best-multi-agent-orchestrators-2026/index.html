@@ -21,7 +21,7 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Blog","item":"https://amux.io/blog/"},{"@type":"ListItem","position":3,"name":"Best Multi-Agent Coding Orchestrators 2026","item":"https://amux.io/blog/best-multi-agent-orchestrators-2026/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"Best Multi-Agent Coding Orchestrators in 2026: Claude Squad, Conductor, Codex & More","description":"Comprehensive comparison of the 9 best multi-agent coding orchestrators in 2026. Compared on parallel capacity, git isolation, self-healing, dashboards, cost, and unattended operation.","author":{"@type":"Organization","name":"amux","url":"https://amux.io"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},"datePublished":"2026-05-01","dateModified":"2026-05-01","mainEntityOfPage":"https://amux.io/blog/best-multi-agent-orchestrators-2026/"}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"Best Multi-Agent Coding Orchestrators in 2026: Claude Squad, Conductor, Codex & More","description":"Comprehensive comparison of the 9 best multi-agent coding orchestrators in 2026. Compared on parallel capacity, git isolation, self-healing, dashboards, cost, and unattended operation.","author":{"@type":"Organization","name":"amux","url":"https://amux.io"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},"datePublished":"2026-05-01","dateModified":"2026-05-02","mainEntityOfPage":"https://amux.io/blog/best-multi-agent-orchestrators-2026/"}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is a multi-agent coding orchestrator?","acceptedAnswer":{"@type":"Answer","text":"A multi-agent coding orchestrator is a tool that manages multiple AI coding agents (like Claude Code, Codex CLI, or Aider) running in parallel on different tasks within the same codebase. It handles session management, git isolation (so agents don't create merge conflicts), task assignment, monitoring, and often crash recovery. Think of it as the control plane between you and your fleet of AI coding agents."}},{"@type":"Question","name":"How many AI coding agents can I run in parallel?","acceptedAnswer":{"@type":"Answer","text":"Most developers start with 3-5 agents and scale to 10-20 as they improve at task decomposition. The practical limit depends on API rate limits, machine resources (RAM and CPU), and your ability to review output. On a Mac with 16GB RAM, 20 concurrent terminal-based agents is comfortable. Cloud-based orchestrators like Codex and Devin can scale higher since agents run on remote infrastructure."}},{"@type":"Question","name":"What is the difference between Claude Squad and amux?","acceptedAnswer":{"@type":"Answer","text":"Claude Squad is a Go-based TUI (terminal user interface) for managing multiple agents in tmux with git worktree isolation. It is terminal-only with no web dashboard. amux is a Python server with a web dashboard, REST API, mobile PWA, kanban board for task coordination, self-healing watchdog for crash recovery, and SSE-based real-time updates. Claude Squad is lighter and faster to start. amux is designed for unattended overnight operation and multi-device access."}},{"@type":"Question","name":"Do I need an orchestrator or can I just use tmux directly?","acceptedAnswer":{"@type":"Answer","text":"You can absolutely use raw tmux with git worktrees. Many developers start this way. An orchestrator adds value when you need: automatic crash recovery (agents hit context limits, API errors, or session corruption), a dashboard to monitor status without attaching to each session, task coordination across agents, token/cost tracking, or mobile access to check on overnight runs. If you run 1-3 agents and babysit them, tmux is fine. If you run 5+ agents or want unattended operation, an orchestrator saves hours of manual recovery."}},{"@type":"Question","name":"Which orchestrator is best for overnight unattended coding?","acceptedAnswer":{"@type":"Answer","text":"amux is specifically designed for unattended operation with its self-healing watchdog that detects and recovers from context overflow, session corruption, and API errors automatically. Devin also runs unattended in the cloud but costs significantly more. Claude Code Agent Teams run within a single session and are not designed for long overnight operation. Claude Squad and dmux provide isolation but no automatic crash recovery. Conductor has checkpoints for rollback but not automated recovery."}},{"@type":"Question","name":"What does an orchestrator cost?","acceptedAnswer":{"@type":"Answer","text":"Most orchestrators are free and open source (Claude Squad, dmux, amux, Goose, Composio Agent Orchestrator). You pay only for the underlying AI model API usage. Conductor is a free Mac app. Devin starts at $20/month plus per-unit compute costs. Kilo Code's orchestration features require a subscription ($19-199/month). The primary cost in any setup is the API tokens consumed by your agents, typically $100-300/month for a developer running 5-10 agents daily."}},{"@type":"Question","name":"Can I use different AI models across my agent fleet?","acceptedAnswer":{"@type":"Answer","text":"Yes, with most orchestrators. A common pattern is running Opus or GPT-5.4 for complex architectural tasks and Sonnet or GPT-5.3 for routine work like tests and documentation. amux, Claude Squad, dmux, and Goose all support multiple AI backends. Conductor supports comparing Claude and Codex side by side. Claude Code Agent Teams and Devin are locked to their respective providers."}},{"@type":"Question","name":"What happened in the April 2026 orchestrator convergence?","acceptedAnswer":{"@type":"Answer","text":"April 2026 saw a rapid convergence in the multi-agent orchestration space. Anthropic launched Claude Code Agent Teams as a built-in feature. OpenAI shipped Codex with parallel cloud sandboxes. Kilo Code added its Agent Manager with worktree isolation. Conductor launched from the team behind Melty. Composio released its Agent Orchestrator. Multiple kanban-for-agents tools (Vibe Kanban, Claw-Kanban) also launched. This convergence validated the orchestration layer as a distinct category, not just a feature of individual coding agents."}}]}</script>
   <style>
     .compare-grid{display:grid;gap:1.5rem;margin:2rem 0}
@@ -29,6 +29,10 @@
     .tool-card h3{margin:0 0 0.3rem;font-size:1.1rem}
     .tool-meta{font-size:0.8rem;color:var(--muted);margin-bottom:1rem;display:flex;gap:1rem;flex-wrap:wrap}
     .tool-meta span{display:inline-flex;align-items:center;gap:0.3rem}
+    .tool-meta a{color:var(--dim);text-decoration:underline;text-decoration-color:var(--border)}
+    .tool-meta a:hover{color:var(--text)}
+    .tool-card p a{color:var(--dim);text-decoration:underline;text-decoration-color:var(--border)}
+    .tool-card p a:hover{color:var(--text)}
     .tool-card ul{font-size:0.88rem;line-height:1.7;padding-left:1.2rem;color:var(--dim)}
     .tool-card ul li strong{color:var(--text)}
     .tool-verdict{margin-top:1rem;padding-top:0.8rem;border-top:1px solid var(--border);font-size:0.85rem;color:var(--dim)}
@@ -97,7 +101,7 @@
 
     <!-- ───────── Why ───────── -->
     <h2 id="why">Why You Need an Orchestrator</h2>
-    <p>The AI coding landscape underwent a rapid convergence in April 2026. Anthropic shipped Agent Teams. OpenAI launched Codex with parallel cloud sandboxes. Kilo Code added multi-session orchestration. Conductor emerged from the Melty team. Within weeks, "agent orchestration" went from a niche concern to a recognized product category.</p>
+    <p>The AI coding landscape underwent a rapid convergence in April 2026. <a href="https://code.claude.com/docs/en/agent-teams" target="_blank" rel="noopener">Anthropic shipped Agent Teams</a>. <a href="https://github.com/openai/codex" target="_blank" rel="noopener">OpenAI launched Codex</a> with parallel cloud sandboxes. <a href="https://kilo.ai/" target="_blank" rel="noopener">Kilo Code</a> added multi-session orchestration. <a href="https://www.conductor.build/" target="_blank" rel="noopener">Conductor</a> emerged from the Melty team. Within weeks, "agent orchestration" went from a niche concern to a recognized product category.</p>
     <p>The reason is straightforward: <strong>running one AI coding agent is a feature. Running ten is an infrastructure problem.</strong></p>
     <p>Without orchestration, developers who scale from one agent to five discover the same failure modes:</p>
     <ul>
@@ -161,7 +165,7 @@
         </thead>
         <tbody>
           <tr>
-            <td>Claude Squad</td>
+            <td><a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-decoration-color:var(--border)">Claude Squad</a></td>
             <td>CLI/TUI</td>
             <td>10-20</td>
             <td class="y">Worktrees</td>
@@ -174,7 +178,7 @@
             <td class="y">MIT</td>
           </tr>
           <tr>
-            <td>Conductor</td>
+            <td><a href="https://www.conductor.build/" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-decoration-color:var(--border)">Conductor</a></td>
             <td>Mac app</td>
             <td>3-8</td>
             <td class="y">Worktrees</td>
@@ -187,7 +191,7 @@
             <td class="n">No</td>
           </tr>
           <tr>
-            <td>Kilo Code</td>
+            <td><a href="https://kilo.ai/" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-decoration-color:var(--border)">Kilo Code</a></td>
             <td>IDE ext</td>
             <td>5-15</td>
             <td class="y">Worktrees</td>
@@ -200,7 +204,7 @@
             <td class="y">Yes</td>
           </tr>
           <tr>
-            <td>Agent Teams</td>
+            <td><a href="https://code.claude.com/docs/en/agent-teams" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-decoration-color:var(--border)">Agent Teams</a></td>
             <td>Built-in</td>
             <td>3-10</td>
             <td class="n">Shared repo</td>
@@ -213,7 +217,7 @@
             <td class="n">No</td>
           </tr>
           <tr>
-            <td>OpenAI Codex</td>
+            <td><a href="https://github.com/openai/codex" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-decoration-color:var(--border)">OpenAI Codex</a></td>
             <td>Cloud</td>
             <td>10-50+</td>
             <td class="y">Sandboxes</td>
@@ -226,7 +230,7 @@
             <td class="p">CLI only</td>
           </tr>
           <tr>
-            <td>Devin</td>
+            <td><a href="https://devin.ai/" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-decoration-color:var(--border)">Devin</a></td>
             <td>Cloud</td>
             <td>Unlimited</td>
             <td class="y">Cloud VMs</td>
@@ -239,7 +243,7 @@
             <td class="n">No</td>
           </tr>
           <tr>
-            <td>Goose</td>
+            <td><a href="https://github.com/block/goose" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-decoration-color:var(--border)">Goose</a></td>
             <td>Desktop/CLI</td>
             <td>3-8</td>
             <td class="n">Manual</td>
@@ -252,7 +256,7 @@
             <td class="y">Apache 2.0</td>
           </tr>
           <tr>
-            <td>dmux</td>
+            <td><a href="https://github.com/standardagents/dmux" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-decoration-color:var(--border)">dmux</a></td>
             <td>CLI</td>
             <td>10-20</td>
             <td class="y">Worktrees</td>
@@ -265,7 +269,7 @@
             <td class="y">MIT</td>
           </tr>
           <tr style="background:var(--accent-dim)">
-            <td>amux</td>
+            <td><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-decoration-color:var(--border)">amux</a></td>
             <td>Server</td>
             <td>20-50+</td>
             <td class="y">Worktrees</td>
@@ -287,13 +291,13 @@
     </p>
 
     <!-- ───────── Individual Tools ───────── -->
-    <h2 id="claude-squad">Claude Squad</h2>
+    <h2 id="claude-squad"><a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;">Claude Squad</a></h2>
     <div class="tool-card">
-      <h3>Claude Squad</h3>
+      <h3><a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener" style="color:inherit;">Claude Squad</a></h3>
       <div class="tool-meta">
-        <span>By smtg-ai</span>
+        <span>By <a href="https://github.com/smtg-ai" target="_blank" rel="noopener">smtg-ai</a></span>
         <span>Go CLI/TUI</span>
-        <span>~6.9k GitHub stars</span>
+        <span><a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener" style="color:inherit;">~6.9k GitHub stars</a></span>
         <span>MIT license</span>
       </div>
       <p style="font-size:0.88rem;color:var(--dim);margin-bottom:1rem;">The most popular open-source multi-agent CLI. Manages multiple AI terminal agents in a single TUI with tmux sessions and git worktree isolation.</p>
@@ -310,11 +314,11 @@
       </div>
     </div>
 
-    <h2 id="conductor">Conductor</h2>
+    <h2 id="conductor"><a href="https://www.conductor.build/" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;">Conductor</a></h2>
     <div class="tool-card">
-      <h3>Conductor</h3>
+      <h3><a href="https://www.conductor.build/" target="_blank" rel="noopener" style="color:inherit;">Conductor</a></h3>
       <div class="tool-meta">
-        <span>By Melty Labs (YC S24)</span>
+        <span>By <a href="https://www.conductor.build/" target="_blank" rel="noopener">Melty Labs</a> (YC S24)</span>
         <span>macOS app</span>
         <span>Closed source</span>
       </div>
@@ -332,16 +336,16 @@
       </div>
     </div>
 
-    <h2 id="kilo-code">Kilo Code</h2>
+    <h2 id="kilo-code"><a href="https://kilo.ai/" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;">Kilo Code</a></h2>
     <div class="tool-card">
-      <h3>Kilo Code</h3>
+      <h3><a href="https://kilo.ai/" target="_blank" rel="noopener" style="color:inherit;">Kilo Code</a></h3>
       <div class="tool-meta">
-        <span>By Kilo-Org ($8M seed)</span>
+        <span>By <a href="https://github.com/Kilo-Org/kilocode" target="_blank" rel="noopener">Kilo-Org</a> ($8M seed)</span>
         <span>VS Code / JetBrains / CLI</span>
-        <span>~10k GitHub stars</span>
+        <span><a href="https://github.com/Kilo-Org/kilocode" target="_blank" rel="noopener" style="color:inherit;">~10k GitHub stars</a></span>
         <span>Open source</span>
       </div>
-      <p style="font-size:0.88rem;color:var(--dim);margin-bottom:1rem;">A superset of Cline and Roo Code with an Agent Manager panel for multi-session orchestration. The most full-featured IDE-based orchestrator, supporting 500+ AI models.</p>
+      <p style="font-size:0.88rem;color:var(--dim);margin-bottom:1rem;">A superset of <a href="https://github.com/cline/cline" target="_blank" rel="noopener">Cline</a> and <a href="https://github.com/RooCodeInc/Roo-Code" target="_blank" rel="noopener">Roo Code</a> with an Agent Manager panel for multi-session orchestration. The most full-featured IDE-based orchestrator, supporting 500+ AI models.</p>
       <ul>
         <li><strong>Agent Manager</strong> &mdash; multi-session panel with git worktree isolation, visible inside your IDE</li>
         <li><strong>Multi-surface</strong> &mdash; works in VS Code, JetBrains, and as a CLI</li>
@@ -355,15 +359,15 @@
       </div>
     </div>
 
-    <h2 id="agent-teams">Claude Code Agent Teams</h2>
+    <h2 id="agent-teams"><a href="https://code.claude.com/docs/en/agent-teams" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;">Claude Code Agent Teams</a></h2>
     <div class="tool-card">
-      <h3>Claude Code Agent Teams</h3>
+      <h3><a href="https://code.claude.com/docs/en/agent-teams" target="_blank" rel="noopener" style="color:inherit;">Claude Code Agent Teams</a></h3>
       <div class="tool-meta">
-        <span>By Anthropic</span>
-        <span>Built into Claude Code</span>
+        <span>By <a href="https://anthropic.com" target="_blank" rel="noopener">Anthropic</a></span>
+        <span>Built into <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a></span>
         <span>Experimental</span>
       </div>
-      <p style="font-size:0.88rem;color:var(--dim);margin-bottom:1rem;">Anthropic's built-in multi-agent orchestration. One session acts as team lead, assigns tasks to teammate agents, and synthesizes results. No external tooling required.</p>
+      <p style="font-size:0.88rem;color:var(--dim);margin-bottom:1rem;"><a href="https://anthropic.com" target="_blank" rel="noopener">Anthropic's</a> built-in multi-agent orchestration. One session acts as team lead, assigns tasks to teammate agents, and synthesizes results. No external tooling required.</p>
       <ul>
         <li><strong>Zero setup</strong> &mdash; built directly into Claude Code, no installation or configuration needed</li>
         <li><strong>Native coordination</strong> &mdash; teammates communicate through the lead agent and can talk directly to each other</li>
@@ -376,13 +380,13 @@
       </div>
     </div>
 
-    <h2 id="codex">OpenAI Codex</h2>
+    <h2 id="codex"><a href="https://github.com/openai/codex" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;">OpenAI Codex</a></h2>
     <div class="tool-card">
-      <h3>OpenAI Codex</h3>
+      <h3><a href="https://github.com/openai/codex" target="_blank" rel="noopener" style="color:inherit;">OpenAI Codex</a></h3>
       <div class="tool-meta">
-        <span>By OpenAI</span>
+        <span>By <a href="https://openai.com" target="_blank" rel="noopener">OpenAI</a></span>
         <span>Cloud platform + open-source CLI</span>
-        <span>~75.6k GitHub stars (CLI)</span>
+        <span><a href="https://github.com/openai/codex" target="_blank" rel="noopener" style="color:inherit;">~75.6k GitHub stars (CLI)</a></span>
       </div>
       <p style="font-size:0.88rem;color:var(--dim);margin-bottom:1rem;">Cloud-based agent platform with sandboxed environments for each task. The highest parallel capacity of any tool here, with enterprise-grade infrastructure behind it.</p>
       <ul>
@@ -398,15 +402,15 @@
       </div>
     </div>
 
-    <h2 id="devin">Devin</h2>
+    <h2 id="devin"><a href="https://devin.ai/" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;">Devin</a></h2>
     <div class="tool-card">
-      <h3>Devin</h3>
+      <h3><a href="https://devin.ai/" target="_blank" rel="noopener" style="color:inherit;">Devin</a></h3>
       <div class="tool-meta">
-        <span>By Cognition AI</span>
+        <span>By <a href="https://cognition.ai/" target="_blank" rel="noopener">Cognition AI</a></span>
         <span>Cloud SaaS</span>
         <span>Proprietary</span>
       </div>
-      <p style="font-size:0.88rem;color:var(--dim);margin-bottom:1rem;">The most autonomous agent on this list. Devin reads tickets from Linear/Jira, navigates your codebase, writes code, runs tests, and opens PRs without human intervention. Not an orchestrator in the traditional sense &mdash; it <em>is</em> the agent.</p>
+      <p style="font-size:0.88rem;color:var(--dim);margin-bottom:1rem;">The most autonomous agent on this list. Devin reads tickets from <a href="https://linear.app/" target="_blank" rel="noopener">Linear</a>/<a href="https://www.atlassian.com/software/jira" target="_blank" rel="noopener">Jira</a>, navigates your codebase, writes code, runs tests, and opens PRs without human intervention. Not an orchestrator in the traditional sense &mdash; it <em>is</em> the agent.</p>
       <ul>
         <li><strong>Full autonomy</strong> &mdash; goes from ticket to merged PR with ~75% success rate</li>
         <li><strong>Deep integrations</strong> &mdash; Jira, Linear, Slack, GitHub PRs, CI pipelines</li>
@@ -419,13 +423,13 @@
       </div>
     </div>
 
-    <h2 id="goose">Goose</h2>
+    <h2 id="goose"><a href="https://github.com/block/goose" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;">Goose</a></h2>
     <div class="tool-card">
-      <h3>Goose</h3>
+      <h3><a href="https://github.com/block/goose" target="_blank" rel="noopener" style="color:inherit;">Goose</a></h3>
       <div class="tool-meta">
-        <span>By Linux Foundation AAIF (originally Block)</span>
+        <span>By <a href="https://www.linuxfoundation.org/" target="_blank" rel="noopener">Linux Foundation</a> AAIF (originally <a href="https://block.xyz/" target="_blank" rel="noopener">Block</a>)</span>
         <span>Desktop app + CLI</span>
-        <span>~29k GitHub stars</span>
+        <span><a href="https://github.com/block/goose" target="_blank" rel="noopener" style="color:inherit;">~29k GitHub stars</a></span>
         <span>Apache 2.0</span>
       </div>
       <p style="font-size:0.88rem;color:var(--dim);margin-bottom:1rem;">A general-purpose AI agent with subagent spawning and 70+ extensions via MCP. Not a dedicated orchestrator, but includes multi-agent capabilities through its extension system.</p>
@@ -442,13 +446,13 @@
       </div>
     </div>
 
-    <h2 id="dmux">dmux</h2>
+    <h2 id="dmux"><a href="https://github.com/standardagents/dmux" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;">dmux</a></h2>
     <div class="tool-card">
-      <h3>dmux</h3>
+      <h3><a href="https://github.com/standardagents/dmux" target="_blank" rel="noopener" style="color:inherit;">dmux</a></h3>
       <div class="tool-meta">
-        <span>By Standard Agents</span>
+        <span>By <a href="https://github.com/standardagents" target="_blank" rel="noopener">Standard Agents</a></span>
         <span>Node.js CLI</span>
-        <span>~1.3k GitHub stars</span>
+        <span><a href="https://github.com/standardagents/dmux" target="_blank" rel="noopener" style="color:inherit;">~1.3k GitHub stars</a></span>
         <span>MIT license</span>
       </div>
       <p style="font-size:0.88rem;color:var(--dim);margin-bottom:1rem;">A tmux-based multiplexer that creates a pane per task with git worktree isolation. Supports 11 different AI agent CLIs and includes AI-generated branch names via OpenRouter.</p>
@@ -465,11 +469,11 @@
       </div>
     </div>
 
-    <h2 id="amux">amux</h2>
+    <h2 id="amux"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;">amux</a></h2>
     <div class="tool-card" style="border-color:var(--amber);">
-      <h3>amux</h3>
+      <h3><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="color:inherit;">amux</a></h3>
       <div class="tool-meta">
-        <span>By Mixpeek</span>
+        <span>By <a href="https://mixpeek.com" target="_blank" rel="noopener">Mixpeek</a></span>
         <span>Python server + web dashboard</span>
         <span>MIT license</span>
       </div>
