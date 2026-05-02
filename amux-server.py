@@ -5647,26 +5647,29 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 cmd += " --model sonnet"
         try:
             tmux_sess = tmux_name(name)
-            # Build shell setup string
-            shell_rc = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
-            # Detect OAuth
-            _has_oauth = False
-            try:
-                import json as _j2
-                _cj = Path.home() / ".claude.json"
-                if _cj.exists():
-                    _has_oauth = bool(_j2.loads(_cj.read_text()).get("oauthAccount"))
-            except Exception:
-                pass
-            if _has_oauth:
-                shell_rc += "unset ANTHROPIC_API_KEY; "
+            # Build shell setup string — skip Claude env cleanup for codex
+            if provider == "codex":
+                shell_rc = ""
+            else:
+                shell_rc = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
+                # Detect OAuth
+                _has_oauth = False
+                try:
+                    import json as _j2
+                    _cj = Path.home() / ".claude.json"
+                    if _cj.exists():
+                        _has_oauth = bool(_j2.loads(_cj.read_text()).get("oauthAccount"))
+                except Exception:
+                    pass
+                if _has_oauth:
+                    shell_rc += "unset ANTHROPIC_API_KEY; "
             for rc in [Path.home() / ".zprofile", Path.home() / ".bash_profile", Path.home() / ".profile"]:
                 if rc.exists():
                     shell_rc += f"source {rc} 2>/dev/null; cd {shlex.quote(work_dir)}; "
                     break
             else:
                 shell_rc += f"cd {shlex.quote(work_dir)}; "
-            if _has_oauth:
+            if provider != "codex" and _has_oauth:
                 shell_rc += "unset ANTHROPIC_API_KEY; "
             # Forward select env vars into the tmux session.
             _env_args = []
