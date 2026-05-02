@@ -13522,19 +13522,13 @@ function render() {
     </div>`;
   }
 
-  // Grid mode: flat list sorted by saved card order, no grouping (desktop only)
+  // Grid mode: flat list sorted by activity or alpha, no grouping (desktop only)
   if (layoutMode === 'grid' && window.innerWidth >= 900) {
     let sortedFiltered;
     if (sortMode === 'alpha') {
       sortedFiltered = [...filtered].sort(_alphaSortSessions);
     } else {
-      const orderMap = {};
-      cardOrder.forEach((name, i) => { orderMap[name] = i; });
-      sortedFiltered = [...filtered].sort((a, b) => {
-        const ai = orderMap[a.name] !== undefined ? orderMap[a.name] : 9999;
-        const bi = orderMap[b.name] !== undefined ? orderMap[b.name] : 9999;
-        return ai - bi;
-      });
+      sortedFiltered = [...filtered].sort(_naturalSortSessions);
     }
     el.innerHTML = draftCards + sortedFiltered.map(_renderSessionCard).join('');
     for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
@@ -13603,25 +13597,10 @@ function render() {
   } else {
     // list mode (flat) or group mode with active filter: flat list
     let flatList = filtered;
-    if (layoutMode === 'list' && !activeTag && !q) {
-      if (sortMode === 'alpha') {
-        flatList = [...filtered].sort(_alphaSortSessions);
-      } else if (cardOrder.length) {
-        const orderMap = {};
-        cardOrder.forEach((n, i) => { orderMap[n] = i; });
-        flatList = [...filtered].sort((a, b) => {
-          const ai = orderMap[a.name];
-          const bi = orderMap[b.name];
-          if (ai !== undefined && bi !== undefined) return ai - bi;
-          if (ai !== undefined) return -1; // ordered before unordered
-          if (bi !== undefined) return 1;
-          return _naturalSortSessions(a, b); // new sessions: natural order
-        });
-      } else {
-        flatList = [...filtered].sort(_naturalSortSessions);
-      }
-    } else if (sortMode === 'alpha' && !activeTag && !q) {
+    if (sortMode === 'alpha') {
       flatList = [...filtered].sort(_alphaSortSessions);
+    } else {
+      flatList = [...filtered].sort(_naturalSortSessions);
     }
     el.innerHTML = draftCards + flatList.map(_renderSessionCard).join('');
     if (layoutMode === 'list') requestAnimationFrame(initSortable);
