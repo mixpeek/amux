@@ -5,9 +5,16 @@
     <link>https://amux.io/blog/</link>
     <description>Insights on parallel AI coding, agent orchestration, and developer productivity with amux.</description>
     <language>en-us</language>
-    <lastBuildDate>Tue, 25 Mar 2026 13:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Thu, 01 May 2026 12:00:00 GMT</lastBuildDate>
     <atom:link href="https://amux.io/blog/rss.xml" rel="self" type="application/rss+xml"/>
     <image><url>https://amux.io/og-image.png</url><title>amux</title><link>https://amux.io/</link></image>
+  <item>
+    <title><![CDATA[Best Multi-Agent Coding Orchestrators in 2026: Claude Squad, Conductor, Codex & More]]></title>
+    <description><![CDATA[9 orchestrators compared on parallel capacity, git isolation, self-healing, dashboards, and unattended overnight operation. The definitive guide to running agent fleets.]]></description>
+    <link>https://amux.io/blog/best-multi-agent-orchestrators-2026/</link>
+    <guid isPermaLink="true">https://amux.io/blog/best-multi-agent-orchestrators-2026/</guid>
+    <pubDate>Thu, 01 May 2026 12:00:00 GMT</pubDate>
+  </item>
   <item>
     <title><![CDATA[Running 30 Claude Code agents on one repo without them stomping each other]]></title>
     <description><![CDATA[Git worktrees for isolation, SQLite CAS for task claiming, SSE for real-time progress. No Redis, no Kubernetes, no microservices.]]></description>
