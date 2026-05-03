@@ -1787,21 +1787,32 @@ def _snapshot_all_sessions():
             # sessions that causes OOM kills. Stop Claude in sessions idle for
             # >30 min. The conversation is preserved — next send auto-wakes it.
             _HIBERNATE_IDLE_SECS = 1800  # 30 minutes
+            _HIBERNATE_STARTUP_GRACE = 600  # 10 min grace after server restart
             if status == "idle" and not actions.get("restarting"):
-                last_activity = actions.get("last_claude_alive", 0)
-                meta_h = _load_meta(name)
-                last_send = meta_h.get("last_send", 0)
-                last_real_activity = max(last_activity, last_send)
-                if last_real_activity and now - last_real_activity > _HIBERNATE_IDLE_SECS:
-                    if not actions.get("hibernated"):
-                        actions["hibernated"] = True
-                        def _do_hibernate(sname=name):
-                            try:
-                                stop_session(sname)
-                                print(f"[hibernate] {sname}: stopped after {int(now - last_real_activity)}s idle")
-                            except Exception:
-                                pass
-                        threading.Thread(target=_do_hibernate, daemon=True).start()
+                cfg_hib = parse_env_file(f)
+                _skip_hibernate = (
+                    # Don't hibernate auto-continue sessions — auto-restart
+                    # would just bring them back, creating a pointless cycle
+                    cfg_hib.get("CC_AUTO_CONTINUE") in ("1", "true", "yes")
+                    # Grace period after server restart: actions dict is wiped
+                    # so we can't tell if a session was recently active
+                    or now - _server_start_time < _HIBERNATE_STARTUP_GRACE
+                )
+                if not _skip_hibernate:
+                    last_activity = actions.get("last_claude_alive", 0)
+                    meta_h = _load_meta(name)
+                    last_send = meta_h.get("last_send", 0)
+                    last_real_activity = max(last_activity, last_send)
+                    if last_real_activity and now - last_real_activity > _HIBERNATE_IDLE_SECS:
+                        if not actions.get("hibernated"):
+                            actions["hibernated"] = True
+                            def _do_hibernate(sname=name):
+                                try:
+                                    stop_session(sname)
+                                    print(f"[hibernate] {sname}: stopped after {int(now - last_real_activity)}s idle")
+                                except Exception:
+                                    pass
+                            threading.Thread(target=_do_hibernate, daemon=True).start()
 
             # ── 3a. Post-compact continuation ──────────────────────────────────
             # After we trigger auto-compact, the session goes idle at the ❯ prompt.
