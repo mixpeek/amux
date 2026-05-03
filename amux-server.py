@@ -5671,12 +5671,11 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
         try:
             tmux_sess = tmux_name(name)
             # Build shell setup string — skip Claude env cleanup for codex
+            _has_oauth = False
             if provider == "codex":
                 shell_rc = ""
             else:
                 shell_rc = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
-                # Detect OAuth
-                _has_oauth = False
                 try:
                     import json as _j2
                     _cj = Path.home() / ".claude.json"
