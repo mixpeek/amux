@@ -16194,11 +16194,12 @@ async function _psfLoad(dirPath) {
       const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
       const dateStr = entry.modified ? timeAgo(entry.modified) : '';
       const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
+      const ep = entryPath.replace(/'/g, "\\'");
       row.innerHTML =
         `<div class="fe-cell-name">${icon}<span>${esc(entry.name)}${slash}</span></div>` +
         `<div class="fe-cell-size">${sizeStr}</div>` +
         `<div class="fe-cell-date">${dateStr}</div>` +
-        `<div class="fe-cell-actions"></div>`;
+        `<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu('${ep}',this,'${entry.type}')">⋯</button></div>`;
       row.onclick = entry.type === 'dir' ? () => _psfLoad(entryPath) : () => _psfViewFile(entryPath);
       body.appendChild(row);
     }
@@ -19348,7 +19349,7 @@ function _showExploreMenu(path, btn, type) {
   const delItem = document.createElement('button');
   delItem.className = 'explore-menu-item';
   delItem.style.color = 'var(--red, #f85149)';
-  delItem.textContent = type === 'directory' ? 'Delete folder' : 'Delete file';
+  delItem.textContent = (type === 'dir' || type === 'directory') ? 'Delete folder' : 'Delete file';
   delItem.onclick = async () => {
     popup.remove();
     const name = path.split('/').pop();
@@ -19394,7 +19395,7 @@ function _showFilesMenu(path, btn, type) {
   linkItem.onclick = () => { popup.remove(); _copyFileDeeplink(path); };
   popup.appendChild(linkItem);
   // Download (files only)
-  if (type !== 'directory') {
+  if (type !== 'dir' && type !== 'directory') {
     const dlItem = document.createElement('button');
     dlItem.className = 'explore-menu-item';
     dlItem.textContent = 'Download';
@@ -19413,7 +19414,7 @@ function _showFilesMenu(path, btn, type) {
   const delItem = document.createElement('button');
   delItem.className = 'explore-menu-item';
   delItem.style.color = 'var(--red, #f85149)';
-  delItem.textContent = type === 'directory' ? 'Delete folder' : 'Delete file';
+  delItem.textContent = (type === 'dir' || type === 'directory') ? 'Delete folder' : 'Delete file';
   delItem.onclick = async () => {
     popup.remove();
     const name = path.split('/').pop();
