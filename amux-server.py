@@ -470,7 +470,7 @@ def _bu_screenshot(session: str = "amux", path: str = "", retries: int = 3) -> d
         return result
     return result
 
-def _bu_agent_run(task: str, session: str = "amux-agent", profile: str = "",
+def _bu_agent_run(task: str, session: str = "amux-agent", profile: str = "default",
                   start_url: str = "", max_iterations: int = 25,
                   model: str = "claude-sonnet-4-5") -> dict:
     """Run an Anthropic Computer Use agent loop driving the browser-use Playwright session.
@@ -34574,7 +34574,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 body = self._read_body()
                 url = body.get("url", "about:blank")
                 session = body.get("session", "amux")
-                profile = body.get("profile")
+                profile = body.get("profile", "default")
                 args = []
                 if profile:
                     args += ["-b", "real", "--profile", profile]
