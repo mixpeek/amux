@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Best AI Agent Multiplexers Compared (2026): 12 Tools Ranked — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="The definitive comparison of every AI agent multiplexer and orchestrator in 2026. Feature matrix, architecture deep-dives, and honest recommendations for amux, cmux, dmux, Termdock, workmux, Claude Code Agent Teams, Cursor, Devin, and more.">
+  <meta name="keywords" content="best ai agent multiplexer 2026, parallel coding agents tools, ai agent orchestrator comparison, run multiple claude code sessions, cmux vs amux vs dmux, ai coding agent multiplexer, terminal multiplexer ai agents, parallel ai agents tools compared, best tools for running ai agents, ai agent fleet management">
+  <link rel="canonical" href="https://amux.io/guides/best-ai-agent-multiplexers-2026/">
+  <meta property="og:title" content="Best AI Agent Multiplexers Compared (2026): 12 Tools Ranked">
+  <meta property="og:description" content="The definitive comparison of every AI agent multiplexer and orchestrator in 2026 — feature matrices, architecture deep-dives, and honest recommendations.">
+  <meta property="og:url" content="https://amux.io/guides/best-ai-agent-multiplexers-2026/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Best AI Agent Multiplexers 2026","item":"https://amux.io/guides/best-ai-agent-multiplexers-2026/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Best AI Agent Multiplexers Compared (2026): 12 Tools Ranked","description":"The definitive comparison of every AI agent multiplexer and orchestrator in 2026. Feature matrix, architecture deep-dives, and honest recommendations.","url":"https://amux.io/guides/best-ai-agent-multiplexers-2026/","datePublished":"2026-05-03","dateModified":"2026-05-03","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an AI agent multiplexer?","acceptedAnswer":{"@type":"Answer","text":"An AI agent multiplexer is a tool that lets you run multiple AI coding agents (like Claude Code, Codex CLI, or Aider) in parallel sessions, each working on a different task simultaneously. It manages session lifecycle, monitors health, and coordinates work across agents — turning a single developer into a fleet operator."}},{"@type":"Question","name":"What is the best AI agent multiplexer in 2026?","acceptedAnswer":{"@type":"Answer","text":"It depends on your workflow. For unattended overnight runs with self-healing and mobile monitoring, amux leads. For the best native macOS desktop experience, cmux is unmatched. For minimal CLI-only git worktree workflows, dmux or workmux are lightweight options. For cloud-hosted autonomous agents, Devin or OpenAI Codex are the simplest to start with."}},{"@type":"Question","name":"Can I run multiple Claude Code sessions without a multiplexer?","acceptedAnswer":{"@type":"Answer","text":"Yes — Claude Code has built-in Agent Teams (claude --agent-teams) that spawn parallel sub-agents using git worktrees. For simple parallelism this works well. A dedicated multiplexer adds session persistence, crash recovery, cost tracking, mobile monitoring, and inter-agent coordination that the built-in feature doesn't provide."}},{"@type":"Question","name":"How many parallel AI agents can I run?","acceptedAnswer":{"@type":"Answer","text":"The bottleneck is typically API rate limits and cost, not local resources. Most developers run 3-10 agents in parallel. amux users regularly run 10-20+ sessions on a single machine. Claude Code uses roughly 200-400MB RAM per session, so a 16GB laptop can host 20+ agents comfortably. The API provider's rate limits are usually the binding constraint."}},{"@type":"Question","name":"Do I need a multiplexer if I use Cursor or an AI IDE?","acceptedAnswer":{"@type":"Answer","text":"IDE-based AI tools like Cursor run agents inside the editor, which limits parallelism and requires a GUI. If you want to run 5+ agents overnight on different tasks, a terminal-based multiplexer is more practical. Many developers use both: Cursor for interactive coding at their desk, and a multiplexer for batch/overnight agent runs."}},{"@type":"Question","name":"Are AI agent multiplexers free?","acceptedAnswer":{"@type":"Answer","text":"Most are open source and free. amux (MIT), dmux (MIT), workmux (MIT), and ittybitty (MIT) are fully free. cmux core is GPL-3.0 (free) with a paid Founder's Edition. Termdock and Superset have free tiers. You still pay for the underlying AI API usage (Anthropic, OpenAI, etc.) regardless of which multiplexer you choose."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","name":"Best AI Agent Multiplexers 2026","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","url":"https://github.com/mixpeek/amux"},{"@type":"ListItem","position":2,"name":"cmux","url":"https://cmux.com"},{"@type":"ListItem","position":3,"name":"dmux","url":"https://github.com/standardagents/dmux"},{"@type":"ListItem","position":4,"name":"Termdock","url":"https://termdock.com"},{"@type":"ListItem","position":5,"name":"workmux","url":"https://github.com/raine/workmux"},{"@type":"ListItem","position":6,"name":"ittybitty","url":"https://github.com/adamwulf/ittybitty"},{"@type":"ListItem","position":7,"name":"Superset","url":"https://superset.sh"},{"@type":"ListItem","position":8,"name":"Claude Code Agent Teams","url":"https://github.com/anthropics/claude-code"},{"@type":"ListItem","position":9,"name":"Cursor Background Agents","url":"https://cursor.com"},{"@type":"ListItem","position":10,"name":"Devin","url":"https://devin.ai"},{"@type":"ListItem","position":11,"name":"OpenAI Codex","url":"https://github.com/openai/codex"},{"@type":"ListItem","position":12,"name":"OpenHands","url":"https://github.com/All-Hands-AI/OpenHands"}]}</script>
+  <style>
+    .quick-pick { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.2rem; margin-bottom: 0.75rem; }
+    .quick-pick strong { color: var(--accent); }
+    .quick-pick .pick-label { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-mute); margin-bottom: 0.3rem; }
+    .tool-card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 1.2rem 1.4rem; margin-bottom: 1rem; }
+    .tool-card h3 { margin-top: 0; padding-top: 0; border: none; }
+    .tool-card .tool-meta { font-family: var(--font-mono); font-size: 12px; color: var(--fg-mute); margin-bottom: 0.6rem; display: flex; gap: 1rem; flex-wrap: wrap; }
+    .tool-card .tool-meta a { color: var(--fg-dim); text-decoration: underline; text-underline-offset: 2px; }
+    .tool-card .tool-meta a:hover { color: var(--accent); }
+    .verdict { background: var(--accent-dim); border: 1px solid var(--accent); border-radius: 8px; padding: 1.2rem 1.4rem; margin: 2rem 0; }
+    .verdict strong { color: var(--accent); }
+    .category-label { display: inline-block; font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 8px; border-radius: 4px; margin-bottom: 0.5rem; }
+    .cat-multiplexer { background: oklch(0.72 0.14 240 / .15); color: var(--blue); }
+    .cat-builtin { background: oklch(0.80 0.18 145 / .15); color: var(--ok); }
+    .cat-cloud { background: oklch(0.82 0.17 85 / .15); color: var(--accent); }
+    @media (max-width: 640px) {
+      .tool-card .tool-meta { flex-direction: column; gap: 0.3rem; }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Best AI Agent Multiplexers 2026</span></div>
+    <h1>Best AI Agent Multiplexers Compared (2026)</h1>
+    <p class="subtitle">The definitive comparison of every tool for running parallel AI coding agents. 12 tools across 3 categories, with an honest feature matrix and opinionated recommendations.</p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#quick-picks" style="color:var(--dim);text-decoration:none;">Quick Picks</a></li>
+        <li><a href="#what" style="color:var(--dim);text-decoration:none;">What Is an AI Agent Multiplexer?</a></li>
+        <li><a href="#matrix" style="color:var(--dim);text-decoration:none;">The Complete Feature Matrix</a></li>
+        <li><a href="#dedicated" style="color:var(--dim);text-decoration:none;">Dedicated Multiplexers (7 tools)</a></li>
+        <li><a href="#builtin" style="color:var(--dim);text-decoration:none;">Built-in Multi-Agent Features (2 tools)</a></li>
+        <li><a href="#cloud" style="color:var(--dim);text-decoration:none;">Cloud Agent Platforms (3 tools)</a></li>
+        <li><a href="#decision" style="color:var(--dim);text-decoration:none;">Decision Framework</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ═══════════════ QUICK PICKS ═══════════════ -->
+    <h2 id="quick-picks">Quick Picks</h2>
+    <p>If you don't want to read 4,000 words, here's who should use what:</p>
+
+    <div class="quick-pick">
+      <div class="pick-label">Best for unattended overnight runs</div>
+      <p><strong><a href="https://github.com/mixpeek/amux">amux</a></strong> &mdash; Self-healing watchdog auto-restarts crashed agents, auto-compacts context overflows, and sends mobile push notifications. The only multiplexer built for "start agents before bed, review PRs in the morning."</p>
+    </div>
+    <div class="quick-pick">
+      <div class="pick-label">Best native desktop experience</div>
+      <p><strong><a href="https://cmux.com">cmux</a></strong> &mdash; GPU-accelerated terminal rendering, embedded browser, notification rings on pane borders. If you're on macOS and want agents to feel like a native app, nothing else comes close.</p>
+    </div>
+    <div class="quick-pick">
+      <div class="pick-label">Best minimal CLI tool</div>
+      <p><strong><a href="https://github.com/standardagents/dmux">dmux</a></strong> &mdash; Git worktree isolation with zero configuration. One command to fan out work across N agents. If you want the thinnest possible layer over Claude Code, this is it.</p>
+    </div>
+    <div class="quick-pick">
+      <div class="pick-label">Best zero-install option</div>
+      <p><strong><a href="https://github.com/anthropics/claude-code">Claude Code Agent Teams</a></strong> &mdash; Built into Claude Code itself. No extra tool to install. Run <code>claude --agent-teams</code> and go. Limited, but frictionless.</p>
+    </div>
+    <div class="quick-pick">
+      <div class="pick-label">Best fully managed / cloud-hosted</div>
+      <p><strong><a href="https://devin.ai">Devin</a></strong> &mdash; Autonomous cloud agent with its own sandbox, browser, and IDE. You give it tickets, it makes PRs. No local setup, no terminal, no multiplexing &mdash; it handles everything.</p>
+    </div>
+
+    <!-- ═══════════════ WHAT IS ═══════════════ -->
+    <h2 id="what">What Is an AI Agent Multiplexer?</h2>
+    <p>An AI agent multiplexer is a tool that runs multiple AI coding agents in parallel, each in its own isolated session, working on different tasks simultaneously. Instead of one agent doing one thing at a time, you get a fleet of agents dividing and conquering your backlog.</p>
+    <p>The core problem they solve: AI coding agents like <a href="https://github.com/anthropics/claude-code">Claude Code</a>, <a href="https://github.com/openai/codex">OpenAI Codex CLI</a>, and <a href="https://aider.chat">Aider</a> are single-session tools. They do one task in one terminal. If you want five tasks done in parallel, you need something to manage five sessions &mdash; creating them, monitoring their health, preventing git conflicts, tracking costs, and recovering from crashes.</p>
+    <p>That "something" is a multiplexer. The category is new &mdash; it barely existed before 2025 &mdash; and the tools range from single bash scripts to full orchestration platforms. This guide covers all of them.</p>
+
+    <!-- ═══════════════ FEATURE MATRIX ═══════════════ -->
+    <h2 id="matrix">The Complete Feature Matrix</h2>
+    <p>Every tool that can run parallel AI coding agents, compared on the features that actually matter.</p>
+
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="min-width:900px;width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr>
+            <th style="text-align:left;padding:10px 12px;position:sticky;left:0;background:var(--bg-3);z-index:1;min-width:140px;">Tool</th>
+            <th style="padding:10px 8px;text-align:center;">Parallel Sessions</th>
+            <th style="padding:10px 8px;text-align:center;">Git Isolation</th>
+            <th style="padding:10px 8px;text-align:center;">Self-Healing</th>
+            <th style="padding:10px 8px;text-align:center;">Web Dashboard</th>
+            <th style="padding:10px 8px;text-align:center;">Mobile Access</th>
+            <th style="padding:10px 8px;text-align:center;">REST API</th>
+            <th style="padding:10px 8px;text-align:center;">Cost Tracking</th>
+            <th style="padding:10px 8px;text-align:center;">Task Board</th>
+            <th style="padding:10px 8px;text-align:center;">Agent Comms</th>
+            <th style="padding:10px 8px;text-align:center;">Cross-Platform</th>
+            <th style="padding:10px 8px;text-align:center;">Open Source</th>
+            <th style="padding:10px 8px;text-align:center;">Free</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://github.com/mixpeek/amux" style="color:var(--accent);">amux</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Manual</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">PWA + iOS</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Full HTTPS</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Per-session</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Kanban</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">API + board</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">MIT</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://cmux.com" style="color:var(--fg);">cmux</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Manual</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Unix socket</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">macOS only</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">GPL-3.0</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Core free</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://github.com/standardagents/dmux" style="color:var(--fg);">dmux</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Worktrees</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">MIT</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://termdock.com" style="color:var(--fg);">Termdock</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Manual</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Basic</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Limited</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Partial</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Free tier</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://github.com/raine/workmux" style="color:var(--fg);">workmux</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Worktrees</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">MIT</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://github.com/adamwulf/ittybitty" style="color:var(--fg);">ittybitty</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Worktrees</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">MIT</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://superset.sh" style="color:var(--fg);">Superset</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Worktrees</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Basic</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Partial</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Free tier</td>
+          </tr>
+          <tr style="border-top:2px solid var(--line-2);">
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://github.com/anthropics/claude-code" style="color:var(--fg);">Agent Teams</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Worktrees</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Parent&harr;child</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">MIT</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://cursor.com" style="color:var(--fg);">Cursor BG</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Branches</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">In-IDE</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Aggregate</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Paid plan</td>
+          </tr>
+          <tr style="border-top:2px solid var(--line-2);">
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://devin.ai" style="color:var(--fg);">Devin</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Sandboxed</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Integrations</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Cloud</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">$500/mo+</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://github.com/openai/codex" style="color:var(--fg);">Codex CLI</a></td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Manual</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Manual</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Apache-2.0</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://github.com/All-Hands-AI/OpenHands" style="color:var(--fg);">OpenHands</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Sandboxed</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">&mdash;</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Micro-agents</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">MIT</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:13px;color:var(--fg-mute);margin-top:-0.5rem;"><strong>Legend:</strong> <span style="color:var(--ok);">Green</span> = full support. <span style="color:var(--fg-dim);">Gray text</span> = partial/limited. <span style="color:var(--fg-mute);">&mdash;</span> = not available. "Agent Teams" = <a href="https://github.com/anthropics/claude-code">Claude Code</a>'s built-in feature. "Cursor BG" = <a href="https://cursor.com">Cursor</a> Background Agents.</p>
+
+    <!-- ═══════════════ DEDICATED MULTIPLEXERS ═══════════════ -->
+    <h2 id="dedicated">Dedicated AI Agent Multiplexers</h2>
+    <p>These tools exist specifically to manage parallel AI coding agents. They are not IDEs, not coding agents themselves, and not general-purpose orchestration frameworks &mdash; they are purpose-built multiplexers.</p>
+
+    <div class="tool-card">
+      <span class="category-label cat-multiplexer">Multiplexer</span>
+      <h3><a href="https://github.com/mixpeek/amux">amux</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://mixpeek.com">Mixpeek</a></span>
+        <span>MIT License</span>
+        <span>Python + tmux</span>
+        <span>macOS, Linux, cloud VMs</span>
+      </div>
+      <p>amux is an orchestration platform built as a single Python file (<code>amux-server.py</code>). It runs a local HTTPS server that manages tmux sessions, serves a web dashboard, and exposes a comprehensive REST API. The self-healing watchdog auto-restarts crashed agents, auto-compacts context overflows, and detects stuck sessions.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>Self-healing watchdog with crash recovery, context compaction, and stuck detection</li>
+        <li>Mobile PWA dashboard + native <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">iOS app</a> for monitoring from anywhere</li>
+        <li>SQLite-backed kanban board with atomic task claiming for agent-to-agent delegation</li>
+        <li>Per-session token spend and cost tracking</li>
+        <li>Full REST API for sessions, board, notes, CRM, browser automation, email, and cron</li>
+        <li>Single-file deployment: <code>scp amux-server.py your-server:</code> is a valid deploy</li>
+      </ul>
+      <p><strong>Best for:</strong> Developers who run agents unattended (overnight, during meetings), need mobile monitoring, want agent-to-agent orchestration, or need a REST API for custom automation. The richest feature set of any multiplexer, at the cost of more moving parts than a simple CLI tool.</p>
+      <p><a href="/compare/amux-vs-cmux/">amux vs cmux</a> &middot; <a href="/compare/amux-vs-dmux/">amux vs dmux</a> &middot; <a href="/compare/amux-vs-diy-tmux/">amux vs DIY tmux</a></p>
+    </div>
+
+    <div class="tool-card">
+      <span class="category-label cat-multiplexer">Multiplexer</span>
+      <h3><a href="https://cmux.com">cmux</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://cmux.com">Manaflow</a> (YC S24)</span>
+        <span>GPL-3.0</span>
+        <span>Swift + libghostty</span>
+        <span>macOS only</span>
+      </div>
+      <p>cmux is a native macOS terminal application that replaces your existing terminal entirely. Built with Swift and <a href="https://github.com/ghostty-org/ghostty">libghostty</a>'s GPU-accelerated rendering engine, it manages parallel agent sessions as workspace tabs with an embedded WebKit browser, notification rings on pane borders, and native macOS integration.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>GPU-accelerated terminal rendering via <a href="https://github.com/ghostty-org/ghostty">Ghostty</a>'s libghostty</li>
+        <li>Embedded WebKit browser that agents can snapshot, click, and script</li>
+        <li>Visual notification rings on pane borders when agents need attention</li>
+        <li>Vertical tabs sidebar showing git branch, PR status, and listening ports per workspace</li>
+        <li>Native <code>cmux claude-teams</code> integration with <a href="https://github.com/anthropics/claude-code">Claude Code</a></li>
+        <li>SSH support with SCP drag-and-drop and localhost routing</li>
+      </ul>
+      <p><strong>Best for:</strong> macOS developers who want the most polished visual experience for managing agents at their desk. cmux is to AI agents what <a href="https://iterm2.com">iTerm2</a> was to terminal power users &mdash; a premium native app that makes the daily workflow feel good. The trade-off: macOS-only, no remote access, no self-healing, no REST API.</p>
+      <p><a href="/compare/amux-vs-cmux/">Detailed comparison: amux vs cmux</a></p>
+    </div>
+
+    <div class="tool-card">
+      <span class="category-label cat-multiplexer">Multiplexer</span>
+      <h3><a href="https://github.com/standardagents/dmux">dmux</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://github.com/standardagents">Standard Agents</a></span>
+        <span>MIT License</span>
+        <span>Shell + git worktrees</span>
+        <span>macOS, Linux</span>
+      </div>
+      <p>dmux is a lightweight CLI for running parallel <a href="https://github.com/anthropics/claude-code">Claude Code</a> agents in isolated git worktrees. No server, no dashboard, no configuration files &mdash; just <code>dmux run</code> with a prompt and it fans out across N worktrees in tmux panes. Each agent gets its own branch and working directory, avoiding git conflicts entirely.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>Automatic git worktree creation and cleanup</li>
+        <li>Zero configuration &mdash; works out of the box with any git repo</li>
+        <li>tmux integration for session persistence and visual monitoring</li>
+        <li>Designed specifically for <a href="https://github.com/anthropics/claude-code">Claude Code</a> workflows</li>
+      </ul>
+      <p><strong>Best for:</strong> Developers who want the thinnest possible layer over parallel Claude Code sessions. If you think amux has too many features and you just want "fan out work across N agents with git isolation," dmux is your tool.</p>
+      <p><a href="/compare/amux-vs-dmux/">Detailed comparison: amux vs dmux</a></p>
+    </div>
+
+    <div class="tool-card">
+      <span class="category-label cat-multiplexer">Multiplexer</span>
+      <h3><a href="https://termdock.com">Termdock</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://termdock.com">Termdock</a></span>
+        <span>Proprietary + free tier</span>
+        <span>Electron-based</span>
+        <span>macOS, Linux, Windows</span>
+      </div>
+      <p>Termdock is an AI-aware terminal multiplexer that bridges the gap between traditional terminals and agent management tools. It adds resource monitoring (CPU, memory per session), basic health checks, and a web-based session viewer on top of terminal multiplexing. Cross-platform, unlike cmux.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>Per-session CPU and memory monitoring</li>
+        <li>Cross-platform (macOS, Linux, Windows)</li>
+        <li>Basic agent health notifications</li>
+        <li>Cost estimation per session</li>
+        <li>Web-based session viewer for remote monitoring</li>
+      </ul>
+      <p><strong>Best for:</strong> Developers who want a visual terminal with agent-aware features on platforms beyond macOS. Positioned between cmux (premium native UX, macOS-only) and amux (full platform, CLI-first). The trade-off: less polished than cmux's native rendering, less feature-rich than amux's platform.</p>
+    </div>
+
+    <div class="tool-card">
+      <span class="category-label cat-multiplexer">Multiplexer</span>
+      <h3><a href="https://github.com/raine/workmux">workmux</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://github.com/raine">raine</a></span>
+        <span>MIT License</span>
+        <span>Shell script</span>
+        <span>macOS, Linux</span>
+      </div>
+      <p>workmux is a shell script that combines <a href="https://github.com/tmux/tmux">tmux</a> with git worktrees for parallel AI agent sessions. Define tasks in a YAML file, run <code>workmux start</code>, and it creates isolated worktrees and tmux sessions for each task. Similar philosophy to dmux but with YAML-based task definitions.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>YAML task definitions for repeatable workflows</li>
+        <li>Git worktree isolation per agent</li>
+        <li>tmux session management</li>
+        <li>Minimal dependencies &mdash; just bash, tmux, and git</li>
+      </ul>
+      <p><strong>Best for:</strong> Developers who like declaring tasks in config files rather than CLI flags. workmux is to dmux what Docker Compose is to <code>docker run</code> &mdash; same concept, declarative interface.</p>
+    </div>
+
+    <div class="tool-card">
+      <span class="category-label cat-multiplexer">Multiplexer</span>
+      <h3><a href="https://github.com/adamwulf/ittybitty">ittybitty</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://github.com/adamwulf">Adam Wulf</a></span>
+        <span>MIT License</span>
+        <span>Single bash script</span>
+        <span>macOS, Linux</span>
+      </div>
+      <p>ittybitty is a single bash script (~200 lines) that spawns, organizes, and controls multiple <a href="https://github.com/anthropics/claude-code">Claude Code</a> agents. It's the most minimal tool on this list &mdash; no server, no dependencies beyond bash and tmux, no configuration. Copy the script, run it, done.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>Single bash script, zero dependencies beyond bash/tmux/git</li>
+        <li>Git worktree isolation per agent</li>
+        <li>Automatic branch naming and cleanup</li>
+        <li>The entire tool is readable in 5 minutes</li>
+      </ul>
+      <p><strong>Best for:</strong> Developers who want to understand every line of the tool they're running. ittybitty is the "I could've written this myself" option &mdash; and that's the point. When you don't need a platform, you need a script.</p>
+    </div>
+
+    <div class="tool-card">
+      <span class="category-label cat-multiplexer">Multiplexer</span>
+      <h3><a href="https://superset.sh">Superset</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://superset.sh">Superset</a></span>
+        <span>Proprietary + free tier</span>
+        <span>Electron / cloud</span>
+        <span>macOS, Linux, Windows</span>
+      </div>
+      <p><a href="https://superset.sh">Superset</a> brands itself as "the code editor for AI agents." It provides a GUI that wraps parallel agent sessions with git worktree isolation, live output streaming, and cost tracking. More visual than dmux/workmux but less of a full platform than amux. Offers both a local app and cloud-hosted option.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>Visual GUI for managing parallel agent sessions</li>
+        <li>Built-in git worktree isolation</li>
+        <li>Cost tracking and session monitoring</li>
+        <li>Cloud-hosted option for remote access</li>
+        <li>Supports multiple AI agents (Claude Code, <a href="https://aider.chat">Aider</a>, <a href="https://github.com/openai/codex">Codex CLI</a>)</li>
+      </ul>
+      <p><strong>Best for:</strong> Developers who want a visual GUI with worktree isolation but don't need amux-level features (no self-healing, no task board, no REST API). Good middle ground between "bash script" and "full orchestration platform."</p>
+    </div>
+
+    <!-- ═══════════════ BUILT-IN FEATURES ═══════════════ -->
+    <h2 id="builtin">Built-in Multi-Agent Features</h2>
+    <p>Some AI coding tools have added native multi-agent capabilities. These aren't standalone multiplexers &mdash; they're features within existing tools. The advantage is zero extra setup. The limitation is they're constrained by their host tool's architecture.</p>
+
+    <div class="tool-card">
+      <span class="category-label cat-builtin">Built-in</span>
+      <h3><a href="https://github.com/anthropics/claude-code">Claude Code Agent Teams</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://www.anthropic.com">Anthropic</a></span>
+        <span>MIT License</span>
+        <span>Built into Claude Code</span>
+        <span>macOS, Linux</span>
+      </div>
+      <p><a href="https://github.com/anthropics/claude-code">Claude Code</a>'s built-in Agent Teams feature (<code>claude --agent-teams</code>) spawns parallel sub-agents, each in its own git worktree. A lead agent decomposes the task, delegates sub-tasks, and merges results. No extra tool to install &mdash; it's part of Claude Code itself.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>Zero-install: built into <a href="https://github.com/anthropics/claude-code">Claude Code</a></li>
+        <li>Automatic git worktree creation and cleanup</li>
+        <li>Lead agent coordinates sub-agents and merges results</li>
+        <li>Sub-agents inherit CLAUDE.md and MCP configuration</li>
+      </ul>
+      <p><strong>Limitations:</strong> No persistent dashboard, no crash recovery, no cost tracking, no task board. The lead agent is a single point of failure &mdash; if it crashes, the whole team dies. Sub-agents can't survive beyond the parent process. For simple "fan out and merge" tasks it works well; for long-running fleet operations, you need a dedicated multiplexer.</p>
+      <p><a href="/compare/amux-vs-claude-code-agent-teams/">Detailed comparison: amux vs Claude Code Agent Teams</a></p>
+    </div>
+
+    <div class="tool-card">
+      <span class="category-label cat-builtin">Built-in</span>
+      <h3><a href="https://cursor.com">Cursor Background Agents</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://cursor.com">Cursor (Anysphere)</a></span>
+        <span>Proprietary</span>
+        <span>Built into Cursor IDE</span>
+        <span>macOS, Linux, Windows</span>
+      </div>
+      <p><a href="https://cursor.com">Cursor</a>'s Background Agents let you spin up multiple agent tasks that run in the cloud while you keep coding. Each agent gets its own branch, works independently, and creates a PR when done. Managed within the Cursor IDE &mdash; no terminal required.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>Cloud-hosted &mdash; agents run on Cursor's infrastructure, not your machine</li>
+        <li>Integrated into the IDE you're already using</li>
+        <li>Automatic branch creation per agent</li>
+        <li>PR creation when agents complete their tasks</li>
+      </ul>
+      <p><strong>Limitations:</strong> Requires a <a href="https://cursor.com">Cursor</a> paid plan. Agents run in Cursor's cloud, not locally &mdash; you can't use local tools, databases, or environment-specific configs. No self-healing, no REST API, no task board. Tied to the Cursor ecosystem.</p>
+      <p><a href="/compare/amux-vs-cursor/">Detailed comparison: amux vs Cursor</a></p>
+    </div>
+
+    <!-- ═══════════════ CLOUD PLATFORMS ═══════════════ -->
+    <h2 id="cloud">Cloud Agent Platforms</h2>
+    <p>These tools run agents entirely in the cloud. You don't manage sessions, terminals, or git worktrees &mdash; you give the platform a task and it handles everything. The trade-off: less control, higher cost, and your code runs on someone else's infrastructure.</p>
+
+    <div class="tool-card">
+      <span class="category-label cat-cloud">Cloud</span>
+      <h3><a href="https://devin.ai">Devin</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://devin.ai">Cognition</a></span>
+        <span>Proprietary</span>
+        <span>Cloud-hosted</span>
+        <span>Web interface</span>
+      </div>
+      <p><a href="https://devin.ai">Devin</a> is a fully autonomous AI software engineer that runs in the cloud. It has its own sandboxed environment with a shell, browser, and code editor. You assign it tasks (or connect it to your issue tracker), and it writes code, runs tests, and creates PRs. No local setup required.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>Fully autonomous &mdash; handles the entire task lifecycle without intervention</li>
+        <li>Cloud sandbox with shell, browser, and editor</li>
+        <li>Integrates with <a href="https://github.com">GitHub</a>, <a href="https://linear.app">Linear</a>, <a href="https://www.atlassian.com/software/jira">Jira</a>, and <a href="https://slack.com">Slack</a></li>
+        <li>Knowledge base that learns your codebase patterns</li>
+        <li>Multiple Devin sessions can run in parallel</li>
+      </ul>
+      <p><strong>Best for:</strong> Teams that want to throw tickets at an AI and get PRs back without managing infrastructure. The most "hands-off" option on this list. The trade-off: $500+/month, code runs on Cognition's servers, and you give up the fine-grained control that terminal-based tools provide.</p>
+      <p><a href="/compare/amux-vs-devin/">Detailed comparison: amux vs Devin</a></p>
+    </div>
+
+    <div class="tool-card">
+      <span class="category-label cat-cloud">Cloud</span>
+      <h3><a href="https://github.com/openai/codex">OpenAI Codex CLI</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://openai.com">OpenAI</a></span>
+        <span>Apache-2.0</span>
+        <span>Local CLI + cloud sandbox</span>
+        <span>macOS, Linux</span>
+      </div>
+      <p><a href="https://github.com/openai/codex">OpenAI's Codex CLI</a> is an open-source terminal-based coding agent. While it's a single-session tool (like Claude Code or <a href="https://aider.chat">Aider</a>), it's included here because many developers use it with multiplexers. It runs locally but can also use OpenAI's cloud sandbox for isolated execution.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>Open source (Apache-2.0) with a thriving contributor community</li>
+        <li>Multimodal &mdash; can process images, screenshots, and diagrams</li>
+        <li>Network-disabled sandbox mode for safe autonomous execution</li>
+        <li>Works with any multiplexer on this list (amux, dmux, workmux, etc.)</li>
+      </ul>
+      <p><strong>Best for:</strong> Developers in the <a href="https://openai.com">OpenAI</a> ecosystem who want a terminal coding agent comparable to <a href="https://github.com/anthropics/claude-code">Claude Code</a>. Pair it with amux or dmux for parallel sessions.</p>
+      <p><a href="/compare/amux-vs-codex/">Detailed comparison: amux vs OpenAI Codex</a></p>
+    </div>
+
+    <div class="tool-card">
+      <span class="category-label cat-cloud">Cloud</span>
+      <h3><a href="https://github.com/All-Hands-AI/OpenHands">OpenHands</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://github.com/All-Hands-AI">All Hands AI</a></span>
+        <span>MIT License</span>
+        <span>Docker-based, self-hostable</span>
+        <span>macOS, Linux</span>
+      </div>
+      <p><a href="https://github.com/All-Hands-AI/OpenHands">OpenHands</a> (formerly OpenDevin) is an open-source autonomous AI agent platform. Each agent runs in a Docker sandbox with a web-based interface for monitoring. It supports multiple LLM backends and can run agents in parallel via its micro-agent architecture.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>Open source and self-hostable</li>
+        <li>Docker sandboxing for each agent</li>
+        <li>Web UI for monitoring agent progress</li>
+        <li>Multi-LLM support (<a href="https://www.anthropic.com">Anthropic</a>, <a href="https://openai.com">OpenAI</a>, local models)</li>
+        <li>Micro-agent delegation for decomposing complex tasks</li>
+      </ul>
+      <p><strong>Best for:</strong> Developers who want a Devin-like experience but open source and self-hosted. More heavyweight than terminal-based multiplexers (requires Docker), but provides sandboxing and a web UI out of the box.</p>
+      <p><a href="/compare/amux-vs-openhands/">Detailed comparison: amux vs OpenHands</a></p>
+    </div>
+
+    <!-- ═══════════════ DECISION FRAMEWORK ═══════════════ -->
+    <h2 id="decision">Decision Framework</h2>
+    <p>The right tool depends on your workflow, not on feature counts. Here's how to decide:</p>
+
+    <h3>Start with your constraints</h3>
+    <table>
+      <thead>
+        <tr>
+          <th style="text-align:left;">If you need...</th>
+          <th style="text-align:left;">Use this</th>
+          <th style="text-align:left;">Why</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Agents running overnight unattended</td>
+          <td><strong><a href="https://github.com/mixpeek/amux">amux</a></strong></td>
+          <td>Only multiplexer with self-healing watchdog and mobile monitoring</td>
+        </tr>
+        <tr>
+          <td>Best native macOS terminal UX</td>
+          <td><strong><a href="https://cmux.com">cmux</a></strong></td>
+          <td>GPU rendering + embedded browser + notification rings</td>
+        </tr>
+        <tr>
+          <td>Minimal CLI, zero config</td>
+          <td><strong><a href="https://github.com/standardagents/dmux">dmux</a></strong></td>
+          <td>One command, automatic worktree isolation, nothing else</td>
+        </tr>
+        <tr>
+          <td>No extra tool at all</td>
+          <td><strong><a href="https://github.com/anthropics/claude-code">Agent Teams</a></strong></td>
+          <td>Built into Claude Code, zero install</td>
+        </tr>
+        <tr>
+          <td>Linux or cloud VM support</td>
+          <td><strong><a href="https://github.com/mixpeek/amux">amux</a></strong> or <strong><a href="https://github.com/standardagents/dmux">dmux</a></strong></td>
+          <td>cmux is macOS-only; these run anywhere</td>
+        </tr>
+        <tr>
+          <td>Declarative task files</td>
+          <td><strong><a href="https://github.com/raine/workmux">workmux</a></strong></td>
+          <td>YAML-based task definitions</td>
+        </tr>
+        <tr>
+          <td>Fully managed, zero ops</td>
+          <td><strong><a href="https://devin.ai">Devin</a></strong></td>
+          <td>Cloud-hosted, assign tickets and get PRs back</td>
+        </tr>
+        <tr>
+          <td>REST API for custom automation</td>
+          <td><strong><a href="https://github.com/mixpeek/amux">amux</a></strong></td>
+          <td>Full HTTPS API for sessions, board, cron, browser, and more</td>
+        </tr>
+        <tr>
+          <td>Agents coordinating with each other</td>
+          <td><strong><a href="https://github.com/mixpeek/amux">amux</a></strong></td>
+          <td>Shared board + inter-session API enable agent-to-agent delegation</td>
+        </tr>
+        <tr>
+          <td>Open source + self-hosted Devin-like</td>
+          <td><strong><a href="https://github.com/All-Hands-AI/OpenHands">OpenHands</a></strong></td>
+          <td>Docker sandboxing, web UI, multi-LLM support</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>The complexity spectrum</h3>
+    <p>These tools exist on a spectrum from "single script" to "full platform." Pick the simplest tool that covers your needs:</p>
+    <pre><code>Simplest ──────────────────────────────────────────── Most features
+
+ittybitty → dmux → workmux → Agent Teams → Superset → cmux → amux → Devin
+  │           │       │          │            │          │       │       │
+  bash      CLI     YAML     built-in       GUI      native  platform  cloud
+ script   + git   configs   feature        app       app     server   hosted</code></pre>
+    <p>Moving right adds capabilities but also complexity, dependencies, and operational surface. A bash script has nothing to break. A platform server has many things that could break &mdash; but also many things that recover themselves when they do.</p>
+
+    <h3>Can you combine tools?</h3>
+    <p>Yes, with caveats. Common combinations:</p>
+    <ul>
+      <li><strong><a href="https://github.com/mixpeek/amux">amux</a> + <a href="https://cursor.com">Cursor</a>:</strong> Use Cursor for interactive coding at your desk, amux for batch/overnight agent runs. Different tools for different modes.</li>
+      <li><strong><a href="https://github.com/standardagents/dmux">dmux</a> for simple tasks, <a href="https://github.com/mixpeek/amux">amux</a> for complex ones:</strong> Use dmux when you need quick parallelism, switch to amux for long-running orchestrated work.</li>
+      <li><strong><a href="https://github.com/anthropics/claude-code">Agent Teams</a> inside <a href="https://github.com/mixpeek/amux">amux</a> sessions:</strong> Each amux session can itself spawn sub-agents via Agent Teams, giving you two levels of parallelism.</li>
+    </ul>
+    <p>What doesn't combine well: <a href="https://cmux.com">cmux</a> + <a href="https://github.com/mixpeek/amux">amux</a> (both want to manage sessions), or any two tools that both manage git worktrees on the same repo (they'll conflict).</p>
+
+    <div class="verdict">
+      <p><strong>The honest take:</strong> If you're just starting with parallel agents, use <a href="https://github.com/anthropics/claude-code">Claude Code Agent Teams</a> &mdash; it's built in and free. Once you outgrow it (crash recovery, cost tracking, overnight runs, mobile monitoring), graduate to <a href="https://github.com/mixpeek/amux">amux</a> or <a href="https://github.com/standardagents/dmux">dmux</a> depending on whether you want a platform or a CLI. If you're on macOS and prefer a native desktop experience, <a href="https://cmux.com">cmux</a> is excellent.</p>
+    </div>
+
+    <!-- ═══════════════ FAQ ═══════════════ -->
+    <h2 id="faq">Frequently Asked Questions</h2>
+
+    <details class="faq-item">
+      <summary>What is an AI agent multiplexer?</summary>
+      <p>An AI agent multiplexer runs multiple AI coding agents (like <a href="https://github.com/anthropics/claude-code">Claude Code</a>, <a href="https://github.com/openai/codex">Codex CLI</a>, or <a href="https://aider.chat">Aider</a>) in parallel sessions, each working on a different task simultaneously. It manages session lifecycle, monitors health, and coordinates work across agents &mdash; turning a single developer into a fleet operator.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>What is the best AI agent multiplexer in 2026?</summary>
+      <p>It depends on your workflow. For unattended overnight runs with self-healing and mobile monitoring, <a href="https://github.com/mixpeek/amux">amux</a> leads. For the best native macOS desktop experience, <a href="https://cmux.com">cmux</a> is unmatched. For minimal CLI-only git worktree workflows, <a href="https://github.com/standardagents/dmux">dmux</a> or <a href="https://github.com/raine/workmux">workmux</a> are lightweight options. For cloud-hosted autonomous agents, <a href="https://devin.ai">Devin</a> or <a href="https://github.com/openai/codex">OpenAI Codex</a> are the simplest to start with.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Can I run multiple Claude Code sessions without a multiplexer?</summary>
+      <p>Yes. <a href="https://github.com/anthropics/claude-code">Claude Code</a> has built-in Agent Teams (<code>claude --agent-teams</code>) that spawn parallel sub-agents using git worktrees. For simple parallelism this works well. A dedicated multiplexer adds session persistence, crash recovery, cost tracking, mobile monitoring, and inter-agent coordination that the built-in feature doesn't provide.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>How many parallel AI agents can I run?</summary>
+      <p>The bottleneck is typically API rate limits and cost, not local resources. Most developers run 3&ndash;10 agents in parallel. amux users regularly run 10&ndash;20+ sessions on a single machine. <a href="https://github.com/anthropics/claude-code">Claude Code</a> uses roughly 200&ndash;400MB RAM per session, so a 16GB laptop can host 20+ agents comfortably. The API provider's rate limits (<a href="https://www.anthropic.com">Anthropic</a>, <a href="https://openai.com">OpenAI</a>) are usually the binding constraint.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Do I need a multiplexer if I use Cursor or an AI IDE?</summary>
+      <p>IDE-based AI tools like <a href="https://cursor.com">Cursor</a> run agents inside the editor, which limits parallelism and requires a GUI. If you want to run 5+ agents overnight on different tasks, a terminal-based multiplexer is more practical. Many developers use both: <a href="https://cursor.com">Cursor</a> for interactive coding at their desk, and a multiplexer for batch/overnight agent runs.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Are AI agent multiplexers free?</summary>
+      <p>Most are open source and free. <a href="https://github.com/mixpeek/amux">amux</a> (MIT), <a href="https://github.com/standardagents/dmux">dmux</a> (MIT), <a href="https://github.com/raine/workmux">workmux</a> (MIT), and <a href="https://github.com/adamwulf/ittybitty">ittybitty</a> (MIT) are fully free. <a href="https://cmux.com">cmux</a> core is GPL-3.0 (free) with a paid Founder's Edition. <a href="https://termdock.com">Termdock</a> and <a href="https://superset.sh">Superset</a> have free tiers. You still pay for the underlying AI API usage (<a href="https://www.anthropic.com">Anthropic</a>, <a href="https://openai.com">OpenAI</a>, etc.) regardless of which multiplexer you choose.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Which multiplexer has the best mobile experience?</summary>
+      <p><a href="https://github.com/mixpeek/amux">amux</a> is the only dedicated multiplexer with mobile support &mdash; a PWA dashboard that installs on your phone home screen, plus a native <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">iOS app</a>. <a href="https://devin.ai">Devin</a>'s web dashboard also works on mobile. <a href="https://cmux.com">cmux</a>, <a href="https://github.com/standardagents/dmux">dmux</a>, <a href="https://github.com/raine/workmux">workmux</a>, and <a href="https://github.com/adamwulf/ittybitty">ittybitty</a> have no mobile access.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>What about CrewAI, LangGraph, and AutoGen?</summary>
+      <p>These are multi-agent AI frameworks for building custom agent systems &mdash; they're developer libraries, not tools you install and run. They require writing code to define agent roles, tools, and workflows. The multiplexers in this guide are ready-to-use tools that manage existing coding agents (Claude Code, Codex, etc.) without custom code. Different category, different use case. See our comparisons: <a href="/compare/amux-vs-crewai/">amux vs CrewAI</a>, <a href="/compare/amux-vs-langraph/">amux vs LangGraph</a>, <a href="/compare/amux-vs-autogen/">amux vs AutoGen</a>.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Which tool is best for a team of developers?</summary>
+      <p>For teams, consider: <a href="https://devin.ai">Devin</a> if you want a shared cloud platform (each team member assigns tasks via Slack/Linear). <a href="https://github.com/mixpeek/amux">amux</a> if you want self-hosted with per-developer instances (each dev runs their own amux server). <a href="https://cursor.com">Cursor</a> Background Agents if your team already uses Cursor. Most other multiplexers are single-developer tools.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>How do multiplexers handle git conflicts between parallel agents?</summary>
+      <p>Three approaches: (1) <strong>Git worktrees</strong> &mdash; <a href="https://github.com/standardagents/dmux">dmux</a>, <a href="https://github.com/raine/workmux">workmux</a>, <a href="https://github.com/adamwulf/ittybitty">ittybitty</a>, <a href="https://superset.sh">Superset</a>, and <a href="https://github.com/anthropics/claude-code">Agent Teams</a> give each agent its own worktree/branch, avoiding conflicts entirely. (2) <strong>Directory-per-agent</strong> &mdash; <a href="https://github.com/mixpeek/amux">amux</a> lets you assign each session to a different repo directory or manually set up worktrees. (3) <strong>Cloud sandboxes</strong> &mdash; <a href="https://devin.ai">Devin</a> and <a href="https://github.com/All-Hands-AI/OpenHands">OpenHands</a> isolate each agent in its own container. If two agents work on the same branch in the same directory, you'll get merge conflicts regardless of tool.</p>
+    </details>
+
+    <div class="cta-box" style="margin-top:3rem;">
+      <h3>Try amux</h3>
+      <p>Run dozens of AI coding agents in parallel with self-healing, mobile monitoring, and token tracking. Works on macOS, Linux, and cloud VMs. Python 3 + tmux. Open source.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+    </div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
