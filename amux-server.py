@@ -9250,15 +9250,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .chrome-tab-menu-item:hover { background: var(--hover); }
   .chrome-tab-collapse {
-    flex-shrink: 0; margin-left: auto; padding: 0 10px;
+    flex-shrink: 0; margin-left: auto; padding: 4px 10px;
     background: none; border: none; color: var(--dim); cursor: pointer;
     font-size: 0.7rem; line-height: 1; display: flex; align-items: center;
-    height: 100%; transition: color 0.12s;
+    transition: color 0.12s; min-width: 44px; min-height: 20px; justify-content: center;
   }
   .chrome-tab-collapse:hover { color: var(--fg); }
   .chrome-tabs-bar.collapsed .chrome-tab,
-  .chrome-tabs-bar.collapsed .chrome-tab-add-wrap { display: none; }
-  .chrome-tabs-bar.collapsed { padding-bottom: 4px; }
+  .chrome-tabs-bar.collapsed .chrome-tab-add { display: none; }
+  .chrome-tabs-bar.collapsed { padding: env(safe-area-inset-top, 0px) 6px 0 0; }
   .chrome-tab-frames { position: fixed; top: var(--chrome-tab-h, 36px); left: 0; right: 0; bottom: 0; z-index: 999; display: none; }
   .chrome-tab-frames.active { display: block; }
   .chrome-tab-frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: none; background: var(--bg); }
