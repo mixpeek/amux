@@ -9249,6 +9249,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     color: var(--fg); white-space: nowrap;
   }
   .chrome-tab-menu-item:hover { background: var(--hover); }
+  .chrome-tab-collapse {
+    flex-shrink: 0; margin-left: auto; padding: 0 10px;
+    background: none; border: none; color: var(--dim); cursor: pointer;
+    font-size: 0.7rem; line-height: 1; display: flex; align-items: center;
+    height: 100%; transition: color 0.12s;
+  }
+  .chrome-tab-collapse:hover { color: var(--fg); }
+  .chrome-tabs-bar.collapsed .chrome-tab,
+  .chrome-tabs-bar.collapsed .chrome-tab-add-wrap { display: none; }
+  .chrome-tabs-bar.collapsed { padding-bottom: 4px; }
   .chrome-tab-rename {
     background: transparent; border: none; outline: none;
     color: inherit; font: inherit; width: 100%;
@@ -20996,10 +21006,12 @@ let _chromeTabs = JSON.parse(localStorage.getItem('amux_chrome_tabs') || 'null')
 let _chromeActiveId = parseInt(localStorage.getItem('amux_chrome_active')) || _chromeTabs[0]?.id || 1;
 let _chromeNextId = Math.max(..._chromeTabs.map(t => t.id), 0) + 1;
 let _chromeMenuOpen = false;
+let _chromeCollapsed = localStorage.getItem('amux_chrome_collapsed') === '1';
 
 function _chromeRender() {
   const bar = document.getElementById('chrome-tabs-bar');
   if (!bar) return;
+  bar.classList.toggle('collapsed', _chromeCollapsed);
   let h = '';
   for (const t of _chromeTabs) {
     const cls = t.id === _chromeActiveId ? ' active' : '';
@@ -21012,8 +21024,15 @@ function _chromeRender() {
   const views = ['sessions','board','calendar','scheduler','files','logs','notes','crm','map','metrics','terminal','browser','habits','grid'];
   for (const v of views) h += '<div class="chrome-tab-menu-item" onclick="_chromeAddTab(\''+v+'\')">'+(_VIEW_LABELS[v]||v)+'</div>';
   h += '</div></div>';
+  h += '<button class="chrome-tab-collapse" onclick="_chromeToggleCollapse()" title="'+(_chromeCollapsed?'Show tabs':'Hide tabs')+'">'+(_chromeCollapsed?'&#x25BC;':'&#x25B2;')+'</button>';
   bar.innerHTML = h;
   _chromeUpdateOffsets();
+}
+
+function _chromeToggleCollapse() {
+  _chromeCollapsed = !_chromeCollapsed;
+  localStorage.setItem('amux_chrome_collapsed', _chromeCollapsed ? '1' : '0');
+  _chromeRender();
 }
 
 function _chromeToggleMenu(e) {
