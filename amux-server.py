@@ -9258,7 +9258,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .chrome-tab-collapse:hover { color: var(--fg); }
   .chrome-tabs-bar.collapsed .chrome-tab,
   .chrome-tabs-bar.collapsed .chrome-tab-add { display: none; }
-  .chrome-tabs-bar.collapsed { padding: env(safe-area-inset-top, 0px) 6px 0 0; }
+  .chrome-tabs-bar.collapsed { padding: 0; height: 0; min-height: 0; overflow: visible; }
+  .chrome-tabs-bar.collapsed .chrome-tab-collapse {
+    position: absolute; top: env(safe-area-inset-top, 4px); right: 4px;
+    opacity: 0.4; z-index: 1001; padding: 6px 10px;
+  }
+  .chrome-tabs-bar.collapsed .chrome-tab-collapse:hover { opacity: 1; }
   .chrome-tab-frames { position: fixed; top: var(--chrome-tab-h, 36px); left: 0; right: 0; bottom: 0; z-index: 999; display: none; }
   .chrome-tab-frames.active { display: block; }
   .chrome-tab-frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: none; background: var(--bg); }
@@ -21084,7 +21089,7 @@ function _chromeUpdateOffsets() {
     const ctb = document.getElementById('chrome-tabs-bar');
     const hr = document.querySelector('.header-row');
     if (ctb) {
-      const h = ctb.offsetHeight;
+      const h = _chromeCollapsed ? 0 : ctb.offsetHeight;
       document.documentElement.style.setProperty('--chrome-tab-h', h + 'px');
       if (!_isInTab) document.body.style.paddingTop = h + 'px';
       if (hr) document.documentElement.style.setProperty('--sticky-nav-top', (h + hr.offsetHeight) + 'px');
