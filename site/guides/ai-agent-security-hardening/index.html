@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agent Security Hardening: The 2026 Practitioner's Guide — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Secure your AI coding agents against supply chain attacks, config poisoning, credential theft, and runaway execution. The complete defensive playbook for Claude Code, Codex CLI, and multi-agent fleets — with real incidents, concrete mitigations, and a 15-point hardening checklist.">
+  <meta name="keywords" content="ai agent security, claude code security, ai coding agent risks, mcp server security, claude code hardening, ai agent supply chain attack, ai agent sandbox, yolo mode security, autonomous coding agent safety, claude code permissions, ai agent credential theft, mcp poisoning, claude md security, ai agent isolation, secure ai coding workflow">
+  <link rel="canonical" href="https://amux.io/guides/ai-agent-security-hardening/">
+  <meta property="og:title" content="AI Agent Security Hardening: The 2026 Practitioner's Guide">
+  <meta property="og:description" content="Secure your AI coding agents against supply chain attacks, config poisoning, and credential theft. The complete defensive playbook with real incidents and concrete mitigations.">
+  <meta property="og:url" content="https://amux.io/guides/ai-agent-security-hardening/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Agent Security Hardening","item":"https://amux.io/guides/ai-agent-security-hardening/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Security Hardening: The 2026 Practitioner's Guide","description":"Secure your AI coding agents against supply chain attacks, config poisoning, credential theft, and runaway execution. The complete defensive playbook with real incidents and concrete mitigations.","url":"https://amux.io/guides/ai-agent-security-hardening/","datePublished":"2026-05-05","dateModified":"2026-05-05","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What are the biggest security risks of AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"The top risks are: (1) Supply chain poisoning via malicious CLAUDE.md or MCP server configs in cloned repos, (2) Credential exfiltration — agents reading .env files or AWS credentials and leaking them through tool calls, (3) Runaway execution in YOLO mode making destructive changes without oversight, (4) Prompt injection via crafted code comments or issue descriptions that hijack agent behavior, and (5) MCP server vulnerabilities — the 5,800+ community MCP servers have varying security quality, with over 1,000 found to contain malicious code."}},{"@type":"Question","name":"Is YOLO mode safe for AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"YOLO mode (auto-approve all tool calls) is safe when combined with proper guardrails: directory-scoped permissions that prevent writes outside the project, hook-based allowlists that block dangerous commands (rm -rf, curl to external hosts, credential access), network isolation that prevents data exfiltration, and session timeouts that cap execution duration. Without these layers, YOLO mode gives agents unconstrained access to your system."}},{"@type":"Question","name":"How do I secure MCP servers for AI agents?","acceptedAnswer":{"@type":"Answer","text":"Pin MCP server versions to exact commits (never use @latest), audit server source code before installation, run MCP servers in network-isolated containers, use an allowlist of approved servers in your team's shared configuration, restrict file system access to the minimum paths needed, and monitor MCP server network traffic for unexpected outbound connections. Never install MCP servers from untrusted sources."}},{"@type":"Question","name":"Can AI agents steal my credentials?","acceptedAnswer":{"@type":"Answer","text":"Yes. An AI coding agent with file read access can read .env files, ~/.aws/credentials, SSH keys, and API tokens. It can then exfiltrate them via tool calls (writing to files, making HTTP requests, or encoding them in git commit messages). Mitigations: use secret managers instead of .env files, block read access to credential directories via hooks or permission configs, and use credential-scanning hooks that abort if secrets appear in agent output."}},{"@type":"Question","name":"How do multiplexers improve agent security?","acceptedAnswer":{"@type":"Answer","text":"Multiplexers like amux add a security control layer between you and your agents: session isolation prevents one compromised agent from affecting others, hook systems enforce permission policies uniformly across all sessions, centralized monitoring detects anomalous behavior (unusual file access patterns, unexpected network calls), and audit logging creates a record of every action taken. Running agents through a multiplexer with proper configuration is significantly safer than running them directly in unmanaged terminal sessions."}},{"@type":"Question","name":"Should I run AI agents in Docker containers?","acceptedAnswer":{"@type":"Answer","text":"For untrusted code or overnight unattended runs, yes. Docker containers provide filesystem isolation, network control, and resource limits. Docker Sandboxes (launched January 2026) are specifically designed for AI coding agents. The trade-off is performance overhead and complexity — containerized agents can't access your local tools, databases, or file system without explicit mounts. For trusted projects in active development, hook-based security is usually sufficient."}}]}</script>
+  <style>
+    .threat-card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 1.2rem 1.4rem; margin-bottom: 1rem; border-left: 3px solid var(--err); }
+    .threat-card h3 { margin-top: 0; padding-top: 0; border: none; color: var(--err); }
+    .defense-card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 1.2rem 1.4rem; margin-bottom: 1rem; border-left: 3px solid var(--ok); }
+    .defense-card h3 { margin-top: 0; padding-top: 0; border: none; color: var(--ok); }
+    .incident-box { background: oklch(0.72 0.20 25 / .08); border: 1px solid oklch(0.72 0.20 25 / .3); border-radius: 8px; padding: 1rem 1.2rem; margin: 1rem 0; }
+    .incident-box strong { color: var(--err); }
+    .checklist { list-style: none; margin-left: 0; padding-left: 0; }
+    .checklist li { padding: 0.6rem 0; border-bottom: 1px solid var(--line); padding-left: 1.8rem; position: relative; }
+    .checklist li::before { content: "□"; position: absolute; left: 0; font-family: var(--font-mono); color: var(--fg-mute); font-size: 1.1em; }
+    .severity { display: inline-block; font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 6px; border-radius: 3px; margin-left: 0.5rem; }
+    .sev-critical { background: oklch(0.72 0.20 25 / .2); color: var(--err); }
+    .sev-high { background: oklch(0.82 0.17 65 / .2); color: var(--warn); }
+    .sev-medium { background: oklch(0.72 0.14 240 / .15); color: var(--blue); }
+    .layer-diagram { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 1.5rem; margin: 1.5rem 0; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>AI Agent Security Hardening</span></div>
+    <h1>AI Agent Security Hardening</h1>
+    <p class="subtitle">Your AI coding agent has shell access, can read your credentials, write to any file, and make network requests. Here's how to run it safely &mdash; whether you're a solo developer or operating a fleet of 20+ agents overnight.</p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#incidents" style="color:var(--dim);text-decoration:none;">Real Incidents (2026)</a></li>
+        <li><a href="#threat-model" style="color:var(--dim);text-decoration:none;">The Threat Model</a></li>
+        <li><a href="#defense-layers" style="color:var(--dim);text-decoration:none;">Defense in Depth</a></li>
+        <li><a href="#config-security" style="color:var(--dim);text-decoration:none;">Config File Security</a></li>
+        <li><a href="#mcp-hardening" style="color:var(--dim);text-decoration:none;">MCP Server Hardening</a></li>
+        <li><a href="#credential-protection" style="color:var(--dim);text-decoration:none;">Credential Protection</a></li>
+        <li><a href="#yolo-safely" style="color:var(--dim);text-decoration:none;">Running YOLO Mode Safely</a></li>
+        <li><a href="#network-isolation" style="color:var(--dim);text-decoration:none;">Network Isolation</a></li>
+        <li><a href="#container-sandboxing" style="color:var(--dim);text-decoration:none;">Container Sandboxing</a></li>
+        <li><a href="#fleet-security" style="color:var(--dim);text-decoration:none;">Fleet Security with Multiplexers</a></li>
+        <li><a href="#monitoring" style="color:var(--dim);text-decoration:none;">Monitoring &amp; Anomaly Detection</a></li>
+        <li><a href="#checklist" style="color:var(--dim);text-decoration:none;">The 15-Point Hardening Checklist</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ═══════════════ INCIDENTS ═══════════════ -->
+    <h2 id="incidents">Real Incidents (2026)</h2>
+    <p>These aren't theoretical risks. Every attack vector described in this guide has been exploited in the wild.</p>
+
+    <div class="incident-box">
+      <strong>Config Poisoning &mdash; RCE via CLAUDE.md (March 2026)</strong>
+      <p style="margin:0.5rem 0 0;">Security researchers demonstrated remote code execution through crafted <code>CLAUDE.md</code> files in public repositories. When a developer cloned the repo and ran <a href="https://github.com/anthropics/claude-code">Claude Code</a>, the agent executed arbitrary commands embedded in the config. The attack bypassed permission prompts by encoding payloads in hook configurations. Every developer who <code>git clone</code>s untrusted repos and runs an AI agent is vulnerable.</p>
+    </div>
+
+    <div class="incident-box">
+      <strong>MCP Supply Chain &mdash; 1,184 Malicious Skills (February 2026)</strong>
+      <p style="margin:0.5rem 0 0;">Researchers audited the <a href="https://modelcontextprotocol.io">MCP</a> ecosystem and found over 1,184 malicious packages across community skill registries. Payloads included credential harvesters, reverse shells, and crypto miners. The <a href="https://modelcontextprotocol.io">Model Context Protocol</a> ecosystem grew to 5,800+ servers and 97 million monthly SDK downloads &mdash; but with minimal vetting infrastructure.</p>
+    </div>
+
+    <div class="incident-box">
+      <strong>Credential Exfiltration &mdash; .env Leaks via Agent Output (2026)</strong>
+      <p style="margin:0.5rem 0 0;">Multiple reports of AI agents reading <code>.env</code> files during "helpful" debugging and accidentally including API keys in commit messages, PR descriptions, or MCP tool call parameters. In one documented case, an agent running in YOLO mode pushed a commit containing production database credentials to a public GitHub repository.</p>
+    </div>
+
+    <div class="incident-box">
+      <strong>Prompt Injection via Issues &mdash; Agent Hijacking (April 2026)</strong>
+      <p style="margin:0.5rem 0 0;">Attackers created <a href="https://github.com">GitHub</a> issues with hidden prompt injection payloads. When developers pointed their coding agents at "fix issue #42," the agent read the issue body, followed the injected instructions, and installed a backdoor dependency. The attack exploited the trust boundary between "user instruction" and "external data the agent reads."</p>
+    </div>
+
+    <p>These incidents share a pattern: <strong>AI agents operate with the developer's full permissions but without the developer's judgment.</strong> Security hardening is about constraining what agents can do without neutering their usefulness.</p>
+
+    <!-- ═══════════════ THREAT MODEL ═══════════════ -->
+    <h2 id="threat-model">The Threat Model</h2>
+    <p>AI coding agents face a unique threat landscape. They combine the attack surface of a CI/CD system (arbitrary code execution) with the access of a developer workstation (credentials, SSH keys, private repos).</p>
+
+    <div class="threat-card">
+      <h3>1. Supply Chain Poisoning <span class="severity sev-critical">Critical</span></h3>
+      <p>Malicious code in repos you clone: <code>CLAUDE.md</code> with injected hooks, <code>.cursorrules</code> with prompt injections, poisoned <a href="https://modelcontextprotocol.io">MCP</a> server configs, or compromised dependencies that trigger agent actions on install.</p>
+      <p><strong>Attack vector:</strong> You clone a repo &rarr; agent reads config &rarr; agent executes attacker's payload with your permissions.</p>
+    </div>
+
+    <div class="threat-card">
+      <h3>2. Credential Theft <span class="severity sev-critical">Critical</span></h3>
+      <p>Agents can read <code>~/.aws/credentials</code>, <code>.env</code>, SSH keys, browser cookies, and any secret on the filesystem. Exfiltration routes: git commits, HTTP requests via tools, MCP server calls, or writing to shared storage.</p>
+      <p><strong>Attack vector:</strong> Agent reads secret &rarr; includes in tool call / commit / output &rarr; secret reaches an external system.</p>
+    </div>
+
+    <div class="threat-card">
+      <h3>3. Runaway Execution <span class="severity sev-high">High</span></h3>
+      <p>Agents in autonomous/YOLO mode making destructive changes: dropping databases, force-pushing to main, deleting files, or running expensive operations that burn through API quotas.</p>
+      <p><strong>Attack vector:</strong> Poorly scoped prompt or hallucinated reasoning &rarr; agent takes destructive action &rarr; no human in the loop to stop it.</p>
+    </div>
+
+    <div class="threat-card">
+      <h3>4. Prompt Injection <span class="severity sev-high">High</span></h3>
+      <p>Crafted content in code comments, issue descriptions, PR bodies, or dependency READMEs that alter agent behavior. The agent reads "data" but treats it as "instruction."</p>
+      <p><strong>Attack vector:</strong> External text with embedded instructions &rarr; agent interprets as commands &rarr; performs unintended actions.</p>
+    </div>
+
+    <div class="threat-card">
+      <h3>5. Lateral Movement <span class="severity sev-medium">Medium</span></h3>
+      <p>A compromised agent using its access to reach other systems: SSH to production servers, push to other repos, access internal APIs via the developer's network position, or compromise other agents in the fleet.</p>
+      <p><strong>Attack vector:</strong> Compromised agent &rarr; uses developer's SSH keys / API tokens / network access &rarr; reaches production systems.</p>
+    </div>
+
+    <div class="threat-card">
+      <h3>6. Data Exfiltration via MCP <span class="severity sev-medium">Medium</span></h3>
+      <p><a href="https://modelcontextprotocol.io">MCP servers</a> are network services that the agent calls as tools. A malicious or compromised MCP server can receive any data the agent sends to it &mdash; source code, credentials, conversation context.</p>
+      <p><strong>Attack vector:</strong> Agent calls MCP tool with sensitive context &rarr; MCP server forwards data to attacker.</p>
+    </div>
+
+    <!-- ═══════════════ DEFENSE IN DEPTH ═══════════════ -->
+    <h2 id="defense-layers">Defense in Depth</h2>
+    <p>No single control stops all attacks. Layer defenses so that when one fails, others catch the threat.</p>
+
+    <div class="layer-diagram">
+      <pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│  LAYER 1: Permission Boundaries                                      │
+│  Claude Code --permission-mode, hooks allowlists, directory scoping  │
+├─────────────────────────────────────────────────────────────────────┤
+│  LAYER 2: Config Validation                                          │
+│  Audit CLAUDE.md on clone, pin MCP versions, review hooks            │
+├─────────────────────────────────────────────────────────────────────┤
+│  LAYER 3: Credential Isolation                                       │
+│  Secret managers, blocked paths, scanning hooks                      │
+├─────────────────────────────────────────────────────────────────────┤
+│  LAYER 4: Network Controls                                           │
+│  Outbound filtering, DNS blocklists, no-internet sandboxes           │
+├─────────────────────────────────────────────────────────────────────┤
+│  LAYER 5: Execution Sandboxing                                       │
+│  Docker, gVisor, Firejail, filesystem read-only mounts               │
+├─────────────────────────────────────────────────────────────────────┤
+│  LAYER 6: Monitoring &amp; Alerting                                      │
+│  Audit logs, anomaly detection, session output scanning              │
+└─────────────────────────────────────────────────────────────────────┘</code></pre>
+    </div>
+
+    <p>The rest of this guide walks through each layer with concrete implementations. You don't need all six &mdash; pick the layers that match your risk tolerance. A solo developer on a personal project needs Layer 1-3. A team running 20 agents overnight on production code needs all six.</p>
+
+    <!-- ═══════════════ CONFIG SECURITY ═══════════════ -->
+    <h2 id="config-security">Config File Security (CLAUDE.md, .cursorrules, MCP configs)</h2>
+    <p>Config files are the #1 attack vector for AI coding agents. They run before any human reviews them, and they can instruct the agent to do almost anything.</p>
+
+    <div class="defense-card">
+      <h3>Audit configs before running agents on cloned repos</h3>
+      <p>Before running any AI agent in a newly-cloned repository, inspect these files:</p>
+      <ul>
+        <li><code>CLAUDE.md</code> and <code>.claude/</code> directory &mdash; instructions for <a href="https://github.com/anthropics/claude-code">Claude Code</a></li>
+        <li><code>.cursorrules</code> and <code>.cursor/</code> &mdash; instructions for <a href="https://cursor.com">Cursor</a></li>
+        <li><code>.github/copilot-instructions.md</code> &mdash; instructions for <a href="https://github.com/features/copilot">GitHub Copilot</a></li>
+        <li><code>mcp.json</code>, <code>.mcp/</code>, <code>claude_desktop_config.json</code> &mdash; <a href="https://modelcontextprotocol.io">MCP</a> server configs</li>
+        <li>Any files referenced in hook configurations (pre/post tool use scripts)</li>
+      </ul>
+      <p>Treat these files with the same suspicion you'd give a <code>Makefile</code> or <code>postinstall</code> script in an untrusted package.</p>
+    </div>
+
+    <div class="defense-card">
+      <h3>Git hook for config validation</h3>
+      <p>Add a <code>post-checkout</code> hook that flags suspicious patterns in agent config files:</p>
+      <pre><code>#!/bin/bash
+# .git/hooks/post-checkout — warn on suspicious agent configs
+
+SUSPICIOUS_PATTERNS=(
+  "curl "
+  "wget "
+  "nc "
+  "bash -c"
+  "/dev/tcp"
+  "eval("
+  "base64"
+  "$(("
+  "rm -rf"
+  "chmod 777"
+  "ssh "
+)
+
+for file in CLAUDE.md .claude/**/* .cursorrules mcp.json; do
+  [ -f "$file" ] || continue
+  for pattern in "${SUSPICIOUS_PATTERNS[@]}"; do
+    if grep -qi "$pattern" "$file" 2>/dev/null; then
+      echo "⚠️  SECURITY: '$file' contains suspicious pattern: $pattern"
+      echo "    Review before running AI agents in this repo."
+    fi
+  done
+done</code></pre>
+    </div>
+
+    <div class="defense-card">
+      <h3>Lock your own CLAUDE.md with trusted-only hooks</h3>
+      <p>In repos you maintain, commit a <code>.claude/settings.json</code> that only allows hooks from paths you control:</p>
+      <pre><code>{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "command": "/usr/local/bin/my-verified-hook.sh"
+      }
+    ]
+  }
+}</code></pre>
+      <p>Never allow hook commands that reference relative paths (an attacker can plant files at those paths) or shell expansion patterns.</p>
+    </div>
+
+    <!-- ═══════════════ MCP HARDENING ═══════════════ -->
+    <h2 id="mcp-hardening">MCP Server Hardening</h2>
+    <p>The <a href="https://modelcontextprotocol.io">Model Context Protocol</a> ecosystem has 5,800+ servers with 97 million monthly SDK downloads. Many are community-maintained with no security review. Treat MCP servers as third-party code that runs with your agent's permissions.</p>
+
+    <div class="defense-card">
+      <h3>Pin exact versions</h3>
+      <p>Never use <code>@latest</code> or unpinned versions for MCP servers. Pin to exact commit SHAs or version tags:</p>
+      <pre><code>{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@0.6.2"],
+      "env": {}
+    }
+  }
+}</code></pre>
+      <p>If the server is installed from a git repo, pin to a specific commit hash, not a branch:</p>
+      <pre><code># Good: pinned commit
+"command": "node",
+"args": ["/opt/mcp-servers/github-server/index.js"]
+
+# Bad: pulls latest from npm on every run
+"command": "npx",
+"args": ["-y", "@someorg/mcp-server"]</code></pre>
+    </div>
+
+    <div class="defense-card">
+      <h3>Audit before installing</h3>
+      <p>Before adding any <a href="https://modelcontextprotocol.io">MCP</a> server to your config:</p>
+      <ol>
+        <li>Read the source code &mdash; MCP servers are typically small (~500 lines). If you can't read it in 10 minutes, it's doing too much.</li>
+        <li>Check the dependency tree: <code>npm ls</code> or <code>pip show -f</code>. Excessive dependencies increase supply chain risk.</li>
+        <li>Verify the publisher's identity. Who maintains this? Is there a verified org? GitHub stars don't equal safety.</li>
+        <li>Check for network calls. A filesystem MCP server that makes outbound HTTP requests is suspicious.</li>
+      </ol>
+    </div>
+
+    <div class="defense-card">
+      <h3>Restrict MCP filesystem access</h3>
+      <p>Most MCP servers that need filesystem access accept path restrictions. Always scope them to the minimum:</p>
+      <pre><code>{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y", "@modelcontextprotocol/server-filesystem@0.6.2",
+        "/home/user/project"
+      ]
+    }
+  }
+}</code></pre>
+      <p>Never give an MCP server access to <code>~</code> (home directory), <code>/</code> (root), or paths containing credentials (<code>~/.ssh</code>, <code>~/.aws</code>).</p>
+    </div>
+
+    <div class="defense-card">
+      <h3>Run MCP servers in network-isolated containers</h3>
+      <p>For high-security environments, run each MCP server in its own container with no network access:</p>
+      <pre><code># Dockerfile.mcp-filesystem
+FROM node:22-slim
+RUN npm install -g @modelcontextprotocol/server-filesystem@0.6.2
+ENTRYPOINT ["mcp-server-filesystem"]
+
+# Run with no network and minimal filesystem
+docker run --rm --network=none \
+  -v /home/user/project:/workspace:ro \
+  mcp-filesystem /workspace</code></pre>
+      <p>This prevents a compromised MCP server from exfiltrating data over the network or reading outside its designated path.</p>
+    </div>
+
+    <!-- ═══════════════ CREDENTIAL PROTECTION ═══════════════ -->
+    <h2 id="credential-protection">Credential Protection</h2>
+    <p>AI agents can read any file your user account can read. This includes <code>.env</code>, <code>~/.aws/credentials</code>, <code>~/.ssh/id_rsa</code>, browser session tokens, and application secrets. Protect them.</p>
+
+    <div class="defense-card">
+      <h3>Block access to credential paths</h3>
+      <p>Use <a href="https://github.com/anthropics/claude-code">Claude Code</a> hooks to block reads of sensitive directories:</p>
+      <pre><code>#!/bin/bash
+# hooks/block-credentials.sh — PreToolUse hook
+# Blocks agent from reading credential files
+
+BLOCKED_PATHS=(
+  ".env"
+  ".env.local"
+  ".env.production"
+  "credentials"
+  "id_rsa"
+  "id_ed25519"
+  ".aws/"
+  ".ssh/"
+  ".netrc"
+  ".npmrc"
+  "secrets"
+  "token"
+  ".kube/config"
+)
+
+INPUT=$(cat)
+for path in "${BLOCKED_PATHS[@]}"; do
+  if echo "$INPUT" | grep -qi "$path"; then
+    echo '{"decision":"block","reason":"Blocked: credential path access"}'
+    exit 0
+  fi
+done
+echo '{"decision":"allow"}'</code></pre>
+    </div>
+
+    <div class="defense-card">
+      <h3>Use secret managers instead of .env files</h3>
+      <p>If your agent never needs direct access to secrets (and it usually doesn't), use a secret manager that injects values at runtime:</p>
+      <ul>
+        <li><strong>1Password CLI:</strong> <code>op run -- your-command</code> injects secrets as env vars without writing files</li>
+        <li><strong>AWS Secrets Manager / Parameter Store:</strong> application fetches secrets at runtime</li>
+        <li><strong>direnv with encrypted vault:</strong> secrets decrypted only in the correct directory</li>
+      </ul>
+      <p>The principle: if the secret isn't on the filesystem, the agent can't read it.</p>
+    </div>
+
+    <div class="defense-card">
+      <h3>Scan agent output for leaked secrets</h3>
+      <p>Add a PostToolUse hook that scans agent output for accidentally leaked credentials:</p>
+      <pre><code>#!/bin/bash
+# hooks/scan-secrets.sh — PostToolUse hook
+# Alerts if agent output contains credential patterns
+
+INPUT=$(cat)
+OUTPUT=$(echo "$INPUT" | jq -r '.output // empty' 2>/dev/null)
+
+# Check for common secret patterns
+if echo "$OUTPUT" | grep -qEi \
+  '(AKIA[0-9A-Z]{16}|sk-[a-zA-Z0-9]{48}|ghp_[a-zA-Z0-9]{36}|-----BEGIN.*PRIVATE KEY)'; then
+  echo '{"decision":"block","reason":"ALERT: Potential credential detected in output"}'
+  exit 0
+fi
+echo '{"decision":"allow"}'</code></pre>
+      <p>For more comprehensive scanning, integrate <a href="https://github.com/trufflesecurity/trufflehog">TruffleHog</a> or <a href="https://github.com/Yelp/detect-secrets">detect-secrets</a> into your hook pipeline.</p>
+    </div>
+
+    <div class="defense-card">
+      <h3>Pre-commit secret scanning</h3>
+      <p>Even with hook-based protection, add a pre-commit safety net. Use <a href="https://github.com/awslabs/git-secrets">git-secrets</a> to prevent credentials from ever being committed:</p>
+      <pre><code># Install git-secrets
+brew install git-secrets  # macOS
+# or: pip install detect-secrets
+
+# Initialize in your repo
+git secrets --install
+git secrets --register-aws
+
+# Add custom patterns
+git secrets --add 'sk-[a-zA-Z0-9]{48}'      # OpenAI keys
+git secrets --add 'anthropic_api_key'         # Anthropic keys
+git secrets --add 'ghp_[a-zA-Z0-9]{36}'      # GitHub PATs</code></pre>
+      <p>This catches credentials that slip past hook-level protections when the agent creates commits.</p>
+    </div>
+
+    <!-- ═══════════════ YOLO MODE ═══════════════ -->
+    <h2 id="yolo-safely">Running YOLO Mode Safely</h2>
+    <p>YOLO mode (auto-approve all tool calls) is how most developers run agents unattended. It's powerful but removes the human checkpoint. Here's how to use it without giving agents unconstrained access.</p>
+
+    <div class="defense-card">
+      <h3>Scope YOLO to specific commands</h3>
+      <p>Instead of blanket YOLO, use <a href="https://github.com/anthropics/claude-code">Claude Code</a>'s permission configuration to allow specific patterns:</p>
+      <pre><code>{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(npm test)",
+      "Bash(npm run *)",
+      "Bash(python -m pytest *)",
+      "Bash(cargo test *)",
+      "Read(*)",
+      "Write(src/**)",
+      "Write(tests/**)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(git push --force *)",
+      "Bash(docker *)",
+      "Write(.env*)",
+      "Write(*.pem)",
+      "Write(credentials*)"
+    ]
+  }
+}</code></pre>
+      <p>The <code>deny</code> list takes precedence. Even in YOLO mode, these commands will be blocked.</p>
+    </div>
+
+    <div class="defense-card">
+      <h3>Directory scoping</h3>
+      <p>Restrict the agent to its project directory. It should not be able to read or write outside the repo:</p>
+      <pre><code># When registering an amux session, scope to the project dir
+amux register myproject --dir ~/Dev/myproject --yolo
+
+# The session runs in ~/Dev/myproject and CLAUDE.md should declare:
+# "Do not access files outside this project directory."
+# "Do not read ~/.aws, ~/.ssh, ~/.env, or any parent directory."</code></pre>
+      <p>Combine with filesystem-level enforcement (symlink protections, mount namespaces) for defense in depth.</p>
+    </div>
+
+    <div class="defense-card">
+      <h3>Session timeouts and cost caps</h3>
+      <p>Prevent runaway execution with hard limits:</p>
+      <ul>
+        <li><strong>Time limit:</strong> Kill sessions that run longer than expected (e.g., 2 hours for a task that should take 30 minutes)</li>
+        <li><strong>Token cap:</strong> Set a per-session token budget. If the agent burns through its allocation, something went wrong.</li>
+        <li><strong>File write limit:</strong> Alert if an agent writes more than N files in a single session &mdash; could indicate a hallucination loop</li>
+      </ul>
+      <p>In <a href="https://github.com/mixpeek/amux">amux</a>, the watchdog's stuck detection catches runaway sessions automatically. Configure it to restart (not continue) when a session exceeds its expected duration.</p>
+    </div>
+
+    <!-- ═══════════════ NETWORK ISOLATION ═══════════════ -->
+    <h2 id="network-isolation">Network Isolation</h2>
+    <p>If an agent can't make outbound network requests, it can't exfiltrate data. Most coding tasks don't require internet access once dependencies are installed.</p>
+
+    <div class="defense-card">
+      <h3>Block outbound connections for coding sessions</h3>
+      <p>On macOS, use the application firewall or a tool like <a href="https://obdev.at/products/littlesnitch/index.html">Little Snitch</a>. On Linux, use iptables rules per-user or network namespaces:</p>
+      <pre><code># Linux: block all outbound for a specific user (used by agent sessions)
+sudo iptables -A OUTPUT -m owner --uid-owner agent-user -j DROP
+
+# Allow only the AI API endpoint
+sudo iptables -I OUTPUT -m owner --uid-owner agent-user \
+  -d api.anthropic.com -p tcp --dport 443 -j ACCEPT
+sudo iptables -I OUTPUT -m owner --uid-owner agent-user \
+  -d api.openai.com -p tcp --dport 443 -j ACCEPT</code></pre>
+      <p>This allows the agent to call the AI API (required for operation) but blocks all other outbound traffic. A compromised agent can't phone home.</p>
+    </div>
+
+    <div class="defense-card">
+      <h3>DNS-level blocking</h3>
+      <p>For simpler setups, use <code>/etc/hosts</code> or a DNS sinkhole to block known exfiltration destinations while allowing the AI API:</p>
+      <pre><code># /etc/hosts additions for agent sessions
+# Block common exfiltration targets
+127.0.0.1 pastebin.com
+127.0.0.1 requestbin.net
+127.0.0.1 webhook.site
+127.0.0.1 ngrok.io
+127.0.0.1 burpcollaborator.net</code></pre>
+    </div>
+
+    <!-- ═══════════════ CONTAINER SANDBOXING ═══════════════ -->
+    <h2 id="container-sandboxing">Container Sandboxing</h2>
+    <p>For maximum isolation, run agents inside containers. This provides filesystem isolation, network control, resource limits, and a clean-slate environment. <a href="https://docker.com">Docker</a> launched Sandboxes in January 2026 specifically for AI coding agent workloads.</p>
+
+    <div class="defense-card">
+      <h3>Docker-based agent sandbox</h3>
+      <pre><code># Dockerfile.agent — minimal Claude Code environment
+FROM ubuntu:24.04
+RUN apt-get update &amp;&amp; apt-get install -y \
+    git nodejs npm python3 tmux curl ca-certificates \
+    &amp;&amp; npm install -g @anthropic-ai/claude-code \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+# Run as non-root
+RUN useradd -m agent
+USER agent
+WORKDIR /workspace
+
+ENTRYPOINT ["claude"]</code></pre>
+      <pre><code># Run with restricted network and resource limits
+docker run --rm -it \
+  --network=agent-net \          # custom network with egress rules
+  --memory=4g \                  # cap memory (prevent fork bombs)
+  --cpus=2 \                     # cap CPU
+  --read-only \                  # read-only root filesystem
+  --tmpfs /tmp:size=1g \         # writable tmp with size limit
+  -v ./project:/workspace \      # mount only the project
+  -e ANTHROPIC_API_KEY \         # pass API key via env, not file
+  agent-sandbox \
+  "Implement the auth module per the spec in TASKS.md"</code></pre>
+      <p>The <code>agent-net</code> <a href="https://docker.com">Docker</a> network should only allow egress to <code>api.anthropic.com:443</code> (or <code>api.openai.com:443</code>). All other outbound traffic is dropped.</p>
+    </div>
+
+    <div class="defense-card">
+      <h3>gVisor for stronger isolation</h3>
+      <p><a href="https://gvisor.dev">gVisor</a> intercepts system calls in userspace, providing a security boundary stronger than standard <a href="https://docker.com">Docker</a> containers. Use it when running agents on untrusted code:</p>
+      <pre><code># Run Docker container with gVisor runtime
+docker run --runtime=runsc --rm \
+  --network=none \
+  -v ./project:/workspace \
+  agent-sandbox "Fix the failing tests"</code></pre>
+      <p><a href="https://gvisor.dev">gVisor</a> prevents container escapes and limits the kernel attack surface. The performance overhead is ~5-15% for typical coding workloads &mdash; acceptable for security-sensitive environments.</p>
+    </div>
+
+    <div class="defense-card">
+      <h3>Lightweight sandboxing without Docker</h3>
+      <p>If <a href="https://docker.com">Docker</a> is too heavy, use process-level sandboxing:</p>
+      <ul>
+        <li><strong>Linux:</strong> <a href="https://github.com/containers/bubblewrap">Bubblewrap</a> (<code>bwrap</code>) creates minimal namespaces. <a href="https://github.com/netblue30/firejail">Firejail</a> provides predefined security profiles.</li>
+        <li><strong>macOS:</strong> <code>sandbox-exec</code> (deprecated but still functional) provides profile-based restrictions.</li>
+      </ul>
+      <pre><code># Linux: run Claude Code in a Firejail sandbox
+firejail --noprofile --net=none --private-tmp \
+  --whitelist=~/Dev/myproject \
+  --read-only=~ \
+  claude "Implement feature X"</code></pre>
+    </div>
+
+    <!-- ═══════════════ FLEET SECURITY ═══════════════ -->
+    <h2 id="fleet-security">Fleet Security with Multiplexers</h2>
+    <p>When running multiple agents in parallel, security becomes a fleet concern. One compromised agent can potentially affect others. Multiplexers like <a href="https://github.com/mixpeek/amux">amux</a> add a security control layer that applies policies uniformly across all sessions.</p>
+
+    <div class="defense-card">
+      <h3>Session isolation</h3>
+      <p>Each agent session should be isolated from others:</p>
+      <ul>
+        <li><strong>Separate working directories:</strong> Each agent gets its own git worktree or repo clone. One agent can't corrupt another's work.</li>
+        <li><strong>Separate tmux sessions:</strong> <a href="https://github.com/mixpeek/amux">amux</a> runs each agent in its own tmux session. Sessions can't access each other's terminal buffers.</li>
+        <li><strong>API key isolation:</strong> In high-security setups, each agent uses a different API key. If one is compromised, revoke it without affecting the fleet.</li>
+        <li><strong>Controlled inter-session communication:</strong> Agents communicate only through the <a href="https://github.com/mixpeek/amux">amux</a> REST API (board, notes, messages) &mdash; never through shared filesystem or environment variables.</li>
+      </ul>
+    </div>
+
+    <div class="defense-card">
+      <h3>Centralized hook enforcement</h3>
+      <p>Define security hooks once, apply them to every session in the fleet. In <a href="https://github.com/mixpeek/amux">amux</a>, the global <code>CLAUDE.md</code> and <code>.claude/settings.json</code> are inherited by all sessions:</p>
+      <pre><code># ~/.claude/settings.json — applies to ALL Claude Code sessions
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "command": "/usr/local/bin/security-gate.sh"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "command": "/usr/local/bin/secret-scanner.sh"
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Bash(curl * | bash)",
+      "Bash(wget -O - * | sh)",
+      "Bash(pip install *)",
+      "Bash(npm install *)"
+    ]
+  }
+}</code></pre>
+      <p>With this configuration, no agent in the fleet can pipe downloads to shell or install packages without explicit approval &mdash; regardless of what their per-project CLAUDE.md says.</p>
+    </div>
+
+    <div class="defense-card">
+      <h3>Atomic task claiming prevents race conditions</h3>
+      <p>When multiple agents claim work from a shared board, use atomic operations to prevent duplicated or conflicting work:</p>
+      <pre><code># amux's /api/board/TASK-ID/claim endpoint is atomic
+# If two agents try to claim the same task, only one succeeds
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"session":"agent-1"}' \
+  https://localhost:8822/api/board/TASK-123/claim</code></pre>
+      <p>This prevents a compromised agent from claiming all tasks to disrupt the fleet, and ensures no two agents accidentally work on the same code simultaneously.</p>
+    </div>
+
+    <!-- ═══════════════ MONITORING ═══════════════ -->
+    <h2 id="monitoring">Monitoring &amp; Anomaly Detection</h2>
+    <p>You can't stop every attack at the gate. Monitoring detects compromises that bypass preventive controls.</p>
+
+    <div class="defense-card">
+      <h3>What to monitor</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Signal</th>
+            <th>Normal</th>
+            <th>Suspicious</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Files read</td>
+            <td>Source code, tests, configs</td>
+            <td><code>.env</code>, <code>~/.aws</code>, <code>~/.ssh</code>, credential files</td>
+          </tr>
+          <tr>
+            <td>Files written</td>
+            <td>Source files, test files</td>
+            <td>Binary files, files outside project, dotfiles</td>
+          </tr>
+          <tr>
+            <td>Commands run</td>
+            <td><code>git</code>, <code>npm test</code>, <code>python</code></td>
+            <td><code>curl</code> to unknown hosts, <code>nc</code>, <code>base64 -d</code></td>
+          </tr>
+          <tr>
+            <td>Network connections</td>
+            <td>AI API, package registries</td>
+            <td>Unknown IPs, non-standard ports, DNS queries to odd domains</td>
+          </tr>
+          <tr>
+            <td>Token usage</td>
+            <td>Steady consumption</td>
+            <td>Sudden spikes (looping), zero usage (crashed/stuck)</td>
+          </tr>
+          <tr>
+            <td>Session duration</td>
+            <td>30min&ndash;2hrs per task</td>
+            <td>&gt;4 hours with no output (stuck or looping)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="defense-card">
+      <h3>Session output scanning</h3>
+      <p>Periodically scan agent output for indicators of compromise:</p>
+      <pre><code>#!/bin/bash
+# monitor-fleet.sh — run via cron every 5 minutes
+# Scans all amux session output for suspicious patterns
+
+ALERT_PATTERNS=(
+  "BEGIN.*PRIVATE KEY"
+  "AKIA[0-9A-Z]{16}"
+  "sk-[a-zA-Z0-9]{20,}"
+  "password.*="
+  "curl.*pastebin"
+  "wget.*-O.*|.*sh"
+  "/dev/tcp/"
+  "reverse.*shell"
+)
+
+SESSIONS=$(curl -sk https://localhost:8822/api/sessions | \
+  python3 -c "import json,sys; [print(s['name']) for s in json.load(sys.stdin)]")
+
+for session in $SESSIONS; do
+  OUTPUT=$(curl -sk "https://localhost:8822/api/sessions/$session/peek?lines=50" | \
+    python3 -c "import json,sys; print(json.load(sys.stdin).get('output',''))")
+  for pattern in "${ALERT_PATTERNS[@]}"; do
+    if echo "$OUTPUT" | grep -qEi "$pattern"; then
+      echo "🚨 ALERT: Session '$session' matched pattern: $pattern"
+      # Send notification, kill session, or log for review
+    fi
+  done
+done</code></pre>
+    </div>
+
+    <div class="defense-card">
+      <h3>Audit logging</h3>
+      <p>Enable audit logging so you have a forensic record of every action every agent took:</p>
+      <ul>
+        <li><strong>Git history:</strong> Every agent commit is timestamped and attributed. Use <code>git log --author=</code> to trace agent actions.</li>
+        <li><strong><a href="https://github.com/mixpeek/amux">amux</a> session logs:</strong> The server logs every API call, session start/stop, and watchdog intervention.</li>
+        <li><strong><a href="https://github.com/anthropics/claude-code">Claude Code</a> conversation logs:</strong> Stored locally in <code>~/.claude/</code> &mdash; contains the full conversation including every tool call and result.</li>
+        <li><strong>System-level auditing:</strong> On Linux, use <code>auditd</code> to log file access and process execution by agent user accounts.</li>
+      </ul>
+    </div>
+
+    <!-- ═══════════════ CHECKLIST ═══════════════ -->
+    <h2 id="checklist">The 15-Point Hardening Checklist</h2>
+    <p>Print this. Run through it when setting up a new project or onboarding a new team member to your agent fleet.</p>
+
+    <ul class="checklist">
+      <li><strong>1. Audit CLAUDE.md and MCP configs</strong> in every repo you clone before running an agent</li>
+      <li><strong>2. Pin MCP server versions</strong> to exact version numbers or commit hashes &mdash; never <code>@latest</code></li>
+      <li><strong>3. Block credential path access</strong> via PreToolUse hooks (<code>.env</code>, <code>~/.aws</code>, <code>~/.ssh</code>)</li>
+      <li><strong>4. Install pre-commit secret scanning</strong> with <a href="https://github.com/awslabs/git-secrets">git-secrets</a> or <a href="https://github.com/Yelp/detect-secrets">detect-secrets</a></li>
+      <li><strong>5. Use scoped permissions</strong> instead of blanket YOLO &mdash; allow specific commands, deny dangerous ones</li>
+      <li><strong>6. Restrict agent working directory</strong> &mdash; agents should not read/write outside the project</li>
+      <li><strong>7. Set session timeouts</strong> &mdash; kill sessions that exceed expected duration</li>
+      <li><strong>8. Block outbound network</strong> except AI API endpoints for unattended/overnight sessions</li>
+      <li><strong>9. Use secret managers</strong> (1Password CLI, AWS Secrets Manager) instead of <code>.env</code> files on disk</li>
+      <li><strong>10. Scan agent output</strong> for leaked credentials via PostToolUse hooks</li>
+      <li><strong>11. Run each agent in its own worktree/directory</strong> to prevent cross-contamination</li>
+      <li><strong>12. Use atomic task claiming</strong> when multiple agents share a work queue</li>
+      <li><strong>13. Container-sandbox untrusted code</strong> with <a href="https://docker.com">Docker</a> or <a href="https://gvisor.dev">gVisor</a> for repos you don't control</li>
+      <li><strong>14. Monitor for anomalies</strong> &mdash; unusual file access, unexpected network calls, token spikes</li>
+      <li><strong>15. Review agent git history weekly</strong> &mdash; look for files that shouldn't have changed, unusual commit patterns</li>
+    </ul>
+
+    <p style="margin-top:1.5rem;color:var(--fg-dim);font-size:13px;"><strong>Minimum viable security (solo developer):</strong> Items 1, 3, 4, 5, 6. Takes 15 minutes to set up.<br>
+    <strong>Production fleet security (teams):</strong> All 15 items. Takes a day to implement, saves you from the next incident.</p>
+
+    <!-- ═══════════════ FAQ ═══════════════ -->
+    <h2 id="faq">Frequently Asked Questions</h2>
+
+    <details class="faq-item">
+      <summary>What are the biggest security risks of AI coding agents?</summary>
+      <p>The top risks are: (1) Supply chain poisoning via malicious <code>CLAUDE.md</code> or <a href="https://modelcontextprotocol.io">MCP</a> server configs in cloned repos, (2) Credential exfiltration &mdash; agents reading <code>.env</code> files or AWS credentials and leaking them through tool calls, (3) Runaway execution in YOLO mode making destructive changes without oversight, (4) Prompt injection via crafted code comments or issue descriptions that hijack agent behavior, and (5) MCP server vulnerabilities &mdash; the 5,800+ community MCP servers have varying security quality, with over 1,000 found to contain malicious code.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Is YOLO mode safe for AI coding agents?</summary>
+      <p>YOLO mode is safe <em>when combined with proper guardrails</em>: directory-scoped permissions that prevent writes outside the project, hook-based allowlists that block dangerous commands (<code>rm -rf</code>, <code>curl</code> to external hosts, credential access), network isolation that prevents data exfiltration, and session timeouts that cap execution duration. Without these layers, YOLO mode gives agents unconstrained access to your system. See the <a href="#yolo-safely">Running YOLO Mode Safely</a> section above for concrete configurations.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>How do I secure MCP servers for AI agents?</summary>
+      <p>Pin <a href="https://modelcontextprotocol.io">MCP</a> server versions to exact commits (never use <code>@latest</code>), audit server source code before installation, run MCP servers in network-isolated containers, use an allowlist of approved servers in your team's shared configuration, restrict file system access to the minimum paths needed, and monitor MCP server network traffic for unexpected outbound connections. Never install MCP servers from untrusted sources. See <a href="#mcp-hardening">MCP Server Hardening</a> for implementation details.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Can AI agents steal my credentials?</summary>
+      <p>Yes. An AI coding agent with file read access can read <code>.env</code> files, <code>~/.aws/credentials</code>, SSH keys, and API tokens. It can then exfiltrate them via tool calls (writing to files, making HTTP requests, or encoding them in git commit messages). Mitigations: use secret managers instead of <code>.env</code> files, block read access to credential directories via hooks, and use credential-scanning hooks that abort if secrets appear in agent output. See <a href="#credential-protection">Credential Protection</a>.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>How do multiplexers improve agent security?</summary>
+      <p>Multiplexers like <a href="https://github.com/mixpeek/amux">amux</a> add a security control layer between you and your agents: session isolation prevents one compromised agent from affecting others, hook systems enforce permission policies uniformly across all sessions, centralized monitoring detects anomalous behavior, and audit logging creates a record of every action taken. Running agents through a multiplexer with proper configuration is significantly safer than running them directly in unmanaged terminal sessions. See <a href="#fleet-security">Fleet Security with Multiplexers</a>.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Should I run AI agents in Docker containers?</summary>
+      <p>For untrusted code or overnight unattended runs, yes. <a href="https://docker.com">Docker</a> containers provide filesystem isolation, network control, and resource limits. Docker Sandboxes (launched January 2026) are specifically designed for AI coding agent workloads. The trade-off is performance overhead and complexity &mdash; containerized agents can't access your local tools, databases, or file system without explicit mounts. For trusted projects in active development, hook-based security (Layers 1-3) is usually sufficient. See <a href="#container-sandboxing">Container Sandboxing</a>.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>What's the minimum security I should set up?</summary>
+      <p>At minimum: (1) Audit configs in cloned repos before running agents, (2) Block credential path access via a PreToolUse hook, (3) Install pre-commit secret scanning with <a href="https://github.com/awslabs/git-secrets">git-secrets</a>, (4) Scope YOLO permissions to specific commands, (5) Restrict the agent's working directory. This takes 15 minutes and stops the most common attack vectors. Add network isolation and container sandboxing for overnight/unattended runs.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>How do I handle security for agents reading GitHub issues?</summary>
+      <p>Treat issue content as untrusted input (because it is). Never point an agent at an issue from an unknown contributor without review. Use hooks that detect common prompt injection patterns in agent input. Consider running a "triage agent" that summarizes issues in a sanitized format before passing them to coding agents. The <a href="https://owasp.org">OWASP</a> prompt injection guidelines apply directly to this scenario.</p>
+    </details>
+
+    <div class="cta-box" style="margin-top:3rem;">
+      <h3>Secure your agent fleet with amux</h3>
+      <p>amux provides session isolation, centralized hook enforcement, fleet monitoring, and audit logging out of the box. Run agents safely &mdash; whether you're managing 3 sessions or 30.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux serve  # → https://localhost:8822 — dashboard with fleet monitoring</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <a class="btn" href="/guides/self-healing-configuration/" style="margin-left:0.5rem;">Self-healing guide</a>
+    </div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
