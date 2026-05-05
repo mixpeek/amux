@@ -7718,7 +7718,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   /* Peek overlay */
   .overlay {
-    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    position: fixed; top: var(--chrome-tab-h, 0px); left: 0; right: 0; bottom: 0;
     background: var(--bg);
     z-index: 100; flex-direction: column;
   }
@@ -7778,7 +7778,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   /* File preview overlay */
   .file-overlay {
-    display: none; position: fixed; inset: 0; background: rgba(1,4,9,0.92);
+    display: none; position: fixed; top: var(--chrome-tab-h, 0px); left: 0; right: 0; bottom: 0; background: rgba(1,4,9,0.92);
     z-index: 200; flex-direction: column;
     padding: 12px; padding-top: max(12px, env(safe-area-inset-top));
   }
@@ -9189,15 +9189,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   /* Chrome-style browser tabs */
   .chrome-tabs-bar {
     display: flex; align-items: flex-end;
-    position: sticky; top: 0; z-index: 41;
+    position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
     background: color-mix(in srgb, var(--bg), black 12%);
     padding: max(6px, env(safe-area-inset-top)) 6px 0 10px;
-    margin: calc(-1 * max(16px, env(safe-area-inset-top))) -16px 0 -16px;
+    margin: 0;
     gap: 1px;
-    overflow-x: auto; overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
+    overflow: visible;
   }
-  .chrome-tabs-bar::-webkit-scrollbar { display: none; }
   .chrome-tab {
     display: flex; align-items: center; gap: 4px;
     padding: 7px 6px 7px 12px;
@@ -21050,6 +21048,7 @@ function _chromeUpdateOffsets() {
     if (ctb) {
       const h = ctb.offsetHeight;
       document.documentElement.style.setProperty('--chrome-tab-h', h + 'px');
+      document.body.style.paddingTop = h + 'px';
       if (hr) document.documentElement.style.setProperty('--sticky-nav-top', (h + hr.offsetHeight) + 'px');
     }
   });
