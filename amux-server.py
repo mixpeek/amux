@@ -8901,7 +8901,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   /* In-app notification banners */
   .notif-banners {
-    position: fixed; top: env(safe-area-inset-top, 0px); right: 12px; z-index: 510;
+    position: fixed; top: calc(var(--chrome-tab-h, 0px) + 8px); right: 12px; z-index: 1002;
     display: flex; flex-direction: column; gap: 6px; pointer-events: none;
     max-width: 360px; width: calc(100% - 24px);
   }
@@ -9258,10 +9258,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .chrome-tab-collapse:hover { color: var(--fg); }
   .chrome-tabs-bar.collapsed .chrome-tab,
   .chrome-tabs-bar.collapsed .chrome-tab-add { display: none; }
-  .chrome-tabs-bar.collapsed { padding: 0; height: 0; min-height: 0; overflow: visible; }
+  .chrome-tabs-bar.collapsed { padding: 0; height: 0; min-height: 0; overflow: visible; background: none; }
   .chrome-tabs-bar.collapsed .chrome-tab-collapse {
     position: absolute; top: env(safe-area-inset-top, 4px); right: 4px;
-    opacity: 0.4; z-index: 1001; padding: 6px 10px;
+    opacity: 0.3; z-index: 1001; padding: 6px 10px;
   }
   .chrome-tabs-bar.collapsed .chrome-tab-collapse:hover { opacity: 1; }
   .chrome-tab-frames { position: fixed; top: var(--chrome-tab-h, 36px); left: 0; right: 0; bottom: 0; z-index: 999; display: none; }
