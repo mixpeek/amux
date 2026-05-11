@@ -14844,7 +14844,7 @@ function _renderArchivedSection() {
     (q ? archived : allArchived).forEach(s => {
       const ago = s.last_activity ? timeAgo(s.last_activity) : '';
       const preview = esc(s.preview || s.desc || '');
-      html += `<div class="archived-card">
+      html += `<div class="archived-card" data-session="${esc(s.name)}">
         <div class="archived-card-name">${esc(s.name)}</div>
         ${ago ? `<div class="archived-card-meta">${ago}</div>` : ''}
         ${preview ? `<div class="archived-card-preview">${preview}</div>` : ''}
@@ -14927,9 +14927,8 @@ function updateRateLimitPill() {
 function _scrollToFirstRateLimited() {
   const target = sessions.find(s => s.rate_limited_until);
   if (!target) return;
-  const card = document.querySelector('.card[data-session="' + target.name + '"]')
-    || Array.from(document.querySelectorAll('.card-name'))
-        .find(el => el.textContent.trim() === target.name);
+  const sel = '[data-session="' + target.name.replace(/"/g, '\\"') + '"]';
+  const card = document.querySelector(sel);
   if (card && card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
