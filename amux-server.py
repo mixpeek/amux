@@ -1477,6 +1477,15 @@ _MONTHS = {
     'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
 }
 
+# Permissive fallback: any bare HH:MM (optionally with AM/PM) in the
+# scrollback when none of the labeled patterns above match. Real-world
+# Claude Code rendering wraps lines and may push the "resets" label off
+# the same line as the time, so a bare-time scan within the menu's
+# scrollback window is more robust than requiring the strict label.
+# A >=5min-in-the-future filter blocks pickup of the current-time status
+# bar (e.g. "✦ 14:23 thinking…").
+_RATE_LIMIT_BARE_TIME_RE = re.compile(r'\b(\d{1,2}):(\d{2})\s*(am|pm)?\b', re.IGNORECASE)
+
 
 def _parse_rate_limit_reset(text: str, now: float | None = None) -> int | None:
     """Scan text for a Claude Code rate-limit reset time and return a unix ts.
@@ -1495,6 +1504,10 @@ def _parse_rate_limit_reset(text: str, now: float | None = None) -> int | None:
         return None
     now_ts = now if now is not None else time.time()
     base = _dt.datetime.fromtimestamp(now_ts)
+    # Defensive ANSI strip — the handler already cleans the capture before
+    # calling this, but selftests and any future direct caller may pass
+    # raw tmux output.
+    text = _STRIP_ANSI.sub("", text)
 
     # 1. "Resets in: N hours M minutes" — check first so it doesn't get
     #    swallowed by the bare "resets HH:MM" pattern (no colon → no match
@@ -1542,6 +1555,30 @@ def _parse_rate_limit_reset(text: str, now: float | None = None) -> int | None:
             if candidate.timestamp() <= now_ts:
                 candidate += _dt.timedelta(days=1)
             return int(candidate.timestamp())
+
+    # 4. Bare-time fallback. Take the earliest HH:MM at least 5 minutes
+    # in the future — that filters out current-time status-bar renders
+    # like "✦ 14:23 thinking…" while still catching a "resets 14:30"
+    # that landed on its own wrapped line away from the "resets" word.
+    candidates = []
+    for mm in _RATE_LIMIT_BARE_TIME_RE.finditer(text):
+        hour = int(mm.group(1))
+        minute = int(mm.group(2))
+        meridiem = (mm.group(3) or '').lower()
+        if meridiem == 'pm' and hour != 12:
+            hour += 12
+        elif meridiem == 'am' and hour == 12:
+            hour = 0
+        if not (0 <= hour < 24 and 0 <= minute < 60):
+            continue
+        cand = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if cand.timestamp() <= now_ts:
+            cand += _dt.timedelta(days=1)
+        if cand.timestamp() - now_ts < 300:
+            continue  # too close to now — likely the current-time bar
+        candidates.append(int(cand.timestamp()))
+    if candidates:
+        return min(candidates)
 
     return None
 
@@ -37118,6 +37155,59 @@ def _run_selftests() -> int:
           _parse_rate_limit_reset("resets at bananas o'clock", now=ref_ts) is None)
     check("empty input returns None",
           _parse_rate_limit_reset("", now=ref_ts) is None)
+
+    # Realistic boxed UI sample — Claude renders rate-limit context inside
+    # a bordered panel; the strict "resets HH:MM" pattern catches the
+    # in-panel time even with the box-drawing characters around it.
+    boxed = (
+        "  ╭──────────────────────────────────────────╮\n"
+        "  │ You've used 95% of your session limit ·   │\n"
+        "  │ resets 14:30                              │\n"
+        "  ╰──────────────────────────────────────────╯\n"
+        "\n"
+        "What do you want to do?\n"
+        "❯ 1. Stop and wait for limit to reset\n"
+        "  2. Add funds to continue with extra usage\n"
+        "  3. Upgrade your plan\n"
+    )
+    out = _parse_rate_limit_reset(boxed, now=ref_ts)
+    expected = int(_dt.datetime(2026, 5, 11, 14, 30).timestamp())
+    check("realistic boxed UI scrollback parses to 14:30",
+          out == expected, detail=f"got {out}, want {expected}")
+
+    # Bare-time fallback — strict label not present, but a usable HH:MM
+    # sits in the menu area. Should still parse.
+    bare_only = (
+        "What do you want to do?\n"
+        "❯ 1. Stop and wait for limit to reset\n"
+        "  2. Add funds\n  3. Upgrade\n"
+        "\n"
+        "Try again at 19:00.\n"
+    )
+    out = _parse_rate_limit_reset(bare_only, now=ref_ts)
+    expected = int(_dt.datetime(2026, 5, 11, 19, 0).timestamp())
+    check("bare-time fallback catches '19:00' without 'resets' label",
+          out == expected, detail=f"got {out}, want {expected}")
+
+    # Status-bar current time should NOT be picked up — it's within 5 min
+    # of now, which the filter rejects. Without a reset time anywhere
+    # else in the scrollback, the parser returns None.
+    status_bar = (
+        "✦ 09:02 Crunched for 2m 14s — Sonnet 4.6\n"
+        "What do you want to do?\n"
+        "❯ 1. Stop and wait for limit to reset\n"
+    )
+    check("status-bar current time is filtered out (<5min in future)",
+          _parse_rate_limit_reset(status_bar, now=ref_ts) is None,
+          detail=f"got {_parse_rate_limit_reset(status_bar, now=ref_ts)}")
+
+    # ANSI-laden input — parser strips defensively, so the same bytes the
+    # handler would feed it still resolve.
+    ansi_text = "\x1b[31mYou've used 95% of your limit · resets 14:30\x1b[0m\n"
+    out = _parse_rate_limit_reset(ansi_text, now=ref_ts)
+    expected = int(_dt.datetime(2026, 5, 11, 14, 30).timestamp())
+    check("ANSI-laden input is stripped and parsed",
+          out == expected, detail=f"got {out}, want {expected}")
 
     # ── 3. Budget accounting via _rate_limit_budget_state ────────────────
     print("budget accounting:")
