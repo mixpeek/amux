@@ -1606,6 +1606,20 @@ _rate_limit_last_responded: dict = {}
 _rate_limit_last_drift_log: float = 0.0
 
 
+def _rate_limit_budget_state(actions: dict, today_utc: str, budget: int) -> tuple[bool, int]:
+    """Return (exhausted, used) for a session's auto-resume budget.
+
+    Resets the per-session counter when the stored UTC day differs from
+    today_utc (mutating `actions`). Isolated here so the selftest can verify
+    midnight-rollover behavior without spinning up tmux.
+    """
+    if actions.get("rate_limit_budget_day") != today_utc:
+        actions["rate_limit_budget_day"] = today_utc
+        actions["rate_limit_resumes_today"] = 0
+    used = int(actions.get("rate_limit_resumes_today", 0))
+    return (used >= budget, used)
+
+
 def _check_rate_limit_drift():
     """Warn if reset times parsed across the fleet disagree by >30s.
 
@@ -1750,14 +1764,13 @@ def _rate_limit_auto_resume():
         try:
             cfg = parse_env_file(env_file)
 
-            # Daily budget rollover (UTC).
-            if actions.get("rate_limit_budget_day") != today_utc:
-                actions["rate_limit_budget_day"] = today_utc
-                actions["rate_limit_resumes_today"] = 0
-
+            # Always run the rollover so the per-day counter doesn't grow
+            # forever in unlimited mode; second return is ignored unless
+            # we're enforcing a cap.
+            exhausted, used = _rate_limit_budget_state(
+                actions, today_utc, _RATE_LIMIT_BUDGET)
             if _RATE_LIMIT_MODE == "capped":
-                used = actions.get("rate_limit_resumes_today", 0)
-                if used >= _RATE_LIMIT_BUDGET:
+                if exhausted:
                     actions.pop("rate_limit_reset_at", None)
                     budget_exhausted += 1
                     slog(f"[rate-limit] session={name} auto-resume budget "
@@ -37018,5 +37031,174 @@ def main():
         server.server_close()
 
 
+def _run_selftests() -> int:
+    """Inline unit tests for the rate-limit watchdog.
+
+    Triggered by `AMUX_SELFTEST=1 python3 amux-server.py`. Touches no DB,
+    no network, no filesystem — covers the pure helpers added for this
+    feature. Returns process exit code (0 = all pass).
+    """
+    import datetime as _dt
+    failures: list[str] = []
+
+    def check(label: str, ok: bool, *, detail: str = ""):
+        status = "PASS" if ok else "FAIL"
+        line = f"  [{status}] {label}"
+        if detail and not ok:
+            line += f"  — {detail}"
+        print(line)
+        if not ok:
+            failures.append(label)
+
+    # ── 1. _RATE_LIMIT_PROMPTS pattern match ─────────────────────────────
+    print("rate-limit prompt pattern:")
+    positive = (
+        "What do you want to do?\n"
+        "❯ 1. Stop and wait for limit to reset\n"
+        "  2. Add funds to continue with extra usage\n"
+        "  3. Upgrade your plan\n"
+    )
+    pat = _RATE_LIMIT_PROMPTS[0][0]
+    check("matches real /rate-limit-options menu", bool(pat.search(positive)))
+    check("matches case-insensitively",
+          bool(pat.search(positive.upper())))
+    check("does not match empty string", not pat.search(""))
+    check("does not match a YOLO 'Do you want to proceed?' prompt",
+          not pat.search("Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel"))
+    check("does not match the /usage slash-command palette entry",
+          not pat.search("/usage    Show plan usage and rate limits"))
+    check("does not match the bare phrase without a '1.' menu prefix",
+          not pat.search("the system will stop and wait for limit to reset later"))
+
+    # ── 2. _parse_rate_limit_reset across all three formats ──────────────
+    print("reset-time parser:")
+    # Use a fixed reference time so wall-clock tests are deterministic.
+    ref_dt = _dt.datetime(2026, 5, 11, 9, 0, 0)  # 09:00 local
+    ref_ts = ref_dt.timestamp()
+
+    # Format 1: "resets HH:MM" later today
+    out = _parse_rate_limit_reset(
+        "You've used 95% of your session limit · resets 14:30",
+        now=ref_ts,
+    )
+    expected = _dt.datetime(2026, 5, 11, 14, 30).timestamp()
+    check("format1 'resets HH:MM' later today", out == int(expected),
+          detail=f"got {out}, want {int(expected)}")
+
+    # Format 1b: "resets HH:MM" already past → tomorrow
+    out = _parse_rate_limit_reset("resets 03:00", now=ref_ts)
+    expected = _dt.datetime(2026, 5, 12, 3, 0).timestamp()
+    check("format1 'resets HH:MM' past today rolls to tomorrow",
+          out == int(expected),
+          detail=f"got {out}, want {int(expected)}")
+
+    # Format 2: "Resets in: 4 hours 23 minutes"
+    out = _parse_rate_limit_reset("Resets in: 4 hours 23 minutes", now=ref_ts)
+    expected = int(ref_ts + 4 * 3600 + 23 * 60)
+    check("format2 'Resets in: N hours M minutes'", out == expected,
+          detail=f"got {out}, want {expected}")
+
+    # Format 2b: minutes-only relative
+    out = _parse_rate_limit_reset("resets in 45 minutes", now=ref_ts)
+    expected = int(ref_ts + 45 * 60)
+    check("format2 minutes-only relative", out == expected,
+          detail=f"got {out}, want {expected}")
+
+    # Format 3: absolute date+time
+    out = _parse_rate_limit_reset(
+        "Please upgrade your plan or wait for your limit to reset on "
+        "April 15, 2026 at 10:49 PM",
+        now=ref_ts,
+    )
+    expected = int(_dt.datetime(2026, 4, 15, 22, 49).timestamp())
+    check("format3 absolute 'Month D, YYYY at H:MM PM'",
+          out == expected, detail=f"got {out}, want {expected}")
+
+    # Malformed input
+    check("malformed input returns None",
+          _parse_rate_limit_reset("resets at bananas o'clock", now=ref_ts) is None)
+    check("empty input returns None",
+          _parse_rate_limit_reset("", now=ref_ts) is None)
+
+    # ── 3. Budget accounting via _rate_limit_budget_state ────────────────
+    print("budget accounting:")
+    today = "2026-05-11"
+    a = {"rate_limit_budget_day": today, "rate_limit_resumes_today": 1}
+    exhausted, used = _rate_limit_budget_state(a, today, 3)
+    check("under cap (1/3) not exhausted", (not exhausted) and used == 1)
+
+    a = {"rate_limit_budget_day": today, "rate_limit_resumes_today": 3}
+    exhausted, used = _rate_limit_budget_state(a, today, 3)
+    check("at cap (3/3) is exhausted", exhausted and used == 3)
+
+    a = {"rate_limit_budget_day": today, "rate_limit_resumes_today": 5}
+    exhausted, used = _rate_limit_budget_state(a, today, 3)
+    check("over cap (5/3) is exhausted", exhausted and used == 5)
+
+    # Midnight UTC rollover — different day key triggers reset.
+    a = {"rate_limit_budget_day": "2026-05-10", "rate_limit_resumes_today": 99}
+    exhausted, used = _rate_limit_budget_state(a, today, 3)
+    check("midnight UTC rollover resets counter to 0",
+          (not exhausted) and used == 0 and a["rate_limit_budget_day"] == today)
+
+    # No prior day recorded — first observation of the day.
+    a = {}
+    exhausted, used = _rate_limit_budget_state(a, today, 3)
+    check("first observation of the day initializes counter",
+          (not exhausted) and used == 0 and a["rate_limit_budget_day"] == today)
+
+    # ── 4. _should_skip_rate_limit_resume predicate ──────────────────────
+    print("state-aware skip predicate:")
+    in_wait_state = (
+        "Session limit reached. Waiting for the limit to reset at 14:30...\n"
+        "❯"
+    )
+    skip, reason = _should_skip_rate_limit_resume(in_wait_state)
+    check("in wait state → resume", not skip,
+          detail=f"reason={reason!r}")
+
+    past_wait_state = (
+        "user: do something else\n"
+        "assistant: sure, here is the result\n"
+        "❯ "
+    )
+    skip, reason = _should_skip_rate_limit_resume(past_wait_state)
+    check("past wait state → skip", skip and "moved past" in reason,
+          detail=f"reason={reason!r}")
+
+    archived_or_empty = ""
+    skip, reason = _should_skip_rate_limit_resume(archived_or_empty)
+    check("empty scrollback (archived/stopped) → skip",
+          skip and "no scrollback" in reason, detail=f"reason={reason!r}")
+
+    menu_still_showing = (
+        "❯ 1. Stop and wait for limit to reset\n"
+        "  2. Add funds\n  3. Upgrade\n"
+    )
+    skip, reason = _should_skip_rate_limit_resume(menu_still_showing)
+    check("rate-limit menu still showing → skip (premature)",
+          skip and "menu still showing" in reason,
+          detail=f"reason={reason!r}")
+
+    # ── 5. _session_rate_limit_resume_text default + override ────────────
+    print("resume-text helper:")
+    check("default is 'continue'",
+          _session_rate_limit_resume_text({}) == "continue")
+    check("blank value falls back to 'continue'",
+          _session_rate_limit_resume_text({"CC_RATE_LIMIT_RESUME_TEXT": "  "}) == "continue")
+    check("override is returned as-is",
+          _session_rate_limit_resume_text(
+              {"CC_RATE_LIMIT_RESUME_TEXT": "resume polling"}) == "resume polling")
+
+    print()
+    if failures:
+        print(f"FAILED: {len(failures)} test(s): {', '.join(failures)}")
+        return 1
+    print("All rate-limit watchdog selftests passed.")
+    return 0
+
+
 if __name__ == "__main__":
+    if os.environ.get("AMUX_SELFTEST") == "1":
+        sys.exit(_run_selftests())
     main()
