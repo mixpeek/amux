@@ -36483,17 +36483,19 @@ def main():
     slog(f"[startup] server starting — pid={os.getpid()}, port={port}, scheme={scheme}, python={sys.version.split()[0]}")
     _log_resource_snapshot("startup")
     print("\033[1m\033[34mamux\033[0m web dashboard running")
-    print(f"  Bind:    {', '.join(bind_hosts)}:{port}")
+    print(f"  Bind:    {', '.join(f'{h}:{port}' for h in bind_hosts)}")
     if "0.0.0.0" in bind_hosts:
         print("\033[33m  ⚠ Bound to 0.0.0.0 — reachable on every network interface (incl. public IP).\033[0m")
         print(f"\033[33m    Restrict with: amux serve {port} --bind 127.0.0.1[,<other-ips>]\033[0m")
     print(f"  Local:   {scheme}://localhost:{port}")
     if ts_hostname:
         print(f"  Tailscale: {scheme}://{ts_hostname}:{port}")
-    print(f"  Network: {scheme}://{lan_ip}:{port}")
+    _net_reachable = "0.0.0.0" in bind_hosts or lan_ip in bind_hosts
+    if _net_reachable:
+        print(f"  Network: {scheme}://{lan_ip}:{port}")
     if ts_hostname:
         print(f"\n  Open on your phone → \033[1m{scheme}://{ts_hostname}:{port}\033[0m")
-    else:
+    elif _net_reachable:
         print(f"\n  Open on your phone → {scheme}://{lan_ip}:{port}")
     if scheme == "https":
         if ts_hostname:
