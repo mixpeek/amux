@@ -1420,6 +1420,25 @@ def _yolo_loop():
         pass
 
 
+# ── Rate-limit watchdog ──────────────────────────────────────────────────────
+# Claude Code's /rate-limit-options prompt appears when a subscription usage
+# cap is hit. The three-option menu lets the user either wait, add funds, or
+# upgrade. amux auto-selects option 1 ("Stop and wait for limit to reset")
+# fleet-wide — when one Max account hits its cap, every active session blocks
+# at once, and pressing 1 by hand on each is impractical at scale.
+#
+# Unlike _YOLO_PROMPTS, this runs regardless of --dangerously-skip-permissions:
+# the rate-limit prompt blocks every session equally, YOLO or not.
+_RATE_LIMIT_PROMPTS = [
+    # Anchor on the option-1 menu line. The "1." prefix confirms it's a menu
+    # render and not the phrase appearing in arbitrary scrollback noise; the
+    # full phrase ("Stop and wait for limit to reset") is distinctive enough
+    # that we don't need to also match options 2/3, which keeps the pattern
+    # robust if Anthropic relabels the other choices.
+    (re.compile(r'1\.\s*stop and wait for limit to reset', re.IGNORECASE), '1'),
+]
+
+
 def _push_alert(alert_type: str, session: str, message: str):
     """Enqueue an alert to be streamed to all SSE clients."""
     global _sse_alerts
