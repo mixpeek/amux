@@ -1668,10 +1668,129 @@ def _rate_limit_auto_respond():
             pass
 
 
+def _rate_limit_auto_resume():
+    """Steer the configured resume text to sessions whose reset time passed.
+
+    Respects fleet mode (off/capped/unlimited) and per-session budget.
+    Calls the state-aware skip predicate to avoid fighting a user who
+    moved past the wait-for-reset state.
+    """
+    import datetime as _dt
+    now = time.time()
+    today_utc = _dt.datetime.utcnow().strftime("%Y-%m-%d")
+
+    # Collect candidates first so we can bail out cheaply when nothing's due.
+    candidates = [name for name, actions in list(_session_auto_actions.items())
+                  if actions.get("rate_limit_reset_at")
+                  and actions["rate_limit_reset_at"] <= now]
+    if not candidates:
+        return
+
+    if _RATE_LIMIT_MODE == "off":
+        # Clear stale reset-at so the badge doesn't linger past reset time.
+        # The user has to steer the resume themselves in this mode.
+        for name in candidates:
+            actions = _session_auto_actions.get(name) or {}
+            actions.pop("rate_limit_reset_at", None)
+            slog(f"[rate-limit] session={name} reset time reached; "
+                 f"auto-resume disabled (mode=off)")
+        return
+
+    running_sessions = set()
+    try:
+        r = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            running_sessions = set(r.stdout.splitlines())
+    except Exception:
+        return
+
+    resumed = 0
+    skipped = 0
+    budget_exhausted = 0
+    for name in candidates:
+        actions = _session_auto_actions.get(name) or {}
+        env_file = CC_SESSIONS / f"{name}.env"
+        if not env_file.exists():
+            actions.pop("rate_limit_reset_at", None)
+            continue
+        try:
+            cfg = parse_env_file(env_file)
+
+            # Daily budget rollover (UTC).
+            if actions.get("rate_limit_budget_day") != today_utc:
+                actions["rate_limit_budget_day"] = today_utc
+                actions["rate_limit_resumes_today"] = 0
+
+            if _RATE_LIMIT_MODE == "capped":
+                used = actions.get("rate_limit_resumes_today", 0)
+                if used >= _RATE_LIMIT_BUDGET:
+                    actions.pop("rate_limit_reset_at", None)
+                    budget_exhausted += 1
+                    slog(f"[rate-limit] session={name} auto-resume budget "
+                         f"exhausted ({used}/{_RATE_LIMIT_BUDGET}), "
+                         f"falling back to manual")
+                    _push_alert("rate_limit_manual", name,
+                                f"Rate-limit auto-resume budget exhausted for "
+                                f"'{name}' — manual resume required")
+                    continue
+
+            scrollback = ""
+            if tmux_name(name) in running_sessions:
+                raw = tmux_capture(name, 100)
+                if raw:
+                    scrollback = _STRIP_ANSI.sub("", raw)
+            skip, reason = _should_skip_rate_limit_resume(scrollback)
+            if skip:
+                actions.pop("rate_limit_reset_at", None)
+                skipped += 1
+                slog(f"[rate-limit] session={name} auto-resume skipped at "
+                     f"reset, {reason}")
+                continue
+
+            resume_text = _session_rate_limit_resume_text(cfg)
+            ok, err = send_text(name, resume_text)
+            if ok:
+                actions.pop("rate_limit_reset_at", None)
+                actions["rate_limit_resumes_today"] = \
+                    actions.get("rate_limit_resumes_today", 0) + 1
+                resumed += 1
+                slog(f"[rate-limit] session={name} resumed at reset, "
+                     f"resume_text={resume_text!r}")
+                _posthog_emit("rate_limit_auto_resumed", {
+                    "session": name,
+                    "resume_text": resume_text,
+                }, distinct_id=name)
+            else:
+                # Don't clear reset_at — next tick will retry. Send can fail
+                # transiently if tmux is briefly unavailable.
+                slog(f"[rate-limit] session={name} resume send failed: {err}")
+        except Exception as e:
+            slog(f"[rate-limit] session={name} resume error: {e}")
+
+    total = resumed + skipped + budget_exhausted
+    if total > 1:
+        slog(f"[rate-limit] fleet resume: {resumed} sessions steered, "
+             f"{skipped} skipped (user intervened), "
+             f"{budget_exhausted} budget-exhausted")
+        _posthog_emit("rate_limit_fleet_event", {
+            "kind": "resume",
+            "resumed": resumed,
+            "skipped": skipped,
+            "budget_exhausted": budget_exhausted,
+        })
+
+
 def _rate_limit_loop():
     """Single rate-limit watchdog tick: detect prompts, handle reset."""
     try:
         _rate_limit_auto_respond()
+    except Exception:
+        pass
+    try:
+        _rate_limit_auto_resume()
     except Exception:
         pass
 
