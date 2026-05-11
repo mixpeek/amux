@@ -1600,7 +1600,38 @@ def _session_rate_limit_resume_text(cfg: dict) -> str:
 
 
 _RATE_LIMIT_COOLDOWN = 10  # seconds between auto-responses per session
+_RATE_LIMIT_DRIFT_TOLERANCE = 30  # seconds; reset times closer than this are "in sync"
+_RATE_LIMIT_DRIFT_LOG_COOLDOWN = 600  # don't repeat the drift warning more than every 10 min
 _rate_limit_last_responded: dict = {}
+_rate_limit_last_drift_log: float = 0.0
+
+
+def _check_rate_limit_drift():
+    """Warn if reset times parsed across the fleet disagree by >30s.
+
+    The subscription cap is account-wide, so every blocked session should
+    have the same reset time (within ~seconds). Larger drift usually means
+    our parser misread one session's scrollback. Log-only — no behavior
+    change.
+    """
+    global _rate_limit_last_drift_log
+    now = time.time()
+    if now - _rate_limit_last_drift_log < _RATE_LIMIT_DRIFT_LOG_COOLDOWN:
+        return
+    future_resets = []
+    for name, actions in _session_auto_actions.items():
+        r = actions.get("rate_limit_reset_at")
+        if r and r > now:
+            future_resets.append((name, r))
+    if len(future_resets) < 2:
+        return
+    spread = max(r for _, r in future_resets) - min(r for _, r in future_resets)
+    if spread > _RATE_LIMIT_DRIFT_TOLERANCE:
+        _rate_limit_last_drift_log = now
+        sample = ", ".join(f"{n}={r}" for n, r in sorted(future_resets)[:6])
+        slog(f"[rate-limit] reset-time drift across fleet: spread={int(spread)}s "
+             f"across {len(future_resets)} sessions ({sample}). "
+             f"Likely a parser mis-read — verify by peeking each session.")
 
 
 def _rate_limit_auto_respond():
@@ -1787,6 +1818,10 @@ def _rate_limit_loop():
     """Single rate-limit watchdog tick: detect prompts, handle reset."""
     try:
         _rate_limit_auto_respond()
+    except Exception:
+        pass
+    try:
+        _check_rate_limit_drift()
     except Exception:
         pass
     try:
