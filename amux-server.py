@@ -5203,6 +5203,7 @@ def list_sessions() -> list:
             "archived": cfg.get("CC_ARCHIVED", "") == "1",
             "auto_continue": cfg.get("CC_AUTO_CONTINUE") in ("1", "true", "yes"),
             "steering": _steering_queue.get(name, []),
+            "rate_limited_until": _session_auto_actions.get(name, {}).get("rate_limit_reset_at", 0),
             "tags": [t.strip() for t in cfg.get("CC_TAGS", "").split(",") if t.strip()],
             "flags": cfg.get("CC_FLAGS", ""),
             "creator": cfg.get("CC_CREATOR", ""),
@@ -9220,6 +9221,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .status-badge.waiting { background: rgba(210,153,34,0.2); color: var(--yellow); }
   .status-badge.idle { background: rgba(139,148,158,0.15); color: var(--dim); }
   .status-badge.steering { background: rgba(137,87,229,0.2); color: var(--purple,#8957e5); }
+  .status-badge.rate-limited { background: rgba(248,81,73,0.18); color: #f85149; }
   .last-active { font-size: 0.7rem; color: var(--dim); flex-shrink: 0; }
   .token-count { font-size: 0.65rem; color: var(--dim); flex-shrink: 0; font-family: "SF Mono","Fira Code",monospace; opacity: 0.7; }
 
@@ -14034,6 +14036,9 @@ function updatePeekStatus() {
   else if (s.status === 'waiting') badge = '<span class="status-badge waiting">needs input</span>';
   else if (s.status === 'idle')    badge = '<span class="status-badge idle">idle</span>';
   else if (!s.running)             badge = '<span class="status-badge" style="background:rgba(255,255,255,0.06);color:var(--dim);border:1px solid var(--border);">stopped</span>';
+  if (s.rate_limited_until) {
+    badge += `<span class="status-badge rate-limited" style="margin-left:6px;">Rate-limited until ${_fmtClockTime(s.rate_limited_until)}</span>`;
+  }
   el.innerHTML = badge;
   // Update input placeholder based on session state
   const cmdInp = document.getElementById('peek-cmd-input');
@@ -14171,10 +14176,11 @@ function render() {
           <div class="card-menu-item danger" onclick="event.stopPropagation();deleteSession('${s.name}')"><span class="mi">&#x2716;</span> Delete</div>
         </div>
         </div>
-        ${(s.status || s.tokens || s.last_activity || !online) ? `<div class="card-header-meta">
+        ${(s.status || s.tokens || s.last_activity || s.rate_limited_until || !online) ? `<div class="card-header-meta">
           ${s.status === 'active' ? '<span class="status-badge active">working</span>' : ''}
           ${s.status === 'waiting' ? '<span class="status-badge waiting">needs input</span>' : ''}
           ${s.status === 'idle' ? '<span class="status-badge idle">idle</span>' : ''}
+          ${s.rate_limited_until ? `<span class="status-badge rate-limited" title="Rate-limited — auto-resume at ${_fmtClockTime(s.rate_limited_until)}">Rate-limited until ${_fmtClockTime(s.rate_limited_until)}</span>` : ''}
           ${s.steering && s.steering.length ? `<span class="status-badge steering" title="${s.steering.length} steering message${s.steering.length>1?'s':''} queued">${s.steering.length} queued</span>` : ''}
           ${s.tokens ? `<span class="token-count">${fmtTokens(s.tokens)}</span>` : ''}
           ${s.last_activity ? `<span class="last-active">${timeAgo(s.last_activity)}</span>` : ''}
@@ -14358,6 +14364,13 @@ function fmtDuration(sec) {
   if (h > 0) return h + 'h ' + m + 'm';
   if (m > 0) return m + 'm';
   return sec + 's';
+}
+function _fmtClockTime(epoch) {
+  if (!epoch) return '';
+  const d = new Date(epoch * 1000);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return hh + ':' + mm;
 }
 
 // ═══════ GIT BRANCH AWARENESS ═══════
