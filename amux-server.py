@@ -1636,7 +1636,15 @@ def _session_rate_limit_resume_text(cfg: dict) -> str:
     return val or _RATE_LIMIT_DEFAULT_RESUME_TEXT
 
 
-_RATE_LIMIT_COOLDOWN = 10  # seconds between auto-responses per session
+# Seconds between consecutive auto-responses for the same session. The
+# scheduler tick is 3s, so with a 10s cooldown the watchdog fires no more
+# than once every ~12s on a persistently-matching prompt (matches the
+# behavior observed during manual verification). Real Claude clears the
+# menu immediately after pressing 1, so this loop only matters when the
+# menu text persists in scrollback — typically a simulation artifact
+# where the prompt was injected via tmux send-keys without Enter and
+# stayed pinned in the input area.
+_RATE_LIMIT_COOLDOWN = 10
 _RATE_LIMIT_DRIFT_TOLERANCE = 30  # seconds; reset times closer than this are "in sync"
 _RATE_LIMIT_DRIFT_LOG_COOLDOWN = 600  # don't repeat the drift warning more than every 10 min
 _rate_limit_last_responded: dict = {}

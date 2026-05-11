@@ -125,6 +125,36 @@ tmux send-keys -t amux-rl-test \
 Within ~3-15 seconds the dashboard card should show the badge and
 `~/.amux/logs/server.log` should contain `[rate-limit] session=... auto-selected option 1, reset_at=...`.
 
+**Simulation caveats:** `tmux send-keys` lands text at Claude's input
+prompt, not as raw terminal output, and Claude may render or re-render
+it differently than a real rate-limit event. Two pitfalls to be aware of:
+
+- The strict reset-time parser may not match Claude's actual rendering;
+  when that happens the watchdog applies a 5-minute safety fallback so
+  the auto-resume path still exercises end-to-end. Real rate-limit
+  windows are always >1h, so the fallback never causes premature resume.
+- If the menu text persists in Claude's input area without being
+  submitted, the detector will re-fire every ~12 seconds (10s cooldown +
+  3s tick). Send `C-c` to the session after the initial detection if you
+  want to stop the loop while observing badge/pill behavior:
+
+  ```bash
+  tmux send-keys -t amux-rl-test C-c
+  ```
+
+The simulation is a sanity check; the integration test for the real
+rendering can only be done against an actual rate-limit event. If you
+hit one on a development account, capture `tmux capture-pane -p -t
+amux-<session> -S -300` to a file and feed it through the parser:
+
+```bash
+python3 -c "import sys; sys.path.insert(0,'.'); \
+  import importlib.util as iu; \
+  spec = iu.spec_from_file_location('a','amux-server.py'); \
+  m = iu.module_from_spec(spec); spec.loader.exec_module(m); \
+  print(m._parse_rate_limit_reset(open('capture.txt').read()))"
+```
+
 ### Agent-to-Agent Orchestration
 
 ```bash
