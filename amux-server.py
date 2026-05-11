@@ -1439,6 +1439,98 @@ _RATE_LIMIT_PROMPTS = [
 ]
 
 
+# Reset-time formats Claude Code is known to render in scrollback when a
+# session hits the cap. We scan the surrounding tmux capture for any of them
+# and convert to a unix timestamp so the watchdog can schedule an auto-resume.
+_RATE_LIMIT_RESET_PATTERNS = [
+    # "resets HH:MM" — wall-clock; today if still ahead, otherwise tomorrow.
+    re.compile(r'resets?\s+(?:at\s+)?(\d{1,2}):(\d{2})\s*(am|pm)?\b', re.IGNORECASE),
+    # "Resets in: 4 hours 23 minutes" — relative duration (hours and/or minutes).
+    re.compile(r'resets?\s+in[:\s]+(?:(\d+)\s*h(?:ours?)?)?\s*(?:(\d+)\s*m(?:in(?:ute)?s?)?)?', re.IGNORECASE),
+    # "reset on April 15, 2026 at 10:49 PM" — absolute date + 12h time.
+    re.compile(
+        r'reset(?:s|\s+on)?\s+(?:on\s+)?'
+        r'(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|'
+        r'aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+        r'\s+(\d{1,2}),?\s+(\d{4})\s+at\s+(\d{1,2}):(\d{2})\s*(am|pm)',
+        re.IGNORECASE,
+    ),
+]
+
+_MONTHS = {
+    'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+    'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+}
+
+
+def _parse_rate_limit_reset(text: str, now: float | None = None) -> int | None:
+    """Scan text for a Claude Code rate-limit reset time and return a unix ts.
+
+    Recognizes three TUI formats:
+      - "resets HH:MM" or "resets at H:MM PM" (today, or tomorrow if past)
+      - "Resets in: <N> hours <M> minutes" (relative duration)
+      - "reset on <Month> <D>, <YYYY> at <H:MM AM/PM>" (absolute)
+
+    Returns None if no recognizable format is present. The wall-clock formats
+    are interpreted in the server's local time zone — Claude Code renders
+    them in the user's local zone, and amux runs on the same machine.
+    """
+    import datetime as _dt
+    if not text:
+        return None
+    now_ts = now if now is not None else time.time()
+    base = _dt.datetime.fromtimestamp(now_ts)
+
+    # 1. "Resets in: N hours M minutes" — check first so it doesn't get
+    #    swallowed by the bare "resets HH:MM" pattern (no colon → no match
+    #    anyway, but ordering keeps intent obvious).
+    m = _RATE_LIMIT_RESET_PATTERNS[1].search(text)
+    if m and (m.group(1) or m.group(2)):
+        hours = int(m.group(1) or 0)
+        minutes = int(m.group(2) or 0)
+        if hours or minutes:
+            return int(now_ts + hours * 3600 + minutes * 60)
+
+    # 2. Absolute "reset on April 15, 2026 at 10:49 PM"
+    m = _RATE_LIMIT_RESET_PATTERNS[2].search(text)
+    if m:
+        month_key = m.group(1).lower()[:3]
+        month = _MONTHS.get(month_key)
+        day = int(m.group(2))
+        year = int(m.group(3))
+        hour = int(m.group(4))
+        minute = int(m.group(5))
+        meridiem = m.group(6).lower()
+        if meridiem == 'pm' and hour != 12:
+            hour += 12
+        elif meridiem == 'am' and hour == 12:
+            hour = 0
+        if month and 0 <= hour < 24 and 0 <= minute < 60:
+            try:
+                dt = _dt.datetime(year, month, day, hour, minute)
+                return int(dt.timestamp())
+            except ValueError:
+                pass
+
+    # 3. "resets HH:MM" — today if still ahead, otherwise tomorrow.
+    m = _RATE_LIMIT_RESET_PATTERNS[0].search(text)
+    if m:
+        hour = int(m.group(1))
+        minute = int(m.group(2))
+        meridiem = (m.group(3) or '').lower()
+        if meridiem == 'pm' and hour != 12:
+            hour += 12
+        elif meridiem == 'am' and hour == 12:
+            hour = 0
+        if 0 <= hour < 24 and 0 <= minute < 60:
+            candidate = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if candidate.timestamp() <= now_ts:
+                candidate += _dt.timedelta(days=1)
+            return int(candidate.timestamp())
+
+    return None
+
+
 def _push_alert(alert_type: str, session: str, message: str):
     """Enqueue an alert to be streamed to all SSE clients."""
     global _sse_alerts
