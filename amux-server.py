@@ -1729,22 +1729,41 @@ def _rate_limit_auto_respond():
             if matched_idx < 0:
                 continue
             actions = _session_auto_actions.setdefault(name, {})
-            reset_at = _parse_rate_limit_reset(clean, now=now)
+            parsed_reset = _parse_rate_limit_reset(clean, now=now)
             actions["rate_limit_last_event_ts"] = int(now)
-            if reset_at:
+            if parsed_reset:
+                reset_at = parsed_reset
                 actions["rate_limit_reset_at"] = reset_at
+                actions.pop("rate_limit_reset_at_fallback", None)
                 slog(f"[rate-limit] session={name} auto-selected option 1, "
                      f"reset_at={reset_at}")
             else:
-                # Couldn't parse a reset time — record the event but
-                # auto-resume won't fire without a target timestamp.
-                actions.pop("rate_limit_reset_at", None)
+                # Couldn't parse a reset time. Apply a 5-minute safety
+                # fallback so auto-resume still has a target — Claude
+                # Code's actual rate-limit windows are always much
+                # longer (1h+, usually 5h), so 5 min cannot trigger a
+                # premature resume. If the prompt is still showing
+                # when the fallback fires, the auto-respond loop will
+                # press 1 again and the auto-resume's state-aware skip
+                # predicate prevents fighting.
+                reset_at = int(now + 300)
+                actions["rate_limit_reset_at"] = reset_at
+                actions["rate_limit_reset_at_fallback"] = True
+                # Log a sanitized snippet so future debugging can see
+                # what the parser actually saw. Single-line, capped
+                # length so the server log stays readable.
+                snippet = " | ".join(
+                    l.strip() for l in clean.splitlines()[-12:] if l.strip()
+                )[:240]
                 slog(f"[rate-limit] session={name} auto-selected option 1, "
-                     f"reset_at=unknown (no parseable reset time in scrollback)")
+                     f"reset_at={reset_at} (5min safety fallback — no "
+                     f"parseable reset time in scrollback); "
+                     f"tail-snippet={snippet!r}")
             _posthog_emit("rate_limit_auto_handled", {
                 "session": name,
                 "pattern_idx": matched_idx,
-                "reset_at": reset_at or 0,
+                "reset_at": reset_at,
+                "fallback": not parsed_reset,
             }, distinct_id=name)
         except Exception:
             pass
