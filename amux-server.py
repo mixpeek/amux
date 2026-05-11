@@ -192,6 +192,21 @@ _S3_CAL_URL = (
     f"https://{_S3_BUCKET}.s3.{_S3_REGION}.amazonaws.com/{_S3_KEY}"
     if _S3_BUCKET else ""
 )
+# Rate-limit watchdog (fleet-level). Mode controls auto-resume behavior:
+#   off       — detect the prompt and press 1, but do NOT auto-resume.
+#   capped    — auto-resume up to AMUX_RATE_LIMIT_BUDGET times per session
+#               per UTC day; after the budget is exhausted, fall back to
+#               manual (user must steer resume themselves).
+#   unlimited — auto-resume every time, no cap.
+_RATE_LIMIT_MODE = (os.environ.get("AMUX_RATE_LIMIT_MODE", "capped") or "capped").lower()
+if _RATE_LIMIT_MODE not in ("off", "capped", "unlimited"):
+    _RATE_LIMIT_MODE = "capped"
+try:
+    _RATE_LIMIT_BUDGET = int(os.environ.get("AMUX_RATE_LIMIT_BUDGET", "3"))
+except ValueError:
+    _RATE_LIMIT_BUDGET = 3
+if _RATE_LIMIT_BUDGET < 0:
+    _RATE_LIMIT_BUDGET = 0
 MAX_LOG_BYTES = 10 * 1024 * 1024  # 10MB per session
 SERVER_LOG = CC_LOGS / "server.log"
 _server_log_lock = threading.Lock()
