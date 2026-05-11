@@ -36380,7 +36380,26 @@ def _kill_stale_port(port: int):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8822
+    # CLI: optional positional port, optional --bind host[,host,...]
+    # Examples:
+    #   amux serve
+    #   amux serve 8822
+    #   amux serve 8822 --bind 127.0.0.1
+    #   amux serve 8822 --bind 127.0.0.1,172.17.0.1
+    port = 8822
+    bind_hosts = ["0.0.0.0"]
+    _args = sys.argv[1:]
+    _i = 0
+    while _i < len(_args):
+        _a = _args[_i]
+        if _a == "--bind" and _i + 1 < len(_args):
+            bind_hosts = [h.strip() for h in _args[_i + 1].split(",") if h.strip()]
+            _i += 2
+        elif _a.isdigit():
+            port = int(_a)
+            _i += 1
+        else:
+            _i += 1
     lan_ip = get_lan_ip()
     no_tls = "--no-tls" in sys.argv
 
@@ -36409,17 +36428,20 @@ def main():
     # Pre-configure ~/.claude.json to skip interactive setup wizard
     _init_claude_config()
 
-    # Retry binding in case port is in TIME_WAIT after a restart
-    for _attempt in range(10):
-        try:
-            server = ResilientHTTPSServer(("0.0.0.0", port), CCHandler)
-            break
-        except OSError as e:
-            if e.errno == 48 and _attempt < 9:  # Address already in use
-                slog(f"[startup] port {port} busy, retrying ({_attempt + 1}/10)...")
-                time.sleep(2)
-            else:
-                raise
+    # Bind one HTTPS server per host in bind_hosts. Retry on TIME_WAIT after restart.
+    servers = []
+    for _host in bind_hosts:
+        for _attempt in range(10):
+            try:
+                servers.append(ResilientHTTPSServer((_host, port), CCHandler))
+                break
+            except OSError as e:
+                if e.errno == 48 and _attempt < 9:  # Address already in use
+                    slog(f"[startup] {_host}:{port} busy, retrying ({_attempt + 1}/10)...")
+                    time.sleep(2)
+                else:
+                    raise
+    server = servers[0]  # primary: used by file watcher & graceful shutdown
 
     scheme = "http"
     ts_hostname = ""
@@ -36434,7 +36456,8 @@ def main():
                     if server_name != ts_hostname:
                         sock.context = fb_ctx
                 ctx.sni_callback = _sni_cb
-            server.ssl_ctx = ctx  # per-connection TLS in process_request_thread()
+            for _s in servers:
+                _s.ssl_ctx = ctx  # per-connection TLS in process_request_thread()
             scheme = "https"
         except Exception as e:
             print(f"\033[33m  TLS setup failed ({e}), falling back to HTTP\033[0m")
@@ -36443,6 +36466,10 @@ def main():
     slog(f"[startup] server starting — pid={os.getpid()}, port={port}, scheme={scheme}, python={sys.version.split()[0]}")
     _log_resource_snapshot("startup")
     print("\033[1m\033[34mamux\033[0m web dashboard running")
+    print(f"  Bind:    {', '.join(bind_hosts)}:{port}")
+    if "0.0.0.0" in bind_hosts:
+        print("\033[33m  ⚠ Bound to 0.0.0.0 — reachable on every network interface (incl. public IP).\033[0m")
+        print(f"\033[33m    Restrict with: amux serve {port} --bind 127.0.0.1[,<other-ips>]\033[0m")
     print(f"  Local:   {scheme}://localhost:{port}")
     if ts_hostname:
         print(f"  Tailscale: {scheme}://{ts_hostname}:{port}")
@@ -36467,7 +36494,7 @@ def main():
 
     # Plain HTTP cert server (so phones can fetch cert before trusting it)
     if scheme == "https":
-        def _cert_server(port):
+        def _cert_server(port, _host):
             from http.server import HTTPServer, BaseHTTPRequestHandler
             class H(BaseHTTPRequestHandler):
                 def do_GET(self):
@@ -36504,13 +36531,14 @@ def main():
                 allow_reuse_port = True
             for _att in range(10):
                 try:
-                    IPv4HTTPServer(("0.0.0.0", port + 1), H).serve_forever()
+                    IPv4HTTPServer((_host, port + 1), H).serve_forever()
                     break
                 except OSError:
                     if _att < 9:
                         time.sleep(2)
                     # silently give up after retries — cert server is optional
-        threading.Thread(target=_cert_server, args=(port,), daemon=True).start()
+        for _h in bind_hosts:
+            threading.Thread(target=_cert_server, args=(port, _h), daemon=True).start()
         print(f"  Cert:    http://{lan_ip}:{port + 1}/api/cert")
 
     # Register all recurring jobs with the unified scheduler
@@ -36546,11 +36574,18 @@ def main():
     # Warm the metrics cache in background so first UI open is fast
     threading.Thread(target=_refresh_metrics_cache, daemon=True).start()
 
+    # Run secondary servers in background threads; primary in main thread
+    for _s in servers[1:]:
+        threading.Thread(target=_s.serve_forever, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n\033[2mStopped.\033[0m")
-        server.server_close()
+        for _s in servers:
+            try:
+                _s.server_close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

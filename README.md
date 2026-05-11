@@ -252,4 +252,33 @@ See how amux compares to other AI coding tools:
 
 ## Security
 
-Local-first. No auth built in — use Tailscale or bind to localhost. Never expose port 8822 to the internet.
+Local-first. No auth built in — use Tailscale or bind to localhost. **Never expose port 8822 to the internet.**
+
+### Network exposure & `--bind`
+
+`amux serve` binds to `0.0.0.0` by default. On a workstation behind a router this is fine; on a public VPS it makes the dashboard reachable from the internet the moment the server starts. Verify with `ss -tlnp | grep 8822` after launch, and `curl -k https://<public-ip>:8822/` from outside.
+
+Restrict the listening interfaces with `--bind` (comma-separated list of IPs):
+
+```bash
+amux serve                                   # default: 0.0.0.0 (all interfaces)
+amux serve 8822 --bind 127.0.0.1             # loopback only
+amux serve 8822 --bind 127.0.0.1,100.64.0.5  # loopback + Tailscale IP
+amux serve 8822 --bind 127.0.0.1,172.17.0.1  # loopback + docker0 (containers)
+amux serve 8822 --bind 0.0.0.0               # opt in to every interface
+```
+
+One HTTPS server (and one HTTP cert helper on `port+1`) is spawned per listed host. `amux serve 8822` with no `--bind` keeps the current behavior.
+
+### Firewall (belt-and-braces)
+
+Even with `--bind`, a firewall rule is recommended on multi-homed hosts. Example for `iptables` (allow localhost + docker0, drop the rest):
+
+```bash
+sudo iptables -I INPUT -p tcp --dport 8822 -s 127.0.0.1     -j ACCEPT
+sudo iptables -I INPUT -p tcp --dport 8822 -s 172.17.0.0/16 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 8822 -j DROP
+sudo netfilter-persistent save   # survive reboot (Debian/Ubuntu)
+```
+
+Validate the lockdown from outside the host: `curl -k --connect-timeout 4 https://<public-ip>:8822/` should time out.
