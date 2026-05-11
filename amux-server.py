@@ -8612,6 +8612,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .btn-active .active-count {
     font-variant-numeric: tabular-nums;
   }
+  /* Fleet-wide rate-limit indicator */
+  .btn-rate-limit {
+    display: none; font-size: 0.78rem; padding: 6px 10px; border-radius: 8px;
+    border: 1px solid rgba(248,81,73,0.45);
+    background: rgba(248,81,73,0.12); color: #f85149;
+    cursor: pointer; font-weight: 500; min-height: 40px;
+    align-items: center; gap: 6px; font-variant-numeric: tabular-nums;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn-rate-limit.show { display: flex; }
+  .btn-rate-limit:active { background: rgba(248,81,73,0.22); }
   .active-dropdown {
     display: none; position: fixed; top: auto; right: 16px;
     background: var(--card); border: 1px solid var(--border);
@@ -11255,6 +11266,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
   <div style="display:flex;gap:8px;align-items:center;">
     <div id="org-switcher-wrap" style="display:none;"></div>
+    <button class="btn-rate-limit" id="rate-limit-pill" title="" onclick="event.stopPropagation();_scrollToFirstRateLimited()">
+      <span id="rate-limit-pill-text">0 rate-limited</span>
+    </button>
     <div class="active-wrap">
       <button class="btn-active" id="active-btn" onclick="event.stopPropagation();toggleActiveDropdown()">
         <span class="active-dot"></span>
@@ -14073,6 +14087,7 @@ function render() {
   // Save focused element before ANY DOM changes — captures search-input, send-input, or anything else
   const focusedId = _active && _active.id ? _active.id : null;
   updateActiveCount();
+  updateRateLimitPill();
   // Build tag filter bar
   const tagEl = document.getElementById('tag-filters');
   const allTags = [...new Set(sessions.filter(s => !s.archived).flatMap(s => s.tags || []))].sort();
@@ -14877,6 +14892,32 @@ function updateActiveCount() {
   const btn = document.getElementById('active-btn');
   if (el) el.textContent = count;
   if (btn) btn.style.display = count > 0 ? 'flex' : 'none';
+}
+function updateRateLimitPill() {
+  const pill = document.getElementById('rate-limit-pill');
+  const txt = document.getElementById('rate-limit-pill-text');
+  if (!pill || !txt) return;
+  const blocked = sessions.filter(s => s.rate_limited_until);
+  if (!blocked.length) {
+    pill.classList.remove('show');
+    return;
+  }
+  // All sessions on one account share a reset time; show the earliest if
+  // they drift, and indicate "N of M" so the user sees the fleet picture.
+  const earliest = Math.min(...blocked.map(s => s.rate_limited_until));
+  const total = sessions.filter(s => !s.archived).length || blocked.length;
+  txt.textContent = blocked.length + ' of ' + total +
+    ' rate-limited, reset ' + _fmtClockTime(earliest);
+  pill.title = blocked.map(s => s.name).join(', ');
+  pill.classList.add('show');
+}
+function _scrollToFirstRateLimited() {
+  const target = sessions.find(s => s.rate_limited_until);
+  if (!target) return;
+  const card = document.querySelector('.card[data-session="' + target.name + '"]')
+    || Array.from(document.querySelectorAll('.card-name'))
+        .find(el => el.textContent.trim() === target.name);
+  if (card && card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 // ── Header + dropdown ──
