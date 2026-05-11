@@ -1599,6 +1599,75 @@ def _session_rate_limit_resume_text(cfg: dict) -> str:
     return val or _RATE_LIMIT_DEFAULT_RESUME_TEXT
 
 
+_RATE_LIMIT_COOLDOWN = 10  # seconds between auto-responses per session
+_rate_limit_last_responded: dict = {}
+
+
+def _rate_limit_auto_respond():
+    """Detect /rate-limit-options across the fleet and press 1 on each match.
+
+    Mirrors _yolo_auto_respond's shape but runs on every running session
+    regardless of YOLO mode — the rate-limit prompt blocks YOLO and
+    non-YOLO sessions equally. On match, presses 1 to park the session
+    at "waiting for limit to reset", parses the reset time from the
+    surrounding scrollback, and stores it in _session_auto_actions[name]
+    for the auto-resume scheduler to pick up later.
+    """
+    now = time.time()
+    running_sessions = set()
+    try:
+        r = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            running_sessions = set(r.stdout.splitlines())
+    except Exception:
+        return  # tmux not available
+    for f in CC_SESSIONS.glob("*.env"):
+        name = f.stem
+        try:
+            if tmux_name(name) not in running_sessions:
+                continue
+            if now - _rate_limit_last_responded.get(name, 0) < _RATE_LIMIT_COOLDOWN:
+                continue
+            # 300 lines is enough to catch the reset-time line, which can
+            # appear ~10-20 lines above the menu in Claude Code's UI.
+            raw = tmux_capture(name, 300)
+            if not raw:
+                continue
+            clean = _STRIP_ANSI.sub("", raw)
+            matched_idx = -1
+            for i, (pattern, response) in enumerate(_RATE_LIMIT_PROMPTS):
+                if pattern.search(clean):
+                    send_text(name, response)
+                    _rate_limit_last_responded[name] = now
+                    matched_idx = i
+                    break
+            if matched_idx < 0:
+                continue
+            actions = _session_auto_actions.setdefault(name, {})
+            reset_at = _parse_rate_limit_reset(clean, now=now)
+            actions["rate_limit_last_event_ts"] = int(now)
+            if reset_at:
+                actions["rate_limit_reset_at"] = reset_at
+                slog(f"[rate-limit] session={name} auto-selected option 1, "
+                     f"reset_at={reset_at}")
+            else:
+                # Couldn't parse a reset time — record the event but
+                # auto-resume won't fire without a target timestamp.
+                actions.pop("rate_limit_reset_at", None)
+                slog(f"[rate-limit] session={name} auto-selected option 1, "
+                     f"reset_at=unknown (no parseable reset time in scrollback)")
+            _posthog_emit("rate_limit_auto_handled", {
+                "session": name,
+                "pattern_idx": matched_idx,
+                "reset_at": reset_at or 0,
+            }, distinct_id=name)
+        except Exception:
+            pass
+
+
 def _push_alert(alert_type: str, session: str, message: str):
     """Enqueue an alert to be streamed to all SSE clients."""
     global _sse_alerts
