@@ -36386,6 +36386,23 @@ def main():
     #   amux serve 8822
     #   amux serve 8822 --bind 127.0.0.1
     #   amux serve 8822 --bind 127.0.0.1,172.17.0.1
+    if any(a in ("-h", "--help") for a in sys.argv[1:]):
+        print(
+            "Usage: amux-server.py [port] [--bind host[,host,...]] [--no-tls]\n"
+            "\n"
+            "  port                  TCP port to listen on (default: 8822).\n"
+            "                        The cert helper uses port+1.\n"
+            "  --bind host[,host..]  Comma-separated list of interface IPs to bind.\n"
+            "                        Default: 0.0.0.0 (every interface). Pass 127.0.0.1\n"
+            "                        to restrict to loopback, or e.g.\n"
+            "                        127.0.0.1,172.17.0.1 for loopback + docker0.\n"
+            "  --no-tls              Serve plain HTTP instead of HTTPS.\n"
+            "\n"
+            "Default 0.0.0.0 exposes the dashboard on every interface this host is\n"
+            "attached to (incl. public Wi-Fi LANs and public IPs). Use --bind to\n"
+            "restrict, or add a firewall rule on top."
+        )
+        return
     port = 8822
     bind_hosts = ["0.0.0.0"]
     _args = sys.argv[1:]

@@ -932,6 +932,38 @@ EOF
 }
 
 cmd_serve() {
+  # --help / -h short-circuit
+  for _a in "$@"; do
+    case "$_a" in
+      -h|--help|help)
+        cat <<EOF
+${BOLD}amux serve${RESET} - start the web dashboard (HTTPS by default)
+
+${BOLD}Usage:${RESET}
+  amux serve [port] [--bind host[,host,...]] [--no-tls]
+
+${BOLD}Args:${RESET}
+  port                  TCP port to listen on (default: 8822). Cert helper uses port+1.
+  --bind host[,host..]  Comma-separated list of interface IPs to bind. Default: 0.0.0.0
+                        (every interface). Pass 127.0.0.1 to restrict to loopback,
+                        or e.g. 127.0.0.1,172.17.0.1 for loopback + docker0.
+  --no-tls              Serve plain HTTP instead of HTTPS (offline mode/PWA needs HTTPS).
+
+${BOLD}Examples:${RESET}
+  amux serve
+  amux serve 8822
+  amux serve 8822 --bind 127.0.0.1
+  amux serve 8822 --bind 127.0.0.1,172.17.0.1
+  amux serve 9000 --no-tls
+
+${BOLD}Security note:${RESET} the default 0.0.0.0 bind exposes the dashboard on every
+network interface this host is connected to (including public Wi-Fi LANs and
+public IPs). Use --bind to restrict, or layer a firewall rule on top.
+EOF
+        return 0
+        ;;
+    esac
+  done
   # Resolve cc-server.py relative to the real location of this script
   local script_dir
   script_dir="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")" && pwd)"
