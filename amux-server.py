@@ -1549,6 +1549,45 @@ def _parse_rate_limit_reset(text: str, now: float | None = None) -> int | None:
 _RATE_LIMIT_DEFAULT_RESUME_TEXT = "continue"
 
 
+def _should_skip_rate_limit_resume(scrollback_clean: str) -> tuple[bool, str]:
+    """Decide whether auto-resume should be skipped at reset time.
+
+    The watchdog parks a session by pressing 1 on the /rate-limit-options
+    menu, which leaves Claude Code displaying a "waiting for limit to reset"
+    confirmation. If at reset time the scrollback still shows that wait
+    state, auto-resume is safe — we're just unblocking what we parked.
+
+    If the user intervened (picked option 2 or 3 from the menu, typed
+    something new, or otherwise moved past the wait state), the session
+    is no longer parked where we left it, and steering "continue" would
+    fight the user. Skip in that case.
+
+    Returns (skip, reason). Reason is a short human-readable string for
+    the log line; empty string when skip is False.
+    """
+    if not scrollback_clean:
+        # Empty scrollback usually means the session is stopped/archived
+        # and we can't see anything; safest to skip rather than risk
+        # poking a session in an unknown state.
+        return True, "no scrollback to inspect"
+    tail = "\n".join(scrollback_clean.splitlines()[-30:]).lower()
+    # Positive markers: Claude is still parked at the wait-for-reset state.
+    if "waiting for" in tail and "reset" in tail:
+        return False, ""
+    if "stop and wait for limit to reset" in tail:
+        # User hasn't pressed anything yet — pattern was matched but
+        # the menu is still showing. Resume is premature; the auto-respond
+        # cycle will press 1 first.
+        return True, "rate-limit menu still showing"
+    if "rate-limit-options" in tail or "rate limit" in tail:
+        # Some related rate-limit UI is still on screen; user may be
+        # interacting with it.
+        return False, ""
+    # No rate-limit-related markers anywhere in the tail → the session
+    # has moved on. Don't fight the user.
+    return True, "session moved past wait-state"
+
+
 def _session_rate_limit_resume_text(cfg: dict) -> str:
     """Return the per-session text to steer at rate-limit reset.
 
