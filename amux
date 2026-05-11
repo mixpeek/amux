@@ -932,7 +932,6 @@ EOF
 }
 
 cmd_serve() {
-  local port="${1:-8822}"
   # Resolve cc-server.py relative to the real location of this script
   local script_dir
   script_dir="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")" && pwd)"
@@ -941,7 +940,8 @@ cmd_serve() {
   [[ -f "$server" ]] || server="$script_dir/cc-server.py"
   [[ -f "$server" ]] || die "amux-server.py not found at $script_dir"
   command -v python3 &>/dev/null || die "python3 is required for amux serve"
-  exec python3 "$server" "$port"
+  # Pass all args through: amux-server.py parses the positional port and any --bind flag.
+  exec python3 "$server" "$@"
 }
 
 cmd_help() {
@@ -972,7 +972,7 @@ ${BOLD}Dashboard:${RESET}
   amux                           Interactive dashboard (optimized for phone)
 
 ${BOLD}Web Dashboard:${RESET}
-  amux serve [port]              Start web dashboard (default: 8822)
+  amux serve [port] [--bind host[,host,...]]  Start web dashboard (default: 8822, all interfaces)
 
 ${BOLD}Board:${RESET}
   amux board ls                  List all board issues
