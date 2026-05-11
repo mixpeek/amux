@@ -1531,6 +1531,20 @@ def _parse_rate_limit_reset(text: str, now: float | None = None) -> int | None:
     return None
 
 
+_RATE_LIMIT_DEFAULT_RESUME_TEXT = "continue"
+
+
+def _session_rate_limit_resume_text(cfg: dict) -> str:
+    """Return the per-session text to steer at rate-limit reset.
+
+    Read from CC_RATE_LIMIT_RESUME_TEXT in ~/.amux/sessions/<name>.env
+    (defaults to "continue"). Lets supervisors/orchestrators use a
+    richer resume prompt than a bare "continue".
+    """
+    val = cfg.get("CC_RATE_LIMIT_RESUME_TEXT", "").strip()
+    return val or _RATE_LIMIT_DEFAULT_RESUME_TEXT
+
+
 def _push_alert(alert_type: str, session: str, message: str):
     """Enqueue an alert to be streamed to all SSE clients."""
     global _sse_alerts
