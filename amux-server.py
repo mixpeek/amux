@@ -1668,6 +1668,14 @@ def _rate_limit_auto_respond():
             pass
 
 
+def _rate_limit_loop():
+    """Single rate-limit watchdog tick: detect prompts, handle reset."""
+    try:
+        _rate_limit_auto_respond()
+    except Exception:
+        pass
+
+
 def _push_alert(alert_type: str, session: str, message: str):
     """Enqueue an alert to be streamed to all SSE clients."""
     global _sse_alerts
@@ -36763,6 +36771,7 @@ def main():
 
     # Register all recurring jobs with the unified scheduler
     schedule_job(_yolo_loop,             interval=3,                    name="yolo",        initial_delay=3)
+    schedule_job(_rate_limit_loop,       interval=3,                    name="rate_limit",  initial_delay=4)
     schedule_job(_snapshot_loop,         interval=60,                   name="snapshot",    initial_delay=0)
     schedule_job(_reap_stale_browsers,  interval=120,                  name="browser_reap", initial_delay=60)
     schedule_job(_kill_stale_ray,        interval=600,                  name="ray_reap",     initial_delay=120)
