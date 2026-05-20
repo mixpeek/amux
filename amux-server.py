@@ -968,6 +968,33 @@ def _cc_session_exists_in_project(session_name: str, work_dir: str) -> bool:
     return False
 
 
+def _cc_session_id_for_name(session_name: str, work_dir: str) -> str:
+    """Return the UUID of a uniquely-named Claude Code session, or '' if ambiguous/missing.
+
+    When exactly one session matches, return its UUID so we can --resume <uuid>
+    (which bypasses the interactive picker). When multiple match, return '' to
+    force a fresh --name start instead of opening the picker."""
+    proj_dir = CLAUDE_HOME / "projects" / _project_name(work_dir)
+    if not proj_dir.is_dir():
+        return ""
+    matches = []
+    try:
+        for jf in proj_dir.glob("*.jsonl"):
+            try:
+                first_line = jf.open().readline()
+                if not first_line:
+                    continue
+                rec = json.loads(first_line)
+                if rec.get("customTitle") == session_name or rec.get("sessionName") == session_name:
+                    sid = rec.get("sessionId", jf.stem)
+                    matches.append(sid)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return matches[0] if len(matches) == 1 else ""
+
+
 # Per-session token cache — refreshed every 30s, keyed by resolved dir
 _token_cache = {"data": {}, "timestamps": {}, "time": 0}
 _TOKEN_CACHE_TTL = 120
@@ -6136,9 +6163,18 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
             cc_session_name = meta.get("cc_session_name", "")
             conv_id = meta.get("cc_conversation_id", "")
             if cc_session_name and _validate_cc_session_name(cc_session_name):
-                if _cc_session_exists_in_project(cc_session_name, work_dir):
-                    session_flag = f'--resume {shlex.quote(cc_session_name)}'
-                    print(f"[start] {name}: resume={cc_session_name}")
+                _sid = _cc_session_id_for_name(cc_session_name, work_dir)
+                if _sid:
+                    # Use UUID to resume — bypasses interactive picker
+                    session_flag = f'--resume {_sid}'
+                    print(f"[start] {name}: resume={cc_session_name} (uuid={_sid})")
+                elif _cc_session_exists_in_project(cc_session_name, work_dir):
+                    # Multiple sessions with this name — start fresh to avoid picker
+                    meta.pop("cc_session_name", None)
+                    meta.pop("cc_conversation_id", None)
+                    _save_meta(name, meta)
+                    session_flag = f'--name {shlex.quote(name)}'
+                    print(f"[start] {name}: fresh start (ambiguous session name '{cc_session_name}')")
                 else:
                     meta.pop("cc_session_name", None)
                     meta.pop("cc_conversation_id", None)
@@ -6778,7 +6814,27 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
     with lock:
         try:
             t = tmux_name(name)
-            # tmux send-keys -l has a ~500 char buffer limit; use load-buffer+paste-buffer for longer text
+            if not text:
+                # Extract suggested prompt from the pane and send it as real text
+                try:
+                    cap = subprocess.run(
+                        ["tmux", "capture-pane", "-t", tmux_target(name), "-p"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    for line in reversed(cap.stdout.splitlines()):
+                        line = line.strip()
+                        if line.startswith("❯") or line.startswith(">"):
+                            suggested = line.lstrip("❯>\xa0 ").strip()
+                            if suggested:
+                                text = suggested
+                                break
+                except Exception:
+                    pass
+                if not text:
+                    return True, "no suggestion found"
+                # Clear any ghost text in the input before typing
+                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-u"], capture_output=True, timeout=5)
+                time.sleep(0.05)
             if len(text) > 400:
                 import tempfile, os as _os
                 # Use a named buffer to avoid races between concurrent sends
@@ -15586,8 +15642,21 @@ async function gitPush(name, e) {
 }
 async function sendFromInput(name) {
   const inp = document.getElementById('input-' + name);
-  if (!inp || !inp.value.trim()) return;
+  if (!inp) return;
   const text = inp.value.trim();
+  if (!text) {
+    // Empty send = extract + submit the suggested prompt from the session
+    inp.value = '';
+    try {
+      const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({text: ''})
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d.message === 'no suggestion found') showToast('No suggestion to submit');
+    } catch(e) {}
+    return;
+  }
   const routed = _atRoute(text);
   if (routed) {
     // @mention opens a persistent channel drawer instead of fire-and-forget routing.
@@ -17479,7 +17548,19 @@ async function sendPeekCmd() {
   const inp = document.getElementById('peek-cmd-input');
   const text = inp.value.trim();
   const files = peekFiles.filter(f => f.path);
-  if (!text && files.length === 0) return;
+  if (!text && files.length === 0) {
+    // Empty send = extract + submit the suggested prompt from the session
+    showSendingIndicator();
+    try {
+      const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/send', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({text: ''})
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d.message === 'no suggestion found') showToast('No suggestion to submit');
+    } catch(e) {}
+    return;
+  }
   const sess = (sessions || []).find(s => s.name === peekSession);
   // Queue mode: bypass dialog, always queue at next turn boundary
   if (_sendMode === 'queue' && sess && sess.status === 'active' && files.length === 0 && !text.startsWith('/')) {
@@ -35938,8 +36019,6 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
             if action == "send":
                 body = self._read_body()
                 text = body.get("text", "")
-                if not text:
-                    return self._json({"error": "missing 'text'"}, 400)
                 wd = _session_work_dir(name)
                 if wd:
                     _ensure_memory(name, wd)
