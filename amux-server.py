@@ -1830,7 +1830,7 @@ def _rate_limit_auto_resume():
     """
     import datetime as _dt
     now = time.time()
-    today_utc = _dt.datetime.utcnow().strftime("%Y-%m-%d")
+    today_utc = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
 
     # Collect candidates first so we can bail out cheaply when nothing's due.
     candidates = [name for name, actions in list(_session_auto_actions.items())
@@ -7145,7 +7145,7 @@ return output
     try:
         result = subprocess.run(
             ["osascript", "-e", script],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=30,
         )
         if result.returncode != 0:
             slog(f"[email] AppleScript error: {result.stderr[:300]}")
@@ -7169,7 +7169,7 @@ return output
         slog(f"[email] Mail.app: {len(messages)} candidates (lookback {lookback_days_frac:.1f}d)")
         return messages
     except subprocess.TimeoutExpired:
-        slog("[email] Mail.app AppleScript timed out (>120s)")
+        slog("[email] Mail.app AppleScript timed out (>30s)")
         return None  # None = timeout/failure; [] = success with no matches
     except Exception as e:
         slog(f"[email] mail fetch error: {e}")
