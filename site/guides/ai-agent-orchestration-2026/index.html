@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agent Orchestration in 2026: Patterns, Tools, and the Complete Architecture Guide &mdash; amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="The definitive guide to AI agent orchestration in 2026. Five proven patterns (Solo, Parallel Workers, Pipeline, Hub-and-Spoke, Swarm), 12 tools compared, the five-layer orchestration stack, production architecture, cost analysis, and a decision framework for choosing the right approach. Updated May 2026.">
+  <meta name="keywords" content="AI agent orchestration, multi-agent coding, AI agent orchestration patterns, multi-agent development, parallel AI coding agents, AI agent architecture, agent orchestration tools 2026, AI coding agent coordination, multi-agent workflow, AI agent fleet management, agent swarm pattern, hub and spoke agents, pipeline agents, AI orchestration framework">
+  <link rel="canonical" href="https://amux.io/guides/ai-agent-orchestration-2026/">
+  <meta property="og:title" content="AI Agent Orchestration in 2026: Patterns, Tools, and the Complete Architecture Guide">
+  <meta property="og:description" content="Five proven orchestration patterns, 12 tools compared, the five-layer stack, production architecture, and a decision framework. The definitive guide to running multi-agent AI coding teams.">
+  <meta property="og:url" content="https://amux.io/guides/ai-agent-orchestration-2026/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Agent Orchestration 2026","item":"https://amux.io/guides/ai-agent-orchestration-2026/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Orchestration in 2026: Patterns, Tools, and the Complete Architecture Guide","description":"The definitive guide to AI agent orchestration. Five patterns, 12 tools, the five-layer stack, and a decision framework for multi-agent coding teams.","url":"https://amux.io/guides/ai-agent-orchestration-2026/","datePublished":"2026-05-25","dateModified":"2026-05-25","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is AI agent orchestration?","acceptedAnswer":{"@type":"Answer","text":"AI agent orchestration is the practice of coordinating multiple AI coding agents working in parallel on a shared codebase. Instead of running one agent at a time, an orchestration layer manages task assignment, code isolation (via git worktrees or branches), inter-agent communication, conflict resolution, and result aggregation. The orchestrator ensures agents don't step on each other's work and that their combined output integrates cleanly. Tools like amux, Claude Squad, workmux, and Microsoft Conductor provide this orchestration layer, while platforms like Cursor v3, Google Antigravity 2.0, and Claude Code are adding built-in multi-agent support."}},{"@type":"Question","name":"How many AI coding agents can run in parallel?","acceptedAnswer":{"@type":"Answer","text":"On a modern laptop (16GB+ RAM), 5-7 terminal-based agents (Claude Code, Aider, Codex CLI) run comfortably. With 32GB+ RAM and git worktree isolation, 10-15 agents are practical. Cloud-hosted agents (Devin, Copilot Coding Agent, Codex cloud) have higher concurrency limits since compute is remote. Some teams report running 30-50+ agents on dedicated servers. The practical ceiling depends on your API rate limits (Anthropic's Claude Code Max allows ~45 Opus requests/5min), available memory, and disk I/O for git operations."}},{"@type":"Question","name":"How do parallel AI agents avoid merge conflicts?","acceptedAnswer":{"@type":"Answer","text":"The standard approach is git worktree isolation: each agent operates in its own worktree on a separate branch, working on non-overlapping files. The orchestration layer assigns tasks that touch different parts of the codebase. When agents finish, their branches are merged sequentially with automated conflict detection. If conflicts arise, a dedicated merge-resolution agent can handle them, or the orchestrator flags them for human review. Tools like amux track which files each agent is touching and warn before overlap occurs."}},{"@type":"Question","name":"What is the difference between the five orchestration patterns?","acceptedAnswer":{"@type":"Answer","text":"Solo: one agent handles everything sequentially — simplest but slowest. Parallel Workers: multiple agents work on independent tasks simultaneously — fastest for embarrassingly parallel work. Pipeline: agents are arranged in stages (plan, implement, test, review) — best for quality-critical workflows. Hub-and-Spoke: a coordinator agent breaks down work and delegates to specialist agents — best for complex projects requiring architectural decisions. Swarm: agents self-organize via shared state (a task board or message bus) without a central coordinator — best for large-scale, loosely-coupled work."}},{"@type":"Question","name":"How much does multi-agent orchestration cost?","acceptedAnswer":{"@type":"Answer","text":"Costs depend on the model, plan, and number of agents. With Claude Code Max ($100/month for Opus 4.6), running 5 parallel agents for 8 hours costs the subscription fee — no per-token charges. On API billing, the same workload costs roughly $30-80/day depending on task complexity and context window usage. A 10-agent fleet on API billing runs $50-150/day. The orchestration tools themselves are mostly free and open source (amux, Claude Squad, workmux). The main cost optimization lever is model routing: use cheaper models (Sonnet, Haiku) for routine tasks and reserve Opus for complex reasoning."}}]}</script>
+  <style>
+    .pattern-card { background: var(--bg-card, #232838); border-radius: 12px; padding: 1.75rem; margin-bottom: 1.5rem; border: 1px solid rgba(255,255,255,0.06); }
+    .pattern-card h3 { margin-top: 0; font-size: 1.2rem; display: flex; align-items: center; gap: 0.5rem; }
+    .pattern-card .pattern-num { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; background: rgba(110,231,183,0.15); color: #6ee7b7; border-radius: 6px; padding: 0.2rem 0.5rem; font-weight: 600; }
+    .pattern-card .pattern-meta { display: flex; gap: 0.75rem; flex-wrap: wrap; margin: 0.75rem 0; font-size: 0.8rem; }
+    .pattern-card .tag { background: rgba(255,255,255,0.06); border-radius: 6px; padding: 0.25rem 0.6rem; }
+    .pattern-card .tag-complexity { background: rgba(251,191,36,0.12); color: #fbbf24; }
+    .pattern-card .tag-agents { background: rgba(96,165,250,0.15); color: #60a5fa; }
+    .pattern-card .tag-best { background: rgba(110,231,183,0.1); color: #6ee7b7; }
+    .pattern-card .best-for { background: rgba(110,231,183,0.06); border: 1px solid rgba(110,231,183,0.15); border-radius: 8px; padding: 0.75rem 1rem; margin-top: 1rem; font-size: 0.88rem; }
+    .pattern-card .best-for strong { color: #6ee7b7; }
+    .pattern-card .tradeoff { background: rgba(248,113,113,0.06); border: 1px solid rgba(248,113,113,0.15); border-radius: 8px; padding: 0.75rem 1rem; margin-top: 0.75rem; font-size: 0.88rem; }
+    .pattern-card .tradeoff strong { color: #f87171; }
+    .arch-diagram { background: #1a1f2e; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 1.25rem; margin: 1rem 0; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; line-height: 1.5; color: #8892a4; white-space: pre; }
+    .arch-diagram .highlight { color: #6ee7b7; }
+    .arch-diagram .accent { color: #60a5fa; }
+    .arch-diagram .warn { color: #fbbf24; }
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
+    .stat-grid .stat-card { background: var(--bg-card, #232838); border-radius: 10px; padding: 1.25rem; border: 1px solid rgba(255,255,255,0.06); text-align: center; }
+    .stat-grid .stat-card .stat-num { font-size: 2rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: #6ee7b7; }
+    .stat-grid .stat-card .stat-label { font-size: 0.82rem; color: var(--text-muted, #8892a4); margin-top: 0.4rem; }
+    .stat-grid .stat-card .stat-source { font-size: 0.72rem; color: var(--text-muted, #8892a4); margin-top: 0.3rem; opacity: 0.7; }
+    .stat-grid .stat-card .stat-source a { color: inherit; }
+    @media (max-width: 600px) { .stat-grid { grid-template-columns: 1fr; } }
+    .cmp-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.84rem; }
+    .cmp-table th, .cmp-table td { padding: 0.65rem 0.7rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .cmp-table th { font-weight: 600; white-space: nowrap; position: sticky; top: 0; background: var(--bg-card, #232838); z-index: 2; }
+    .cmp-table th:first-child { min-width: 120px; }
+    .cmp-table td:first-child { font-weight: 600; }
+    .cmp-table a { color: #6ee7b7; }
+    .cmp-table .y { color: #6ee7b7; }
+    .cmp-table .n { color: #f87171; }
+    .cmp-table .p { color: #fbbf24; }
+    .cmp-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 1.5rem 0; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; }
+    .cmp-wrap .cmp-table { margin: 0; }
+    .key-insight { background: rgba(110,231,183,0.08); border: 1px solid rgba(110,231,183,0.2); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
+    .key-insight strong { color: #6ee7b7; }
+    .warning-box { background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.25); border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0; }
+    .warning-box strong { color: #f87171; }
+    .decision-card { background: var(--bg-card, #232838); border-left: 3px solid #6ee7b7; border-radius: 0 12px 12px 0; padding: 1.5rem; margin: 1.25rem 0; }
+    .decision-card h4 { margin-top: 0; color: #6ee7b7; font-size: 1.05rem; }
+    .decision-card ul { margin: 0.5rem 0 0; padding-left: 1.2rem; }
+    .layer-card { background: var(--bg-card, #232838); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; border: 1px solid rgba(255,255,255,0.06); }
+    .layer-card h4 { margin-top: 0; display: flex; align-items: center; gap: 0.5rem; }
+    .layer-card .layer-num { font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; background: rgba(96,165,250,0.15); color: #60a5fa; border-radius: 4px; padding: 0.15rem 0.4rem; }
+    .tool-card { background: var(--bg-card, #232838); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; border: 1px solid rgba(255,255,255,0.06); }
+    .tool-card h4 { margin-top: 0; font-size: 1.05rem; }
+    .tool-card h4 a { color: inherit; text-decoration: none; border-bottom: 1px solid rgba(255,255,255,0.15); }
+    .tool-card h4 a:hover { color: #6ee7b7; border-color: #6ee7b7; }
+    .tool-card .tool-meta { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.5rem 0; font-size: 0.78rem; }
+    .tool-card .tag { background: rgba(255,255,255,0.06); border-radius: 6px; padding: 0.2rem 0.5rem; }
+    .tool-card .tag-oss { background: rgba(96,165,250,0.15); color: #60a5fa; }
+    .tool-card .tag-commercial { background: rgba(251,191,36,0.12); color: #fbbf24; }
+    .tool-card .tag-builtin { background: rgba(167,139,250,0.15); color: #a78bfa; }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>AI Agent Orchestration 2026</span></div>
+    <span class="updated-badge">May 2026</span>
+    <h1>AI Agent Orchestration in 2026: Patterns, Tools, and the Complete Architecture Guide</h1>
+    <p class="subtitle">Multi-agent system inquiries surged 1,445% in 2025. Every major AI coding tool now supports some form of parallel agent execution. But running agents in parallel is not the same as orchestrating them. This guide covers the five proven orchestration patterns, the five-layer architecture stack that makes them work, every major orchestration tool compared, and the decision framework for choosing the right approach for your team and codebase.</p>
+
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-num">1,445%</div>
+        <div class="stat-label">Surge in multi-agent system inquiries (2025)</div>
+        <div class="stat-source"><a href="https://resources.anthropic.com" target="_blank" rel="noopener">Anthropic Agentic Coding Trends Report</a></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num">5&ndash;7</div>
+        <div class="stat-label">Practical agent concurrency on a laptop (16GB RAM)</div>
+        <div class="stat-source">Empirical ceiling before perf degrades</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num">3&ndash;8&times;</div>
+        <div class="stat-label">Throughput gain with orchestrated parallel agents</div>
+        <div class="stat-source">vs sequential single-agent workflow</div>
+      </div>
+    </div>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="display:block;margin-bottom:0.5rem;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted,#8892a4)">Contents</strong>
+      <ol style="margin:0;padding-left:1.2rem;font-size:0.9rem;line-height:1.8">
+        <li><a href="#why-orchestration">Why orchestration &mdash; not just parallelism</a></li>
+        <li><a href="#five-patterns">The five orchestration patterns</a></li>
+        <li><a href="#stack">The five-layer orchestration stack</a></li>
+        <li><a href="#tools">Tool landscape: 12 orchestrators compared</a></li>
+        <li><a href="#production">Production concerns: cost, safety, and scaling</a></li>
+        <li><a href="#decision-framework">Decision framework</a></li>
+        <li><a href="#anti-patterns">Anti-patterns: when NOT to orchestrate</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ==================== SECTION 1: WHY ORCHESTRATION ==================== -->
+    <h2 id="why-orchestration">Why orchestration &mdash; not just parallelism</h2>
+
+    <p>Running five <a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a> sessions in five <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> panes is parallelism. It gives you raw throughput &mdash; five agents working simultaneously. But without orchestration, those agents will:</p>
+    <ul>
+      <li>Edit the same files and create merge conflicts</li>
+      <li>Duplicate work because neither knows what the other is doing</li>
+      <li>Produce inconsistent APIs, naming conventions, and architectural patterns</li>
+      <li>Burn tokens re-reading context the other agent already processed</li>
+      <li>Silently fail with no monitoring or recovery</li>
+    </ul>
+
+    <p><strong>Orchestration</strong> is the infrastructure layer that turns raw parallelism into coordinated output. It handles five concerns that parallelism alone does not:</p>
+
+    <div class="key-insight">
+      <strong>Orchestration = Parallelism + Isolation + Communication + Coordination + Observability.</strong> If you're missing any one of these, you have agents running in parallel &mdash; not an orchestrated system. The difference shows up in merge conflict rates, duplicated work, and the time you spend babysitting agents instead of reviewing their output.
+    </div>
+
+    <p>The landscape has shifted dramatically. In January 2025, orchestration meant writing bash scripts around <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> <code>send-keys</code>. By May 2026, there are dedicated orchestration tools (<a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>, <a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a>, <a href="https://github.com/raine/workmux" target="_blank" rel="noopener">workmux</a>, <a href="https://github.com/microsoft/conductor" target="_blank" rel="noopener">Microsoft Conductor</a>), and the major AI coding tools themselves are adding built-in multi-agent features: <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a> v3 with 8-agent parallelism, <a href="https://antigravity.google/" target="_blank" rel="noopener">Google Antigravity 2.0</a> with Agent Teams, and <a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a>&rsquo;s multi-agent workspace.</p>
+
+    <!-- ==================== SECTION 2: FIVE PATTERNS ==================== -->
+    <h2 id="five-patterns">The five orchestration patterns</h2>
+
+    <p>Every multi-agent coding workflow maps to one of five patterns. These aren't theoretical &mdash; they're the patterns that emerged from teams actually running agent fleets in production. Understanding which pattern fits your work determines whether orchestration saves you time or creates overhead.</p>
+
+    <!-- Pattern 1: Solo Agent -->
+    <div class="pattern-card">
+      <h3><span class="pattern-num">01</span> Solo Agent</h3>
+      <div class="pattern-meta">
+        <span class="tag tag-complexity">Complexity: Trivial</span>
+        <span class="tag tag-agents">Agents: 1</span>
+        <span class="tag tag-best">Best for: focused tasks</span>
+      </div>
+      <p>One agent, one task, full context window. The baseline that every other pattern improves on. The solo agent sees everything, makes all decisions, and requires no coordination infrastructure.</p>
+      <div class="arch-diagram"><span class="highlight">Developer</span> &rarr; <span class="accent">[Agent]</span> &rarr; <span class="highlight">Codebase</span>
+
+Task &rarr; Agent reads context &rarr; Plans &rarr; Implements &rarr; Tests &rarr; PR</div>
+      <p><strong>When to use:</strong> Tasks that fit within a single context window and touch fewer than ~15 files. Bug fixes, small features, refactors with clear scope. Any task where the overhead of splitting work exceeds the time saved by parallelism.</p>
+      <div class="best-for"><strong>Tools:</strong> <a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a>, <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a>, <a href="https://aider.chat/" target="_blank" rel="noopener">Aider</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, <a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a> &mdash; any agent in its default single-session mode.</div>
+      <div class="tradeoff"><strong>Ceiling:</strong> Throughput is capped at 1&times;. Complex tasks exhaust the context window. Can't parallelize independent subtasks.</div>
+    </div>
+
+    <!-- Pattern 2: Parallel Workers -->
+    <div class="pattern-card">
+      <h3><span class="pattern-num">02</span> Parallel Workers</h3>
+      <div class="pattern-meta">
+        <span class="tag tag-complexity">Complexity: Low</span>
+        <span class="tag tag-agents">Agents: 2&ndash;50+</span>
+        <span class="tag tag-best">Best for: embarrassingly parallel work</span>
+      </div>
+      <p>Multiple agents work on completely independent tasks simultaneously. No inter-agent communication. Each agent operates in its own <a href="https://git-scm.com/docs/git-worktree" target="_blank" rel="noopener">git worktree</a> on a separate branch. Results are merged after all agents finish.</p>
+      <div class="arch-diagram">                          ┌─ <span class="accent">[Agent 1]</span> &rarr; worktree-1/feature-auth
+<span class="highlight">Task Board</span> &rarr; <span class="warn">Dispatcher</span> ─┼─ <span class="accent">[Agent 2]</span> &rarr; worktree-2/feature-search
+                          ├─ <span class="accent">[Agent 3]</span> &rarr; worktree-3/fix-pagination
+                          └─ <span class="accent">[Agent 4]</span> &rarr; worktree-4/refactor-api
+                                          &darr;
+                               <span class="highlight">Sequential merge</span> &rarr; main</div>
+      <p>The key requirement is <strong>task independence</strong>. If Agent 1's work touches files that Agent 3 also needs, you'll hit merge conflicts. The dispatcher (human or automated) must decompose work into non-overlapping file sets.</p>
+      <p><strong>When to use:</strong> Sprint backlogs with independent tickets. Multi-service repos where each agent works on a different service. Test generation across independent modules. Bulk migrations (rename patterns, API version upgrades) that can be split by directory.</p>
+      <div class="best-for"><strong>Tools:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> (task board + session management), <a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a> (tmux session groups), <a href="https://github.com/raine/workmux" target="_blank" rel="noopener">workmux</a> (git worktree + tmux), <a href="https://github.com/microsoft/conductor" target="_blank" rel="noopener">Microsoft Conductor</a> (YAML-defined parallel tasks), DIY tmux + git worktrees.</div>
+      <div class="tradeoff"><strong>Ceiling:</strong> Cannot handle tasks with shared dependencies. Merge phase can become a bottleneck. No quality gate between agents.</div>
+    </div>
+
+    <!-- Pattern 3: Pipeline -->
+    <div class="pattern-card">
+      <h3><span class="pattern-num">03</span> Pipeline</h3>
+      <div class="pattern-meta">
+        <span class="tag tag-complexity">Complexity: Medium</span>
+        <span class="tag tag-agents">Agents: 3&ndash;6 per pipeline</span>
+        <span class="tag tag-best">Best for: quality-critical workflows</span>
+      </div>
+      <p>Agents are arranged in sequential stages. Each stage's output becomes the next stage's input. The classic pipeline for production-quality code: <strong>plan &rarr; implement &rarr; test &rarr; review &rarr; merge</strong>. Different models or prompts can be used at each stage.</p>
+      <div class="arch-diagram"><span class="highlight">Spec</span> &rarr; <span class="accent">[Planner]</span> &rarr; <span class="accent">[Coder]</span> &rarr; <span class="accent">[Tester]</span> &rarr; <span class="accent">[Reviewer]</span> &rarr; <span class="highlight">PR</span>
+        Opus 4.6       Sonnet 4.6     Sonnet 4.6      Opus 4.6
+        (architect)    (implement)    (write tests)   (find bugs)
+
+Gate: plan    Gate: code     Gate: tests    Gate: review
+approved?     compiles?      pass?          approved?</div>
+      <p>Each stage has a <strong>quality gate</strong> &mdash; the next agent only starts if the previous stage's output meets criteria (tests pass, lint clean, review approved). This catches errors early instead of discovering them after the full workflow completes.</p>
+      <p><strong>When to use:</strong> Features that require architectural planning before implementation. Security-sensitive code that needs multi-layer review. Regulated environments where audit trails matter. Any workflow where you'd assign the task to different people with different roles.</p>
+      <div class="best-for"><strong>Tools:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> (board-based stage tracking), <a href="https://github.com/microsoft/conductor" target="_blank" rel="noopener">Microsoft Conductor</a> (YAML pipeline definitions), <a href="https://kiro.dev/" target="_blank" rel="noopener">Kiro</a> (spec-driven agents with built-in planning stages), custom scripts using <a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a> headless mode.</div>
+      <div class="tradeoff"><strong>Ceiling:</strong> Latency scales linearly with stages. A slow stage bottlenecks the whole pipeline. Higher total token cost than parallel workers (each stage builds on full prior context).</div>
+    </div>
+
+    <!-- Pattern 4: Hub and Spoke -->
+    <div class="pattern-card">
+      <h3><span class="pattern-num">04</span> Hub and Spoke</h3>
+      <div class="pattern-meta">
+        <span class="tag tag-complexity">Complexity: Medium-High</span>
+        <span class="tag tag-agents">Agents: 1 hub + 3&ndash;10 spokes</span>
+        <span class="tag tag-best">Best for: complex projects with dependencies</span>
+      </div>
+      <p>A <strong>coordinator agent</strong> (the hub) analyzes the task, creates a plan, decomposes it into subtasks, and delegates to <strong>specialist agents</strong> (the spokes). The hub monitors progress, resolves conflicts, and integrates results. Think of it as a tech lead directing a team.</p>
+      <div class="arch-diagram">                               ┌─ <span class="accent">[Frontend Agent]</span> &rarr; React components
+                               │
+<span class="highlight">Feature Spec</span> &rarr; <span class="warn">[Coordinator]</span> ─┼─ <span class="accent">[Backend Agent]</span>  &rarr; API endpoints
+                   (Opus 4.6)  │
+                               ├─ <span class="accent">[Test Agent]</span>     &rarr; Integration tests
+                               │
+                               └─ <span class="accent">[Docs Agent]</span>    &rarr; API documentation
+                                        &uarr;
+                          <span class="warn">Coordinator</span> reviews, resolves conflicts,
+                          merges branches, verifies integration</div>
+      <p>The coordinator agent typically runs a more powerful model (<a href="https://docs.anthropic.com/en/docs/about-claude/models" target="_blank" rel="noopener">Claude Opus 4.6</a>) for planning and review, while spoke agents use faster, cheaper models (<a href="https://docs.anthropic.com/en/docs/about-claude/models" target="_blank" rel="noopener">Claude Sonnet 4.6</a>) for implementation. The coordinator maintains the architectural vision across all agents.</p>
+      <p><strong>When to use:</strong> Full-stack features requiring coordinated frontend, backend, and test changes. Large refactors where an architect needs to maintain consistency. Greenfield projects where structure needs to be established before agents start coding. Any task where the decomposition itself requires intelligence.</p>
+      <div class="best-for"><strong>Tools:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> (coordinator creates board tasks, spokes claim them), <a href="https://antigravity.google/" target="_blank" rel="noopener">Google Antigravity 2.0</a> Agent Teams (built-in hub-spoke), <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a> v3 multi-agent (coordinator manages up to 8 agents), <a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a> subagents (parent spawns child agents).</div>
+      <div class="tradeoff"><strong>Ceiling:</strong> The coordinator is a single point of failure. If it misdecomposes the task, all spokes produce wrong output. Higher coordination overhead. Coordinator context window limits the number of active spokes it can track.</div>
+    </div>
+
+    <!-- Pattern 5: Swarm -->
+    <div class="pattern-card">
+      <h3><span class="pattern-num">05</span> Swarm</h3>
+      <div class="pattern-meta">
+        <span class="tag tag-complexity">Complexity: High</span>
+        <span class="tag tag-agents">Agents: 5&ndash;50+</span>
+        <span class="tag tag-best">Best for: large-scale, loosely-coupled work</span>
+      </div>
+      <p>No central coordinator. Agents self-organize by reading from and writing to <strong>shared state</strong> &mdash; a task board, a message bus, or a shared filesystem. Each agent autonomously picks up work, completes it, and posts results. Other agents react to those results. Emergent coordination replaces centralized planning.</p>
+      <div class="arch-diagram">         <span class="accent">[Agent 1]</span> ←──→ ┌──────────────────┐ ←──→ <span class="accent">[Agent 4]</span>
+                       │                  │
+         <span class="accent">[Agent 2]</span> ←──→ │  <span class="warn">Shared State</span>     │ ←──→ <span class="accent">[Agent 5]</span>
+                       │  (Task Board +   │
+         <span class="accent">[Agent 3]</span> ←──→ │   Message Bus)   │ ←──→ <span class="accent">[Agent 6]</span>
+                       └──────────────────┘
+                              &uarr;
+                  Agents claim tasks atomically,
+                  post results, discover new work</div>
+      <p>The swarm pattern requires <strong>atomic task claiming</strong> (so two agents don't grab the same task), <strong>idempotent operations</strong> (so retries don't corrupt state), and <strong>convergence detection</strong> (so the system knows when all work is done). It scales better than hub-and-spoke because there's no coordinator bottleneck, but it's harder to debug when things go wrong.</p>
+      <p><strong>When to use:</strong> Large-scale migrations affecting hundreds of files. Test suite generation across an entire codebase. Codebase-wide lint fixes or dependency upgrades. Continuous improvement loops where agents create work for each other (one agent finds bugs, another fixes them).</p>
+      <div class="best-for"><strong>Tools:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> (board with atomic claiming + session-to-session messaging), <a href="https://github.com/langchain-ai/langgraph" target="_blank" rel="noopener">LangGraph</a> (graph-based agent coordination), <a href="https://github.com/microsoft/autogen" target="_blank" rel="noopener">AutoGen</a> (multi-agent conversation framework), custom implementations using shared SQLite or Redis.</div>
+      <div class="tradeoff"><strong>Ceiling:</strong> Hardest pattern to debug. Emergent behavior can be unpredictable. Requires robust shared-state infrastructure. Risk of agents creating circular work (Agent A creates task, Agent B processes it, result triggers Agent A again).</div>
+    </div>
+
+    <!-- Pattern Comparison Table -->
+    <h3>Pattern comparison matrix</h3>
+    <div class="cmp-wrap">
+      <table class="cmp-table">
+        <thead>
+          <tr><th>Pattern</th><th>Agents</th><th>Throughput</th><th>Quality Control</th><th>Complexity</th><th>Coordination Overhead</th><th>Best Codebase Size</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Solo Agent</td><td>1</td><td>1&times;</td><td>None (agent self-reviews)</td><td>Trivial</td><td>Zero</td><td>Any</td></tr>
+          <tr><td>Parallel Workers</td><td>2&ndash;50+</td><td>N&times; (linear)</td><td>Post-hoc review</td><td>Low</td><td>Task decomposition only</td><td>Multi-service, modular</td></tr>
+          <tr><td>Pipeline</td><td>3&ndash;6</td><td>1&times; per pipeline</td><td><span class="y">Stage gates</span></td><td>Medium</td><td>Gate definitions</td><td>Any (quality focus)</td></tr>
+          <tr><td>Hub &amp; Spoke</td><td>4&ndash;11</td><td>N&times; (with overhead)</td><td><span class="y">Coordinator review</span></td><td>Medium-High</td><td>Coordinator capacity</td><td>Full-stack, cross-cutting</td></tr>
+          <tr><td>Swarm</td><td>5&ndash;50+</td><td>N&times; (near-linear)</td><td>Peer review / gates</td><td>High</td><td>Shared state infra</td><td>Large, loosely-coupled</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="key-insight">
+      <strong>Most teams combine patterns.</strong> A typical production setup uses Parallel Workers for independent tickets, Pipelines for quality-critical features, and Hub-and-Spoke when a coordinator needs to maintain architectural consistency. Start with Parallel Workers &mdash; it has the best effort-to-throughput ratio.
+    </div>
+
+    <!-- ==================== SECTION 3: THE STACK ==================== -->
+    <h2 id="stack">The five-layer orchestration stack</h2>
+
+    <p>Every orchestration pattern relies on the same five infrastructure layers. Understanding these layers helps you evaluate tools (which layers does each tool cover?) and identify gaps in your own setup.</p>
+
+    <div class="arch-diagram">┌─────────────────────────────────────────────────────────┐
+│  <span class="warn">Layer 5: Observability</span>                                  │
+│  Monitoring, cost tracking, health checks, dashboards   │
+├─────────────────────────────────────────────────────────┤
+│  <span class="warn">Layer 4: Coordination</span>                                   │
+│  Task boards, atomic claiming, conflict resolution      │
+├─────────────────────────────────────────────────────────┤
+│  <span class="warn">Layer 3: Communication</span>                                  │
+│  REST APIs, MCP, shared filesystem, message passing     │
+├─────────────────────────────────────────────────────────┤
+│  <span class="warn">Layer 2: Isolation</span>                                      │
+│  Git worktrees, branches, containers, sandboxes         │
+├─────────────────────────────────────────────────────────┤
+│  <span class="warn">Layer 1: Runtime</span>                                        │
+│  tmux, terminal sessions, containers, cloud VMs         │
+└─────────────────────────────────────────────────────────┘</div>
+
+    <div class="layer-card">
+      <h4><span class="layer-num">L1</span> Runtime</h4>
+      <p>Where agents physically execute. On a single machine, this is typically <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> sessions &mdash; each agent runs in its own tmux pane with its own shell, environment, and working directory. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> manages these sessions automatically. For cloud-hosted agents, the runtime is a container or VM: <a href="https://devin.ai/" target="_blank" rel="noopener">Devin</a> runs in dedicated cloud sandboxes, <a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a> Coding Agent runs in GitHub Actions runners, and <a href="https://github.com/openai/codex" target="_blank" rel="noopener">OpenAI Codex</a> cloud tasks run in isolated containers.</p>
+      <p>The runtime layer handles process lifecycle: starting agents, restarting them when they crash or exhaust their context window, and cleanly shutting them down when work is complete.</p>
+    </div>
+
+    <div class="layer-card">
+      <h4><span class="layer-num">L2</span> Isolation</h4>
+      <p>How you prevent agents from interfering with each other. The standard approach is <strong><a href="https://git-scm.com/docs/git-worktree" target="_blank" rel="noopener">git worktrees</a></strong>: each agent gets its own working copy of the repo on its own branch. Changes are isolated until explicitly merged. This is cheaper than containers (no VM overhead) and provides natural conflict detection via git.</p>
+      <p>For stronger isolation (untrusted code execution, network restrictions), tools like <a href="https://e2b.dev/" target="_blank" rel="noopener">E2B</a>, <a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a>, and <a href="https://gvisor.dev/" target="_blank" rel="noopener">gVisor</a> provide container-level sandboxing. <a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a> offers built-in permission controls (allowlist/denylist for tools, file paths, and network access) as a lightweight alternative.</p>
+    </div>
+
+    <div class="layer-card">
+      <h4><span class="layer-num">L3</span> Communication</h4>
+      <p>How agents exchange information. Four approaches, in increasing sophistication:</p>
+      <ul>
+        <li><strong>Shared filesystem:</strong> Agents read/write shared files (a spec doc, a TODO list, a results file). Simple but prone to race conditions.</li>
+        <li><strong>REST APIs:</strong> Agents communicate via HTTP endpoints. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> provides this natively &mdash; agents can peek at each other's output, send messages, and read/write to a shared board via <code>curl</code>.</li>
+        <li><strong><a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">MCP</a> (Model Context Protocol):</strong> <a href="https://www.anthropic.com/" target="_blank" rel="noopener">Anthropic</a>&rsquo;s open protocol for giving agents structured access to tools and data sources. Agents can share MCP servers to access the same databases, APIs, and services.</li>
+        <li><strong><a href="https://google.github.io/A2A/" target="_blank" rel="noopener">A2A</a> (Agent-to-Agent Protocol):</strong> <a href="https://cloud.google.com/" target="_blank" rel="noopener">Google</a>&rsquo;s protocol specifically designed for inter-agent communication. Still early but gaining adoption in enterprise multi-agent deployments.</li>
+      </ul>
+    </div>
+
+    <div class="layer-card">
+      <h4><span class="layer-num">L4</span> Coordination</h4>
+      <p>How work is assigned, tracked, and conflict-resolved. The core primitive is a <strong>task board with atomic claiming</strong> &mdash; an agent claims a task in a single operation that prevents any other agent from claiming the same task simultaneously. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>'s SQLite-backed kanban board provides this natively. <a href="https://github.com/microsoft/conductor" target="_blank" rel="noopener">Microsoft Conductor</a> uses YAML workflow definitions. DIY setups often use Redis or Postgres advisory locks.</p>
+      <p>Coordination also includes <strong>merge conflict resolution</strong>. When two agents' branches conflict, the orchestrator can: (a) re-run one agent on top of the other's changes, (b) spawn a dedicated merge-resolution agent, or (c) flag the conflict for human review.</p>
+    </div>
+
+    <div class="layer-card">
+      <h4><span class="layer-num">L5</span> Observability</h4>
+      <p>Knowing what your agents are doing, how much they're spending, and whether they're stuck. This includes: real-time session output monitoring, per-agent token cost tracking, health checks (is the agent responsive? has it been idle for too long?), and dashboards that show fleet status at a glance.</p>
+      <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> provides a web dashboard accessible from any device (including a <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">mobile app</a>) with live session output, token spend graphs, and board status. For custom monitoring, agents can write structured logs that feed into <a href="https://grafana.com/" target="_blank" rel="noopener">Grafana</a>, <a href="https://www.datadoghq.com/" target="_blank" rel="noopener">Datadog</a>, or any observability platform.</p>
+    </div>
+
+    <!-- ==================== SECTION 4: TOOL LANDSCAPE ==================== -->
+    <h2 id="tools">Tool landscape: 12 orchestrators compared</h2>
+
+    <p>The orchestration tool landscape splits into three tiers: <strong>dedicated orchestrators</strong> (purpose-built for multi-agent coordination), <strong>built-in multi-agent features</strong> (part of a larger AI coding tool), and <strong>agent frameworks</strong> (general-purpose multi-agent SDKs you can build orchestration on top of).</p>
+
+    <h3>Dedicated orchestrators</h3>
+
+    <div class="tool-card">
+      <h4><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a></h4>
+      <div class="tool-meta">
+        <span class="tag tag-oss">Open Source</span>
+        <span class="tag">Python</span>
+        <span class="tag">All 5 layers</span>
+      </div>
+      <p>Full-stack agent control plane: tmux session management, SQLite task board with atomic claiming, inter-agent REST API, git worktree isolation, token spend tracking, web dashboard (desktop + mobile PWA), self-healing watchdog, and cron scheduler. Single-file Python server. Works with any terminal-based agent (<a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a>, <a href="https://aider.chat/" target="_blank" rel="noopener">Aider</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, <a href="https://github.com/aaif-goose/goose" target="_blank" rel="noopener">Goose</a>). Supports all five patterns. <strong>Covers layers 1&ndash;5.</strong></p>
+    </div>
+
+    <div class="tool-card">
+      <h4><a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a></h4>
+      <div class="tool-meta">
+        <span class="tag tag-oss">Open Source</span>
+        <span class="tag">Go</span>
+        <span class="tag">Layers 1&ndash;2</span>
+      </div>
+      <p>TUI for managing multiple AI coding agents in tmux sessions. Handles session lifecycle and git worktree isolation with a clean terminal interface. Supports <a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a>, <a href="https://aider.chat/" target="_blank" rel="noopener">Aider</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, and other terminal agents. Focused on the runtime and isolation layers &mdash; you provide your own coordination and observability. <strong>Covers layers 1&ndash;2.</strong></p>
+    </div>
+
+    <div class="tool-card">
+      <h4><a href="https://github.com/raine/workmux" target="_blank" rel="noopener">workmux</a></h4>
+      <div class="tool-meta">
+        <span class="tag tag-oss">Open Source</span>
+        <span class="tag">Rust</span>
+        <span class="tag">Layers 1&ndash;2</span>
+      </div>
+      <p>Git worktree + terminal multiplexer automation. Manages worktree creation, branch tracking, and terminal session layout for parallel development. Works with <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a>, <a href="https://github.com/zellij-org/zellij" target="_blank" rel="noopener">Zellij</a>, and <a href="https://sw.kovidgoyal.net/kitty/" target="_blank" rel="noopener">Kitty</a>. Lightweight, focused on the mechanical layer of worktree + session management. <strong>Covers layers 1&ndash;2.</strong></p>
+    </div>
+
+    <div class="tool-card">
+      <h4><a href="https://github.com/microsoft/conductor" target="_blank" rel="noopener">Microsoft Conductor</a></h4>
+      <div class="tool-meta">
+        <span class="tag tag-oss">Open Source</span>
+        <span class="tag">TypeScript</span>
+        <span class="tag">Layers 3&ndash;4</span>
+      </div>
+      <p>CLI for defining multi-agent workflows in YAML. Declarative pipeline and parallel task definitions. Supports <a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a> SDK and <a href="https://www.anthropic.com/" target="_blank" rel="noopener">Anthropic Claude</a> agents. Strong on coordination and communication layers but delegates runtime and isolation to the underlying tools. <strong>Covers layers 3&ndash;4.</strong></p>
+    </div>
+
+    <h3>Built-in multi-agent features</h3>
+
+    <div class="tool-card">
+      <h4><a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a> v3 Multi-Agent</h4>
+      <div class="tool-meta">
+        <span class="tag tag-commercial">Commercial</span>
+        <span class="tag">$20&ndash;200/mo</span>
+        <span class="tag tag-builtin">Built-in</span>
+      </div>
+      <p>Run up to 8 agents in parallel within the Cursor IDE. Agents share context and can be assigned different tasks. Background agents can continue working while you switch to other tasks. Local-to-cloud handoff for longer-running work. <strong>Covers layers 1&ndash;4 within the Cursor ecosystem.</strong></p>
+    </div>
+
+    <div class="tool-card">
+      <h4><a href="https://antigravity.google/" target="_blank" rel="noopener">Google Antigravity 2.0</a> Agent Teams</h4>
+      <div class="tool-meta">
+        <span class="tag tag-commercial">Commercial</span>
+        <span class="tag">$20&ndash;200/mo</span>
+        <span class="tag tag-builtin">Built-in</span>
+      </div>
+      <p>Agent Teams panel in the Antigravity IDE. Visual orchestration of multiple agents with a built-in browser for verification. Voice commands via Gemini Audio models. Managed Agents API for programmatic orchestration. Runs on <a href="https://deepmind.google/" target="_blank" rel="noopener">Gemini</a> 3.5 Flash with 1M-token context. <strong>Covers layers 1&ndash;5 within the Antigravity ecosystem.</strong></p>
+    </div>
+
+    <div class="tool-card">
+      <h4><a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a> Subagents</h4>
+      <div class="tool-meta">
+        <span class="tag tag-commercial">$20&ndash;200/mo</span>
+        <span class="tag tag-builtin">Built-in</span>
+      </div>
+      <p>Claude Code can spawn subagents within a single session &mdash; child agents that work on focused subtasks and report back to the parent. Subagents share the parent's permission settings but have isolated context windows. Useful for Hub-and-Spoke within a single session. For true multi-session orchestration, pair with <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> or <a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a>. <strong>Covers layers 1&ndash;2 for single-session use.</strong></p>
+    </div>
+
+    <div class="tool-card">
+      <h4><a href="https://devin.ai/" target="_blank" rel="noopener">Devin</a></h4>
+      <div class="tool-meta">
+        <span class="tag tag-commercial">$500/mo</span>
+        <span class="tag tag-builtin">Built-in</span>
+      </div>
+      <p>Fully autonomous cloud agent by <a href="https://cognition.ai/" target="_blank" rel="noopener">Cognition</a>. Runs in a cloud sandbox with its own shell, browser, and editor. Can spawn multiple parallel tasks. The most expensive option but requires zero local infrastructure. Best for teams that want a hands-off, cloud-hosted approach. <strong>Covers all 5 layers in a managed cloud environment.</strong></p>
+    </div>
+
+    <h3>Agent frameworks (build-your-own orchestration)</h3>
+
+    <div class="tool-card">
+      <h4><a href="https://github.com/langchain-ai/langgraph" target="_blank" rel="noopener">LangGraph</a></h4>
+      <div class="tool-meta">
+        <span class="tag tag-oss">Open Source</span>
+        <span class="tag">Python / JS</span>
+      </div>
+      <p>Graph-based multi-agent orchestration framework by <a href="https://www.langchain.com/" target="_blank" rel="noopener">LangChain</a>. Define agent workflows as directed graphs with nodes (agents) and edges (transitions). Strong support for cycles, conditional routing, and persistent state. Good for building custom Pipeline and Hub-and-Spoke patterns. Requires significant custom code for coding-specific orchestration.</p>
+    </div>
+
+    <div class="tool-card">
+      <h4><a href="https://github.com/crewAIInc/crewAI" target="_blank" rel="noopener">CrewAI</a></h4>
+      <div class="tool-meta">
+        <span class="tag tag-oss">Open Source</span>
+        <span class="tag">Python</span>
+      </div>
+      <p>Role-based multi-agent framework. Define agents with roles, goals, and backstories, then assign them to tasks. Built-in sequential and parallel task execution. Simpler API than LangGraph. Better for non-coding multi-agent workflows (research, analysis) than for code orchestration, but can be adapted.</p>
+    </div>
+
+    <div class="tool-card">
+      <h4><a href="https://github.com/microsoft/autogen" target="_blank" rel="noopener">AutoGen</a></h4>
+      <div class="tool-meta">
+        <span class="tag tag-oss">Open Source</span>
+        <span class="tag">Python</span>
+      </div>
+      <p>Multi-agent conversation framework by <a href="https://www.microsoft.com/" target="_blank" rel="noopener">Microsoft</a>. Agents interact via message-passing conversations. Strong support for human-in-the-loop patterns. The most research-oriented of the three frameworks &mdash; more papers published with AutoGen than any other multi-agent framework. Good for Swarm patterns where agents need to negotiate and iterate.</p>
+    </div>
+
+    <div class="tool-card">
+      <h4><a href="https://mastra.ai/" target="_blank" rel="noopener">Mastra</a></h4>
+      <div class="tool-meta">
+        <span class="tag tag-oss">Open Source</span>
+        <span class="tag">TypeScript</span>
+      </div>
+      <p>TypeScript-native AI agent framework from the team behind <a href="https://www.gatsbyjs.com/" target="_blank" rel="noopener">Gatsby</a>. First-class TypeScript support, built-in tool use, and workflow orchestration. Good choice for teams already in the TypeScript ecosystem that want to build custom orchestration logic.</p>
+    </div>
+
+    <!-- Tool Comparison Table -->
+    <h3>Feature matrix</h3>
+    <div class="cmp-wrap">
+      <table class="cmp-table">
+        <thead>
+          <tr><th>Tool</th><th>Type</th><th>License</th><th>Runtime (L1)</th><th>Isolation (L2)</th><th>Communication (L3)</th><th>Coordination (L4)</th><th>Observability (L5)</th><th>Patterns Supported</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a></td><td>Orchestrator</td><td>MIT</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td>All 5</td></tr>
+          <tr><td><a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a></td><td>Orchestrator</td><td>MIT</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="n">&#10007;</td><td class="n">&#10007;</td><td class="p">Partial</td><td>Parallel, Solo</td></tr>
+          <tr><td><a href="https://github.com/raine/workmux" target="_blank" rel="noopener">workmux</a></td><td>Orchestrator</td><td>MIT</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="n">&#10007;</td><td class="n">&#10007;</td><td class="n">&#10007;</td><td>Parallel, Solo</td></tr>
+          <tr><td><a href="https://github.com/microsoft/conductor" target="_blank" rel="noopener">Conductor</a></td><td>Orchestrator</td><td>MIT</td><td class="p">Partial</td><td class="n">&#10007;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="p">Partial</td><td>Parallel, Pipeline</td></tr>
+          <tr><td><a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a> v3</td><td>Built-in</td><td>Commercial</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="p">Partial</td><td>Parallel, Hub&amp;Spoke</td></tr>
+          <tr><td><a href="https://antigravity.google/" target="_blank" rel="noopener">Antigravity</a> 2.0</td><td>Built-in</td><td>Commercial</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td>All 5</td></tr>
+          <tr><td><a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a></td><td>Built-in</td><td>Commercial</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="p">Subagents</td><td class="n">&#10007;</td><td class="n">&#10007;</td><td>Solo, Hub&amp;Spoke</td></tr>
+          <tr><td><a href="https://devin.ai/" target="_blank" rel="noopener">Devin</a></td><td>Built-in</td><td>Commercial</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td>All 5</td></tr>
+          <tr><td><a href="https://github.com/langchain-ai/langgraph" target="_blank" rel="noopener">LangGraph</a></td><td>Framework</td><td>MIT</td><td class="n">&#10007;</td><td class="n">&#10007;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="p">Partial</td><td>Pipeline, Hub&amp;Spoke, Swarm</td></tr>
+          <tr><td><a href="https://github.com/crewAIInc/crewAI" target="_blank" rel="noopener">CrewAI</a></td><td>Framework</td><td>MIT</td><td class="n">&#10007;</td><td class="n">&#10007;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="p">Partial</td><td>Pipeline, Hub&amp;Spoke</td></tr>
+          <tr><td><a href="https://github.com/microsoft/autogen" target="_blank" rel="noopener">AutoGen</a></td><td>Framework</td><td>MIT</td><td class="n">&#10007;</td><td class="n">&#10007;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="p">Partial</td><td>Swarm, Hub&amp;Spoke</td></tr>
+          <tr><td><a href="https://mastra.ai/" target="_blank" rel="noopener">Mastra</a></td><td>Framework</td><td>MIT</td><td class="n">&#10007;</td><td class="n">&#10007;</td><td class="y">&#10003;</td><td class="y">&#10003;</td><td class="n">&#10007;</td><td>Pipeline, Parallel</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="key-insight">
+      <strong>Dedicated orchestrators vs. built-in features:</strong> Built-in multi-agent features (<a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a>, <a href="https://antigravity.google/" target="_blank" rel="noopener">Antigravity</a>) lock you into one coding tool. Dedicated orchestrators (<a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>, <a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a>) work with any terminal-based agent and let you mix tools &mdash; run <a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a> on Opus for architecture, <a href="https://aider.chat/" target="_blank" rel="noopener">Aider</a> with <a href="https://www.deepseek.com/" target="_blank" rel="noopener">DeepSeek</a> for bulk refactors, and <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a> for OpenAI-specific tasks &mdash; all in one fleet.
+    </div>
+
+    <!-- ==================== SECTION 5: PRODUCTION CONCERNS ==================== -->
+    <h2 id="production">Production concerns: cost, safety, and scaling</h2>
+
+    <h3>Cost management</h3>
+
+    <p>Multi-agent orchestration multiplies both throughput and cost. A solo agent running <a href="https://docs.anthropic.com/en/docs/about-claude/models" target="_blank" rel="noopener">Claude Opus 4.6</a> on a complex task might consume 500K&ndash;2M tokens. Five parallel agents doing similar work consume 5&times; that. Cost management strategies:</p>
+
+    <ul>
+      <li><strong>Model routing:</strong> Use Opus for planning, architecture, and code review. Use Sonnet for implementation and tests. Use Haiku for lint fixes, formatting, and simple migrations. A typical fleet saves 40&ndash;60% by routing tasks to the cheapest model that can handle them.</li>
+      <li><strong>Context discipline:</strong> Agents with smaller, focused context windows use fewer tokens per request. A well-scoped task description with clear file boundaries keeps agents from exploring the entire codebase.</li>
+      <li><strong>Max plan economics:</strong> <a href="https://www.anthropic.com/" target="_blank" rel="noopener">Anthropic</a>&rsquo;s Claude Code Max plan ($100&ndash;200/month) removes per-token billing. If you're running 3+ agents regularly, the flat rate is almost always cheaper than API billing.</li>
+      <li><strong>Per-agent cost tracking:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> tracks token spend per session so you can identify which agents are consuming disproportionate resources and optimize their prompts or scope.</li>
+    </ul>
+
+    <h3>Safety guardrails</h3>
+
+    <p>Multiple agents amplify both output and risk. A single mis-configured agent can cause damage &mdash; a fleet of them can do it five times faster.</p>
+
+    <div class="warning-box">
+      <strong>Non-negotiable guardrails for multi-agent setups:</strong>
+      <ul>
+        <li><strong>Git isolation:</strong> Every agent must work on its own branch (preferably in its own <a href="https://git-scm.com/docs/git-worktree" target="_blank" rel="noopener">worktree</a>). Never let two agents edit the same branch.</li>
+        <li><strong>No force-push:</strong> Agents should never <code>git push --force</code> or <code>git reset --hard</code> on shared branches.</li>
+        <li><strong>Secrets isolation:</strong> Use <a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a> hooks or tool permissions to prevent agents from reading <code>.env</code> files, credentials, or secret stores.</li>
+        <li><strong>Network restrictions:</strong> Agents that don't need network access shouldn't have it. Block outbound requests except to approved domains.</li>
+        <li><strong>Human review before merge:</strong> No agent output should merge to <code>main</code> without human review. Automated CI gates (tests, lint, type check) are necessary but not sufficient.</li>
+      </ul>
+    </div>
+
+    <p>For a comprehensive safety framework, see our <a href="/guides/ai-coding-agent-safety-checklist/">AI Coding Agent Safety Checklist</a>.</p>
+
+    <h3>Scaling considerations</h3>
+
+    <div class="cmp-wrap">
+      <table class="cmp-table">
+        <thead>
+          <tr><th>Scale</th><th>Agents</th><th>Infrastructure</th><th>Bottleneck</th><th>Recommended Pattern</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Solo</td><td>1&ndash;2</td><td>Single terminal</td><td>Context window</td><td>Solo or Pipeline</td></tr>
+          <tr><td>Small fleet</td><td>3&ndash;7</td><td>tmux + git worktrees</td><td>API rate limits</td><td>Parallel Workers</td></tr>
+          <tr><td>Medium fleet</td><td>8&ndash;20</td><td>Orchestrator + worktrees</td><td>Disk I/O, merge conflicts</td><td>Hub &amp; Spoke</td></tr>
+          <tr><td>Large fleet</td><td>20&ndash;50+</td><td>Orchestrator + cloud agents</td><td>Coordination overhead</td><td>Swarm</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>Key scaling limits:</strong></p>
+    <ul>
+      <li><strong>RAM:</strong> Each <a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a> session uses ~200&ndash;400MB. On 16GB RAM, 5&ndash;7 agents are comfortable. On 32GB+, 15&ndash;20 agents work before you start swapping.</li>
+      <li><strong>API rate limits:</strong> <a href="https://www.anthropic.com/" target="_blank" rel="noopener">Anthropic</a>&rsquo;s Max plan allows ~45 Opus requests per 5-minute window. More agents means more queueing and backoff.</li>
+      <li><strong>Disk:</strong> Each git worktree is a full working copy. For large repos (10GB+), 20 worktrees consume 200GB+ of disk. Use shallow clones or sparse checkout to reduce per-worktree size.</li>
+      <li><strong>Merge queue:</strong> The more agents, the longer the sequential merge phase. At 20+ agents, automated merge resolution becomes essential.</li>
+    </ul>
+
+    <!-- ==================== SECTION 6: DECISION FRAMEWORK ==================== -->
+    <h2 id="decision-framework">Decision framework</h2>
+
+    <p>Choosing an orchestration pattern and tool depends on your team size, codebase structure, and what you're trying to accomplish.</p>
+
+    <div class="decision-card">
+      <h4>Solo developer, focused tasks</h4>
+      <ul>
+        <li><strong>Pattern:</strong> Solo Agent or Parallel Workers (2&ndash;3 agents)</li>
+        <li><strong>Tool:</strong> <a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a> with subagents, or <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> for quick parallel sessions</li>
+        <li><strong>Why:</strong> Minimal overhead. No coordination infrastructure needed. The agent handles everything within its context window. Scale to 2&ndash;3 workers when you have independent tickets.</li>
+      </ul>
+    </div>
+
+    <div class="decision-card">
+      <h4>Solo developer, ambitious throughput</h4>
+      <ul>
+        <li><strong>Pattern:</strong> Parallel Workers (5&ndash;10 agents) with Pipeline for critical features</li>
+        <li><strong>Tool:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> (task board + monitoring) or <a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a> (lighter, TUI-focused)</li>
+        <li><strong>Why:</strong> You're the bottleneck on decomposition and review, not the agents. The orchestrator handles session management and isolation so you focus on specs and review.</li>
+      </ul>
+    </div>
+
+    <div class="decision-card">
+      <h4>Small team (2&ndash;5 developers)</h4>
+      <ul>
+        <li><strong>Pattern:</strong> Hub and Spoke (coordinator agent plans, workers implement)</li>
+        <li><strong>Tool:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> (shared board for team visibility) or <a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a> v3 (if team is IDE-centric)</li>
+        <li><strong>Why:</strong> Multiple people are creating tasks for agents. A shared board provides visibility into who's running what. The coordinator pattern ensures architectural consistency across agents spawned by different team members.</li>
+      </ul>
+    </div>
+
+    <div class="decision-card">
+      <h4>Enterprise or large codebase (100K+ lines)</h4>
+      <ul>
+        <li><strong>Pattern:</strong> Swarm with quality gates</li>
+        <li><strong>Tool:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> (atomic claiming + full observability), <a href="https://devin.ai/" target="_blank" rel="noopener">Devin</a> (managed cloud agents), or <a href="https://github.com/microsoft/conductor" target="_blank" rel="noopener">Microsoft Conductor</a> (enterprise workflow definitions)</li>
+        <li><strong>Why:</strong> At scale, centralized coordination becomes a bottleneck. Swarm patterns with atomic task claiming let agents self-organize. Quality gates (CI checks, automated review) replace the human coordinator.</li>
+      </ul>
+    </div>
+
+    <div class="decision-card">
+      <h4>Cloud-first, hands-off</h4>
+      <ul>
+        <li><strong>Pattern:</strong> Depends on task &mdash; Devin handles its own orchestration internally</li>
+        <li><strong>Tool:</strong> <a href="https://devin.ai/" target="_blank" rel="noopener">Devin</a> or <a href="https://github.com/features/copilot" target="_blank" rel="noopener">GitHub Copilot</a> Coding Agent</li>
+        <li><strong>Why:</strong> Zero local infrastructure. Agents run in cloud sandboxes. You interact via PRs and Slack messages. Higher cost ($500+/month) but zero ops burden.</li>
+      </ul>
+    </div>
+
+    <!-- ==================== SECTION 7: ANTI-PATTERNS ==================== -->
+    <h2 id="anti-patterns">Anti-patterns: when NOT to orchestrate</h2>
+
+    <p>Orchestration has overhead. Not every task benefits from it. Avoid these common traps:</p>
+
+    <div class="warning-box">
+      <strong>Orchestration anti-patterns:</strong>
+      <ul>
+        <li><strong>Premature orchestration:</strong> Spinning up 5 agents for a task that one agent could finish in 10 minutes. The decomposition and merge overhead exceeds the time saved.</li>
+        <li><strong>Over-splitting:</strong> Breaking a feature into such fine-grained tasks that agents lack enough context to make good decisions. Each agent sees a sliver and produces code that doesn't integrate cleanly.</li>
+        <li><strong>No review bottleneck planning:</strong> Running 10 agents overnight when you can only review 3 PRs in the morning. The unreviewed branches create a backlog that grows stale and conflicts with newer work.</li>
+        <li><strong>Tightly-coupled codebase:</strong> If every feature touches the same 5 files (common in monoliths with a fat <code>utils.py</code> or <code>types.ts</code>), parallel agents will constantly conflict. Refactor the coupling first.</li>
+        <li><strong>Ignoring coordination costs:</strong> Each additional agent adds merge, review, and conflict-resolution overhead. The throughput curve flattens above 7&ndash;10 agents unless your codebase is highly modular.</li>
+      </ul>
+    </div>
+
+    <div class="key-insight">
+      <strong>The rule of 3:</strong> If a task can be decomposed into 3+ independent, non-overlapping subtasks that each take 15+ minutes for a solo agent, orchestrate. Below that threshold, a single agent with subagents is usually faster end-to-end.
+    </div>
+
+    <!-- ==================== SECTION 8: FAQ ==================== -->
+    <h2 id="faq">Frequently asked questions</h2>
+
+    <h3>What is AI agent orchestration?</h3>
+    <p>AI agent orchestration is the practice of coordinating multiple AI coding agents working in parallel on a shared codebase. It includes task assignment, code isolation (via <a href="https://git-scm.com/docs/git-worktree" target="_blank" rel="noopener">git worktrees</a>), inter-agent communication, conflict resolution, and observability. Tools like <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>, <a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a>, and <a href="https://github.com/microsoft/conductor" target="_blank" rel="noopener">Microsoft Conductor</a> provide orchestration infrastructure.</p>
+
+    <h3>How many AI coding agents can run in parallel?</h3>
+    <p>On 16GB RAM: 5&ndash;7 agents comfortably. On 32GB+: 10&ndash;15 agents. With cloud agents (<a href="https://devin.ai/" target="_blank" rel="noopener">Devin</a>, <a href="https://github.com/features/copilot" target="_blank" rel="noopener">Copilot Coding Agent</a>), concurrency is higher since compute is remote. The practical ceiling depends on API rate limits, memory, and disk I/O.</p>
+
+    <h3>How do you prevent merge conflicts with parallel agents?</h3>
+    <p>Three techniques: (1) <strong>File-level task decomposition</strong> &mdash; assign agents to non-overlapping file sets. (2) <strong>Git worktree isolation</strong> &mdash; each agent works in its own worktree on its own branch. (3) <strong>Sequential merge with conflict detection</strong> &mdash; merge branches one at a time, with automated conflict resolution or human review for conflicts.</p>
+
+    <h3>What is the cheapest way to run multi-agent orchestration?</h3>
+    <p>Use open-source orchestrators (<a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>, <a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a>, <a href="https://github.com/raine/workmux" target="_blank" rel="noopener">workmux</a>) with <a href="https://www.anthropic.com/" target="_blank" rel="noopener">Anthropic</a>&rsquo;s Claude Code Max plan ($100/month flat rate) or API-based billing with aggressive model routing (Haiku/Sonnet for routine tasks, Opus only for complex reasoning). A well-optimized 5-agent fleet can run for under $150/month.</p>
+
+    <h3>Should I use a dedicated orchestrator or a built-in multi-agent feature?</h3>
+    <p>Dedicated orchestrators (<a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>) are tool-agnostic &mdash; you can mix <a href="https://docs.anthropic.com/en/docs/claude-code/overview" target="_blank" rel="noopener">Claude Code</a>, <a href="https://aider.chat/" target="_blank" rel="noopener">Aider</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, and others in one fleet. Built-in features (<a href="https://www.cursor.com/" target="_blank" rel="noopener">Cursor</a> multi-agent, <a href="https://antigravity.google/" target="_blank" rel="noopener">Antigravity</a> Agent Teams) offer tighter integration but lock you into one ecosystem. Choose dedicated if you want flexibility; choose built-in if you want simplicity and are already committed to one tool.</p>
+
+    <h3>What is the difference between orchestration and an agent framework?</h3>
+    <p>Agent frameworks (<a href="https://github.com/langchain-ai/langgraph" target="_blank" rel="noopener">LangGraph</a>, <a href="https://github.com/crewAIInc/crewAI" target="_blank" rel="noopener">CrewAI</a>, <a href="https://github.com/microsoft/autogen" target="_blank" rel="noopener">AutoGen</a>) provide primitives for building multi-agent systems: message passing, state management, graph routing. Orchestrators (<a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a>, <a href="https://github.com/smtg-ai/claude-squad" target="_blank" rel="noopener">Claude Squad</a>) are ready-to-use tools that handle the full stack: session management, git isolation, task boards, monitoring, and fleet operations. Frameworks require custom code; orchestrators work out of the box.</p>
+
+    <div class="cta-box" style="background:rgba(110,231,183,0.06);border:1px solid rgba(110,231,183,0.2);border-radius:12px;padding:2rem;margin:2.5rem 0;text-align:center;">
+      <h3 style="margin-top:0;">Ready to orchestrate your first agent fleet?</h3>
+      <p style="color:var(--text-muted,#8892a4);max-width:520px;margin:0.5rem auto 1.25rem;">amux is a free, open-source agent control plane that supports all five orchestration patterns. Install in 30 seconds, run your first parallel agents in under 5 minutes.</p>
+      <a href="/guides/getting-started/" class="btn btn-primary" style="margin-right:0.75rem;">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="btn btn-ghost">View on GitHub</a>
+    </div>
+
+    <h3>Further reading</h3>
+    <ul>
+      <li><a href="/guides/agentic-engineering/">Agentic Engineering &mdash; The Practical Guide</a></li>
+      <li><a href="/guides/agentmaxxing/">The Definitive Guide to Agentmaxxing</a></li>
+      <li><a href="/guides/multi-agent-orchestrator-architecture/">How to Build a Multi-Agent Coding Orchestrator</a></li>
+      <li><a href="/guides/agent-control-plane/">What Is an Agent Control Plane?</a></li>
+      <li><a href="/guides/reviewing-ai-agent-code/">How to Review AI-Generated Code &mdash; The Playbook for Agent Fleets</a></li>
+      <li><a href="/guides/ai-coding-agent-safety-checklist/">AI Coding Agent Safety Checklist</a></li>
+      <li><a href="/guides/ai-coding-agent-costs/">AI Coding Agent Costs in 2026 &mdash; The Complete Breakdown</a></li>
+      <li><a href="/guides/best-ai-agent-multiplexers-2026/">Best AI Agent Multiplexers Compared (2026)</a></li>
+      <li><a href="/compare/">All amux comparison pages</a></li>
+    </ul>
+
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
