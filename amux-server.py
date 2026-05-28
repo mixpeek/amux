@@ -17664,7 +17664,7 @@ async function peekQuickKeys(keys) {
   await doKeys(peekSession, keys);
   setTimeout(refreshPeek, 500);
 }
-async function _submitSuggestion(name, isPeek) {
+async function _submitSuggestion(name, isPeek, fallbackKeys) {
   showSendingIndicator();
   try {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
@@ -17672,7 +17672,10 @@ async function _submitSuggestion(name, isPeek) {
       body: JSON.stringify({text: ''})
     });
     const d = await r.json().catch(() => ({}));
-    if (d.message === 'no suggestion found') showToast('No suggestion to submit');
+    if (d.message === 'no suggestion found') {
+      if (fallbackKeys) { if (isPeek) peekQuickKeys(fallbackKeys); else doKeys(name, fallbackKeys); }
+      else showToast('No suggestion to submit');
+    }
   } catch(e) {}
   if (isPeek) setTimeout(refreshPeek, 500);
 }
@@ -18082,14 +18085,11 @@ function _chipAction(chip, sessionName, isPeek) {
     if (isPeek) peekQuickSend(chip.value);
     else doSend(sessionName, chip.value);
   } else if (chip.action === 'keys') {
-    // Enter on idle session → extract and submit Claude's suggested prompt
+    // Enter → always try suggestion extraction first; fall back to raw Enter if none found
     if (chip.value === 'Enter') {
       const name = isPeek ? peekSession : sessionName;
-      const sess = (sessions || []).find(s => s.name === name);
-      if (!sess || sess.status !== 'active') {
-        _submitSuggestion(name, isPeek);
-        return;
-      }
+      _submitSuggestion(name, isPeek, 'Enter');
+      return;
     }
     if (isPeek) peekQuickKeys(chip.value);
     else doKeys(sessionName, chip.value);
