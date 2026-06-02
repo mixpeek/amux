@@ -6420,6 +6420,60 @@ def _get_default_model() -> str:
     return "sonnet"
 
 
+_AMUX_HOOK_MARKER = "# amux-session-stamp"
+_AMUX_HOOK_BODY = """#!/bin/sh
+# amux-session-stamp — tags each commit with the originating amux session.
+# Reads $AMUX_SESSION (exported into every amux session's shell) at commit
+# time, so a single shared hook attributes commits correctly even when
+# multiple sessions work in the same repo. Outside amux ($AMUX_SESSION unset)
+# it does nothing.
+msg_file="$1"
+[ -n "$AMUX_SESSION" ] || exit 0
+grep -q "^Amux-Session: " "$msg_file" 2>/dev/null && exit 0
+printf '\\nAmux-Session: %s\\n' "$AMUX_SESSION" >> "$msg_file"
+exit 0
+"""
+
+
+def _install_amux_commit_hook(work_dir: str) -> None:
+    """Install a non-destructive prepare-commit-msg hook that stamps commits
+    with $AMUX_SESSION. Idempotent; never clobbers a foreign hook (chains onto
+    it instead). Best-effort — failures are swallowed."""
+    try:
+        gr = subprocess.run(["git", "-C", work_dir, "rev-parse", "--git-dir"],
+                            capture_output=True, text=True, timeout=5)
+        if gr.returncode != 0:
+            return
+        git_dir = gr.stdout.strip()
+        if not os.path.isabs(git_dir):
+            git_dir = os.path.join(work_dir, git_dir)
+        hooks_dir = os.path.join(git_dir, "hooks")
+        os.makedirs(hooks_dir, exist_ok=True)
+        hook_path = os.path.join(hooks_dir, "prepare-commit-msg")
+        if os.path.exists(hook_path):
+            try:
+                existing = open(hook_path).read()
+            except Exception:
+                return
+            if _AMUX_HOOK_MARKER in existing:
+                return  # already installed
+            # Foreign hook present — append our stamping logic so both run.
+            snippet = (
+                "\n" + _AMUX_HOOK_MARKER + "\n"
+                'if [ -n "$AMUX_SESSION" ] && ! grep -q "^Amux-Session: " "$1" 2>/dev/null; then\n'
+                "  printf '\\nAmux-Session: %s\\n' \"$AMUX_SESSION\" >> \"$1\"\n"
+                "fi\n"
+            )
+            with open(hook_path, "a") as fh:
+                fh.write(snippet)
+            return
+        with open(hook_path, "w") as fh:
+            fh.write(_AMUX_HOOK_BODY)
+        os.chmod(hook_path, 0o755)
+    except Exception:
+        pass
+
+
 def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False) -> tuple[bool, str]:
     """Start a session headless (no attach). Returns (success, message)."""
     if not _VALID_SESSION_NAME_RE.match(name):
@@ -6437,6 +6491,8 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
             f.write_text("\n".join(lines) + "\n")
             cfg.pop("CC_ARCHIVED", None)
         work_dir = str(Path(cfg.get("CC_DIR", str(Path.home()))).expanduser().resolve())
+        # Stamp this session's commits with its name (durable git trailer).
+        _install_amux_commit_hook(work_dir)
         flags = cfg.get("CC_FLAGS", "")
         # Claude Code v2.1.69+ rejects --dangerously-skip-permissions when running as root.
         if os.getuid() == 0 and "--dangerously-skip-permissions" in flags:
@@ -9667,8 +9723,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .commits-item:hover { background: rgba(139,148,158,0.06); }
   .commits-item.active { background: rgba(88,166,255,0.1); border-left: 3px solid var(--accent); }
   .commits-item-subject { font-size: 0.82rem; font-weight: 500; color: var(--text); line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .commits-item-meta { display: flex; gap: 8px; margin-top: 4px; font-size: 0.7rem; color: var(--dim); }
+  .commits-item-meta { display: flex; gap: 8px; margin-top: 4px; font-size: 0.7rem; color: var(--dim); align-items: center; flex-wrap: wrap; }
   .commits-item-hash { font-family: monospace; font-size: 0.7rem; color: var(--accent); opacity: 0.8; }
+  .commits-sess-badge { font-size: 0.64rem; font-weight: 600; padding: 1px 7px; border-radius: 9px; white-space: nowrap; letter-spacing: 0.02em; }
   .commits-detail { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
   .commits-detail-empty { flex: 1; display: flex; align-items: center; justify-content: center; }
   .commits-back-btn { display: none; background: none; border: none; color: var(--accent); cursor: pointer; padding: 8px 14px; font-size: 0.82rem; text-align: left; border-bottom: 1px solid var(--border); }
@@ -16286,6 +16343,17 @@ async function _commitsLoad() {
   }
 }
 
+// Deterministic color per session name — same session always gets the same hue
+function _sessionColor(name) {
+  let h = 0;
+  for (let i = 0; i < (name || '').length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return h;
+}
+function _sessionBadgeStyle(name) {
+  const h = _sessionColor(name);
+  return `background:hsl(${h} 70% 22%);color:hsl(${h} 90% 80%);border:1px solid hsl(${h} 60% 42%);`;
+}
+
 function _commitsRenderList() {
   const list = document.getElementById('commits-list');
   if (!_commitsData.length) {
@@ -16305,9 +16373,12 @@ function _commitsRenderList() {
     const active = c.hash === _commitsActiveHash ? ' active' : '';
     const shortHash = c.hash.slice(0, 7);
     const time = c.date ? c.date.slice(11, 16) : '';
+    const sessBadge = c.amux_session
+      ? `<span class="commits-sess-badge" style="${_sessionBadgeStyle(c.amux_session)}" title="Committed by amux session: ${esc(c.amux_session)}">${esc(c.amux_session)}</span>`
+      : '';
     html += `<div class="commits-item${active}" data-hash="${c.hash}" onclick="_commitsSelect('${c.hash}')">`;
     html += `<div class="commits-item-subject">${esc(c.subject)}</div>`;
-    html += `<div class="commits-item-meta"><span class="commits-item-hash">${shortHash}</span><span>${esc(c.author)}</span><span>${time}</span></div>`;
+    html += `<div class="commits-item-meta">${sessBadge}<span class="commits-item-hash">${shortHash}</span><span>${esc(c.author)}</span><span>${time}</span></div>`;
     html += `</div>`;
   }
   list.innerHTML = html;
@@ -36350,6 +36421,9 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 return self._json(stats)
             if action == "git":
                 wd = _session_work_dir(name)
+                # Ensure the commit-stamping hook is present (covers sessions
+                # already running before this feature / before a restart).
+                _install_amux_commit_hook(wd)
                 if action_subid == "commits":
                     count = int(qs.get("count", ["30"])[0])
                     # Return commit log with hash, author, date, subject, body
@@ -36366,10 +36440,17 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                                 continue
                             parts = entry.split("\x00", 4)
                             if len(parts) >= 4:
+                                body_txt = parts[4].strip() if len(parts) > 4 else ""
+                                # Extract the amux session trailer (if present)
+                                amux_sess = ""
+                                m_sess = re.search(r"^Amux-Session:\s*(.+)$", body_txt, re.MULTILINE)
+                                if m_sess:
+                                    amux_sess = m_sess.group(1).strip()
+                                    body_txt = re.sub(r"^Amux-Session:.*$", "", body_txt, flags=re.MULTILINE).strip()
                                 commits.append({
                                     "hash": parts[0], "author": parts[1],
                                     "date": parts[2], "subject": parts[3],
-                                    "body": parts[4].strip() if len(parts) > 4 else "",
+                                    "body": body_txt, "amux_session": amux_sess,
                                 })
                     return self._json({"commits": commits})
                 if action_subid == "commit-detail":
