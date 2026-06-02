@@ -22277,6 +22277,7 @@ function switchView(view) {
     _notesInitQuill(); _notesApplySidebarState(); _notesBindSwipeGestures();
     _notesDirty = false;
     _notesLoad(); // always refresh list on tab switch
+    _notesReloadActive(); // refresh open note content if it changed on disk (Obsidian)
   }
   if (view === 'logs') { fetchLogs(); _startLogsTimer(); } else { _stopLogsTimer(); }
   if (view === 'board') {
@@ -25559,7 +25560,7 @@ function connectSSE() {
       } else if (msg.type === 'invalidate') {
         for (const key of (msg.keys || [])) {
           if (key === 'notes') {
-            if (activeView === 'notes') _notesLoad();
+            if (activeView === 'notes') { _notesLoad(); _notesReloadActive(); }
             else _notesDirty = true;
             _pinnedNotesRefresh();
           } else if (key === 'crm') {
@@ -28845,6 +28846,45 @@ async function _notesOpen(path) {
     _notesSidebarOpen = false;
     _notesApplySidebarState();
   }
+}
+
+// Reload the currently-open note's content from disk (e.g. after an external
+// edit in Obsidian). Unlike _notesOpen, this refreshes the SAME open note.
+// Guarded so it never clobbers unsaved local edits or in-progress typing.
+async function _notesReloadActive() {
+  if (!_notesActive) return;
+  if (_notesSaveTimer) return;                                  // pending local save
+  const editor = _notesGetEditor();
+  if (editor && document.activeElement === editor) return;      // user is typing in body
+  const titleInp = document.getElementById('notes-title');
+  if (titleInp && document.activeElement === titleInp) return;  // editing the title
+  const path = _notesActive.path;
+  let data;
+  try {
+    const r = await fetch(API + '/api/notes/' + path.replace(/\.md$/, '').split('/').map(encodeURIComponent).join('/'));
+    if (!r.ok) return;
+    data = await r.json();
+  } catch(e) { return; }
+  if (!_notesActive || _notesActive.path !== path) return;      // switched away mid-fetch
+  const serverContent = data.content || '';
+  if (editor && editor.value === serverContent) return;         // unchanged — nothing to do
+  _idb.set('amux_note_' + path, JSON.stringify(data));
+  _notesRawContent = serverContent;
+  if (editor) {
+    _notesLoadingContent = true;
+    editor.value = serverContent;
+    setTimeout(() => { _notesLoadingContent = false; }, 0);
+  }
+  const h1md = serverContent.match(/^#\s+(.+)$/m);
+  if (h1md) {
+    _notesActive.title = h1md[1];
+    if (titleInp) titleInp.value = _notesActive.title;
+    const listEntry = _notesAllNotes.find(n => n.path === path);
+    if (listEntry) { listEntry.name = _notesActive.title; _notesRenderList(_notesAllNotes); }
+  }
+  if (_notesMode === 'preview') _notesSwitchMode('preview');    // re-render preview from new content
+  const st = document.getElementById('notes-save-status');
+  if (st) { st.textContent = 'Updated from disk'; setTimeout(() => { if (st.textContent === 'Updated from disk') st.textContent = ''; }, 2500); }
 }
 
 async function _notesNew(folder) {
