@@ -12344,6 +12344,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div class="notes-sidebar-actions">
         <button class="notes-new-btn" onclick="_notesNew()" title="New note"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
         <button class="notes-new-btn" onclick="_notesNewFolder()" title="New folder"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg></button>
+        <button class="notes-new-btn" id="notes-collapse-all-btn" onclick="_notesCollapseAllFolders()" title="Collapse all folders"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 9 8 5 12 9"/><polyline points="4 19 8 15 12 19"/><line x1="16" y1="7" x2="20" y2="7"/><line x1="16" y1="17" x2="20" y2="17"/></svg></button>
         <button class="notes-toggle-btn" onclick="_notesToggleSidebar()" title="Collapse sidebar"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg></button>
       </div>
     </div>
@@ -28735,6 +28736,31 @@ function _notesFolderSetOpen(name, open) {
   state[name] = open;
   localStorage.setItem('amux_notes_folders', JSON.stringify(state));
 }
+// Collect every folder path (including nested) from the current note set
+function _notesAllFolderPaths() {
+  const set = new Set();
+  for (const n of (_notesCurrentNotes || _notesAllNotes || [])) {
+    const parts = (n.path || '').split('/');
+    let pre = '';
+    for (let i = 0; i < parts.length - 1; i++) {
+      pre = pre ? pre + '/' + parts[i] : parts[i];
+      set.add(pre);
+    }
+  }
+  return [...set];
+}
+// Toggle: collapse all folders; if everything is already collapsed, expand all.
+function _notesCollapseAllFolders() {
+  const all = _notesAllFolderPaths();
+  if (!all.length) return;
+  const anyOpen = all.some(f => _notesFolderOpen(f));
+  const state = JSON.parse(localStorage.getItem('amux_notes_folders') || '{}');
+  for (const f of all) state[f] = anyOpen ? false : true;
+  localStorage.setItem('amux_notes_folders', JSON.stringify(state));
+  const btn = document.getElementById('notes-collapse-all-btn');
+  if (btn) btn.title = anyOpen ? 'Expand all folders' : 'Collapse all folders';
+  _notesRenderList(_notesCurrentNotes);
+}
 function _notesNewFolder() {
   _notesFolderCreating = true;
   _notesRenderList(_notesCurrentNotes);
@@ -28796,10 +28822,10 @@ function _notesDragEnd(e) {
 }
 function _notesDragOverFolder(e, el) {
   if (!_notesDraggingPath) return;
-  const folder = el.dataset.folder;
-  // Don't highlight if note is already in this folder
-  const parts = _notesDraggingPath.split('/');
-  if (parts.length > 1 && parts[0] === folder) return;
+  const folder = el.dataset.folder;  // full path, e.g. "Self/Therapy"
+  // Don't highlight if the note already lives directly in this folder
+  const parent = _notesDraggingPath.split('/').slice(0, -1).join('/');
+  if (parent === folder) return;
   e.preventDefault(); e.dataTransfer.dropEffect = 'move';
   el.classList.add('notes-drop-target');
 }
@@ -28815,10 +28841,11 @@ async function _notesDropOnFolder(e, el) {
   e.preventDefault();
   el.classList.remove('notes-drop-target');
   const path = e.dataTransfer.getData('text/plain') || _notesDraggingPath;
-  const folder = el.dataset.folder;
+  const folder = el.dataset.folder;  // full path, e.g. "Self/Therapy"
   if (!path || !folder) return;
   const parts = path.split('/');
-  if (parts.length > 1 && parts[0] === folder) return; // already there
+  const parent = parts.slice(0, -1).join('/');
+  if (parent === folder) return; // already there
   const filename = parts[parts.length - 1];
   const newPath = folder + '/' + filename;
   await _notesMoveNote(path, newPath);
@@ -28852,22 +28879,30 @@ async function _notesMoveNote(oldPath, newPath) {
   if (entry) entry.path = newPath;
   if (_notesActive?.path === oldPath) _notesActive.path = newPath;
   localStorage.setItem('amux_last_note', newPath);
-  // Open the new folder if needed
-  const newFolder = newPath.includes('/') ? newPath.split('/')[0] : null;
-  if (newFolder) _notesFolderSetOpen(newFolder, true);
+  // Open the destination folder (and its ancestors) so the moved note shows
+  if (newPath.includes('/')) {
+    const parts = newPath.split('/');
+    let pre = '';
+    for (let i = 0; i < parts.length - 1; i++) {
+      pre = pre ? pre + '/' + parts[i] : parts[i];
+      _notesFolderSetOpen(pre, true);
+    }
+  }
   _notesRenderList(_notesCurrentNotes.map(n => n.path === oldPath ? {...n, path: newPath} : n));
   _notesAllNotes = _notesCurrentNotes; // keep in sync
 }
-function _notesItemHtml(n) {
+function _notesItemHtml(n, depth) {
   const active = _notesActive && _notesActive.path === n.path ? ' active' : '';
   const pinned = n.pinned ? ' pinned' : '';
   const dt = n.updated ? new Date(n.updated * 1000).toLocaleDateString() : '';
   const stem = n.path.replace(/\.md$/, '').split('/').pop();
   const rawName = n.name || stem;
   const displayName = /^untitled(-\d+)?$/.test(rawName) ? 'Untitled' : rawName;
+  // Indent to match nesting depth (depth 0 = root, uses default CSS padding)
+  const indent = depth ? `padding-left:${12 + depth * 14}px;` : '';
   return `<div class="notes-list-item${active}${pinned}" data-path="${esc(n.path)}" draggable="true"
     ondragstart="_notesDragStart(event,this)" ondragend="_notesDragEnd(event)"
-    onclick="_notesOpen(this.dataset.path)" style="display:flex;align-items:center;gap:4px;">
+    onclick="_notesOpen(this.dataset.path)" style="display:flex;align-items:center;gap:4px;${indent}">
     <span class="nli-drag"><svg width="8" height="12" viewBox="0 0 8 12" fill="currentColor"><circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/><circle cx="2" cy="6" r="1.2"/><circle cx="6" cy="6" r="1.2"/><circle cx="2" cy="10" r="1.2"/><circle cx="6" cy="10" r="1.2"/></svg></span>
     <div style="flex:1;min-width:0;">
       <div class="nli-title">${esc(displayName)}</div>
@@ -28878,36 +28913,60 @@ function _notesItemHtml(n) {
 function _notesRenderList(notes) {
   _notesCurrentNotes = notes;
   const el = document.getElementById('notes-list');
-  // Group by first path component
-  const folders = {}, root = [];
+  // Build a recursive tree so nested folders (e.g. Self/Therapy/Notes) render
+  // as a real hierarchy. Each node: { dirs: {name:node}, files: [note] }.
+  const root = { dirs: {}, files: [] };
   for (const n of notes) {
     const parts = n.path.split('/');
-    if (parts.length > 1) { (folders[parts[0]] = folders[parts[0]] || []).push(n); }
-    else root.push(n);
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      node.dirs[parts[i]] = node.dirs[parts[i]] || { dirs: {}, files: [] };
+      node = node.dirs[parts[i]];
+    }
+    node.files.push(n);
   }
   let html = '';
   if (_notesFolderCreating) {
     html += `<div class="notes-folder-new-wrap"><input id="notes-folder-input" class="notes-folder-input" type="text" placeholder="Folder name…" onkeydown="_notesFolderInputKey(event)" onblur="setTimeout(_notesFolderCancel,150)" autocomplete="off"></div>`;
   }
-  for (const [folder, items] of Object.entries(folders).sort()) {
-    const open = _notesFolderOpen(folder);
-    html += `<div class="notes-folder-section">
-      <div class="notes-folder-hdr" data-folder="${esc(folder)}" onclick="_notesFolderToggle('${esc(folder)}')"
-        ondragover="_notesDragOverFolder(event,this)" ondragleave="_notesDragLeave(event,this)" ondrop="_notesDropOnFolder(event,this)">
-        <svg class="notes-folder-chevron${open?' open':''}" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 3h3.5l1.5 1.5H11v5.5H1V3Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
-        <span class="notes-folder-name">${esc(folder)}</span>
-        <span class="notes-folder-count">${items.length}</span>
-        <button class="notes-folder-add" onclick="event.stopPropagation();_notesNew('${esc(folder)}')" title="New note in ${esc(folder)}"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M5 1v8M1 5h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
-      </div>
-      ${open ? `<div class="notes-folder-items">${items.map(_notesItemHtml).join('')}</div>` : ''}
-    </div>`;
-  }
+  html += _notesRenderFolders(root.dirs, '', 0);
   // Root drop zone (only visible while dragging a note that's inside a folder)
   html += `<div class="notes-root-drop" id="notes-root-drop"
     ondragover="_notesDragOverRoot(event,this)" ondragleave="_notesDragLeave(event,this)" ondrop="_notesDropOnRoot(event,this)"></div>`;
-  html += root.map(_notesItemHtml).join('');
+  html += root.files.map(n => _notesItemHtml(n, 0)).join('');
   el.innerHTML = html || (!_notesFolderCreating ? '<div class="notes-list-empty">No notes yet</div>' : '');
+}
+
+// Count all notes within a tree node (including nested folders)
+function _notesCountFiles(node) {
+  let c = node.files.length;
+  for (const k in node.dirs) c += _notesCountFiles(node.dirs[k]);
+  return c;
+}
+
+// Recursively render folder sections. Folder open-state is keyed by FULL path
+// (e.g. "Self/Therapy") so nested folders collapse independently.
+function _notesRenderFolders(dirs, prefix, depth) {
+  let html = '';
+  for (const name of Object.keys(dirs).sort((a,b)=>a.localeCompare(b))) {
+    const node = dirs[name];
+    const fullPath = prefix ? prefix + '/' + name : name;
+    const open = _notesFolderOpen(fullPath);
+    const count = _notesCountFiles(node);
+    const pad = 10 + depth * 14;
+    html += `<div class="notes-folder-section">
+      <div class="notes-folder-hdr" data-folder="${esc(fullPath)}" style="padding-left:${pad}px;" onclick="_notesFolderToggle('${esc(fullPath)}')"
+        ondragover="_notesDragOverFolder(event,this)" ondragleave="_notesDragLeave(event,this)" ondrop="_notesDropOnFolder(event,this)">
+        <svg class="notes-folder-chevron${open?' open':''}" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 3h3.5l1.5 1.5H11v5.5H1V3Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+        <span class="notes-folder-name">${esc(name)}</span>
+        <span class="notes-folder-count">${count}</span>
+        <button class="notes-folder-add" onclick="event.stopPropagation();_notesNew('${esc(fullPath)}')" title="New note in ${esc(name)}"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M5 1v8M1 5h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      </div>
+      ${open ? `<div class="notes-folder-items">${_notesRenderFolders(node.dirs, fullPath, depth+1)}${node.files.map(n => _notesItemHtml(n, depth+1)).join('')}</div>` : ''}
+    </div>`;
+  }
+  return html;
 }
 
 function _notesSidebarUpdateActive(path) {
