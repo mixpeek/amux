@@ -80,6 +80,14 @@ def _safe_note_path(note_rel: str, base: Path = None) -> Path | None:
         return None  # traversal detected
     return candidate
 
+def _path_is_within(path: Path, base: Path) -> bool:
+    """Return True when path resolves inside base, not just under a string prefix."""
+    try:
+        path.resolve().relative_to(base.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
 # ── Filesystem access control ────────────────────────────────────────────────
 _SENSITIVE_PATHS = {".ssh", ".gnupg", ".aws", ".kube", ".netrc", ".npmrc",
                     ".docker", ".config/gcloud", ".config/gh"}
@@ -31722,13 +31730,13 @@ class CCHandler(BaseHTTPRequestHandler):
             if not file_path:
                 return self._json({"error": "path required"}, 400)
             # Security: ensure file is within download dir
-            real = os.path.realpath(file_path)
-            if not real.startswith(os.path.realpath(_ARIA2_DOWNLOAD_DIR)):
+            real = Path(file_path).expanduser().resolve()
+            if not _path_is_within(real, Path(_ARIA2_DOWNLOAD_DIR).expanduser().resolve()):
                 return self._json({"error": "forbidden"}, 403)
-            if not os.path.isfile(real):
+            if not real.is_file():
                 return self._json({"error": "file not found"}, 404)
             # Determine content type
-            ext = os.path.splitext(real)[1].lower()
+            ext = real.suffix.lower()
             ct_map = {
                 ".mp4": "video/mp4", ".mkv": "video/x-matroska", ".avi": "video/x-msvideo",
                 ".mov": "video/quicktime", ".webm": "video/webm", ".m4v": "video/mp4",
@@ -31736,7 +31744,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 ".pdf": "application/pdf",
             }
             ct = ct_map.get(ext, "application/octet-stream")
-            fsize = os.path.getsize(real)
+            fsize = real.stat().st_size
             # Support range requests for video streaming
             range_hdr = self.headers.get("Range")
             if range_hdr:
@@ -31753,7 +31761,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     self.send_header("Content-Length", str(length))
                     self.send_header("Accept-Ranges", "bytes")
                     self.end_headers()
-                    with open(real, "rb") as fp:
+                    with real.open("rb") as fp:
                         fp.seek(start)
                         remaining = length
                         while remaining > 0:
@@ -31768,10 +31776,10 @@ class CCHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", ct)
             self.send_header("Content-Length", str(fsize))
             self.send_header("Accept-Ranges", "bytes")
-            fname = os.path.basename(real)
+            fname = real.name
             self.send_header("Content-Disposition", f'inline; filename="{fname}"')
             self.end_headers()
-            with open(real, "rb") as fp:
+            with real.open("rb") as fp:
                 while True:
                     chunk = fp.read(65536)
                     if not chunk:
@@ -32055,12 +32063,11 @@ class CCHandler(BaseHTTPRequestHandler):
 
         # GET /api/release-notes — paginated JSON from docs/release-notes/notes.json
         if method == "GET" and path.startswith("/api/release-notes"):
-            qs = {}
-            if "?" in path:
-                import urllib.parse as _up
-                qs = dict(_up.parse_qsl(path.split("?", 1)[1]))
-            page = int(qs.get("page", "1"))
-            per_page = int(qs.get("per_page", "6"))
+            try:
+                page = max(1, int((qs.get("page") or ["1"])[0]))
+                per_page = max(1, min(100, int((qs.get("per_page") or ["6"])[0])))
+            except (TypeError, ValueError):
+                return self._json({"error": "invalid pagination"}, 400)
             notes_file = Path(__file__).parent / "docs" / "release-notes" / "notes.json"
             if notes_file.exists():
                 all_notes = json.loads(notes_file.read_text())
@@ -32224,7 +32231,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 sub = qs.get("path", [""])[0]
                 target = (work / sub).resolve()
                 # Prevent path traversal
-                if not str(target).startswith(str(work)):
+                if not _path_is_within(target, work):
                     return self._json({"error": "invalid path"}, 400)
                 if target.is_file():
                     try:
