@@ -5899,7 +5899,12 @@ def _auto_resume_sessions():
         name = meta_file.name.removesuffix(".meta.json")
         try:
             meta = json.loads(meta_file.read_text())
-            if meta.get("start_count", 0) > 0 and (CC_SESSIONS / f"{name}.env").exists():
+            env_file = CC_SESSIONS / f"{name}.env"
+            if meta.get("start_count", 0) > 0 and env_file.exists():
+                cfg = parse_env_file(env_file)
+                if cfg.get("CC_ARCHIVED") == "1":
+                    print(f"[auto-resume] {name}: skipped archived session")
+                    continue
                 ok, msg = start_session(name)
                 print(f"[auto-resume] {name}: {msg}")
         except Exception as e:
@@ -6516,11 +6521,8 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
         if is_running(name):
             return True, "already running"
         cfg = parse_env_file(f)
-        # Un-archive on start — prevents stale archived flag from hiding active sessions
         if cfg.get("CC_ARCHIVED") == "1":
-            lines = [l for l in f.read_text().splitlines() if "CC_ARCHIVED" not in l]
-            f.write_text("\n".join(lines) + "\n")
-            cfg.pop("CC_ARCHIVED", None)
+            return False, "session is archived; wake it first"
         work_dir = str(Path(cfg.get("CC_DIR", str(Path.home()))).expanduser().resolve())
         # Stamp this session's commits with its name (durable git trailer).
         _install_amux_commit_hook(work_dir)
@@ -36960,9 +36962,13 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                             dest.write_text(claude_file.read_text())
                 return self._json({"ok": True})
             if action == "delete":
+                cfg_del = parse_env_file(env_file) if env_file.exists() else {}
+                if cfg_del.get("CC_PINNED") == "1":
+                    slog(f"[delete-blocked] {name}: pinned session, rejecting delete from {self.client_address[0]}")
+                    return self._json({"error": "cannot delete pinned session — unpin first"}, 403)
+                slog(f"[delete] {name}: delete request from {self.client_address[0]}")
                 if is_running(name):
                     stop_session(name)
-                cfg_del = parse_env_file(env_file) if env_file.exists() else {}
                 # Clean up worktree if this session used one
                 if cfg_del.get("CC_WORKTREE") == "1":
                     wt_repo = cfg_del.get("CC_WORKTREE_REPO", "")
