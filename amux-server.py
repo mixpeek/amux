@@ -5906,6 +5906,18 @@ def _auto_resume_sessions():
             print(f"[auto-resume] {name} failed: {e}")
 
 
+def _log_pipe_command(log_path: Path) -> str:
+    """Return a tmux pipe-pane command that redacts API keys before logging."""
+    redactor = (
+        "import re,sys\n"
+        "pat=re.compile(rb'((?:mxp|usr|ret)_sk)_[A-Za-z0-9_-]+')\n"
+        "for line in sys.stdin.buffer:\n"
+        "    sys.stdout.buffer.write(pat.sub(lambda m: m.group(1)+b'_REDACTED', line))\n"
+        "    sys.stdout.buffer.flush()\n"
+    )
+    return f"python3 -c {shlex.quote(redactor)} >> {shlex.quote(str(log_path))}"
+
+
 def _attach_log_streaming():
     """Set up pipe-pane log streaming for all currently-running tmux sessions.
 
@@ -5927,7 +5939,7 @@ def _attach_log_streaming():
             pass
         subprocess.run(
             ["tmux", "pipe-pane", "-t", tmux_name(name), "-o",
-             f"cat >> {shlex.quote(str(lp))}"],
+             _log_pipe_command(lp)],
             capture_output=True, timeout=5,
         )
 
@@ -6977,7 +6989,7 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 pass
             subprocess.run(
                 ["tmux", "pipe-pane", "-t", tmux_name(name), "-o",
-                 f"cat >> {shlex.quote(str(lp))}"],
+                 _log_pipe_command(lp)],
                 capture_output=True, timeout=5,
             )
             # Migration: if we resumed via UUID and Claude is running, read session name
