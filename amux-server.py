@@ -5910,9 +5910,11 @@ def _log_pipe_command(log_path: Path) -> str:
     """Return a tmux pipe-pane command that redacts API keys before logging."""
     redactor = (
         "import re,sys\n"
-        "pat=re.compile(rb'((?:mxp|usr|ret)_sk)_[A-Za-z0-9_-]+')\n"
+        "pat=re.compile(rb'((?:mxp|usr|ret)_sk)_[A-Za-z0-9_-]+|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]+')\n"
+        "def repl(m):\n"
+        "    return m.group(1)+b'_REDACTED' if m.group(1) else b'GITHUB_TOKEN_REDACTED'\n"
         "for line in sys.stdin.buffer:\n"
-        "    sys.stdout.buffer.write(pat.sub(lambda m: m.group(1)+b'_REDACTED', line))\n"
+        "    sys.stdout.buffer.write(pat.sub(repl, line))\n"
         "    sys.stdout.buffer.flush()\n"
     )
     return f"python3 -c {shlex.quote(redactor)} >> {shlex.quote(str(log_path))}"
