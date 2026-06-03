@@ -53,6 +53,7 @@ CC_LOGS = CC_HOME / "logs"
 CC_MEMORY = CC_HOME / "memory"
 CC_BOARD_DIR = CC_HOME / "board"
 CC_UPLOADS = CC_HOME / "uploads"
+CC_BLOCKED_SESSIONS = CC_HOME / "blocked-sessions.txt"
 CC_NOTES = Path(os.environ.get("AMUX_NOTES_DIR", "")) if os.environ.get("AMUX_NOTES_DIR") else CC_HOME / "notes"
 CC_NOTES_PINS = CC_HOME / "notes" / ".pins.json"
 CC_NOTES_TRASH = CC_HOME / "notes" / ".trash"
@@ -1228,6 +1229,25 @@ def _write_env(path: Path, cfg: dict):
     for k, v in cfg.items():
         lines.append(f'{k}="{v}"')
     _atomic_write_secure(path, "\n".join(lines) + "\n")
+
+
+def _blocked_session_names() -> set[str]:
+    """Return session names quarantined from create/start/wake/auto-resume."""
+    try:
+        names = set()
+        for line in CC_BLOCKED_SESSIONS.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                names.add(line)
+        return names
+    except FileNotFoundError:
+        return set()
+    except Exception:
+        return set()
+
+
+def _is_session_blocked(name: str) -> bool:
+    return name in _blocked_session_names()
 
 
 # ═══════════════════════════════════════════
@@ -5898,6 +5918,9 @@ def _auto_resume_sessions():
     for meta_file in sorted(CC_SESSIONS.glob("*.meta.json")):
         name = meta_file.name.removesuffix(".meta.json")
         try:
+            if _is_session_blocked(name):
+                print(f"[auto-resume] {name}: skipped blocked session")
+                continue
             meta = json.loads(meta_file.read_text())
             env_file = CC_SESSIONS / f"{name}.env"
             if meta.get("start_count", 0) > 0 and env_file.exists():
@@ -6514,6 +6537,8 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
     """Start a session headless (no attach). Returns (success, message)."""
     if not _VALID_SESSION_NAME_RE.match(name):
         return False, "invalid session name"
+    if _is_session_blocked(name):
+        return False, "session is blocked; remove it from blocked-sessions.txt first"
     f = CC_SESSIONS / f"{name}.env"
     if not f.exists():
         return False, f"session '{name}' not found"
@@ -6547,12 +6572,18 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                     session_flag = f'--resume {_sid}'
                     print(f"[start] {name}: resume={cc_session_name} (uuid={_sid})")
                 elif _cc_session_exists_in_project(cc_session_name, work_dir):
-                    # Multiple sessions with this name — start fresh to avoid picker
-                    meta.pop("cc_session_name", None)
-                    meta.pop("cc_conversation_id", None)
-                    _save_meta(name, meta)
-                    session_flag = f'--name {shlex.quote(name)}'
-                    print(f"[start] {name}: fresh start (ambiguous session name '{cc_session_name}')")
+                    # Multiple sessions with this name — fall back to UUID if available
+                    if conv_id and _uuid_re.match(conv_id):
+                        conv_file = CLAUDE_HOME / "projects" / _project_name(work_dir) / f"{conv_id}.jsonl"
+                        if conv_file.exists():
+                            session_flag = f'--resume {conv_id}'
+                            print(f"[start] {name}: resume via UUID fallback (ambiguous name '{cc_session_name}', uuid={conv_id})")
+                        else:
+                            session_flag = f'--name {shlex.quote(name)}'
+                            print(f"[start] {name}: fresh start (ambiguous name, stale uuid)")
+                    else:
+                        session_flag = f'--name {shlex.quote(name)}'
+                        print(f"[start] {name}: fresh start (ambiguous session name '{cc_session_name}')")
                 else:
                     meta.pop("cc_session_name", None)
                     meta.pop("cc_conversation_id", None)
@@ -7234,6 +7265,8 @@ def archive_session(name: str) -> tuple[bool, str]:
 
 def wake_session(name: str) -> tuple[bool, str]:
     """Remove CC_ARCHIVED flag and start the session (resumes conversation via --resume)."""
+    if _is_session_blocked(name):
+        return False, "session is blocked; remove it from blocked-sessions.txt first"
     f = CC_SESSIONS / f"{name}.env"
     if not f.exists():
         return False, f"session '{name}' not found"
@@ -34516,6 +34549,10 @@ class CCHandler(BaseHTTPRequestHandler):
             if not name:
                 return self._json({"error": "missing name"}, 400)
             name = re.sub(r'[^a-zA-Z0-9_-]', '-', name)
+            if _is_session_blocked(name):
+                return self._json({
+                    "error": f"session '{name}' is blocked; remove it from blocked-sessions.txt first"
+                }, 403)
             env_file = CC_SESSIONS / f"{name}.env"
             if env_file.exists():
                 return self._json({"error": f"session '{name}' already exists"}, 409)
