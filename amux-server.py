@@ -22614,6 +22614,7 @@ let _mapSearchQ = '';
 let _mapMarkers = {};
 let _mapDropMode = false;
 let _mapMobileSidebarInited = false; // mobile: show the map (not the pin list) on first open
+let _mapServerLoaded = false; // true once we've synced from the server — guards against empty overwrites
 let _mapEditingPin = null;
 let _mapEditingTag = null;
 
@@ -22636,6 +22637,7 @@ function _mapLoad() {
     _mapTags = data.tags || [];
     _mapSettings = Object.assign(_mapSettings, data.settings || {});
     _mapGoogleKey = (data.settings || {}).googleMapsKey || '';
+    _mapServerLoaded = true; // safe to persist now that client mirrors server
     // Cache for offline
     try {
       localStorage.setItem('amux_map_pins', JSON.stringify(_mapPins));
@@ -22665,6 +22667,10 @@ function _mapSave() {
     localStorage.setItem('amux_map_tags', JSON.stringify(_mapTags));
     localStorage.setItem('amux_map_settings', JSON.stringify(_mapSettings));
   } catch(e) {}
+  // Don't push to the server until we've synced FROM it this session — prevents
+  // an empty/stale client (e.g. fetch not finished) from wiping saved pins when
+  // the map is merely panned or zoomed.
+  if (!_mapServerLoaded) return;
   var payload = { pins: _mapPins, tags: _mapTags, settings: _mapSettings };
   apiCall(API + '/api/map', {
     method: 'POST',
@@ -32536,6 +32542,19 @@ class CCHandler(BaseHTTPRequestHandler):
                 return self._json(data)
             if method == "POST":
                 body = self._read_body()
+                # Safety net: if this write would drop existing pins, snapshot
+                # the old file first so an accidental wipe is always recoverable.
+                try:
+                    if CC_MAP.exists():
+                        old = json.loads(CC_MAP.read_text())
+                        old_n = len(old.get("pins", []))
+                        new_n = len(body.get("pins", []))
+                        if old_n > 0 and new_n < old_n:
+                            ts = time.strftime("%Y%m%d-%H%M%S")
+                            CC_MAP.with_name(f"map.json.autobak-{ts}").write_text(json.dumps(old))
+                            slog(f"[map] pins {old_n}->{new_n}; snapshot saved before overwrite")
+                except Exception:
+                    pass
                 CC_MAP.write_text(json.dumps(body))
                 return self._json({"ok": True})
 
