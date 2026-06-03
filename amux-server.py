@@ -7176,8 +7176,20 @@ def stop_session(name: str) -> tuple[bool, str]:
         return True, "stopped (hard-kill)"
 
 
+def _kill_tmux_session(name: str) -> None:
+    """Best-effort removal of the tmux session backing an archived amux session."""
+    try:
+        subprocess.run(
+            ["tmux", "kill-session", "-t", tmux_name(name)],
+            capture_output=True,
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
 def archive_session(name: str) -> tuple[bool, str]:
-    """Save full tmux scrollback to log, mark CC_ARCHIVED=1, and kill the tmux pane."""
+    """Save full tmux scrollback to log, mark CC_ARCHIVED=1, and kill tmux."""
     f = CC_SESSIONS / f"{name}.env"
     if not f.exists():
         return False, f"session '{name}' not found"
@@ -7197,6 +7209,7 @@ def archive_session(name: str) -> tuple[bool, str]:
         except Exception:
             pass
         stop_session(name)
+        _kill_tmux_session(name)
     cfg = parse_env_file(f)
     cfg["CC_ARCHIVED"] = "1"
     _write_env(f, cfg)
@@ -37277,7 +37290,7 @@ def _auto_archive_idle():
 
 
 def _enforce_archived_stopped():
-    """Stop any archived sessions that still have running tmux processes."""
+    """Stop and remove any tmux processes for archived sessions."""
     stopped = []
     for env_file in sorted(CC_SESSIONS.glob("*.env")):
         name = env_file.stem
@@ -37285,6 +37298,7 @@ def _enforce_archived_stopped():
         if cfg.get("CC_ARCHIVED") == "1" and is_running(name):
             try:
                 stop_session(name)
+                _kill_tmux_session(name)
                 stopped.append(name)
             except Exception:
                 pass
