@@ -136,6 +136,28 @@ def _load_or_create_auth_token() -> str:
 
 AUTH_TOKEN = _load_or_create_auth_token()
 
+# Dedicated guard token for DESTRUCTIVE session ops (delete/archive). It is
+# embedded only in the served dashboard HTML, so a human using the dashboard
+# has it but a session/agent hitting the local API does not — this is what
+# stops sessions from deleting other sessions. Derived from the persisted
+# AUTH_TOKEN so it's stable across restarts, but distinct and never returned
+# by any API endpoint. Override for trusted automation with
+# AMUX_ALLOW_AGENT_SESSION_DELETE=1 in ~/.amux/server.env.
+import hashlib as _hashlib
+_UI_TOKEN = _hashlib.sha256(("amux-ui-guard:" + AUTH_TOKEN).encode()).hexdigest()[:40]
+
+
+def _session_destructive_allowed(headers) -> bool:
+    """True if a delete/archive is authorized: either explicit automation
+    opt-in, or the request carries the dashboard UI token (i.e. a human acting
+    in the dashboard). Sessions/agents calling the API directly have neither."""
+    if os.environ.get("AMUX_ALLOW_AGENT_SESSION_DELETE", "") in ("1", "true", "yes"):
+        return True
+    try:
+        return headers.get("X-Amux-UI-Token", "") == _UI_TOKEN
+    except Exception:
+        return False
+
 
 # ── PostHog server-side telemetry ────────────────────────────────────────────
 # Emits events for signals only the backend observes (YOLO auto-answers,
@@ -16055,14 +16077,14 @@ async function shareSession(session) {
 async function deleteSession(session) {
   closeAllMenus();
   if (!await showConfirm('Delete session "' + session + '"?', 'Delete', true)) return;
-  await apiCall(API + '/api/sessions/' + session + '/delete', { method: 'POST' });
+  await apiCall(API + '/api/sessions/' + session + '/delete', { method: 'POST', headers: { 'X-Amux-UI-Token': (window._AMUX_UI_TOKEN || '') } });
   expanded.delete(session);
   await fetchSessions();
 }
 
 async function archiveSession(session) {
   closeAllMenus();
-  const r = await apiCall(API + '/api/sessions/' + session + '/archive', { method: 'POST' });
+  const r = await apiCall(API + '/api/sessions/' + session + '/archive', { method: 'POST', headers: { 'X-Amux-UI-Token': (window._AMUX_UI_TOKEN || '') } });
   if (r) showToast(session + ' archived');
   await fetchSessions();
 }
@@ -32067,6 +32089,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 f'window._AMUX_POSTHOG_HOST={_json.dumps(os.environ.get("POSTHOG_HOST","https://us.i.posthog.com"))};'
                 f'window._AMUX_USER_EMAIL={_json.dumps(_user_email)};'
                 f'window._AMUX_USER_ID={_json.dumps(_user_id)};'
+                f'window._AMUX_UI_TOKEN={_json.dumps(_UI_TOKEN)};'
                 f'window._AMUX_DEFAULT_MODEL={_json.dumps(_get_default_model())};</script></head>',
                 1,
             )
@@ -36976,6 +36999,9 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                                        capture_output=True, timeout=5)
                 return self._json({"ok": True, "message": f"cloned as {new_name} (method: {method_used})", "started": ok})
             if action == "archive":
+                if not _session_destructive_allowed(self.headers):
+                    slog(f"[guard] archive {name} blocked — not a dashboard action, from {self.client_address[0]}")
+                    return self._json({"error": "archiving a session must be initiated by a human in the dashboard; sessions/agents cannot archive sessions (set AMUX_ALLOW_AGENT_SESSION_DELETE=1 to allow automation)"}, 403)
                 cfg_arc = parse_env_file(env_file) if env_file.exists() else {}
                 if cfg_arc.get("CC_PINNED") == "1" and not _is_session_blocked(name):
                     slog(f"[archive-blocked] {name}: pinned session, rejecting archive from {self.client_address[0]}")
@@ -37007,6 +37033,9 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                             dest.write_text(claude_file.read_text())
                 return self._json({"ok": True})
             if action == "delete":
+                if not _session_destructive_allowed(self.headers):
+                    slog(f"[guard] delete {name} blocked — not a dashboard action, from {self.client_address[0]}")
+                    return self._json({"error": "deleting a session must be initiated by a human in the dashboard; sessions/agents cannot delete sessions (set AMUX_ALLOW_AGENT_SESSION_DELETE=1 in ~/.amux/server.env to allow automation)"}, 403)
                 cfg_del = parse_env_file(env_file) if env_file.exists() else {}
                 if cfg_del.get("CC_PINNED") == "1" and not _is_session_blocked(name):
                     slog(f"[delete-blocked] {name}: pinned session, rejecting delete from {self.client_address[0]}")
