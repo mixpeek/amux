@@ -22674,7 +22674,9 @@ function _mapSave() {
   // the map is merely panned or zoomed.
   if (!_mapServerLoaded) return;
   var payload = { pins: _mapPins, tags: _mapTags, settings: _mapSettings };
-  apiCall(API + '/api/map', {
+  // ?replace=1 — the dashboard holds the full set (guarded by _mapServerLoaded),
+  // so it's authorized to replace the whole document, including deletions.
+  apiCall(API + '/api/map?replace=1', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -32544,21 +32546,57 @@ class CCHandler(BaseHTTPRequestHandler):
                 return self._json(data)
             if method == "POST":
                 body = self._read_body()
-                # Safety net: if this write would drop existing pins, snapshot
-                # the old file first so an accidental wipe is always recoverable.
-                try:
-                    if CC_MAP.exists():
-                        old = json.loads(CC_MAP.read_text())
-                        old_n = len(old.get("pins", []))
-                        new_n = len(body.get("pins", []))
-                        if old_n > 0 and new_n < old_n:
-                            ts = time.strftime("%Y%m%d-%H%M%S")
-                            CC_MAP.with_name(f"map.json.autobak-{ts}").write_text(json.dumps(old))
-                            slog(f"[map] pins {old_n}->{new_n}; snapshot saved before overwrite")
-                except Exception:
-                    pass
+                old = {}
+                if CC_MAP.exists():
+                    try: old = json.loads(CC_MAP.read_text())
+                    except Exception: old = {}
+                old_n = len(old.get("pins", []))
+                new_n = len(body.get("pins", []))
+                replace = qs.get("replace", ["0"])[0] in ("1", "true", "yes")
+                # Guard: POST /api/map replaces the WHOLE map document. Refuse a
+                # write that drops existing pins unless ?replace=1 is passed (the
+                # dashboard passes it — it always holds the full authoritative
+                # set). This stops a naive partial POST (e.g. a session adding
+                # one pin) from wiping everything. To ADD a pin, use the
+                # additive POST /api/map/pins endpoint below.
+                if old_n > 0 and new_n < old_n and not replace:
+                    return self._json({
+                        "error": (f"refusing to drop pins {old_n}->{new_n}: POST /api/map replaces the "
+                                  f"whole map. To ADD a pin use POST /api/map/pins; to intentionally "
+                                  f"replace everything pass ?replace=1"),
+                        "existing_pins": old_n, "submitted_pins": new_n,
+                    }, 409)
+                # Safety net: snapshot before any shrink so a wipe is recoverable.
+                if old_n > 0 and new_n < old_n:
+                    try:
+                        ts = time.strftime("%Y%m%d-%H%M%S")
+                        CC_MAP.with_name(f"map.json.autobak-{ts}").write_text(json.dumps(old))
+                        slog(f"[map] pins {old_n}->{new_n}; snapshot saved before overwrite")
+                    except Exception:
+                        pass
                 CC_MAP.write_text(json.dumps(body))
                 return self._json({"ok": True})
+
+        # Additive pin endpoint — append a pin without touching existing ones.
+        # The SAFE way for sessions/agents to add a map pin.
+        if path == "/api/map/pins" and method == "POST":
+            body = self._read_body()
+            data = {"pins": [], "tags": [], "settings": {}}
+            if CC_MAP.exists():
+                try: data = json.loads(CC_MAP.read_text())
+                except Exception: pass
+            data.setdefault("pins", [])
+            pin = body.get("pin") if isinstance(body.get("pin"), dict) else body
+            if pin.get("lat") is None or pin.get("lng") is None:
+                return self._json({"error": "pin requires lat and lng"}, 400)
+            if not pin.get("id"):
+                pin["id"] = "pin_" + str(int(time.time() * 1000))
+            pin.setdefault("name", pin.get("title", "") or "Pin")
+            pin.setdefault("tags", [])
+            pin.setdefault("desc", "")
+            data["pins"].append(pin)
+            CC_MAP.write_text(json.dumps(data))
+            return self._json({"ok": True, "pin": pin, "total_pins": len(data["pins"])})
 
         # Map place search proxy (/api/map/search)
         if path == "/api/map/search" and method == "GET":
