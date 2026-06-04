@@ -3577,6 +3577,10 @@ def _init_db():
         # trigger_on is a comma-separated set of event names (e.g. 'session_idle,board').
         "ALTER TABLE schedules ADD COLUMN trigger_on TEXT",
         "ALTER TABLE schedules ADD COLUMN trigger_cooldown INTEGER NOT NULL DEFAULT 120",
+        # Optional comma-separated allowlist of sessions whose events count for this
+        # trigger (empty/null = any session). Scopes session_idle to e.g. the sessions
+        # an orchestrator manages, so unrelated fleet activity doesn't wake it.
+        "ALTER TABLE schedules ADD COLUMN trigger_sessions TEXT",
         "ALTER TABLE graph_nodes ADD COLUMN source_path TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE issues ADD COLUMN gcal_event_id TEXT",
         "ALTER TABLE issues ADD COLUMN pos REAL NOT NULL DEFAULT 0",
@@ -4691,8 +4695,17 @@ def _drain_and_fire_sched_events(now: float):
             triggers = {t.strip() for t in (s.get("trigger_on") or "").split(",") if t.strip()}
             if not triggers:
                 continue
-            # Re-arm if any drained event matches and isn't from this schedule's own session.
-            if any(et in triggers and not (src and s.get("session") == src) for (et, src, _ts) in events):
+            allow = {t.strip() for t in (s.get("trigger_sessions") or "").split(",") if t.strip()}
+            def _matches(et, src):
+                if et not in triggers:
+                    return False
+                if src and s.get("session") == src:      # never self-trigger
+                    return False
+                if allow and src and src not in allow:    # scoped: source must be allowlisted
+                    return False
+                return True
+            # Re-arm if any drained event matches.
+            if any(_matches(et, src) for (et, src, _ts) in events):
                 cooldown = int(s.get("trigger_cooldown") or 120)
                 fire_at = max(now, _sched_last_fire.get(s["id"], 0) + cooldown)
                 cur = _sched_event_armed.get(s["id"])
@@ -13104,7 +13117,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         </label>
       </div>
       <div id="sched-trigger-cooldown-field" style="display:none;margin-top:6px;">
-        <label class="field-label">Trigger cooldown <span class="field-optional">(min seconds between event-fired runs)</span></label>
+        <label class="field-label">Only these sessions <span class="field-optional">(comma-separated; blank = any session)</span></label>
+        <input id="sched-trigger-sessions" type="text" placeholder="e.g. backend, mvs-infra, ts-gke" autocomplete="off" style="width:100%;box-sizing:border-box;">
+        <label class="field-label" style="margin-top:6px;">Trigger cooldown <span class="field-optional">(min seconds between event-fired runs)</span></label>
         <input id="sched-trigger-cooldown" type="number" min="10" max="3600" value="120" style="width:100px;">
       </div>
       <div style="font-size:0.65rem;color:var(--dim);margin-top:2px;">This schedule's own session is never counted as a trigger, so it can't loop on itself.</div>
@@ -24654,6 +24669,7 @@ function openSchedModal(editId) {
       document.getElementById('sched-trigger-idle').checked = trig.includes('session_idle');
       document.getElementById('sched-trigger-board').checked = trig.includes('board');
       document.getElementById('sched-trigger-cooldown').value = s.trigger_cooldown || 120;
+      document.getElementById('sched-trigger-sessions').value = s.trigger_sessions || '';
     }
     document.getElementById('sched-save-btn').textContent = 'Update';
   } else {
@@ -24670,6 +24686,7 @@ function openSchedModal(editId) {
     document.getElementById('sched-trigger-idle').checked = false;
     document.getElementById('sched-trigger-board').checked = false;
     document.getElementById('sched-trigger-cooldown').value = 120;
+    document.getElementById('sched-trigger-sessions').value = '';
     document.getElementById('sched-save-btn').textContent = 'Save';
   }
   updateSchedTypeUI();
@@ -24720,10 +24737,11 @@ async function saveSchedModal() {
   if (document.getElementById('sched-trigger-idle').checked) trig.push('session_idle');
   if (document.getElementById('sched-trigger-board').checked) trig.push('board');
   const triggerCooldown = parseInt(document.getElementById('sched-trigger-cooldown').value) || 120;
+  const triggerSessions = document.getElementById('sched-trigger-sessions').value.split(',').map(x => x.trim()).filter(Boolean).join(',');
   const payload = { title, session, kind, command, sched_type: stype, recurrence: recurrence || null, run_at,
                     schedule_expr: schedExpr || null,
                     watch, done_pattern: donePattern || null, done_action: doneAction, watch_timeout: watchTimeout,
-                    trigger_on: trig.join(','), trigger_cooldown: triggerCooldown };
+                    trigger_on: trig.join(','), trigger_cooldown: triggerCooldown, trigger_sessions: triggerSessions };
   const url = _schedEditId ? API + '/api/schedules/' + _schedEditId : API + '/api/schedules';
   const method = _schedEditId ? 'PATCH' : 'POST';
   const r = await apiCall(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
@@ -34496,6 +34514,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     "done_action": data.get("done_action") or "disable",
                     "trigger_on": (data.get("trigger_on") or "").strip() or None,
                     "trigger_cooldown": int(data.get("trigger_cooldown") or 120),
+                    "trigger_sessions": (data.get("trigger_sessions") or "").strip() or None,
                     "created": now_ts, "updated": now_ts, "deleted": None,
                 }
                 # compute next_run — prefer schedule_expr if provided
@@ -34508,16 +34527,16 @@ class CCHandler(BaseHTTPRequestHandler):
                 db.execute(
                     """INSERT INTO schedules (id,title,session,command,kind,sched_type,recurrence,
                        run_at,next_run,last_run,enabled,run_count,schedule_expr,
-                       watch,watch_timeout,done_pattern,done_action,trigger_on,trigger_cooldown,
+                       watch,watch_timeout,done_pattern,done_action,trigger_on,trigger_cooldown,trigger_sessions,
                        created,updated,deleted)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (sched["id"], sched["title"], sched["session"], sched["command"], sched["kind"],
                      sched["sched_type"], sched["recurrence"], sched["run_at"],
                      sched["next_run"], sched["last_run"], sched["enabled"],
                      sched["run_count"], sched["schedule_expr"],
                      sched["watch"], sched["watch_timeout"],
                      sched["done_pattern"], sched["done_action"],
-                     sched["trigger_on"], sched["trigger_cooldown"],
+                     sched["trigger_on"], sched["trigger_cooldown"], sched["trigger_sessions"],
                      sched["created"], sched["updated"], sched["deleted"])
                 )
                 db.commit()
@@ -34574,7 +34593,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 sched = _sched_row_to_dict(row, cols)
                 body = self._read_body()
                 for k in ("title","session","command","kind","sched_type","recurrence","run_at","enabled","schedule_expr",
-                          "watch","watch_timeout","done_pattern","done_action","trigger_on","trigger_cooldown"):
+                          "watch","watch_timeout","done_pattern","done_action","trigger_on","trigger_cooldown","trigger_sessions"):
                     if k in body:
                         sched[k] = body[k]
                 expr = (sched.get("schedule_expr") or "").strip()
@@ -34585,10 +34604,11 @@ class CCHandler(BaseHTTPRequestHandler):
                     sched["next_run"] = _next_run_dt(sched) or sched.get("run_at", "")
                 sched["updated"] = int(_time.time())
                 _trig = (sched.get("trigger_on") or "").strip() or None
+                _trig_sess = (sched.get("trigger_sessions") or "").strip() or None
                 db.execute(
                     """UPDATE schedules SET title=?,session=?,command=?,kind=?,sched_type=?,recurrence=?,
                        run_at=?,next_run=?,enabled=?,schedule_expr=?,
-                       watch=?,watch_timeout=?,done_pattern=?,done_action=?,trigger_on=?,trigger_cooldown=?,
+                       watch=?,watch_timeout=?,done_pattern=?,done_action=?,trigger_on=?,trigger_cooldown=?,trigger_sessions=?,
                        updated=? WHERE id=?""",
                     (sched["title"], sched["session"], sched["command"], sched.get("kind") or "tmux",
                      sched["sched_type"],
@@ -34596,7 +34616,7 @@ class CCHandler(BaseHTTPRequestHandler):
                      sched["enabled"], sched.get("schedule_expr"),
                      int(sched.get("watch") or 0), int(sched.get("watch_timeout") or 120),
                      sched.get("done_pattern"), sched.get("done_action") or "disable",
-                     _trig, int(sched.get("trigger_cooldown") or 120),
+                     _trig, int(sched.get("trigger_cooldown") or 120), _trig_sess,
                      sched["updated"], sched_id)
                 )
                 db.commit()
