@@ -3572,6 +3572,11 @@ def _init_db():
         "ALTER TABLE schedules ADD COLUMN watch_timeout INTEGER NOT NULL DEFAULT 120",
         "ALTER TABLE schedules ADD COLUMN done_pattern TEXT",
         "ALTER TABLE schedules ADD COLUMN done_action TEXT NOT NULL DEFAULT 'disable'",
+        # Event triggers: wake a schedule's session when something changes (closed-loop
+        # orchestration), in addition to (not instead of) the cron schedule_expr heartbeat.
+        # trigger_on is a comma-separated set of event names (e.g. 'session_idle,board').
+        "ALTER TABLE schedules ADD COLUMN trigger_on TEXT",
+        "ALTER TABLE schedules ADD COLUMN trigger_cooldown INTEGER NOT NULL DEFAULT 120",
         "ALTER TABLE graph_nodes ADD COLUMN source_path TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE issues ADD COLUMN gcal_event_id TEXT",
         "ALTER TABLE issues ADD COLUMN pos REAL NOT NULL DEFAULT 0",
@@ -4011,7 +4016,7 @@ def _auto_create_board_issue(session_name: str, title: str, prompt_text: str):
             db.execute("UPDATE issues SET title=?, status='doing', updated=? WHERE id=?",
                        (title, now, existing["id"]))
             db.commit()
-            _sse_cache["board"]["time"] = 0
+            _board_changed()
             _append_board_log(existing["id"], f"New task: {prompt_text[:200]}")
             return
         # Create new issue
@@ -4023,7 +4028,7 @@ def _auto_create_board_issue(session_name: str, title: str, prompt_text: str):
             (item_id, title, f"**Prompt:** {prompt_text[:300]}", session_name, now, now),
         )
         db.commit()
-        _sse_cache["board"]["time"] = 0
+        _board_changed()
     except Exception as e:
         print(f"[board] auto-create failed for {session_name}: {e}", flush=True)
 
@@ -4041,7 +4046,7 @@ def _append_board_log(issue_id: str, line: str):
         db.execute("UPDATE issues SET desc=?, updated=? WHERE id=?",
                    (desc, int(time.time()), issue_id))
         db.commit()
-        _sse_cache["board"]["time"] = 0
+        _board_changed()
     except Exception:
         pass
 
@@ -4089,7 +4094,7 @@ def _complete_session_board_issue(session_name: str):
             _append_board_log(row["id"], "Session completed")
             db.execute("UPDATE issues SET status='done', updated=? WHERE id=?", (now, row["id"]))
         db.commit()
-        _sse_cache["board"]["time"] = 0
+        _board_changed()
     except Exception:
         pass
 
@@ -4113,7 +4118,7 @@ def _pickup_next_board_task(session_name: str):
         now = int(time.time())
         db.execute("UPDATE issues SET status='doing', updated=? WHERE id=?", (now, item_id))
         db.commit()
-        _sse_cache["board"]["time"] = 0
+        _board_changed()
         _append_board_log(item_id, "Auto-picked up from queue")
         prompt = title
         if desc:
@@ -4625,6 +4630,84 @@ def _next_run_dt(sched):
     return base.strftime("%Y-%m-%dT%H:%M")
 
 
+# ── Event-triggered schedules (closed-loop orchestration) ────────────────────
+# amux is a dumb substrate here: it only records that *something changed* (a
+# worker session went idle, the board changed) and arms a debounced wake-up of
+# any schedule subscribed to that event. The target session (e.g. an
+# orchestrator) decides what to do — no task semantics live in the server.
+_sched_event_lock = threading.Lock()
+_sched_pending_events: list = []          # [(event_type, source_session|None, ts)] — hot-path append only
+_sched_event_armed: dict = {}             # sched_id -> epoch when an event-triggered run should fire
+_sched_last_fire: dict = {}               # sched_id -> epoch of last fire (event OR cron), for cooldown
+
+# Recognized event types (kept deliberately generic / model-agnostic).
+SCHED_EVENT_TYPES = ("session_idle", "board")
+
+def _board_changed():
+    """Invalidate the board SSE cache and emit a closed-loop 'board' event.
+    (Written without the literal cache-assignment substring so the bulk
+    replace that routed all board writes here didn't rewrite this body too.)"""
+    _bc = _sse_cache["board"]
+    _bc["time"] = 0
+    _fire_schedule_event("board")
+
+def _fire_schedule_event(event_type: str, source_session: str | None = None):
+    """Record an orchestration event. Hot-path safe: just appends under a lock,
+    no DB access. The scheduler loop drains and matches these against schedules'
+    trigger_on sets. `source_session` (when known) is excluded from matching so a
+    schedule's own session can never trigger itself into a loop."""
+    try:
+        with _sched_event_lock:
+            _sched_pending_events.append((event_type, source_session, time.time()))
+            if len(_sched_pending_events) > 1000:      # backstop against unbounded growth
+                del _sched_pending_events[:500]
+    except Exception:
+        pass
+
+def _drain_and_fire_sched_events(now: float):
+    """Drain pending events, arm matching schedules (debounced + cooldown-guarded),
+    then fire any armed schedules that are due. Called from the 1s scheduler tick."""
+    from datetime import datetime
+    with _sched_event_lock:
+        events = _sched_pending_events[:]
+        _sched_pending_events.clear()
+    db = get_db()
+    cols = [d[0] for d in db.execute("SELECT * FROM schedules LIMIT 0").description]
+    if events:
+        rows = db.execute(
+            "SELECT * FROM schedules WHERE deleted IS NULL AND enabled=1 "
+            "AND trigger_on IS NOT NULL AND trigger_on != ''"
+        ).fetchall()
+        for row in rows:
+            s = dict(zip(cols, row))
+            triggers = {t.strip() for t in (s.get("trigger_on") or "").split(",") if t.strip()}
+            if not triggers:
+                continue
+            # Re-arm if any drained event matches and isn't from this schedule's own session.
+            if any(et in triggers and not (src and s.get("session") == src) for (et, src, _ts) in events):
+                cooldown = int(s.get("trigger_cooldown") or 120)
+                fire_at = max(now, _sched_last_fire.get(s["id"], 0) + cooldown)
+                cur = _sched_event_armed.get(s["id"])
+                if cur is None or fire_at < cur:
+                    _sched_event_armed[s["id"]] = fire_at
+    # Fire armed triggers that have come due.
+    if _sched_event_armed:
+        for sid in [k for k, t in list(_sched_event_armed.items()) if t <= now]:
+            _sched_event_armed.pop(sid, None)
+            row = db.execute(
+                "SELECT * FROM schedules WHERE id=? AND deleted IS NULL AND enabled=1", (sid,)
+            ).fetchone()
+            if not row:
+                continue
+            s = dict(zip(cols, row))
+            _sched_last_fire[sid] = now
+            slog(f"[sched] event-trigger firing '{s['title']}' → {s.get('session')}")
+            _run_schedule(s)
+            db.execute("UPDATE schedules SET last_run=?, updated=? WHERE id=?",
+                       (datetime.now().strftime("%Y-%m-%dT%H:%M"), int(now), sid))
+            db.commit()
+
+
 def _run_schedule(sched):
     """Execute a schedule entry — send message to tmux session (kind='tmux')
     or run as shell command (kind='shell'). Logs the run.
@@ -4784,6 +4867,13 @@ def _scheduler_loop():
                 job["next_run"] = now + job["interval"]
                 threading.Thread(target=job["func"], daemon=True, name=job["name"]).start()
 
+        # ── 1b. Event-triggered schedules (closed-loop wake-ups) ──────────────
+        # Runs every tick (not gated by the 10s DB-check) so events fire promptly.
+        try:
+            _drain_and_fire_sched_events(now)
+        except Exception as e:
+            slog(f"[sched] event-trigger error: {e}")
+
         # ── 2. DB-backed user schedules (tmux commands) ───────────────────────
         if now - _last_db_check < _DB_CHECK_INTERVAL:
             continue
@@ -4799,6 +4889,7 @@ def _scheduler_loop():
             for row in due:
                 sched = dict(zip(cols, row))
                 _run_schedule(sched)
+                _sched_last_fire[sched["id"]] = now  # cron fire counts toward event cooldown
                 now_ts = int(time.time())
                 if sched["sched_type"] == "once":
                     db.execute("UPDATE schedules SET enabled=0, last_run=?, updated=? WHERE id=?",
@@ -5434,6 +5525,9 @@ def list_sessions() -> list:
             # Detect session becoming idle → auto-complete board issue, then pick up next queued task
             prev = _session_prev_status.get(name)
             if status == "idle" and prev in ("active", "waiting"):
+                # A worker finished a turn → emit a closed-loop event so any
+                # orchestrator schedule subscribed to 'session_idle' can wake.
+                _fire_schedule_event("session_idle", source_session=name)
                 def _complete_then_pickup(sname=name):
                     _complete_session_board_issue(sname)
                     _pickup_next_board_task(sname)
@@ -34018,7 +34112,7 @@ class CCHandler(BaseHTTPRequestHandler):
                         (item_id, tag),
                     )
                 db.commit()
-                _sse_cache["board"]["time"] = 0  # invalidate SSE cache
+                _board_changed()  # invalidate SSE cache
                 item = _item_by_id(item_id)
                 _push_ical_bg()
                 if due:
@@ -34043,7 +34137,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     "UPDATE issues SET deleted = ? WHERE status = 'done' AND deleted IS NULL", (now,)
                 )
                 db.commit()
-                _sse_cache["board"]["time"] = 0
+                _board_changed()
                 remaining = db.execute(
                     "SELECT COUNT(*) FROM issues WHERE deleted IS NULL"
                 ).fetchone()[0]
@@ -34104,7 +34198,7 @@ class CCHandler(BaseHTTPRequestHandler):
                         "UPDATE issues SET status = 'todo' WHERE status = ? AND deleted IS NULL", (sid,)
                     )
                     db.commit()
-                    _sse_cache["board"]["time"] = 0
+                    _board_changed()
                     return self._json({"ok": True})
                 if method == "PATCH":
                     body = self._read_body()
@@ -34159,7 +34253,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 db.commit()
                 if cur.rowcount == 0:
                     return self._json({"error": "claim failed — taken by another session"}, 409)
-                _sse_cache["board"]["time"] = 0
+                _board_changed()
                 return self._json(_item_by_id(bid))
 
             # PATCH/DELETE /api/board/<id>
@@ -34208,7 +34302,7 @@ class CCHandler(BaseHTTPRequestHandler):
                                     (bid, tag),
                                 )
                     db.commit()
-                    _sse_cache["board"]["time"] = 0
+                    _board_changed()
                     _push_ical_bg()
                     updated_item = _item_by_id(bid)
                     _gcal_sync_bg(bid, title=updated_item.get("title", ""),
@@ -34229,7 +34323,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     now = int(time.time())
                     db.execute("UPDATE issues SET deleted = ? WHERE id = ?", (now, bid))
                     db.commit()
-                    _sse_cache["board"]["time"] = 0
+                    _board_changed()
                     _push_ical_bg()
                     _gcal_sync_bg(bid, deleted=True)
                     return self._json({"ok": True, "deleted": bid})
@@ -34307,6 +34401,8 @@ class CCHandler(BaseHTTPRequestHandler):
                     "watch_timeout": int(data.get("watch_timeout") or 120),
                     "done_pattern": data.get("done_pattern") or None,
                     "done_action": data.get("done_action") or "disable",
+                    "trigger_on": (data.get("trigger_on") or "").strip() or None,
+                    "trigger_cooldown": int(data.get("trigger_cooldown") or 120),
                     "created": now_ts, "updated": now_ts, "deleted": None,
                 }
                 # compute next_run — prefer schedule_expr if provided
@@ -34319,15 +34415,16 @@ class CCHandler(BaseHTTPRequestHandler):
                 db.execute(
                     """INSERT INTO schedules (id,title,session,command,kind,sched_type,recurrence,
                        run_at,next_run,last_run,enabled,run_count,schedule_expr,
-                       watch,watch_timeout,done_pattern,done_action,
+                       watch,watch_timeout,done_pattern,done_action,trigger_on,trigger_cooldown,
                        created,updated,deleted)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (sched["id"], sched["title"], sched["session"], sched["command"], sched["kind"],
                      sched["sched_type"], sched["recurrence"], sched["run_at"],
                      sched["next_run"], sched["last_run"], sched["enabled"],
                      sched["run_count"], sched["schedule_expr"],
                      sched["watch"], sched["watch_timeout"],
                      sched["done_pattern"], sched["done_action"],
+                     sched["trigger_on"], sched["trigger_cooldown"],
                      sched["created"], sched["updated"], sched["deleted"])
                 )
                 db.commit()
@@ -34384,7 +34481,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 sched = _sched_row_to_dict(row, cols)
                 body = self._read_body()
                 for k in ("title","session","command","kind","sched_type","recurrence","run_at","enabled","schedule_expr",
-                          "watch","watch_timeout","done_pattern","done_action"):
+                          "watch","watch_timeout","done_pattern","done_action","trigger_on","trigger_cooldown"):
                     if k in body:
                         sched[k] = body[k]
                 expr = (sched.get("schedule_expr") or "").strip()
@@ -34394,10 +34491,11 @@ class CCHandler(BaseHTTPRequestHandler):
                 else:
                     sched["next_run"] = _next_run_dt(sched) or sched.get("run_at", "")
                 sched["updated"] = int(_time.time())
+                _trig = (sched.get("trigger_on") or "").strip() or None
                 db.execute(
                     """UPDATE schedules SET title=?,session=?,command=?,kind=?,sched_type=?,recurrence=?,
                        run_at=?,next_run=?,enabled=?,schedule_expr=?,
-                       watch=?,watch_timeout=?,done_pattern=?,done_action=?,
+                       watch=?,watch_timeout=?,done_pattern=?,done_action=?,trigger_on=?,trigger_cooldown=?,
                        updated=? WHERE id=?""",
                     (sched["title"], sched["session"], sched["command"], sched.get("kind") or "tmux",
                      sched["sched_type"],
@@ -34405,6 +34503,7 @@ class CCHandler(BaseHTTPRequestHandler):
                      sched["enabled"], sched.get("schedule_expr"),
                      int(sched.get("watch") or 0), int(sched.get("watch_timeout") or 120),
                      sched.get("done_pattern"), sched.get("done_action") or "disable",
+                     _trig, int(sched.get("trigger_cooldown") or 120),
                      sched["updated"], sched_id)
                 )
                 db.commit()
@@ -37718,7 +37817,7 @@ def _db_maintenance():
         extra = ""
         if archived:
             extra += f", archived {archived} done board tasks"
-            _sse_cache["board"]["time"] = 0
+            _board_changed()
         if purged:
             extra += f", purged {purged} old deleted tasks"
         slog(f"[cleanup] database maintenance: WAL checkpoint + optimize{extra}")
