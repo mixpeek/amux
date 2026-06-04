@@ -13412,6 +13412,18 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div><!-- /peek-split-wrap -->
   <!-- Steering queue panel -->
   <div id="peek-steering-panel" class="peek-tasks-panel">
+    <div style="flex-shrink:0;border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;background:rgba(255,255,255,0.02);">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span style="font-size:0.8rem;font-weight:600;">Standing instructions</span>
+        <span style="font-size:0.68rem;color:var(--dim);flex:1;">Re-sent automatically whenever this session (re)starts — survives compaction.</span>
+      </div>
+      <textarea id="peek-instructions" rows="3" placeholder="e.g. Act autonomously — don't ask the user for permission or direction. Execute best practices for your mandate; pick the lowest-risk option. Record progress as evidence on your board items. Escalate only to the orchestrator if blocked outside your scope." style="width:100%;font-size:0.78rem;resize:vertical;box-sizing:border-box;"></textarea>
+      <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px;align-items:center;">
+        <span id="peek-instructions-status" style="flex:1;font-size:0.7rem;color:var(--dim);"></span>
+        <button class="btn" style="font-size:0.75rem;padding:4px 12px;" onclick="savePeekInstructions(false)">Save</button>
+        <button class="btn primary" style="font-size:0.75rem;padding:4px 12px;" onclick="savePeekInstructions(true)" title="Save and send to the session now">Save &amp; apply now</button>
+      </div>
+    </div>
     <div class="peek-tasks-add" style="gap:10px;">
       <span id="peek-steering-count" style="flex:1;font-size:0.82rem;color:var(--dim);align-self:center;"></span>
       <button class="btn" style="font-size:0.8rem;padding:5px 12px;" onclick="_steeringClearAll()">Clear all</button>
@@ -16470,7 +16482,7 @@ function setPeekTab(tab) {
   document.getElementById('peek-terminal-panel').style.display = tab === 'terminal' ? '' : 'none';
   document.getElementById('peek-split-wrap').style.display = tab === 'terminal' ? '' : 'none';
   const steering = document.getElementById('peek-steering-panel');
-  if (tab === 'steering') { steering.classList.add('active'); _steeringRender(); }
+  if (tab === 'steering') { steering.classList.add('active'); _steeringRender(); loadPeekInstructions(); }
   else { steering.classList.remove('active'); }
   const issues = document.getElementById('peek-issues-panel');
   if (tab === 'issues') { issues.classList.add('active'); renderPeekIssues(); }
@@ -16487,6 +16499,36 @@ function setPeekTab(tab) {
   const notes = document.getElementById('peek-notes-panel');
   if (tab === 'notes') { notes.classList.add('active'); _peekNotesLoad(); }
   else { notes.classList.remove('active'); }
+}
+
+// ── Standing instructions (autonomy config) ──
+async function loadPeekInstructions() {
+  if (!peekSession) return;
+  const ta = document.getElementById('peek-instructions');
+  const status = document.getElementById('peek-instructions-status');
+  if (!ta) return;
+  if (status) status.textContent = '';
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/instructions');
+    const d = await r.json();
+    if (peekSession && document.getElementById('peek-instructions'))
+      document.getElementById('peek-instructions').value = d.instructions || '';
+  } catch(e) {}
+}
+async function savePeekInstructions(apply) {
+  if (!peekSession) return;
+  const ta = document.getElementById('peek-instructions');
+  const status = document.getElementById('peek-instructions-status');
+  const body = { instructions: ta.value };
+  if (apply) body.apply = true;
+  const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/instructions', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+  });
+  if (r && status) {
+    const d = await r.json().catch(() => ({}));
+    status.textContent = d.applied ? 'Saved & sent to session' : 'Saved';
+    setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+  }
 }
 
 // ── Steering panel ──
