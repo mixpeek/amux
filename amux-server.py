@@ -34454,6 +34454,24 @@ class CCHandler(BaseHTTPRequestHandler):
                         "SELECT session, status, owner_type FROM issues WHERE id = ?", (bid,)
                     ).fetchone()
                     prior_session = prior["session"] if prior else None
+                    # Verify-gate: 'verified' means the work is committed & deployed, so block
+                    # the transition while the owning session's tree is dirty. The orchestrator
+                    # (or anyone) can override with {"force": true} if the dirt is unrelated to
+                    # this task — judgment stays with the caller; amux just enforces the default.
+                    if (body.get("status") == "verified" and prior and prior["status"] != "verified"
+                            and not body.get("force")):
+                        eff_session = body.get("session") if "session" in body else prior_session
+                        wd = _session_work_dir(eff_session) if eff_session else None
+                        if wd:
+                            dirty = _session_dirty_files(eff_session, wd)
+                            if dirty:
+                                return self._json({
+                                    "error": "session has uncommitted changes; commit before "
+                                             "verifying, or pass force=true if unrelated to this task",
+                                    "session": eff_session,
+                                    "dirty_count": len(dirty),
+                                    "dirty_files": dirty[:20],
+                                }, 409)
                     set_clauses, params = [], []
                     for k in ("title", "desc", "status", "session", "due", "due_time", "owner_type", "pinned", "pos"):
                         if k in body:
@@ -36995,6 +37013,11 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 return self._json(info)
             if action == "instructions":
                 return self._json({"name": name, "instructions": _session_instructions(name)})
+            if action == "dirty":
+                wd = _session_work_dir(name)
+                files = _session_dirty_files(name, wd) if wd else []
+                return self._json({"name": name, "dirty": bool(files),
+                                   "count": len(files), "files": files[:50]})
             if action == "meta":
                 cfg = parse_env_file(env_file)
                 meta = _load_meta(name)
