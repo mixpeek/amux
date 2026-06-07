@@ -27,12 +27,17 @@ from urllib.parse import urlparse, parse_qs, unquote
 for _cv in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
     os.environ.pop(_cv, None)
 
-# Support both ~/.amux (new) and legacy dirs for migration
-_amux_home = Path.home() / ".amux"
-for _old_home in [Path.home() / ".cmux", Path.home() / ".cc"]:
-    if not _amux_home.exists() and _old_home.exists():
-        _old_home.rename(_amux_home)
-        break
+# Home directory for all amux state. Override with AMUX_HOME (preferred) or the
+# legacy CC_HOME — both read from the *process* env, since server.env lives inside
+# this dir and therefore can't choose it. Defaults to ~/.amux.
+_env_home = os.environ.get("AMUX_HOME") or os.environ.get("CC_HOME")
+_amux_home = Path(_env_home).expanduser() if _env_home else Path.home() / ".amux"
+# Migrate legacy default dirs only when using the default location.
+if not _env_home:
+    for _old_home in [Path.home() / ".cmux", Path.home() / ".cc"]:
+        if not _amux_home.exists() and _old_home.exists():
+            _old_home.rename(_amux_home)
+            break
 
 # Load ~/.amux/server.env before reading any env vars (persistent server config)
 # server.env values OVERRIDE process env — user-saved settings (e.g. API keys
@@ -47,7 +52,7 @@ if _server_env_file.exists():
             if _v:  # only override if value is non-empty
                 os.environ[_k] = _v
 
-CC_HOME = Path(os.environ.get("CC_HOME", _amux_home))
+CC_HOME = _amux_home
 CC_SESSIONS = CC_HOME / "sessions"
 CC_LOGS = CC_HOME / "logs"
 CC_MEMORY = CC_HOME / "memory"
@@ -501,7 +506,7 @@ def _bu_list_profiles() -> list:
 
 def _bu_screenshot(session: str = "amux", path: str = "", retries: int = 3) -> dict:
     """Take a screenshot, return {path, size}. Retries on SessionManager errors."""
-    dest = path or str(Path.home() / ".amux" / "browser-screenshots" / "latest.jpg")
+    dest = path or str(CC_HOME / "browser-screenshots" / "latest.jpg")
     Path(dest).parent.mkdir(parents=True, exist_ok=True)
     for attempt in range(retries):
         result = _bu_call(["screenshot", dest], session=session)
@@ -36997,12 +37002,12 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
 
             # GET /api/browser/pw-profiles — list Playwright auth profiles
             if method == "GET" and path == "/api/browser/pw-profiles":
-                pw_dir = Path.home() / ".amux" / "playwright-auth" / "profiles"
+                pw_dir = CC_HOME / "playwright-auth" / "profiles"
                 profiles = set()
                 if pw_dir.is_dir():
                     profiles = {p.name for p in pw_dir.iterdir() if p.is_dir()}
                 # Also include default profile
-                default_dir = Path.home() / ".amux" / "playwright-auth" / "profile"
+                default_dir = CC_HOME / "playwright-auth" / "profile"
                 if default_dir.is_dir():
                     profiles.add("default")
                 return self._json({"profiles": sorted(profiles)})
@@ -37015,7 +37020,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     return self._json({"error": "name required"}, 400)
                 session = body.get("session", "amux")
                 # Save current browser-use session cookies to a Playwright auth profile
-                dest = Path.home() / ".amux" / "playwright-auth" / "profiles" / name
+                dest = CC_HOME / "playwright-auth" / "profiles" / name
                 dest.mkdir(parents=True, exist_ok=True)
                 try:
                     result = _bu_call(["save-cookies", str(dest)], session=session, timeout_s=15)
