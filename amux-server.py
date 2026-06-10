@@ -13323,51 +13323,59 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 
 <!-- Schedule modal -->
 <div id="sched-overlay" class="board-edit-overlay" onclick="if(event.target===this)closeSchedModal()" style="display:none;">
-  <div class="board-edit-box" style="max-width:700px;width:100%;">
-    <div style="font-weight:600;font-size:0.9rem;margin-bottom:10px;">&#x23F0; Scheduled Task</div>
-    <div class="field-group">
-      <label class="field-label">Title</label>
-      <input id="sched-title" type="text" placeholder="What should run?" autocomplete="off">
-    </div>
-    <div style="display:flex;gap:12px;">
-      <div class="field-group" style="flex:1;">
-        <label class="field-label">Kind</label>
-        <select id="sched-kind" class="board-detail-session-select" style="width:100%;" onchange="updateSchedKindUI()">
-          <option value="tmux">Send to session (Claude)</option>
-          <option value="shell">Run shell command</option>
-        </select>
+  <div class="board-edit-box" style="max-width:640px;width:100%;height:82dvh;padding:0;overflow:hidden;display:flex;flex-direction:column;">
+    <!-- Header: title, kind, session -->
+    <div style="padding:14px 16px 10px;flex-shrink:0;border-bottom:1px solid var(--border);">
+      <div style="font-weight:600;font-size:0.9rem;margin-bottom:10px;">&#x23F0; Scheduled Task</div>
+      <div class="field-group" style="margin-bottom:8px;">
+        <label class="field-label">Title</label>
+        <input id="sched-title" type="text" placeholder="What should run?" autocomplete="off">
       </div>
-      <div class="field-group" id="sched-session-group" style="flex:1;">
-        <label class="field-label">Session</label>
-        <select id="sched-session" class="board-detail-session-select" style="width:100%;"></select>
+      <div style="display:flex;gap:12px;">
+        <div style="flex:1;">
+          <label class="field-label">Kind</label>
+          <select id="sched-kind" class="board-detail-session-select" style="width:100%;margin-bottom:0;" onchange="updateSchedKindUI()">
+            <option value="tmux">Send to session (Claude)</option>
+            <option value="shell">Run shell command</option>
+          </select>
+        </div>
+        <div id="sched-session-group" style="flex:1;">
+          <label class="field-label">Session</label>
+          <select id="sched-session" class="board-detail-session-select" style="width:100%;margin-bottom:0;"></select>
+        </div>
       </div>
     </div>
-    <div class="field-group">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+    <!-- Command: fills remaining vertical space -->
+    <div style="flex:1;display:flex;flex-direction:column;padding:10px 16px;min-height:0;overflow:hidden;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-shrink:0;">
         <label class="field-label" id="sched-command-label" style="margin-bottom:0;">Command</label>
         <div class="notes-mode-tabs" id="sched-command-tabs" style="margin:0;">
           <button class="notes-mode-tab active" id="sched-cmd-tab-edit" onclick="schedCmdSwitchMode('edit')">Edit</button>
           <button class="notes-mode-tab" id="sched-cmd-tab-preview" onclick="schedCmdSwitchMode('preview')">Preview</button>
         </div>
       </div>
-      <div id="sched-command-editor-wrap" style="position:relative;">
-        <textarea id="sched-command" rows="5" placeholder="e.g. /status or npm run build" autocomplete="off"
-          style="width:100%;box-sizing:border-box;resize:vertical;font-size:0.85rem;min-height:90px;line-height:1.55;padding:10px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:inherit;"></textarea>
+      <div id="sched-command-editor-wrap" style="flex:1;display:flex;min-height:0;">
+        <textarea id="sched-command" placeholder="e.g. /status or npm run build" autocomplete="off"
+          style="flex:1;resize:none;box-sizing:border-box;font-size:0.88rem;line-height:1.65;padding:10px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:inherit;min-height:0;width:100%;"></textarea>
       </div>
-      <div id="sched-command-preview" class="md-content" style="display:none;min-height:90px;max-height:280px;padding:10px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;overflow-y:auto;font-size:0.85rem;line-height:1.55;color:var(--text);"></div>
+      <div id="sched-command-preview" class="md-content" style="display:none;flex:1;padding:10px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;overflow-y:auto;font-size:0.88rem;line-height:1.65;color:var(--text);min-height:0;"></div>
     </div>
-    <div class="field-group">
-      <label class="field-label">Schedule</label>
-      <select id="sched-type" class="board-detail-session-select" style="width:100%;" onchange="updateSchedTypeUI()">
-        <option value="once">Once</option>
-        <option value="recurring">Recurring</option>
-      </select>
-    </div>
-    <div id="sched-once-fields" class="field-group">
-      <label class="field-label">Run at</label>
-      <input id="sched-run-at" type="datetime-local" class="board-detail-session-select" style="width:100%;">
-    </div>
-    <div id="sched-rec-fields" style="display:none;">
+    <!-- Footer: schedule + advanced + buttons (scrollable) -->
+    <div style="flex-shrink:0;border-top:1px solid var(--border);overflow-y:auto;max-height:260px;padding:10px 16px 14px;">
+      <div style="display:flex;gap:12px;margin-bottom:8px;">
+        <div style="flex:1;">
+          <label class="field-label">Schedule</label>
+          <select id="sched-type" class="board-detail-session-select" style="width:100%;margin-bottom:0;" onchange="updateSchedTypeUI()">
+            <option value="once">Once</option>
+            <option value="recurring">Recurring</option>
+          </select>
+        </div>
+        <div id="sched-once-fields" style="flex:1;">
+          <label class="field-label">Run at</label>
+          <input id="sched-run-at" type="datetime-local" class="board-detail-session-select" style="width:100%;margin-bottom:0;">
+        </div>
+      </div>
+      <div id="sched-rec-fields" style="display:none;">
       <div class="field-group">
         <label class="field-label">Schedule expression <span class="field-optional">(optional — overrides dropdowns below)</span></label>
         <input id="sched-expr" type="text" placeholder='e.g. "every 30m", "daily at 09:00", "0 9 * * 1-5"' autocomplete="off">
@@ -13408,55 +13416,54 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <label class="field-label">Day of month</label>
         <input id="sched-monthday" type="number" min="1" max="28" value="1" class="board-detail-session-select" style="width:100%;">
       </div>
-    </div>
-    <div class="field-group" style="margin-top:8px;">
-      <label class="field-label">Event triggers <span class="field-optional">(wake this session when something changes — runs in addition to the schedule above)</span></label>
-      <div style="display:flex;flex-direction:column;gap:4px;margin-top:2px;">
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.8rem;">
-          <input type="checkbox" id="sched-trigger-idle" style="width:auto;accent-color:var(--accent);" onchange="updateSchedTriggerUI()">
-          A managed session goes idle <span style="color:var(--dim);font-size:0.7rem;">(a worker finished a turn)</span>
+      </div><!-- /sched-rec-fields -->
+      <div class="field-group" style="margin-top:4px;">
+        <label class="field-label">Event triggers <span class="field-optional">(runs in addition to the schedule above)</span></label>
+        <div style="display:flex;flex-direction:column;gap:4px;margin-top:2px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.8rem;">
+            <input type="checkbox" id="sched-trigger-idle" style="width:auto;accent-color:var(--accent);" onchange="updateSchedTriggerUI()">
+            A managed session goes idle <span style="color:var(--dim);font-size:0.7rem;">(a worker finished a turn)</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.8rem;">
+            <input type="checkbox" id="sched-trigger-board" style="width:auto;accent-color:var(--accent);" onchange="updateSchedTriggerUI()">
+            The board changes <span style="color:var(--dim);font-size:0.7rem;">(an issue is created/updated/moved)</span>
+          </label>
+        </div>
+        <div id="sched-trigger-cooldown-field" style="display:none;margin-top:6px;">
+          <label class="field-label">Only these sessions <span class="field-optional">(comma-separated; blank = any session)</span></label>
+          <input id="sched-trigger-sessions" type="text" placeholder="e.g. backend, mvs-infra, ts-gke" autocomplete="off" style="width:100%;box-sizing:border-box;">
+          <label class="field-label" style="margin-top:6px;">Trigger cooldown <span class="field-optional">(min seconds between event-fired runs)</span></label>
+          <input id="sched-trigger-cooldown" type="number" min="10" max="3600" value="120" style="width:100px;">
+        </div>
+      </div>
+      <div class="field-group">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.8rem;font-weight:500;">
+          <input type="checkbox" id="sched-watch" style="width:auto;accent-color:var(--accent);" onchange="updateSchedWatchUI()">
+          Watch response
         </label>
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.8rem;">
-          <input type="checkbox" id="sched-trigger-board" style="width:auto;accent-color:var(--accent);" onchange="updateSchedTriggerUI()">
-          The board changes <span style="color:var(--dim);font-size:0.7rem;">(an issue is created/updated/moved)</span>
-        </label>
       </div>
-      <div id="sched-trigger-cooldown-field" style="display:none;margin-top:6px;">
-        <label class="field-label">Only these sessions <span class="field-optional">(comma-separated; blank = any session)</span></label>
-        <input id="sched-trigger-sessions" type="text" placeholder="e.g. backend, mvs-infra, ts-gke" autocomplete="off" style="width:100%;box-sizing:border-box;">
-        <label class="field-label" style="margin-top:6px;">Trigger cooldown <span class="field-optional">(min seconds between event-fired runs)</span></label>
-        <input id="sched-trigger-cooldown" type="number" min="10" max="3600" value="120" style="width:100px;">
+      <div id="sched-watch-fields" style="display:none;">
+        <div class="field-group">
+          <label class="field-label">Done pattern <span class="field-optional">(text or regex to match in response)</span></label>
+          <input id="sched-done-pattern" type="text" placeholder='e.g. "no more tasks", "all.*complete", "nothing to do"' autocomplete="off">
+        </div>
+        <div class="field-group">
+          <label class="field-label">When matched</label>
+          <select id="sched-done-action" class="board-detail-session-select" style="width:100%;">
+            <option value="disable">Stop schedule (disable)</option>
+            <option value="notify">Notify only (keep running)</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label">Watch timeout <span class="field-optional">(seconds to wait for response)</span></label>
+          <input id="sched-watch-timeout" type="number" min="10" max="600" value="120" style="width:100px;">
+        </div>
       </div>
-      <div style="font-size:0.65rem;color:var(--dim);margin-top:2px;">This schedule's own session is never counted as a trigger, so it can't loop on itself.</div>
-    </div>
-    <div class="field-group" style="margin-top:8px;">
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.8rem;font-weight:500;">
-        <input type="checkbox" id="sched-watch" style="width:auto;accent-color:var(--accent);" onchange="updateSchedWatchUI()">
-        Watch response
-      </label>
-      <div style="font-size:0.65rem;color:var(--dim);margin-top:2px;">After sending, monitor session output and take action when a pattern matches.</div>
-    </div>
-    <div id="sched-watch-fields" style="display:none;">
-      <div class="field-group">
-        <label class="field-label">Done pattern <span class="field-optional">(text or regex to match in response)</span></label>
-        <input id="sched-done-pattern" type="text" placeholder='e.g. "no more tasks", "all.*complete", "nothing to do"' autocomplete="off">
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;">
+        <button class="btn" onclick="closeSchedModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveSchedModal()" id="sched-save-btn">Save</button>
       </div>
-      <div class="field-group">
-        <label class="field-label">When matched</label>
-        <select id="sched-done-action" class="board-detail-session-select" style="width:100%;">
-          <option value="disable">Stop schedule (disable)</option>
-          <option value="notify">Notify only (keep running)</option>
-        </select>
-      </div>
-      <div class="field-group">
-        <label class="field-label">Watch timeout <span class="field-optional">(seconds to wait for response)</span></label>
-        <input id="sched-watch-timeout" type="number" min="10" max="600" value="120" style="width:100px;">
-      </div>
-    </div>
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
-      <button class="btn" onclick="closeSchedModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveSchedModal()" id="sched-save-btn">Save</button>
-    </div>
+    </div><!-- /footer -->
   </div>
 </div>
 
