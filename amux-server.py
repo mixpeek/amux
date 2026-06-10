@@ -1358,7 +1358,7 @@ def tmux_capture(session: str, lines: int = 500) -> str:
         return _iterm2_capture(iterm2_id)
     try:
         r = subprocess.run(
-            ["tmux", "capture-pane", "-t", tmux_target(session), "-p", "-S", f"-{lines}"],
+            ["tmux", "capture-pane", "-t", tmux_target(session), "-p", "-e", "-S", f"-{lines}"],
             capture_output=True, text=True, timeout=5,
         )
         # Strip leading/trailing blank lines so content isn't cut off
@@ -18126,7 +18126,7 @@ function openPeek(name, opts) {
   _idb.get('peek_' + name).then(cached => {
     if (peekSession !== name) return;  // session changed before cache resolved
     if (cached && (!lastPeekHTML || lastPeekHTML.includes('Loading...'))) {
-      lastPeekHTML = highlightPrompts(linkifyOutput(stripAnsi(cached.output)));
+      lastPeekHTML = highlightPrompts(ansiToHtml(cached.output));
       applyPeekSearch();
       const ago = Math.floor((Date.now() - cached.time) / 60000);
       document.getElementById('peek-status').textContent = 'Cached ' + (ago < 1 ? 'just now' : ago + 'm ago');
@@ -18399,15 +18399,98 @@ function rewriteLocalhostUrls(html) {
 
 // ═══════ PEEK MODE ═══════
 function stripAnsi(text) {
-  // Strip ANSI escape sequences (colors, cursor movement, OSC hyperlinks, etc.)
   return text
-    .replace(/\x1b\]8;[^\x1b]*\x1b\\/g, '')  // OSC 8 hyperlinks
-    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')    // CSI sequences (colors, DEC private modes, etc.)
-    .replace(/\x1b\][^\x07]*\x07/g, '')        // OSC sequences (BEL terminated)
-    .replace(/\x1b\][^\x1b]*\x1b\\/g, '')      // OSC sequences (ST terminated)
-    .replace(/\x1b[()][A-Z0-9]/g, '')          // Character set selection
-    .replace(/\x1b[\x20-\x2f]*[\x40-\x7e]/g, '')   // Other escape sequences
-    .replace(/^─{10,}\n?/gm, '');   // Remove decorative separator lines (mobile readability)
+    .replace(/\x1b\]8;[^\x1b]*\x1b\\/g, '')
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
+    .replace(/\x1b\][^\x07]*\x07/g, '')
+    .replace(/\x1b\][^\x1b]*\x1b\\/g, '')
+    .replace(/\x1b[()][A-Z0-9]/g, '')
+    .replace(/\x1b[\x20-\x2f]*[\x40-\x7e]/g, '')
+    .replace(/^─{10,}\n?/gm, '');
+}
+
+function ansiToHtml(text) {
+  // Convert ANSI SGR color codes to HTML spans. Also HTML-escapes and linkifies text.
+  const C16 = ['#1c1c1c','#cc0000','#4e9a06','#c4a000','#3465a4','#75507b','#06989a','#d3d7cf',
+               '#888a85','#ef2929','#8ae234','#fce94f','#729fcf','#ad7fa8','#34e2e2','#eeeeec'];
+  const c256 = n => {
+    if (n < 16) return C16[n];
+    if (n < 232) { const i=n-16,b=i%6,g=Math.floor(i/6)%6,r=Math.floor(i/36),v=x=>x?55+x*40:0; return `rgb(${v(r)},${v(g)},${v(b)})`; }
+    const v=8+(n-232)*10; return `rgb(${v},${v},${v})`;
+  };
+  // Strip non-SGR sequences, preserve \x1b[...m (SGR color codes)
+  let t = text
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g,'')        // OSC sequences
+    .replace(/\x1b[()][A-Z0-9]/g,'')                          // charset selection
+    .replace(/\x1b[\x20-\x2f]*[\x40-\x5a\x5c-\x7e]/g,'')     // other C1 (excl [ = 0x5b)
+    .replace(/\x1b\[[0-9;?]*[A-Za-ln-z]/g,'')                 // CSI non-SGR (not m)
+    .replace(/^─{10,}\n?/gm,'');
+  let bold=false,dim=false,italic=false,uline=false,fg=null,bg=null,spanOpen=false;
+  const closeSpan=()=>{ if(!spanOpen)return ''; spanOpen=false; return '</span>'; };
+  const openSpan=()=>{
+    const s=[];
+    if(bold)s.push('font-weight:bold');
+    if(dim)s.push('opacity:0.5');
+    if(italic)s.push('font-style:italic');
+    if(uline)s.push('text-decoration:underline');
+    if(fg)s.push('color:'+fg);
+    if(bg)s.push('background:'+bg);
+    if(!s.length)return ''; spanOpen=true; return `<span style="${s.join(';')}">`;
+  };
+  const eh=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const linkChunk=raw=>{
+    const urlRe=/https?:\/\/[^\s<>\]\)'"`,;]+/g;
+    const fileRe=/(?:^|[\s(])((\/[\w./-]+(?:\.\w+)(?::[\d]+)?)|(\.\/[\w./-]+(?:\.\w+)(?::[\d]+)?))/gm;
+    const mx=[]; let m;
+    while((m=urlRe.exec(raw))!==null){const u=m[0].replace(/[.,;:!?)]+$/,'');mx.push({start:m.index,end:m.index+u.length,type:'url',value:u});}
+    while((m=fileRe.exec(raw))!==null){const p=m[1],ps=m.index+m[0].indexOf(p),pe=ps+p.length;if(!mx.some(x=>ps<x.end&&pe>x.start))mx.push({start:ps,end:pe,type:'file',value:p});}
+    mx.sort((a,b)=>a.start-b.start);
+    let out='',last=0;
+    for(const x of mx){
+      if(x.start>last)out+=eh(raw.slice(last,x.start));
+      if(x.type==='url'){out+=`<a href="${eh(x.value)}" target="_blank" rel="noopener noreferrer">${eh(x.value)}</a>`;}
+      else{const rp=x.value.replace(/:[\d]+$/,'');const cls=/\.md$/i.test(rp)?'md-link':'file-link';out+=`<span class="${cls}" onclick="if(window.getSelection().toString())return;event.preventDefault();event.stopPropagation();openFilePreview('${eh(rp)}')">${eh(x.value)}</span>`;}
+      last=x.end;
+    }
+    if(last<raw.length)out+=eh(raw.slice(last));
+    return rewriteLocalhostUrls(out);
+  };
+  const parts=t.split(/(\x1b\[[0-9;]*m)/);
+  let out='';
+  for(let i=0;i<parts.length;i++){
+    const p=parts[i];
+    if(p.startsWith('\x1b[')&&p.endsWith('m')){
+      out+=closeSpan();
+      const codes=p.slice(2,-1).split(';').map(s=>s===''?0:+s);
+      let j=0;
+      while(j<codes.length){
+        const c=codes[j];
+        if(c===0){bold=dim=italic=uline=false;fg=bg=null;}
+        else if(c===1)bold=true;
+        else if(c===2)dim=true;
+        else if(c===3)italic=true;
+        else if(c===4)uline=true;
+        else if(c===22){bold=false;dim=false;}
+        else if(c===23)italic=false;
+        else if(c===24)uline=false;
+        else if(c>=30&&c<=37)fg=C16[c-30];
+        else if(c===39)fg=null;
+        else if(c>=40&&c<=47)bg=C16[c-40];
+        else if(c===49)bg=null;
+        else if(c>=90&&c<=97)fg=C16[c-82];
+        else if(c>=100&&c<=107)bg=C16[c-92];
+        else if(c===38&&codes[j+1]===5){fg=c256(codes[j+2]);j+=2;}
+        else if(c===38&&codes[j+1]===2){fg=`rgb(${codes[j+2]},${codes[j+3]},${codes[j+4]})`;j+=4;}
+        else if(c===48&&codes[j+1]===5){bg=c256(codes[j+2]);j+=2;}
+        else if(c===48&&codes[j+1]===2){bg=`rgb(${codes[j+2]},${codes[j+3]},${codes[j+4]})`;j+=4;}
+        j++;
+      }
+      out+=openSpan();
+    } else if(p){
+      out+=linkChunk(p);
+    }
+  }
+  return out+closeSpan();
 }
 
 function linkifyOutput(text) {
@@ -18470,8 +18553,9 @@ function highlightPrompts(html) {
   const out = [];
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
-    const isPromptStart = raw.startsWith('❯');
-    const isContinuation = inPrompt && /^  \S/.test(raw);
+    const textStart = raw.replace(/^(<[^>]*>)+/, '');
+    const isPromptStart = textStart.startsWith('❯');
+    const isContinuation = inPrompt && /^  \S/.test(textStart);
     if (isPromptStart) {
       inPrompt = true;
       out.push('<span class="peek-prompt">' + raw);
@@ -18528,7 +18612,7 @@ async function refreshPeek() {
     const output = data.output || '(no output)';
     const atBottom = _isScrolledToBottom(body);
     if (atBottom) _peekScrollLocked = false;
-    const newHTML = highlightPrompts(linkifyOutput(stripAnsi(output)));
+    const newHTML = highlightPrompts(ansiToHtml(output));
     if (peekSelecting || (window.getSelection()?.toString().length > 0)) return;
     if (_sendingSnapshot && newHTML !== _sendingSnapshot) clearSendingIndicator();
     lastPeekHTML = newHTML;
@@ -18553,7 +18637,7 @@ async function refreshPeek() {
     if (!lastPeekHTML || lastPeekHTML.includes('Loading...')) {
       const cached = await _idb.get('peek_' + peekSession);
       if (cached) {
-        lastPeekHTML = highlightPrompts(linkifyOutput(stripAnsi(cached.output)));
+        lastPeekHTML = highlightPrompts(ansiToHtml(cached.output));
         applyPeekSearch();
         const ago = Math.floor((Date.now() - cached.time) / 60000);
         statusEl.textContent = 'Cached ' + (ago < 1 ? 'just now' : ago + 'm ago');
@@ -25900,7 +25984,7 @@ async function _updateGridPane(name) {
     const data = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/peek?lines=500').then(r => r.json());
     const atBottom = _isScrolledToBottom(body);
     const locked = body._scrollLocked;
-    body.innerHTML = highlightPrompts(linkifyOutput(stripAnsi(data.output || '')));
+    body.innerHTML = highlightPrompts(ansiToHtml(data.output || ''));
     if (!locked && atBottom) {
       body.scrollTop = body.scrollHeight;
       _hideScrollLockBadge(body);
