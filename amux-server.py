@@ -7735,10 +7735,27 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
     _actions_st = _session_auto_actions.get(name, {})
     if _actions_st.get("restarting"):
         return False, "session is restarting"
+    # Single capture used for both resume-picker and is_running checks — avoids
+    # spawning two separate tmux subprocesses on the hot send path.
     try:
-        _out_st = tmux_capture(name, 10)
+        _out_st = tmux_capture(name, 15)
         if _out_st and _at_resume_picker(_out_st):
             return False, "session is in resume picker"
+        if _out_st is not None and _at_shell_prompt(_out_st):
+            # Terminal visible but Claude has exited — treat as not running
+            if name not in _auto_waking:
+                env_file = CC_SESSIONS / f"{name}.env"
+                if env_file.exists():
+                    _auto_waking.add(name)
+                    try:
+                        ok, msg = start_session(name)
+                        if not ok:
+                            return False, f"auto-wake failed: {msg}"
+                        _send_after_ready(name, text)
+                        return True, "sent (auto-woke)"
+                    finally:
+                        _auto_waking.discard(name)
+            return False, "not running"
     except Exception:
         pass
     if not is_running(name):
@@ -7801,8 +7818,10 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
                     ["tmux", "send-keys", "-t", t, "-l", text],
                     check=True, capture_output=True, timeout=10,
                 )
-            # Give readline time to process all queued characters before Enter arrives
-            time.sleep(0.15)
+            # Give readline time to process all queued characters before Enter arrives.
+            # 20ms is ample for a local PTY; paste-buffer (long text) is atomic so
+            # needs even less, but we use the same value for simplicity.
+            time.sleep(0.02)
             subprocess.run(
                 ["tmux", "send-keys", "-t", t, "Enter"],
                 check=True, capture_output=True, timeout=5,
@@ -14287,6 +14306,7 @@ let peekSearchQuery = '';
 let peekSearchIndex = 0;
 let _peekMatches = [];
 let lastPeekHTML = '';
+let _lastPeekRaw = '';   // raw output from last peek — skip re-render if unchanged
 const _peekDrafts = {};  // session name → command text
 
 // ═══════ ZOOM ═══════
@@ -18101,6 +18121,7 @@ function openPeek(name, opts) {
   peekSearchIndex = 0;
   _peekMatches = [];
   lastPeekHTML = '';
+  _lastPeekRaw = '';
   const searchInp = document.getElementById('peek-search');
   if (searchInp) {
     searchInp.value = prefillQuery;
@@ -18145,7 +18166,7 @@ function openPeek(name, opts) {
     }
   });
   refreshPeek();
-  peekTimer = setInterval(refreshPeek, 3000);
+  peekTimer = setInterval(refreshPeek, 1500);
   _savePeekState();
 }
 
@@ -18616,10 +18637,16 @@ async function refreshPeek() {
   const body = document.getElementById('peek-body');
   const statusEl = document.getElementById('peek-status');
   try {
-    const r = await fetch(API + '/api/sessions/' + name + '/peek?lines=500');
+    const r = await fetch(API + '/api/sessions/' + name + '/peek?lines=300');
     const data = await r.json();
     if (peekSession !== name) return;
     const output = data.output || '(no output)';
+    // Skip re-render when output is identical — saves ansiToHtml work on every poll tick
+    if (output === _lastPeekRaw && lastPeekHTML && !peekSearchQuery.trim()) {
+      statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      return;
+    }
+    _lastPeekRaw = output;
     const atBottom = _isScrolledToBottom(body);
     if (atBottom) _peekScrollLocked = false;
     const newHTML = highlightPrompts(ansiToHtml(output));
@@ -37830,7 +37857,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 text = body.get("text", "")
                 wd = _session_work_dir(name)
                 if wd:
-                    _ensure_memory(name, wd)
+                    threading.Thread(target=_ensure_memory, args=(name, wd), daemon=True).start()
                 # Backup JSONL transcript before /compact so we can revert
                 if text.strip().startswith("/compact"):
                     threading.Thread(target=backup_session_jsonl, args=(name, "pre_compact"), daemon=True).start()
