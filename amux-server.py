@@ -23370,7 +23370,7 @@ function switchView(view) {
     if (te) te.classList.toggle('active', view === _svNames[i]);
   }
   if (view === 'calendar') { fetchBoard().then(() => { _fcInit(); }); }
-  if (view === 'torrents') _torrentLoad();
+  if (view === 'torrents') _torrentLoad(); else _torrentStopTimer();
   if (view === 'terminal') _termInit();
   if (view === 'graph') _graphInit();
   if (view === 'crm') { _crmDirty = false; _crmLoad(); _crmApplySidebarState(); } // always refresh on tab switch
@@ -25873,6 +25873,7 @@ function enterGridMode() {
     view.style.top = (rect.bottom + marginBottom) + 'px';
   }
   view.classList.add('active');
+  _torrentStopTimer();
   // Mark Grid tab as active, deactivate others
   ['sessions','board','calendar','scheduler','files','logs','email','notes','crm'].forEach(t => document.getElementById('tab-' + t)?.classList.remove('active'));
   document.getElementById('tab-grid').classList.add('active');
