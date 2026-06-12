@@ -8276,7 +8276,8 @@ def _email_sync() -> None:
     slog(f"[email] syncing lookback={lookback_seconds//60}min")
     messages = _mail_fetch_messages(lookback_seconds)
     if messages is None:
-        return  # timed out — don't update last_synced so next run retries with same window
+        _email_set_synced(now_ts)  # advance past the window to break timeout spirals
+        return
     for msg in messages:
         # Use message-id as dedup key; fall back to subject+date hash
         msg_id = msg["msg_id"] or f"{msg['subject']}|{msg['date']}"
