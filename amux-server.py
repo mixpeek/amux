@@ -15288,6 +15288,7 @@ const _ALERT_LABELS = {
   thinking_reset: (a) => ({ icon: '\U0001f504', title: 'Thinking reset', body: a.session }),
   auto_continue:  (a) => ({ icon: '▶️', title: 'Agent continued', body: a.session }),
   steering_delivered: (a) => ({ icon: '\U0001f4e8', title: 'Steering delivered', body: a.session }),
+  task_pickup:      (a) => ({ icon: '\U0001f4cb', title: 'Task assigned', body: a.session + ' — ' + a.message }),
 };
 
 function _fireAmuxAlert(a) {
@@ -25381,7 +25382,8 @@ async function saveBoardEdit() {
   const dueTimeEl = document.getElementById('be-due-time');
   const dueTime = dueTimeEl ? dueTimeEl.value : '';
   closeBoardEdit();
-  await addBoardItem(title, desc, status, session, tags, due, undefined, dueTime);
+  const ownerType = session ? 'agent' : 'human';
+  await addBoardItem(title, desc, status, session, tags, due, ownerType, dueTime);
   if (_peekTab === 'issues') renderPeekIssues();
 }
 
@@ -25563,7 +25565,7 @@ function saveBoardCache() {
 }
 
 async function addBoardItem(title, desc, status, session, tags, due, ownerType, dueTime) {
-  ownerType = ownerType || 'human';
+  ownerType = ownerType || (session ? 'agent' : 'human');
   const tempId = Math.random().toString(16).slice(2, 8);
   const now = Math.floor(Date.now() / 1000);
   const tempItem = { id: tempId, title, desc, status, session: session || '', tags: tags || [], due: due || '', due_time: dueTime || '', creator: _getDeviceName(), owner_type: ownerType, created: now, updated: now, _pending: true };
