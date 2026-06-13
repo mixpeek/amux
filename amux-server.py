@@ -7594,6 +7594,15 @@ def _claude_ui_visible(clean_output: str) -> bool:
                 return True
             if "gemini-" in ls or "yolo" in ls or "approval" in ls:
                 return True
+    # OpenCode TUI prompt/status. Ink-based UI like codex/gemini.
+    has_opencode = any("opencode" in l.lower() for l in lines[:20] + lines[-12:])
+    if has_opencode:
+        for l in lines[-8:]:
+            ls = l.strip().lower()
+            if ls == ">" or ls.startswith("> ") or ls.startswith("›"):
+                return True
+            if "anthropic/" in ls or "openai/" in ls or "google/" in ls:
+                return True
     return False
 
 
@@ -22008,6 +22017,29 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
         # Load defaults
         defaults_file = CC_HOME / "defaults.env"
 
+        def _find_latest_opencode_session(cwd: str) -> str:
+            """Find the most recent OpenCode session ID for a given working directory."""
+            import sqlite3
+            db_path = os.path.expanduser("~/.local/share/opencode/opencode.db")
+            if not os.path.exists(db_path):
+                return ""
+            try:
+                conn = sqlite3.connect(f"file://{db_path}?mode=ro", uri=True)
+                conn.execute("PRAGMA busy_timeout = 5000")
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT id FROM session WHERE directory = ? "
+                    "ORDER BY time_created DESC LIMIT 1",
+                    (cwd.rstrip("/"),),
+                )
+                row = cur.fetchone()
+                conn.close()
+                if row:
+                    return row[0]
+                return ""
+            except Exception:
+                return ""
+
         def _find_latest_codex_session(cwd: str) -> str:
             """Find the most recent Codex session ID for a given working directory."""
             codex_sessions = Path.home() / ".codex" / "sessions"
@@ -22203,6 +22235,31 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 meta["gemini_session_id"] = gemini_session_id
                 cmd = f"gemini{_gemini_opts} --session-id {shlex.quote(gemini_session_id)}"
                 print(f"[start] {name}: gemini fresh start {gemini_session_id}")
+        elif provider == "opencode":
+            # OpenCode TUI. Resume by stored session ID (codex-like post-hoc
+            # capture), no --add-dir/--session-id injection available in TUI.
+            opencode_session_id = meta.get("opencode_session_id", "")
+            _oc_flags = flags or ""
+            _oc_yolo = False
+            if any(f in _oc_flags for f in _PROVIDER_YOLO_FLAGS):
+                _oc_yolo = True
+                _oc_flags = _strip_provider_yolo_flags(_oc_flags)
+            _oc_opts = ""
+            if _oc_flags:
+                _oc_opts += f" {_shell_quote_flags(_oc_flags)}"
+            if extra_flags:
+                _oc_opts += f" {_shell_quote_flags(extra_flags)}"
+            # Default model (provider/model form)
+            if "--model" not in _oc_opts and "-m " not in _oc_opts:
+                _oc_opts += " --model anthropic/claude-sonnet-4-5"
+            # NOTE: opencode has no YOLO flag — it permits all by default.
+            # Do NOT inject --dangerously-skip-permissions (undefined flag).
+            if opencode_session_id:
+                cmd = f"opencode --session {shlex.quote(opencode_session_id)}{_oc_opts}"
+                print(f"[start] {name}: opencode resume {opencode_session_id}")
+            else:
+                cmd = f"opencode{_oc_opts}"
+                print(f"[start] {name}: opencode fresh start")
         else:
             _custom_claude = os.environ.get("AMUX_CLAUDE_CMD", "").strip()
             cmd = _custom_claude or "claude"
@@ -22546,6 +22603,16 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                         _save_meta(sname, m)
                         print(f"[start] {sname}: captured codex session {sid}")
                 threading.Thread(target=_capture_codex_id, daemon=True).start()
+            if provider == "opencode" and not meta.get("opencode_session_id"):
+                def _capture_opencode_id(sname=name, wd=work_dir):
+                    time.sleep(8)
+                    sid = _find_latest_opencode_session(wd)
+                    if sid:
+                        m = _load_meta(sname)
+                        m["opencode_session_id"] = sid
+                        _save_meta(sname, m)
+                        print(f"[start] {sname}: captured opencode session {sid}")
+                threading.Thread(target=_capture_opencode_id, daemon=True).start()
             _save_meta(name, meta)
             if pending_log_reload:
                 _start_pending_log_reload_thread(name, pending_log_reload_reason)
