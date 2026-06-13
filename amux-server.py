@@ -18467,7 +18467,7 @@ def list_sessions() -> list:
         raw_dir = cfg.get("CC_DIR", "")
         resolved_dir = str(Path(raw_dir).expanduser().resolve()) if raw_dir else ""
         provider = cfg.get("CC_PROVIDER", "claude")
-        if provider in ("codex", "gemini"):
+        if provider in ("codex", "gemini", "opencode"):
             active_model = _extract_model_from_flags(cfg.get("CC_FLAGS", "")) or _default_model_for_provider(provider)
         else:
             active_model = detect_active_model(raw_dir, meta.get("cc_conversation_id", ""))
@@ -20578,7 +20578,7 @@ def _set_effort_flag(flags: str, effort: str) -> str:
     return f"{base} --effort {effort}".strip() if base else f"--effort {effort}"
 
 
-_SESSION_PROVIDERS = ("claude", "codex", "gemini", "iterm2")
+_SESSION_PROVIDERS = ("claude", "codex", "gemini", "iterm2", "opencode")
 
 
 _PROVIDER_YOLO_FLAGS = (
@@ -20593,6 +20593,8 @@ def _default_model_for_provider(provider: str) -> str:
         return "gpt-5.5"
     if provider == "gemini":
         return "auto"
+    if provider == "opencode":
+        return "anthropic/claude-sonnet-4-5"
     return _get_default_model()
 
 
@@ -20602,6 +20604,7 @@ def _provider_label(provider: str) -> str:
         "codex": "Codex",
         "gemini": "Gemini",
         "iterm2": "iTerm2",
+        "opencode": "OpenCode",
     }.get(provider, provider or "Claude Code")
 
 
@@ -20610,6 +20613,9 @@ def _provider_yolo_flag(provider: str) -> str:
         return "--dangerously-bypass-approvals-and-sandbox"
     if provider == "gemini":
         return "--yolo"
+    # opencode has no YOLO flag (it permits all by default);
+    # returning claude's flag for UI consistency, but start_session
+    # will NOT inject it into the opencode command.
     return "--dangerously-skip-permissions"
 
 
@@ -22236,7 +22242,7 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
             tmux_sess = tmux_name(name)
             # Build shell setup string — skip Claude env cleanup for codex
             _has_oauth = False
-            if provider in ("codex", "gemini"):
+            if provider in ("codex", "gemini", "opencode"):
                 shell_rc = ""
             else:
                 shell_rc = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
@@ -22262,7 +22268,7 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 shell_rc += f"set -a; source {shlex.quote(str(CC_AMUX_ENV))} 2>/dev/null; set +a; "
             else:
                 shell_rc += f"cd {shlex.quote(work_dir)}; "
-            if provider not in ("codex", "gemini") and _has_oauth:
+            if provider not in ("codex", "gemini", "opencode") and _has_oauth:
                 shell_rc += "unset ANTHROPIC_API_KEY; "
             # Forward select env vars into the tmux session.
             _env_args = []
@@ -22397,7 +22403,7 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 _poll_shell_prompt(name, timeout=3.0)  # let profile source complete
     
             # Ensure ANTHROPIC_API_KEY is unset when OAuth is available
-            if _has_oauth and provider not in ("codex", "gemini"):
+            if _has_oauth and provider not in ("codex", "gemini", "opencode"):
                 subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l",
                                 "unset ANTHROPIC_API_KEY"],
                                capture_output=True, timeout=5)
