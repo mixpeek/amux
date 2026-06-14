@@ -959,6 +959,70 @@ _proc_info_lock = threading.Lock()
 _proc_info_last_update: float = 0.0
 _PROC_INFO_TTL = 10.0  # refresh every 10s
 
+_opencode_models_cache: dict = {"models": [], "last_update": 0, "updating": False}
+_opencode_models_lock = threading.Lock()
+_OPENCODE_MODELS_TTL = 3600
+_OPENCODE_MODELS_CACHE_FILE = _amux_home / "opencode-models.json"
+
+def _load_opencode_models_cache():
+    try:
+        if _OPENCODE_MODELS_CACHE_FILE.exists():
+            data = json.loads(_OPENCODE_MODELS_CACHE_FILE.read_text())
+            with _opencode_models_lock:
+                _opencode_models_cache["models"] = data.get("models", [])
+                _opencode_models_cache["last_update"] = data.get("last_update", 0)
+    except Exception:
+        pass
+
+def _save_opencode_models_cache(models: list):
+    try:
+        _OPENCODE_MODELS_CACHE_FILE.write_text(json.dumps({
+            "models": models,
+            "last_update": int(time.time()),
+        }))
+    except Exception:
+        pass
+
+def _refresh_opencode_models():
+    with _opencode_models_lock:
+        if _opencode_models_cache["updating"]:
+            return
+        _opencode_models_cache["updating"] = True
+    try:
+        r = subprocess.run(
+            ["opencode", "models"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if r.returncode != 0:
+            return
+        models = []
+        for line in r.stdout.strip().splitlines():
+            line = line.strip()
+            if not line or "/" not in line:
+                continue
+            provider, _, model = line.partition("/")
+            models.append({"provider": provider, "model": model, "full": line})
+        with _opencode_models_lock:
+            _opencode_models_cache["models"] = models
+            _opencode_models_cache["last_update"] = int(time.time())
+        _save_opencode_models_cache(models)
+    except Exception:
+        pass
+    finally:
+        with _opencode_models_lock:
+            _opencode_models_cache["updating"] = False
+
+def _get_opencode_models():
+    with _opencode_models_lock:
+        age = time.time() - _opencode_models_cache["last_update"]
+        models = list(_opencode_models_cache["models"])
+        updating = _opencode_models_cache["updating"]
+    if not models or (age > _OPENCODE_MODELS_TTL and not updating):
+        threading.Thread(target=_refresh_opencode_models, daemon=True).start()
+    return models
+
+_load_opencode_models_cache()
+
 def _build_proc_info() -> dict:
     """Gather process-level diagnostics (blocks ~500ms for CPU sampling)."""
     info = {}
@@ -36601,25 +36665,42 @@ function editField(session, field, current, provider) {
       {v:'gemini-2.5-flash',l:'gemini-2.5-flash'},{v:'gemini-2.5-flash-lite',l:'gemini-2.5-flash-lite'},
       {v:'gemini-3-pro-preview',l:'gemini-3-pro-preview'},{v:'gemini-3-flash-preview',l:'gemini-3-flash-preview'}
     ];
-    const opencodeModels = [
-      {v:'',l:'Default'},
-      {v:'anthropic/claude-sonnet-4-5',l:'anthropic/claude-sonnet-4-5'},
-      {v:'anthropic/claude-opus-4-5',l:'anthropic/claude-opus-4-5'},
-      {v:'anthropic/claude-haiku-4-5',l:'anthropic/claude-haiku-4-5'},
-      {v:'openai/gpt-5.5',l:'openai/gpt-5.5'},
-      {v:'google/gemini-2.5-pro',l:'google/gemini-2.5-pro'}
-    ];
-    const models = provider === 'codex' ? codexModels : (provider === 'gemini' ? geminiModels : (provider === 'opencode' ? opencodeModels : claudeModels));
     sel.innerHTML = '';
-    models.forEach(m => { const o = document.createElement('option'); o.value = m.v; o.textContent = m.l; sel.appendChild(o); });
     inpWrap.style.display = 'none';
     sel.style.display = 'block';
-    sel.value = current || '';
-    if (current && !Array.from(sel.options).some(o => o.value === current)) {
-      const opt = document.createElement('option');
-      opt.value = current; opt.textContent = current;
-      sel.appendChild(opt);
-      sel.value = current;
+    function populateModelOptions(models) {
+      sel.innerHTML = '';
+      models.forEach(m => { const o = document.createElement('option'); o.value = m.v; o.textContent = m.l; sel.appendChild(o); });
+      sel.value = current || '';
+      if (current && !Array.from(sel.options).some(o => o.value === current)) {
+        const opt = document.createElement('option');
+        opt.value = current; opt.textContent = current;
+        sel.appendChild(opt);
+        sel.value = current;
+      }
+    }
+    if (provider === 'opencode') {
+      fetch('/api/opencode-models')
+        .then(r => r.json())
+        .then(data => {
+          const models = (data.models || []).map(m => ({v: m.full, l: m.full}));
+          if (!models.some(m => m.v === '')) {
+            models.unshift({v:'',l:'Default'});
+          }
+          populateModelOptions(models);
+        })
+        .catch(() => {
+          populateModelOptions([
+            {v:'',l:'Default'},{v:'anthropic/claude-sonnet-4-5',l:'anthropic/claude-sonnet-4-5'},
+            {v:'anthropic/claude-opus-4-5',l:'anthropic/claude-opus-4-5'},
+            {v:'anthropic/claude-haiku-4-5',l:'anthropic/claude-haiku-4-5'},
+            {v:'openai/gpt-5.5',l:'openai/gpt-5.5'},
+            {v:'google/gemini-2.5-pro',l:'google/gemini-2.5-pro'}
+          ]);
+        });
+    } else {
+      const models = provider === 'codex' ? codexModels : (provider === 'gemini' ? geminiModels : claudeModels);
+      populateModelOptions(models);
     }
     // Reasoning effort — Claude only. Pre-fill from the session's current --effort flag.
     const effortWrap = document.getElementById('edit-effort-wrap');
@@ -62449,6 +62530,9 @@ class CCHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             return self._json({"error": "CA not found"}, 404)
+
+        if method == "GET" and path == "/api/opencode-models":
+            return self._json({"models": _get_opencode_models()})
 
         # GET /api/events (SSE stream)
         if method == "GET" and path == "/api/events":
