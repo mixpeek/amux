@@ -11459,6 +11459,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .gp-note-status { font-size: 0.68rem; color: var(--dim); padding: 4px 10px; border-top: 1px solid var(--border); background: var(--card); flex-shrink: 0; }
   /* Override dark terminal bg for note panes */
   .grid-stack-item:has(.gp-note-body) .grid-stack-item-content { background: var(--card); }
+  /* Workspace terminal pane */
+  .gp-term-body { flex: 1; min-height: 0; overflow: hidden; background: #0d1117; }
+  .grid-stack-item:has(.gp-term-body) .grid-stack-item-content { background: #0d1117; }
+  .gp-term-reconnect { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(13,17,23,0.85); z-index: 10; }
+  .gp-term-reconnect button { padding: 6px 16px; background: var(--accent); color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
   /* Note picker dropdown */
   .ws-note-dropdown { position: relative; }
   .ws-note-menu {
@@ -25909,6 +25914,7 @@ function enterGridMode() {
       resizable: { handles: 'e,se,s,sw,w,n,ne,nw' },
     }, '#gridstack');
     _grid.on('change', _gridSaveLayout);
+    _grid.on('resizestop', () => setTimeout(_wsTermRefitAll, 50));
     _gridRestoreLayout();
   } else {
     // Resume paused update timers for existing panes
@@ -25918,6 +25924,8 @@ function enterGridMode() {
         _updateGridPane(name);
       }
     });
+    // Refit terminal panes after workspace becomes visible
+    setTimeout(_wsTermRefitAll, 100);
   }
 }
 
@@ -26075,6 +26083,8 @@ function _gridRestoreLayout() {
       const notePath = _notePathFromId(item.id);
       if (notePath) {
         wsAddNotePane(notePath, item.x, item.y, item.w, item.h);
+      } else if (item.id.startsWith('ws-term:')) {
+        wsAddTermPane(item.x, item.y, item.w, item.h, item.id);
       } else if ((sessions || []).find(s => s.name === item.id)) {
         addGridPane(item.id, item.x, item.y, item.w, item.h);
       }
@@ -26154,6 +26164,7 @@ function wsClearWorkspace() {
     const path = _notePathFromId(nid);
     if (path) wsRemoveNotePane(path);
   });
+  Object.keys(_wsTerm).slice().forEach(pid => wsRemoveTermPane(pid));
 }
 
 function wsLoadProfile(name) {
@@ -26169,6 +26180,8 @@ function wsLoadProfile(name) {
     const notePath = _notePathFromId(item.id);
     if (notePath) {
       wsAddNotePane(notePath, item.x, item.y, item.w, item.h);
+    } else if (item.id.startsWith('ws-term:')) {
+      wsAddTermPane(item.x, item.y, item.w, item.h, item.id);
     } else if ((sessions || []).find(s => s.name === item.id)) {
       addGridPane(item.id, item.x, item.y, item.w, item.h);
     }
@@ -26471,6 +26484,158 @@ function wsOpenNoteInTab(path) {
   switchView('notes');
   setTimeout(() => _notesOpen(path), 200);
 }
+
+// ── Workspace Terminal Panes ───────────────────────────────────────────────────
+let _wsTerm = {}; // pid → {widget, term, fit, poll, ptyId}
+let _wsTermSeq = parseInt(localStorage.getItem('amux_ws_term_seq') || '0');
+
+function _wsNextTermId() {
+  const id = 'ws-term:' + _wsTermSeq++;
+  localStorage.setItem('amux_ws_term_seq', String(_wsTermSeq));
+  return id;
+}
+
+function _wsTermRefitAll() {
+  Object.values(_wsTerm).forEach(p => { if (p.fit) { try { p.fit.fit(); } catch(e) {} } });
+}
+
+function wsAddTermPane(x, y, w, h, pid) {
+  if (!_grid) return;
+  pid = pid || _wsNextTermId();
+  if (_wsTerm[pid]) return;
+  const sid = _gpSafeId(pid);
+  const safeId = pid.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const content =
+    '<div class="gp-header">' +
+      '<span style="font-size:0.76rem;margin-right:2px;opacity:0.55;font-family:monospace;">&gt;_</span>' +
+      '<span class="gp-title" id="' + sid + '-title">shell</span>' +
+      '<button class="gp-peek-btn" onclick="wsTermSendTmux(\'' + safeId + '\')" title="Attach / create a tmux session">tmux</button>' +
+      '<button class="gp-close" onclick="wsRemoveTermPane(\'' + safeId + '\')">&#x2715;</button>' +
+    '</div>' +
+    '<div class="gp-term-body" id="' + sid + '-body" style="position:relative;"></div>';
+  const widget = _grid.addWidget({ id: pid, x, y, w: w || 6, h: h || 8, content });
+  _wsTerm[pid] = { widget, term: null, fit: null, poll: null, ptyId: null };
+  setTimeout(() => _initWsTermPane(pid), 80);
+  _gridSaveLayout();
+}
+
+async function _initWsTermPane(pid) {
+  const p = _wsTerm[pid];
+  if (!p) return;
+  const sid = _gpSafeId(pid);
+  const container = document.getElementById(sid + '-body');
+  if (!container) return;
+
+  const term = new Terminal({
+    cursorBlink: true,
+    cursorStyle: 'block',
+    fontSize: 13,
+    fontFamily: "'JetBrains Mono', 'Menlo', 'Monaco', 'Courier New', monospace",
+    theme: {
+      background: '#0d1117', foreground: '#c9d1d9',
+      cursor: '#58a6ff', cursorAccent: '#0d1117',
+      selectionBackground: 'rgba(56,139,253,0.3)',
+      black: '#484f58',   red: '#ff7b72',    green: '#3fb950',  yellow: '#d29922',
+      blue: '#58a6ff',    magenta: '#bc8cff', cyan: '#39d353',   white: '#b1bac4',
+      brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364', brightYellow: '#e3b341',
+      brightBlue: '#79c0ff',  brightMagenta: '#d2a8ff', brightCyan: '#56d364', brightWhite: '#f0f6fc',
+    },
+    scrollback: 5000,
+    allowProposedApi: true,
+    macOptionIsMeta: true,
+    macOptionClickForcesSelection: true,
+  });
+
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.loadAddon(new WebLinksAddon.WebLinksAddon());
+  term.open(container);
+  fit.fit();
+  p.term = term; p.fit = fit;
+
+  const dims = fit.proposeDimensions();
+  const cols = dims ? dims.cols : 100;
+  const rows = dims ? dims.rows : 30;
+
+  try {
+    const r = await fetch(API + '/api/terminal/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cols, rows }),
+    });
+    const data = await r.json();
+    if (data.error) { term.writeln('\r\n\x1b[31mError: ' + data.error + '\x1b[0m'); return; }
+    p.ptyId = data.id;
+  } catch(e) {
+    term.writeln('\r\n\x1b[31mFailed to start shell: ' + e.message + '\x1b[0m');
+    return;
+  }
+
+  term.onData(d => {
+    if (!p.ptyId) return;
+    fetch(API + '/api/terminal/' + p.ptyId + '/input', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: btoa(unescape(encodeURIComponent(d))) }),
+    }).catch(() => {});
+  });
+
+  term.onResize(({ cols, rows }) => {
+    if (!p.ptyId) return;
+    fetch(API + '/api/terminal/' + p.ptyId + '/resize', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cols, rows }),
+    }).catch(() => {});
+  });
+
+  _wsTermStartPoll(pid);
+  term.focus();
+}
+
+function _wsTermStartPoll(pid) {
+  const p = _wsTerm[pid];
+  if (!p || p.poll || !p.ptyId) return;
+  p.poll = setInterval(async () => {
+    if (!p.ptyId) return;
+    try {
+      const r = await fetch(API + '/api/terminal/' + p.ptyId + '/output');
+      const d = await r.json();
+      if (d.data) {
+        const bytes = Uint8Array.from(atob(d.data), c => c.charCodeAt(0));
+        p.term.write(bytes);
+      }
+      if (!d.alive) {
+        p.term.writeln('\r\n\x1b[33m[Process exited]\x1b[0m');
+        clearInterval(p.poll); p.poll = null; p.ptyId = null;
+      }
+    } catch(e) {}
+  }, 50);
+}
+
+function wsTermSendTmux(pid) {
+  const p = _wsTerm[pid];
+  if (!p || !p.ptyId) return;
+  const cmd = '\x03tmux new-session -A -s workspace\r';
+  fetch(API + '/api/terminal/' + p.ptyId + '/input', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data: btoa(unescape(encodeURIComponent(cmd))) }),
+  }).catch(() => {});
+  if (p.term) p.term.focus();
+}
+
+function wsRemoveTermPane(pid) {
+  const p = _wsTerm[pid];
+  if (!p || !_grid) return;
+  if (p.poll) { clearInterval(p.poll); p.poll = null; }
+  if (p.ptyId) { fetch(API + '/api/terminal/' + p.ptyId, { method: 'DELETE' }).catch(() => {}); p.ptyId = null; }
+  if (p.term) { try { p.term.dispose(); } catch(e) {} p.term = null; }
+  try { _grid.removeWidget(p.widget); } catch(e) {}
+  delete _wsTerm[pid];
+  _gridSaveLayout();
+}
+
+window.addEventListener('resize', () => {
+  if (document.getElementById('grid-view')?.classList.contains('active')) _wsTermRefitAll();
+});
 
 function gpDoKeys(name, keys) { doKeys(name, keys); }
 
@@ -32408,6 +32573,7 @@ window.addEventListener('load', _pinnedNotesRefresh);
       <button class="ws-preset-btn" onclick="wsToggleNoteMenu()" title="Add a note pane">&#x1F4DD; Note</button>
       <div class="ws-note-menu" id="ws-note-menu"></div>
     </div>
+    <button class="ws-preset-btn" onclick="wsAddTermPane()" title="Add an interactive terminal pane">&gt;_ Term</button>
     <div class="ws-preset-dropdown" id="ws-preset-dropdown">
       <button class="ws-preset-btn" onclick="wsTogglePresetMenu()" title="Apply a layout preset">&#x25A6; Layout</button>
       <div class="ws-preset-menu" id="ws-preset-menu">
