@@ -436,7 +436,7 @@ cmd_peek() {
   is_running "$name" || die "session '$name' is not running"
 
   echo "${BOLD}── $name ──${RESET}"
-  tmux capture-pane -t "=$tname" -p -S "-$lines" 2>/dev/null || echo "${DIM}(no output)${RESET}"
+  tmux capture-pane -t "=$tname:" -p -S "-$lines" 2>/dev/null || echo "${DIM}(no output)${RESET}"
   echo "${BOLD}── end ──${RESET}"
 }
 
@@ -539,7 +539,7 @@ cmd_ls() {
     # Preview last output line if running
     local preview=""
     if is_running "$name" 2>/dev/null; then
-      preview=$(tmux capture-pane -t "=$(tmux_name "$name")" -p -S -3 2>/dev/null | grep -v '^$' | tail -1 | cut -c1-60)
+      preview=$(tmux capture-pane -t "=$(tmux_name "$name"):" -p -S -3 2>/dev/null | grep -v '^$' | tail -1 | cut -c1-60)
       [[ -n "$preview" ]] && preview=" ${DIM}│ $preview${RESET}"
     fi
 
