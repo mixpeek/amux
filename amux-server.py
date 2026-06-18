@@ -13724,6 +13724,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <span id="peek-session-status"></span>
       <span id="peek-model-badge" style="font-size:0.75rem;padding:2px 8px;border-radius:9999px;background:rgba(255,255,255,0.06);color:var(--dim);border:1px solid var(--border);white-space:nowrap;"></span>
     </div>
+    <div id="peek-task-row" style="display:none;align-items:center;gap:6px;min-width:0;">
+      <span style="font-size:0.72rem;color:var(--dim);flex-shrink:0;">Task:</span>
+      <span id="peek-task-label" style="font-size:0.82rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;" onclick="editField(peekSession,'task',this.textContent.trim())" title="Click to edit task label"></span>
+    </div>
     <div style="display:flex;gap:8px;align-items:center;">
       <div class="peek-find-wrap" id="peek-search-wrap">
         <input class="search-input" id="peek-search" type="text" placeholder="Find..." autocomplete="off" autocorrect="off"
@@ -18163,6 +18167,11 @@ function openPeek(name, opts) {
   document.getElementById('peek-cmd-toggle').innerHTML = '&#x25BC; Send command';
   if (draft) setTimeout(() => document.getElementById('peek-cmd-input').focus({ preventScroll: true }), 50);
   document.getElementById('peek-title').textContent = name;
+  const _peekSess = sessions.find(s => s.name === name);
+  const _peekTask = _peekSess && _peekSess.task_name;
+  const peekTaskRow = document.getElementById('peek-task-row');
+  peekTaskRow.style.display = _peekTask ? 'flex' : 'none';
+  if (_peekTask) document.getElementById('peek-task-label').textContent = _peekTask;
   updatePeekStatus();
   document.getElementById('peek-body').innerHTML = '<span style="color:var(--dim)">Loading...</span>';
   // Reset tab badges; will be repopulated by _peekUpdateTabCounts
@@ -18178,7 +18187,7 @@ function openPeek(name, opts) {
   // Restore focus mode preference
   const focusPref = localStorage.getItem('peekFocus') === '1';
   peekOv.classList.toggle('peek-focus', focusPref);
-  document.getElementById('peek-focus-title').textContent = name;
+  document.getElementById('peek-focus-title').textContent = _peekTask ? name + ' — ' + _peekTask : name;
   _syncPeekOverlayToVisualViewport();
   // Load cached peek instantly while fetching fresh data
   _idb.get('peek_' + name).then(cached => {
