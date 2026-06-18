@@ -4152,7 +4152,7 @@ def _summarize_task_bg(session_name: str, text: str):
                     "--no-session-persistence",
                     f"Summarize this task in 3 words: {text[:400]}",
                 ],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=60,
             )
             summary = result.stdout.strip().rstrip(".") if result.returncode == 0 else ""
             if summary:
