@@ -12690,6 +12690,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-terminal" onclick="switchView('terminal')">Terminal</button>
   <button id="tab-browser" onclick="switchView('browser')">Browser</button>
   <button id="tab-habits" onclick="switchView('habits')">Habits</button>
+  <button id="tab-skills" onclick="switchView('skills')">Skills</button>
 </div>
 <div class="tab-customize-wrap">
   <button class="tab-customize-btn" onclick="event.stopPropagation();toggleTabCustomizer()" title="Show/hide tabs">&#x229E;</button>
@@ -13389,6 +13390,14 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <div id="habits-view" style="display:none;flex-direction:column;align-items:center;padding:12px;overflow-y:auto;-webkit-overflow-scrolling:touch;">
   <div id="habits-container" style="width:100%;max-width:480px;"></div>
   <button onclick="_habitsAdd()" style="margin-top:12px;background:var(--accent);color:#000;border:none;border-radius:50%;width:48px;height:48px;font-size:1.5rem;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.3);transition:transform 0.15s;" onmousedown="this.style.transform='scale(0.9)'" onmouseup="this.style.transform=''" ontouchstart="this.style.transform='scale(0.9)'" ontouchend="this.style.transform=''">+</button>
+</div>
+
+<div id="skills-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;padding:12px 16px;-webkit-overflow-scrolling:touch;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-shrink:0;">
+    <span style="font-size:0.78rem;color:var(--dim);" id="skills-count"></span>
+    <button class="btn" onclick="editSkill()" style="font-size:0.75rem;padding:4px 12px;">+ New skill</button>
+  </div>
+  <div id="skills-tab-sections"></div>
 </div>
 
 <!-- Schedule modal -->
@@ -23427,9 +23436,9 @@ function _chromeSave() {
 function switchView(view) {
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
   activeView = view;
-  const _svIds = ['session','board','calendar','scheduler','files','logs','notes','crm','map','metrics','torrents','terminal','browser','graph','journal','habits'];
-  const _svNames = ['sessions','board','calendar','scheduler','files','logs','notes','crm','map','metrics','torrents','terminal','browser','graph','journal','habits'];
-  const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','','flex','flex','flex'];
+  const _svIds = ['session','board','calendar','scheduler','files','logs','notes','crm','map','metrics','torrents','terminal','browser','graph','journal','habits','skills'];
+  const _svNames = ['sessions','board','calendar','scheduler','files','logs','notes','crm','map','metrics','torrents','terminal','browser','graph','journal','habits','skills'];
+  const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','','flex','flex','flex','flex'];
   for (let i = 0; i < _svIds.length; i++) {
     const ve = document.getElementById(_svIds[i] + '-view');
     if (ve) ve.style.display = view === _svNames[i] ? (_svDisplay[i] || '') : 'none';
@@ -23446,6 +23455,7 @@ function switchView(view) {
   if (view === 'browser') _bwInit();
   if (view === 'journal') _journalInit();
   if (view === 'habits') _habitsLoad();
+  if (view === 'skills') _skillsTabLoad();
   if (view === 'files') loadFiles(_filesPath);
   else {
     try { if (location.hash.startsWith('#path=')) history.replaceState({}, '', location.pathname); } catch(e) {}
@@ -27242,6 +27252,58 @@ async function pingServer() {
   btn.textContent = 'Ping';
   btn.disabled = false;
   renderDebugInfo();
+}
+
+async function _skillsTabLoad() {
+  const container = document.getElementById('skills-tab-sections');
+  const countEl = document.getElementById('skills-count');
+  if (!container) return;
+  container.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px 0;">Loading...</div>';
+  try {
+    const [cmds, dbSkills] = await Promise.all([
+      fetch(API + '/api/slash-commands').then(r => r.json()),
+      fetch(API + '/api/skills').then(r => r.json()),
+    ]);
+    const dbNames = new Set(dbSkills.map(s => '/' + s.name));
+    const builtin = cmds.filter(c => !dbNames.has(c.cmd) && !c.cmd.startsWith('/') === false && c.source !== 'file');
+    // Separate into: db-stored (editable), file-based, builtin
+    const fileItems = cmds.filter(c => c.cmd && !dbNames.has(c.cmd) && !_isBuiltinCmd(c.cmd));
+    const builtinItems = cmds.filter(c => _isBuiltinCmd(c.cmd));
+    const dbItems = dbSkills;
+
+    let total = dbItems.length + fileItems.length;
+    if (countEl) countEl.textContent = total + ' skill' + (total === 1 ? '' : 's') + ' available';
+
+    const section = (title, items, renderFn) => items.length === 0 ? '' :
+      '<div style="margin-bottom:20px;">' +
+        '<div style="font-size:0.7rem;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">' + title + '</div>' +
+        '<div style="display:flex;flex-direction:column;gap:6px;">' + items.map(renderFn).join('') + '</div>' +
+      '</div>';
+
+    const card = (cmd, desc, hint, editable) =>
+      '<div class="skill-card" style="cursor:' + (editable ? 'pointer' : 'default') + ';" ' +
+        (editable ? 'onclick="editSkill(\'' + esc(cmd.replace(/^\//,'')) + '\')"' : '') + '>' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
+          '<span class="skill-card-name">' + esc(cmd) + '</span>' +
+          '<button class="btn" style="font-size:0.65rem;padding:2px 8px;flex-shrink:0;" onclick="event.stopPropagation();navigator.clipboard.writeText(\'' + esc(cmd) + '\');showToast(\'Copied!\')">Copy</button>' +
+        '</div>' +
+        (desc ? '<div class="skill-card-desc">' + esc(desc) + '</div>' : '') +
+        (hint ? '<div class="skill-card-hint">' + esc(hint) + '</div>' : '') +
+      '</div>';
+
+    container.innerHTML =
+      section('Custom skills', dbItems, s => card('/' + s.name, s.description, s.hint, true)) +
+      section('Project commands (.claude/commands)', fileItems, c => card(c.cmd, c.desc, c.hint || '', false)) +
+      section('Built-in', builtinItems, c => card(c.cmd, c.desc, '', false));
+
+    if (total === 0) container.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px 0;">No skills yet. Click <b>+ New skill</b> to create one.</div>';
+  } catch(e) {
+    container.innerHTML = '<div style="color:var(--red);font-size:0.85rem;padding:20px 0;">Failed to load skills</div>';
+  }
+}
+function _isBuiltinCmd(cmd) {
+  const builtins = new Set(['/help','/clear','/compact','/status','/model','/vim','/config','/doctor','/cost','/bug','/review','/pr-comments','/init','/login','/logout','/release-notes','/approved-tools','/memory','/mcp','/settings','/terminal']);
+  return builtins.has(cmd);
 }
 
 async function openSkills() {
