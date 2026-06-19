@@ -7268,6 +7268,7 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 if _api_key_val:
                     _env_args += ["-e", f"ANTHROPIC_API_KEY={_api_key_val}"]
             for _ekey in [
+                "ANTHROPIC_API_BASE",
                 "OPENAI_API_KEY",
                 "GEMINI_API_KEY",
                 "GOOGLE_API_KEY",
@@ -14543,7 +14544,9 @@ async function apikeySetupSave() {
   const err = document.getElementById('apikey-setup-err');
   const btn = document.getElementById('apikey-setup-btn');
   const key = (inp?.value || '').trim();
-  if (!key.startsWith('sk-ant-')) { if (err) err.textContent = 'Key must start with sk-ant-'; return; }
+  const _PLACEHOLDER_KEYS = new Set(['changeme','change-me','change_me','your-api-key','your_api_key','your-key','yourkey','your_key_here','your-key-here','your-api-key-here','placeholder','dummy','example','sample','test','test-key','testkey','replace-me','replace_me','xxx','xxxx','sk-ant-xxx','sk-ant-your-key','sk-ant-example','sk-ant-placeholder']);
+  const _isPlaceholder = _PLACEHOLDER_KEYS.has(key.replace(/^["']|["']$/g, '').toLowerCase());
+  if (key.length < 10 || _isPlaceholder) { if (err) err.textContent = _isPlaceholder ? 'That looks like a placeholder. Enter your real API key.' : 'Key is too short'; return; }
   if (err) err.textContent = '';
   if (btn) btn.textContent = 'Saving…';
   try {
@@ -36926,7 +36929,7 @@ return "not_found"
                     _l = _l.strip()
                     if _l.startswith("ANTHROPIC_API_KEY="):
                         _val = _l[len("ANTHROPIC_API_KEY="):].strip()
-                        if _val.startswith("sk-ant-"):
+                        if _val and not _is_placeholder_api_key(_val):
                             has_key_in_env = True
                         break
             # Also check for OAuth login in ~/.claude.json
@@ -39301,11 +39304,35 @@ def _watch_notes_dir():
             pass
 
 
+# Obvious placeholder/template values that are not real API keys. Lets us avoid
+# treating a templated env file (e.g. ANTHROPIC_API_KEY=changeme) as configured,
+# which would otherwise suppress the onboarding prompt.
+_PLACEHOLDER_API_KEYS = frozenset({
+    "changeme", "change-me", "change_me",
+    "your-api-key", "your_api_key", "your-key", "yourkey",
+    "your_key_here", "your-key-here", "your-api-key-here",
+    "placeholder", "dummy", "example", "sample",
+    "test", "test-key", "testkey",
+    "replace-me", "replace_me",
+    "xxx", "xxxx",
+    "sk-ant-xxx", "sk-ant-your-key", "sk-ant-example", "sk-ant-placeholder",
+})
+
+
+def _is_placeholder_api_key(val: str) -> bool:
+    """Return True if ``val`` is an obvious placeholder/template, not a real key."""
+    v = val.strip().strip('"').strip("'").lower()
+    return v in _PLACEHOLDER_API_KEYS
+
+
 def _validate_api_key() -> tuple[bool, str]:
     """Check if the current ANTHROPIC_API_KEY is valid with a minimal API call.
 
-    Returns (is_valid, error_message). Skips validation if OAuth is configured.
+    Returns (is_valid, error_message). Skips validation if OAuth or custom API base is configured.
     """
+    # Skip if custom API base is configured (third-party provider)
+    if os.environ.get("ANTHROPIC_API_BASE", "").strip():
+        return True, ""
     # Skip if OAuth is present — key isn't needed
     try:
         import json as _j
