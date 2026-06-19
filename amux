@@ -103,19 +103,23 @@ tmux_name() { echo "amux-$1"; }
 # Migrate a cmux-* or cc-* tmux session to amux-* if needed
 migrate_tmux() {
   local name="$1"
-  if tmux has-session -t "amux-$name" 2>/dev/null; then return; fi
+  if tmux has-session -t "=amux-$name" 2>/dev/null; then return; fi
   for old_prefix in "cmux-" "cc-"; do
-    if tmux has-session -t "${old_prefix}${name}" 2>/dev/null; then
-      tmux rename-session -t "${old_prefix}${name}" "amux-$name" 2>/dev/null || true
+    if tmux has-session -t "=${old_prefix}${name}" 2>/dev/null; then
+      tmux rename-session -t "=${old_prefix}${name}" "amux-$name" 2>/dev/null || true
       break
     fi
   done
 }
 
-# Check if tmux session is alive
+# Check if tmux session is alive.
+# NOTE: tmux's -t prefix-matches session names by default, so a bare
+# "amux-foo" would also match a running "amux-foo-worker". Prefix the
+# target with '=' to force an exact match. Name resolution / abbreviation
+# is already handled safely upstream by resolve_session().
 is_running() {
   migrate_tmux "$1"
-  tmux has-session -t "$(tmux_name "$1")" 2>/dev/null
+  tmux has-session -t "=$(tmux_name "$1")" 2>/dev/null
 }
 
 # ─── Shell-safe flag quoting ─────────────────────────────────────────────────
@@ -289,7 +293,7 @@ cmd_start() {
 
   if is_running "$name"; then
     echo "${YELLOW}already running:${RESET} $name — attaching..."
-    tmux attach-session -t "$tname"
+    tmux attach-session -t "=$tname"
     return
   fi
 
@@ -376,11 +380,11 @@ cmd_start() {
   fi
   tmux new-session -d -s "$tname" -n "$name" -c "$dir" "${shell_setup}cd $(printf '%q' "$dir"); $cmd"
   # Lock the window name so Claude can't overwrite it with escape sequences
-  tmux set-option -t "$tname" allow-rename off 2>/dev/null
-  tmux set-window-option -t "$tname" automatic-rename off 2>/dev/null
+  tmux set-option -t "=$tname" allow-rename off 2>/dev/null
+  tmux set-window-option -t "=$tname" automatic-rename off 2>/dev/null
   echo "${GREEN}started${RESET} ${BOLD}$name${RESET} in $dir"
   echo "  ${DIM}$cmd${RESET}"
-  tmux attach-session -t "$tname"
+  tmux attach-session -t "=$tname"
 }
 
 cmd_exec() {
@@ -418,7 +422,7 @@ cmd_attach() {
   local tname
   tname=$(tmux_name "$name")
   is_running "$name" || die "session '$name' is not running. Start with: amux start $name"
-  tmux attach-session -t "$tname"
+  tmux attach-session -t "=$tname"
 }
 
 cmd_peek() {
@@ -432,7 +436,7 @@ cmd_peek() {
   is_running "$name" || die "session '$name' is not running"
 
   echo "${BOLD}── $name ──${RESET}"
-  tmux capture-pane -t "$tname" -p -S "-$lines" 2>/dev/null || echo "${DIM}(no output)${RESET}"
+  tmux capture-pane -t "=$tname:" -p -S "-$lines" 2>/dev/null || echo "${DIM}(no output)${RESET}"
   echo "${BOLD}── end ──${RESET}"
 }
 
@@ -449,12 +453,12 @@ cmd_send() {
   # Check for --keys flag
   if [[ "${1:-}" == "--keys" ]]; then
     shift
-    tmux send-keys -t "$tname" "$@"
+    tmux send-keys -t "=$tname" "$@"
     echo "${GREEN}sent keys${RESET} to $name"
   else
     local text="$*"
     [[ -n "$text" ]] || die "usage: amux send <name> <text>  or  amux send <name> --keys 'C-c'"
-    tmux send-keys -t "$tname" "$text" Enter
+    tmux send-keys -t "=$tname" "$text" Enter
     echo "${GREEN}sent${RESET} to $name: $text"
   fi
 }
@@ -467,7 +471,7 @@ cmd_stop() {
   local tname
   tname=$(tmux_name "$name")
   if is_running "$name"; then
-    tmux kill-session -t "$tname"
+    tmux kill-session -t "=$tname"
     echo "${RED}stopped${RESET} $name"
   else
     echo "${DIM}$name is not running${RESET}"
@@ -535,7 +539,7 @@ cmd_ls() {
     # Preview last output line if running
     local preview=""
     if is_running "$name" 2>/dev/null; then
-      preview=$(tmux capture-pane -t "$(tmux_name "$name")" -p -S -3 2>/dev/null | grep -v '^$' | tail -1 | cut -c1-60)
+      preview=$(tmux capture-pane -t "=$(tmux_name "$name"):" -p -S -3 2>/dev/null | grep -v '^$' | tail -1 | cut -c1-60)
       [[ -n "$preview" ]] && preview=" ${DIM}│ $preview${RESET}"
     fi
 
