@@ -46,21 +46,45 @@ Fetch the v2 template:
 curl -sk $AMUX_URL/api/notes/orchestrator-loop-v2 | python3 -c "import json,sys; print(json.load(sys.stdin).get('content',''))"
 ```
 
-Fill in the template with:
+Do the substitution in Python — fetch the template text, replace every placeholder with real values, write to a temp file, POST it. Do NOT write the note content from scratch.
 
-- **Loop slug**: derived in step 1
-- **Issue prefixes**: from step 2, space-separated
-- **Schedule**: from `--schedule` or default `every 2h`
-- **Goal**: the `-g` text verbatim as the **Goal** line
-- **Scope in / Scope out / Done when**: leave as `[...]` — the orchestrator will fill these in on first tick based on context
-- **Critical path**: leave as `[Item 1]`, `[Item 2]`, `[Item 3]` placeholders — the orchestrator derives this from the goal on first tick
-- **Session access control table**: one row per session from `-s`, all with `✓ ✓ ✓` permissions and their inferred lane. Add a final row for `mixpeek-orchestrator` with `AMUX-` prefix (always present).
-- **State note slug**: `<slug>-state`
-- **Constraints note slug**: `<slug>-constraints`
-
-Save the filled note by writing the JSON to a temp file first (avoids shell quoting issues with apostrophes in the goal):
 ```bash
-python3 -c "import json; open('/tmp/orch-note.json','w').write(json.dumps({'content': FILLED_CONTENT}))"
+python3 << 'PYEOF'
+import json, os, urllib.request, ssl, re
+
+url      = os.environ['AMUX_URL']
+slug     = '<slug>'
+goal     = '<goal text>'
+schedule = '<schedule>'
+prefixes = '<BACKE- MO- AMUX->'   # space-separated prefixes from step 2
+
+# One row per session from -s plus orchestrator row always last
+session_rows = [
+    '| `<session-a>` | ✓ | ✓ | ✓ | <inferred lane> |',
+    '| `<session-b>` | ✓ | ✓ | ✓ | <inferred lane> |',
+    '| `mixpeek-orchestrator` | — | — | ✓ | AMUX- escalations to Ethan |',
+]
+
+ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+req = urllib.request.Request(f'{url}/api/notes/orchestrator-loop-v2')
+tmpl = json.loads(urllib.request.urlopen(req, context=ctx).read())['content']
+
+filled = tmpl
+filled = filled.replace('[Loop Name]', slug)
+filled = re.sub(r'> Fill in.*?---\n\n', '', filled, flags=re.DOTALL)
+filled = filled.replace('`[e.g. mvs-robustness]`', f'`{slug}`')
+filled = re.sub(r'\[loop-slug\]', slug, filled)
+filled = filled.replace('`[e.g. MI- MB- BACKE- TG-]`', f'`{prefixes}`')
+filled = filled.replace('[e.g. every 2h | daily at 09:00 | every weekday at 08:00]', schedule)
+filled = filled.replace('[One sentence. The outcome, not the activity.]', goal)
+table_ph = '| `[session-a]` | ✓ | ✓ | ✓ | [what it owns] |\n| `[session-b]` | ✓ | ✓ | ✓ | [what it owns] |\n| `[session-c]` | ✓ | read-only | ✗ | [observe only] |'
+filled = filled.replace(table_ph, '\n'.join(session_rows))
+
+with open('/tmp/orch-note.json', 'w') as f:
+    json.dump({'content': filled}, f)
+print('template filled')
+PYEOF
+
 curl -sk -X POST -H 'Content-Type: application/json' -d @/tmp/orch-note.json $AMUX_URL/api/notes/<slug>
 ```
 
