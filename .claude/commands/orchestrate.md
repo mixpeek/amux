@@ -80,14 +80,43 @@ curl -sk -X POST -H 'Content-Type: application/json' \
   $AMUX_URL/api/notes/<slug>-constraints
 ```
 
-### 5. Create the scheduler entry (skip if --no-schedule)
+### 5. Construct the scheduler prompt
+
+Before creating the schedule entry, reason about what the orchestrator needs to know the moment it wakes up cold with no context. The prompt must be self-contained — it cannot assume the orchestrator remembers anything from last tick.
+
+A good scheduler prompt has three parts:
+1. **Orientation** — what this loop is, in one sentence drawn from the goal
+2. **Fleet** — which sessions are authorized and what each owns (so the orchestrator knows where to look and what to touch)
+3. **Mechanics** — where to load the full mission, constraints, and where to write state
+
+Compose the prompt by distilling the `-g` text into a crisp one-sentence orientation, then list sessions with their lanes and issue prefixes, then add the note references. Do not use the generic template — write a prompt that would orient a fresh orchestrator instance instantly.
+
+Example for `-g "validate batch objects in MVS, run hybrid evals measuring precision/recall/latency, fix issues as found" -s "ts-gke, backend"`:
+
+```
+You are running the mmv2-retrieval-eval orchestration loop.
+
+Mission: Validate 10 batch objects in MVS and run hybrid search evals (RRF, weighted) measuring precision, recall, and latency. Fix issues as found. Reference the latest footage collection in ts iconik ns.
+
+Authorized sessions:
+- ts-gke (TG-): search quality, batch verification, evals execution
+- backend (BACKE-): evals/benchmarks API, write pipeline
+
+Load full mission from note: mmv2-retrieval-eval
+Load constraints from: mmv2-retrieval-eval-constraints
+Write state to: mmv2-retrieval-eval-state
+
+Run your orchestration loop (load state → observe sessions → think → act → verify → distill → persist).
+```
+
+### 6. Create the scheduler entry (skip if --no-schedule)
 
 ```bash
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d "{
     \"title\": \"Orchestrator loop: <slug>\",
     \"session\": \"mixpeek-orchestrator\",
-    \"command\": \"Load note <slug> and run your orchestration loop. Apply constraints from <slug>-constraints. Write state to <slug>-state.\",
+    \"command\": \"<constructed prompt from step 5>\",
     \"schedule_expr\": \"<schedule>\"
   }" \
   $AMUX_URL/api/schedules
