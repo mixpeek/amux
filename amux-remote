@@ -10,10 +10,11 @@
 #   AMUX_TOKEN     auth token from the remote's ~/.amux/auth_token
 #   AMUX_SSH_HOST  SSH hostname for `attach` (defaults to host extracted from AMUX_URL)
 #   AMUX_SSH_USER  SSH user for `attach` (defaults to current $USER)
+#   AMUX_CC        iTerm2 native attach (control mode): 1/0 to force, "auto" (default) = on in iTerm2
 #
 # Usage:
 #   amux-remote ls                     list sessions
-#   amux-remote attach <name>          SSH into the remote and attach to the tmux session
+#   amux-remote attach <name> [--cc|--plain]   SSH in and attach (native iTerm2 tabs in -CC mode)
 #   amux-remote peek <name> [lines]    print a session's recent output (default 80)
 #   amux-remote send <name> <text...>  send text/prompt to a session
 #   amux-remote start <name>           start a session
@@ -132,15 +133,41 @@ print(m.group(1) if m else '')
   echo "$host"
 }
 
+# True when we should attach with iTerm2 native tmux integration (control mode).
+# iTerm2 renders the remote tmux session's windows/panes as native local tabs —
+# trackpad scroll, local clipboard, Cmd+T/Cmd+D all work as if it were local.
+# Auto-on when the local terminal is iTerm2; AMUX_CC=1 forces, AMUX_CC=0 disables.
+_use_cc() {
+  case "${AMUX_CC:-auto}" in
+    1|yes|true|on)   return 0 ;;
+    0|no|false|off)  return 1 ;;
+    *) [[ "${TERM_PROGRAM:-}" == "iTerm.app" || "${LC_TERMINAL:-}" == "iTerm2" ]] ;;
+  esac
+}
+
 cmd_attach() {
   require_config
-  local name="${1:-}"
-  [[ -n "$name" ]] || die "usage: amux-remote attach <name>"
+  # Flags may appear before or after the name; they override AMUX_CC / auto-detect.
+  local name=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cc)    AMUX_CC=1 ;;
+      --plain) AMUX_CC=0 ;;
+      --*)     die "unknown attach option: $1 (try --cc or --plain)" ;;
+      *)       [[ -n "$name" ]] && die "unexpected argument: $1"; name="$1" ;;
+    esac
+    shift
+  done
+  [[ -n "$name" ]] || die "usage: amux-remote attach <name> [--cc|--plain]"
   local host; host=$(_ssh_host)
   local user="${AMUX_SSH_USER:-$USER}"
   local tname="amux-${name}"
-  echo "${DIM}→ ssh ${user}@${host} — tmux attach-session -t ${tname}${RESET}"
-  exec ssh "${user}@${host}" -t "tmux attach-session -t '${tname}' || (echo 'Session ${tname} not found. Running sessions:' && tmux ls 2>/dev/null; exit 1)"
+  local tmux_cmd="tmux attach-session" note=""
+  if _use_cc; then
+    tmux_cmd="tmux -CC attach-session"; note=" ${DIM}(iTerm2 native)${RESET}"
+  fi
+  echo "${DIM}→ ssh ${user}@${host} — ${tmux_cmd} -t ${tname}${RESET}${note}"
+  exec ssh "${user}@${host}" -t "${tmux_cmd} -t '${tname}' || (echo 'Session ${tname} not found. Running sessions:' && tmux ls 2>/dev/null; exit 1)"
 }
 
 usage() {
@@ -152,10 +179,11 @@ ${BOLD}Config${RESET} (env or ${REMOTE_ENV}):
   AMUX_TOKEN     ${DIM}from the remote's ~/.amux/auth_token${RESET}
   AMUX_SSH_HOST  ${DIM}SSH host for attach (default: host from AMUX_URL)${RESET}
   AMUX_SSH_USER  ${DIM}SSH user for attach (default: \$USER)${RESET}
+  AMUX_CC        ${DIM}native iTerm2 attach: 1/0 to force, auto (default) = on in iTerm2${RESET}
 
 ${BOLD}Commands${RESET}
   ${CYAN}ls${RESET}                      list sessions
-  ${CYAN}attach${RESET} <name>           SSH into remote and attach to the tmux session
+  ${CYAN}attach${RESET} <name> [--cc|--plain]  SSH in + attach (native iTerm2 tabs in -CC mode)
   ${CYAN}peek${RESET} <name> [lines]     print recent output (default 80)
   ${CYAN}send${RESET} <name> <text...>   send text/prompt to a session
   ${CYAN}start${RESET} <name>            start a session
