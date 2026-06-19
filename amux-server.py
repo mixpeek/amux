@@ -9282,6 +9282,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .badge.yolo { background: rgba(210,153,34,0.2); color: var(--yellow); }
   .card-sched-count { font-size: 0.72rem; color: #a78bfa; padding: 1px 0 2px; cursor: pointer; opacity: 0.85; }
+  .sched-toggle-label { display:flex;align-items:center;cursor:pointer;flex-shrink:0;margin-top:1px;min-width:44px;min-height:44px;justify-content:center; }
+  .sched-actions { display:flex;gap:6px;margin-top:8px;flex-wrap:wrap; }
+  .sched-action-btn { font-size:0.72rem;padding:4px 12px; }
   .badge.auto-continue { background: rgba(98,160,234,0.2); color: #62a0ea; }
   .badge.model { background: rgba(57,210,192,0.2); color: var(--cyan); }
   .badge.provider { cursor: pointer; }
@@ -12401,6 +12404,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   /* Map view */
   #jrnl-map-pane { height: 100%; }
   .jrnl-map-container { width: 100%; height: 100%; }
+  @media (max-width: 600px) {
+    .sched-actions { flex-direction: column; gap: 8px; }
+    .sched-action-btn { min-height: 44px; font-size: 0.82rem; padding: 0 12px; width: 100%; }
+    #scheduler-view > div:first-child button.btn { min-height: 44px; font-size: 0.82rem; }
+    .sched-toggle-label { min-width: 44px; min-height: 44px; }
+  }
   @media (max-width: 600px) {
     #journal-view { height: calc(100dvh - 122px - var(--chrome-tab-h, 0px)); position: relative; }
     .jrnl-sidebar {
@@ -24559,9 +24568,9 @@ function renderScheduler() {
       const lastRun = s.last_run ? s.last_run.replace('T', ' ') : 'never';
       const recLabel = s.schedule_expr || (s.sched_type === 'once' ? 'once' : (s.recurrence || 'recurring'));
       const dimmed = !s.enabled ? 'opacity:0.5;' : '';
-      return `<div class="card" style="padding:10px 12px;${dimmed}">
+      return `<div class="card sched-item" style="padding:10px 12px;${dimmed}">
         <div style="display:flex;align-items:flex-start;gap:10px;">
-          <label style="display:flex;align-items:center;cursor:pointer;flex-shrink:0;margin-top:1px;">
+          <label class="sched-toggle-label">
             <input type="checkbox" ${s.enabled ? 'checked' : ''}
               onchange="toggleSchedEnabled('${esc(s.id)}', this.checked)"
               style="width:auto;accent-color:var(--accent);">
@@ -24581,12 +24590,12 @@ function renderScheduler() {
               ${s.done_pattern ? `<span style="color:var(--dim);">stop: <code style="font-size:0.65rem;">${esc(s.done_pattern)}</code></span>` : ''}
               ${s.trigger_on ? `<span style="color:var(--accent);" title="Event-triggered (cooldown ${s.trigger_cooldown||120}s)">⚡ ${esc((s.trigger_on||'').split(',').map(t=>t==='session_idle'?'on idle':t==='board'?'on board':t).join(' + '))}</span>` : ''}
             </div>
-            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
-              <button class="btn" style="font-size:0.72rem;padding:4px 12px;"
+            <div class="sched-actions">
+              <button class="btn sched-action-btn"
                 onclick="runScheduleNow('${esc(s.id)}')">Run Now</button>
-              <button class="btn" style="font-size:0.72rem;padding:4px 12px;"
+              <button class="btn sched-action-btn"
                 onclick="openSchedModal('${esc(s.id)}')">Edit</button>
-              <button class="btn" style="font-size:0.72rem;padding:4px 12px;color:var(--red);"
+              <button class="btn sched-action-btn" style="color:var(--red);"
                 onclick="deleteSchedule('${esc(s.id)}')">Delete</button>
             </div>
           </div>
@@ -24602,11 +24611,11 @@ function renderScheduler() {
     runsEl.innerHTML = _schedulerRuns.slice(0, 30).map(r => {
       const ts = r.ran_at ? new Date(r.ran_at * 1000).toLocaleString() : '?';
       const okColor = r.status === 'ok' ? 'var(--green,#4ade80)' : 'var(--red)';
-      return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border);font-size:0.75rem;">
-        <span style="color:${okColor};font-weight:600;min-width:38px;">${esc(r.status)}</span>
-        <span style="color:var(--dim);min-width:140px;">${esc(ts)}</span>
-        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.title || r.schedule_id)}</span>
-        ${r.note ? `<span style="color:var(--red);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.note)}">${esc(r.note)}</span>` : ''}
+      return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border);font-size:0.75rem;min-width:0;">
+        <span style="color:${okColor};font-weight:600;min-width:28px;flex-shrink:0;">${esc(r.status)}</span>
+        <span style="color:var(--dim);white-space:nowrap;flex-shrink:0;">${esc(ts)}</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">${esc(r.title || r.schedule_id)}</span>
+        ${r.note ? `<span style="color:var(--red);max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;" title="${esc(r.note)}">${esc(r.note)}</span>` : ''}
       </div>`;
     }).join('');
   }
