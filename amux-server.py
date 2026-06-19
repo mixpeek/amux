@@ -27131,6 +27131,8 @@ setInterval(() => {
 
 // Start SSE (falls back to polling on failure)
 connectSSE();
+// Fetch schedules once at startup so session cards can show scheduler counts
+fetchSchedules().then(() => render());
 _notifUpdateBadge();
 loadBranding();
 // JS initialized — hide the no-JS fallback overlay
