@@ -458,7 +458,12 @@ cmd_send() {
   else
     local text="$*"
     [[ -n "$text" ]] || die "usage: amux send <name> <text>  or  amux send <name> --keys 'C-c'"
-    tmux send-keys -t "=$tname" "$text" Enter
+    # Send text literally (-l), then Enter as a separate key after a short
+    # delay. Claude Code's TUI buffers/debounces input; sending text and Enter
+    # in one send-keys call lets Enter arrive before the text is processed.
+    tmux send-keys -t "=$tname" -l "$text"
+    sleep 0.05
+    tmux send-keys -t "=$tname" Enter
     echo "${GREEN}sent${RESET} to $name: $text"
   fi
 }
