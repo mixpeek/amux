@@ -106,32 +106,61 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 
 ### 5. Construct the scheduler prompt
 
-Before creating the schedule entry, reason about what the orchestrator needs to know the moment it wakes up cold with no context. The prompt must be self-contained — it cannot assume the orchestrator remembers anything from last tick.
+The scheduler fires at an arbitrary time and the orchestrator wakes up with **no prior context**. The prompt is the only thing it has. It must be entirely self-contained — do not say "load the note and run the loop." The full brief goes in the prompt.
 
-A good scheduler prompt has three parts:
-1. **Orientation** — what this loop is, in one sentence drawn from the goal
-2. **Fleet** — which sessions are authorized and what each owns (so the orchestrator knows where to look and what to touch)
-3. **Mechanics** — where to load the full mission, constraints, and where to write state
+The scheduler prompt = the filled mission note content + the current constraints note content + the current state note content, concatenated, wrapped in a brief header and a closing action line.
 
-Compose the prompt by distilling the `-g` text into a crisp one-sentence orientation, then list sessions with their lanes and issue prefixes, then add the note references. Do not use the generic template — write a prompt that would orient a fresh orchestrator instance instantly.
+Fetch each note and build the prompt in Python:
 
-Example for `-g "validate batch objects in MVS, run hybrid evals measuring precision/recall/latency, fix issues as found" -s "ts-gke, backend"`:
+```bash
+python3 << 'PYEOF'
+import json, os, urllib.request, ssl
 
+url  = os.environ['AMUX_URL']
+slug = '<slug>'
+
+ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+
+def fetch_note(s):
+    try:
+        req = urllib.request.Request(f'{url}/api/notes/{s}')
+        return json.loads(urllib.request.urlopen(req, context=ctx).read()).get('content', '')
+    except:
+        return ''
+
+mission     = fetch_note(slug)
+constraints = fetch_note(f'{slug}-constraints')
+state       = fetch_note(f'{slug}-state')
+
+prompt = f"""You are running the {slug} orchestration loop. This prompt is your complete brief — read it fully before acting.
+
+--- MISSION ---
+{mission}
+
+--- CONSTRAINTS (append-only standing rules) ---
+{constraints}
+
+--- LAST STATE ---
+{state}
+
+--- ACTION ---
+Run your orchestration loop now: observe sessions → 💭 think (diagnose) → act → verify → 💭 think (distill) → update state note ({slug}-state) with what happened, what's pending, and what you learned.
+"""
+
+with open('/tmp/orch-sched.json', 'w') as f:
+    json.dump({
+        'title': f'Orchestrator loop: {slug}',
+        'session': 'mixpeek-orchestrator',
+        'command': prompt,
+        'schedule_expr': '<schedule>'
+    }, f)
+print('prompt ready, length:', len(prompt))
+PYEOF
+
+curl -sk -X POST -H 'Content-Type: application/json' -d @/tmp/orch-sched.json $AMUX_URL/api/schedules
 ```
-You are running the mmv2-retrieval-eval orchestration loop.
 
-Mission: Validate 10 batch objects in MVS and run hybrid search evals (RRF, weighted) measuring precision, recall, and latency. Fix issues as found. Reference the latest footage collection in ts iconik ns.
-
-Authorized sessions:
-- ts-gke (TG-): search quality, batch verification, evals execution
-- backend (BACKE-): evals/benchmarks API, write pipeline
-
-Load full mission from note: mmv2-retrieval-eval
-Load constraints from: mmv2-retrieval-eval-constraints
-Write state to: mmv2-retrieval-eval-state
-
-Run your orchestration loop (load state → observe sessions → think → act → verify → distill → persist).
-```
+**Important:** The prompt embeds the note content at schedule-creation time. If you later update the mission note, re-run `/orchestrate` with `--no-schedule` to get an updated note, then manually patch the schedule via `PATCH /api/schedules/<id>` with the new embedded content. The notes are the source of truth; the scheduler prompt is a snapshot.
 
 ### 6. Create the scheduler entry (skip if --no-schedule)
 
