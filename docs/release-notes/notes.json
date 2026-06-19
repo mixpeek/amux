@@ -1,5 +1,14 @@
 [
   {
+    "hash": "d626598",
+    "short": "d626598",
+    "title": "Closed orchestrator loops, Skills tab, and session/workspace expand-all",
+    "date": "2026-06-19",
+    "type": "feat",
+    "tags": ["orchestration", "skills", "sessions", "workspace"],
+    "description": "Four related features shipped together. (1) /orchestrate skill — run `/orchestrate -g \"goal\" -s \"session-a, session-b\"` to scaffold a complete closed-loop orchestrator: fills the v2 loop template, creates state + constraints notes, and wires a scheduler entry on mixpeek-orchestrator. The loop runs every tick without human input, escalates to the board only when blocked. (2) Skills tab — new hidable tab showing all slash commands (custom DB skills, project .claude/commands files, and built-ins) with live search and expandable cards. Each card shows the full markdown body with copy-pasteable code block examples. A new /api/slash-commands/<name> endpoint serves file-based command content. (3) Expand-all-active button (⚡) in the session list search row — expands every running non-idle session at once. (4) Same ⚡ Active button in Workspace mode — adds panes for all active/waiting sessions in one click."
+  },
+  {
     "hash": "fcc5ab340bade7c6a6ea28b0684638c05b2e92fe",
     "short": "fcc5ab3",
     "title": "White-label branding — custom name, icon, logo, and accent color",
