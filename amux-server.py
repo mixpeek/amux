@@ -9301,6 +9301,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .sched-disabled-details summary::-webkit-details-marker { display:none; }
   .sched-disabled-details[open] summary .sched-disabled-arrow { transform:rotate(90deg); }
   .sched-disabled-arrow { display:inline-block;font-size:0.6rem;transition:transform 0.15s;color:var(--dim); }
+  /* Schedule modal: mode selector + chips */
+  .sched-mode-seg { display:flex;gap:4px;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:3px; }
+  .sched-mode-btn { flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 3px;border-radius:6px;cursor:pointer;border:none;background:transparent;color:var(--dim);font-size:0.68rem;font-weight:600;min-height:46px;justify-content:center;transition:background 0.12s; }
+  .sched-mode-btn .sched-mode-ico { font-size:1rem;line-height:1; }
+  .sched-mode-btn.active { background:var(--accent);color:#fff; }
+  .sched-mode-btn:not(.active):hover { background:var(--bg); }
+  .sched-chip-row { display:flex;gap:5px;flex-wrap:wrap;margin-top:5px; }
+  .sched-chip { display:inline-flex;align-items:center;padding:5px 11px;border:1px solid var(--border);border-radius:14px;background:var(--card);color:var(--text);font-size:0.72rem;cursor:pointer;min-height:32px;font-family:inherit; }
+  .sched-chip.active { background:var(--accent);border-color:var(--accent);color:#fff; }
+  .sched-chip:not(.active):hover { border-color:var(--accent); }
+  .sched-mode-help { font-size:0.7rem;color:var(--dim);line-height:1.5;margin-top:7px;padding:7px 9px;background:var(--card);border:1px solid var(--border);border-radius:6px; }
+  .sched-mode-help b { color:var(--text);font-weight:600; }
   .badge.auto-continue { background: rgba(98,160,234,0.2); color: #62a0ea; }
   .badge.model { background: rgba(57,210,192,0.2); color: var(--cyan); }
   .badge.provider { cursor: pointer; }
@@ -12421,10 +12433,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   #jrnl-map-pane { height: 100%; }
   .jrnl-map-container { width: 100%; height: 100%; }
   @media (max-width: 600px) {
-    .sched-actions { flex-direction: column; gap: 8px; }
-    .sched-action-btn { min-height: 44px; font-size: 0.82rem; padding: 0 12px; width: 100%; }
+    .sched-actions { flex-wrap: wrap; gap: 6px; }
+    .sched-action-btn { min-height: 40px; font-size: 0.8rem; padding: 0 14px; flex: 1; min-width: calc(50% - 3px); }
     #scheduler-view > div:first-child button.btn { min-height: 44px; font-size: 0.82rem; }
     .sched-toggle-label { min-width: 44px; min-height: 44px; }
+    .sched-mode-btn { min-height: 50px; font-size: 0.66rem; }
+    .sched-chip { min-height: 38px; padding: 7px 13px; font-size: 0.76rem; }
     /* On mobile: pin to top, let box scroll, cap textarea height */
     #sched-overlay { align-items: flex-start; padding: 8px; }
     #sched-overlay .board-edit-box { height: auto !important; max-height: calc(100dvh - 16px); overflow-y: auto !important; overflow-x: hidden; display: block !important; }
@@ -13447,25 +13461,29 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <!-- Schedule modal -->
 <div id="sched-overlay" class="board-edit-overlay" onclick="if(event.target===this)closeSchedModal()" style="display:none;">
   <div class="board-edit-box" style="max-width:640px;width:100%;height:82dvh;padding:0;overflow:hidden;display:flex;flex-direction:column;">
-    <!-- Header: title, kind, session -->
+    <!-- Header: title, mode, session -->
     <div style="padding:14px 16px 10px;flex-shrink:0;border-bottom:1px solid var(--border);">
       <div style="font-weight:600;font-size:0.9rem;margin-bottom:10px;">&#x23F0; Scheduled Task</div>
       <div class="field-group" style="margin-bottom:8px;">
         <label class="field-label">Title</label>
         <input id="sched-title" type="text" placeholder="What should run?" autocomplete="off">
       </div>
-      <div style="display:flex;gap:12px;">
-        <div style="flex:1;">
-          <label class="field-label">Kind</label>
-          <select id="sched-kind" class="board-detail-session-select" style="width:100%;margin-bottom:0;" onchange="updateSchedKindUI()">
-            <option value="tmux">Send to session (Claude)</option>
-            <option value="shell">Run shell command</option>
-          </select>
-        </div>
+      <div class="sched-mode-seg" style="margin-bottom:8px;">
+        <button type="button" class="sched-mode-btn" data-mode="loop" onclick="setSchedMode('loop')"><span class="sched-mode-ico">&#x21BB;</span>Loop</button>
+        <button type="button" class="sched-mode-btn" data-mode="routine" onclick="setSchedMode('routine')"><span class="sched-mode-ico">&#x2600;</span>Routine</button>
+        <button type="button" class="sched-mode-btn" data-mode="trigger" onclick="setSchedMode('trigger')"><span class="sched-mode-ico">&#x26A1;</span>Trigger</button>
+        <button type="button" class="sched-mode-btn" data-mode="once" onclick="setSchedMode('once')"><span class="sched-mode-ico">&#x25B6;</span>Once</button>
+      </div>
+      <div style="display:flex;gap:10px;align-items:flex-end;">
         <div id="sched-session-group" style="flex:1;">
           <label class="field-label">Session</label>
           <select id="sched-session" class="board-detail-session-select" style="width:100%;margin-bottom:0;"></select>
         </div>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:0.72rem;color:var(--dim);white-space:nowrap;padding-bottom:7px;" title="Run a shell command on the host instead of sending to a Claude session">
+          <input type="checkbox" id="sched-kind-shell" style="width:auto;accent-color:var(--accent);" onchange="updateSchedKindUI()">
+          shell cmd
+        </label>
+        <select id="sched-kind" style="display:none;"><option value="tmux"></option><option value="shell"></option></select>
       </div>
     </div>
     <!-- Command: fills remaining vertical space -->
@@ -13483,106 +13501,80 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       </div>
       <div id="sched-command-preview" class="md-content" style="display:none;flex:1;padding:10px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;overflow-y:auto;font-size:0.88rem;line-height:1.65;color:var(--text);min-height:0;"></div>
     </div>
-    <!-- Footer: schedule + advanced + buttons (scrollable) -->
-    <div class="sched-modal-footer" style="flex-shrink:0;border-top:1px solid var(--border);overflow-y:auto;max-height:260px;padding:10px 16px 14px;">
-      <div style="display:flex;gap:12px;margin-bottom:8px;">
-        <div style="flex:1;">
-          <label class="field-label">Schedule</label>
-          <select id="sched-type" class="board-detail-session-select" style="width:100%;margin-bottom:0;" onchange="updateSchedTypeUI()">
-            <option value="once">Once</option>
-            <option value="recurring">Recurring</option>
-          </select>
+    <!-- Footer: mode-specific schedule panels + buttons (scrollable) -->
+    <div class="sched-modal-footer" style="flex-shrink:0;border-top:1px solid var(--border);overflow-y:auto;max-height:300px;padding:12px 16px 14px;">
+      <!-- LOOP -->
+      <div id="sched-panel-loop" class="sched-panel" style="display:none;">
+        <label class="field-label">Repeat every</label>
+        <div class="sched-chip-row" id="sched-loop-chips">
+          <button type="button" class="sched-chip" data-every="15m" onclick="setLoopEvery('15m')">15m</button>
+          <button type="button" class="sched-chip" data-every="30m" onclick="setLoopEvery('30m')">30m</button>
+          <button type="button" class="sched-chip" data-every="1h" onclick="setLoopEvery('1h')">1h</button>
+          <button type="button" class="sched-chip" data-every="2h" onclick="setLoopEvery('2h')">2h</button>
+          <button type="button" class="sched-chip" data-every="4h" onclick="setLoopEvery('4h')">4h</button>
+          <input id="sched-loop-every" type="text" placeholder="custom (e.g. 45m)" autocomplete="off"
+            style="width:120px;font-size:0.72rem;padding:5px 8px;" oninput="markLoopChipActive(this.value)">
         </div>
-        <div id="sched-once-fields" style="flex:1;">
-          <label class="field-label">Run at</label>
-          <input id="sched-run-at" type="datetime-local" class="board-detail-session-select" style="width:100%;margin-bottom:0;">
+        <div class="field-group" style="margin-top:10px;">
+          <label class="field-label">Stop when output matches <span class="field-optional">(optional — ends the loop)</span></label>
+          <input id="sched-done-pattern" type="text" placeholder='e.g. "all complete", "under 50.?ms", "nothing to do"' autocomplete="off">
         </div>
+        <select id="sched-done-action" style="display:none;"><option value="disable"></option><option value="notify"></option></select>
+        <div class="sched-mode-help"><b>Loop</b> — sends the command to the session over and over on a fixed interval. Add a stop pattern to auto-disable when the work is done ("keep optimizing until under 50ms").</div>
       </div>
-      <div id="sched-rec-fields" style="display:none;">
-      <div class="field-group">
-        <label class="field-label">Schedule expression <span class="field-optional">(optional — overrides dropdowns below)</span></label>
-        <input id="sched-expr" type="text" placeholder='e.g. "every 30m", "daily at 09:00", "0 9 * * 1-5"' autocomplete="off">
-        <div style="font-size:0.65rem;color:var(--dim);margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;">
-          <a href="#" onclick="event.preventDefault();document.getElementById('sched-expr').value='every 30m'" style="color:var(--accent);">every 30m</a>
-          <a href="#" onclick="event.preventDefault();document.getElementById('sched-expr').value='every 1h'" style="color:var(--accent);">every 1h</a>
-          <a href="#" onclick="event.preventDefault();document.getElementById('sched-expr').value='every morning'" style="color:var(--accent);">every morning</a>
-          <a href="#" onclick="event.preventDefault();document.getElementById('sched-expr').value='every evening'" style="color:var(--accent);">every evening</a>
-          <a href="#" onclick="event.preventDefault();document.getElementById('sched-expr').value='daily at 6pm'" style="color:var(--accent);">daily at 6pm</a>
-          <a href="#" onclick="event.preventDefault();document.getElementById('sched-expr').value='every weekday at 9am'" style="color:var(--accent);">every weekday at 9am</a>
-          <a href="#" onclick="event.preventDefault();document.getElementById('sched-expr').value='weekly on monday at 08:00'" style="color:var(--accent);">weekly on monday</a>
-          <a href="#" onclick="event.preventDefault();document.getElementById('sched-expr').value='monthly on 1 at 9am'" style="color:var(--accent);">monthly on 1st</a>
-          <a href="#" onclick="event.preventDefault();document.getElementById('sched-expr').value='0 9 * * 1-5'" style="color:var(--accent);">cron: weekdays 9am</a>
+      <!-- ROUTINE -->
+      <div id="sched-panel-routine" class="sched-panel" style="display:none;">
+        <label class="field-label">When</label>
+        <input id="sched-expr" type="text" placeholder='e.g. "daily at 9am", "every weekday at 9am", "0 9 * * 1-5"' autocomplete="off">
+        <div class="sched-chip-row" id="sched-routine-chips">
+          <button type="button" class="sched-chip" onclick="setRoutineExpr('daily at 9am')">daily 9am</button>
+          <button type="button" class="sched-chip" onclick="setRoutineExpr('daily at 6pm')">daily 6pm</button>
+          <button type="button" class="sched-chip" onclick="setRoutineExpr('every weekday at 9am')">weekdays 9am</button>
+          <button type="button" class="sched-chip" onclick="setRoutineExpr('every morning')">mornings</button>
+          <button type="button" class="sched-chip" onclick="setRoutineExpr('weekly on monday at 09:00')">weekly Mon</button>
+          <button type="button" class="sched-chip" onclick="setRoutineExpr('0 9,17 * * 1-5')">2&times;/weekday</button>
         </div>
+        <div class="sched-mode-help"><b>Routine</b> — runs on a fixed daily or weekly schedule. Accepts natural language ("daily at 9am") or cron.</div>
       </div>
-      <div class="field-group">
-        <label class="field-label">Repeat</label>
-        <select id="sched-recurrence" class="board-detail-session-select" style="width:100%;" onchange="updateSchedRecUI()">
-          <option value="hourly">Hourly</option>
-          <option value="daily" selected>Daily</option>
-          <option value="weekly">Weekly</option>
-          <option value="monthly">Monthly</option>
-        </select>
-      </div>
-      <div class="field-group" id="sched-time-field">
-        <label class="field-label">Time</label>
-        <input id="sched-time" type="time" class="board-detail-session-select" style="width:100%;" value="09:00">
-      </div>
-      <div class="field-group" id="sched-weekday-field" style="display:none;">
-        <label class="field-label">Day of week</label>
-        <select id="sched-weekday" class="board-detail-session-select" style="width:100%;">
-          <option value="0">Monday</option><option value="1">Tuesday</option>
-          <option value="2">Wednesday</option><option value="3">Thursday</option>
-          <option value="4">Friday</option><option value="5">Saturday</option><option value="6">Sunday</option>
-        </select>
-      </div>
-      <div class="field-group" id="sched-monthday-field" style="display:none;">
-        <label class="field-label">Day of month</label>
-        <input id="sched-monthday" type="number" min="1" max="28" value="1" class="board-detail-session-select" style="width:100%;">
-      </div>
-      </div><!-- /sched-rec-fields -->
-      <div class="field-group" style="margin-top:4px;">
-        <label class="field-label">Event triggers <span class="field-optional">(runs in addition to the schedule above)</span></label>
-        <div style="display:flex;flex-direction:column;gap:4px;margin-top:2px;">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.8rem;">
-            <input type="checkbox" id="sched-trigger-idle" style="width:auto;accent-color:var(--accent);" onchange="updateSchedTriggerUI()">
-            A managed session goes idle <span style="color:var(--dim);font-size:0.7rem;">(a worker finished a turn)</span>
+      <!-- TRIGGER -->
+      <div id="sched-panel-trigger" class="sched-panel" style="display:none;">
+        <label class="field-label">Wake the session when&hellip;</label>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:3px;">
+          <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:0.82rem;min-height:32px;">
+            <input type="checkbox" id="sched-trigger-idle" style="width:auto;accent-color:var(--accent);">
+            &#x1F4A4; a session goes idle <span style="color:var(--dim);font-size:0.7rem;">(a worker finished a turn)</span>
           </label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.8rem;">
-            <input type="checkbox" id="sched-trigger-board" style="width:auto;accent-color:var(--accent);" onchange="updateSchedTriggerUI()">
-            The board changes <span style="color:var(--dim);font-size:0.7rem;">(an issue is created/updated/moved)</span>
+          <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:0.82rem;min-height:32px;">
+            <input type="checkbox" id="sched-trigger-board" style="width:auto;accent-color:var(--accent);">
+            &#x1F4CB; the board changes <span style="color:var(--dim);font-size:0.7rem;">(issue created/moved)</span>
           </label>
         </div>
-        <div id="sched-trigger-cooldown-field" style="display:none;margin-top:6px;">
-          <label class="field-label">Only these sessions <span class="field-optional">(comma-separated; blank = any session)</span></label>
+        <div class="field-group" style="margin-top:8px;">
+          <label class="field-label">Only these sessions <span class="field-optional">(comma-separated; blank = any)</span></label>
           <input id="sched-trigger-sessions" type="text" placeholder="e.g. backend, mvs-infra, ts-gke" autocomplete="off" style="width:100%;box-sizing:border-box;">
-          <label class="field-label" style="margin-top:6px;">Trigger cooldown <span class="field-optional">(min seconds between event-fired runs)</span></label>
-          <input id="sched-trigger-cooldown" type="number" min="10" max="3600" value="120" style="width:100px;">
         </div>
+        <div style="display:flex;gap:12px;">
+          <div style="flex:1;">
+            <label class="field-label">Cooldown <span class="field-optional">(sec)</span></label>
+            <input id="sched-trigger-cooldown" type="number" min="10" max="3600" value="120" style="width:100%;box-sizing:border-box;">
+          </div>
+          <div style="flex:2;">
+            <label class="field-label">Also on a timer <span class="field-optional">(optional heartbeat)</span></label>
+            <input id="sched-trigger-expr" type="text" placeholder='e.g. "every 1h"' autocomplete="off" style="width:100%;box-sizing:border-box;">
+          </div>
+        </div>
+        <div class="sched-mode-help"><b>Trigger</b> — closed-loop orchestration. The session wakes in response to events instead of (or in addition to) a clock. Cooldown caps how often event-fired runs happen.</div>
       </div>
-      <div class="field-group">
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.8rem;font-weight:500;">
-          <input type="checkbox" id="sched-watch" style="width:auto;accent-color:var(--accent);" onchange="updateSchedWatchUI()">
-          Watch response
-        </label>
+      <!-- ONCE -->
+      <div id="sched-panel-once" class="sched-panel" style="display:none;">
+        <label class="field-label">Run at</label>
+        <input id="sched-run-at" type="datetime-local" class="board-detail-session-select" style="width:100%;margin-bottom:0;">
+        <div class="sched-mode-help"><b>Once</b> — runs a single time, then disables itself.</div>
       </div>
-      <div id="sched-watch-fields" style="display:none;">
-        <div class="field-group">
-          <label class="field-label">Done pattern <span class="field-optional">(text or regex to match in response)</span></label>
-          <input id="sched-done-pattern" type="text" placeholder='e.g. "no more tasks", "all.*complete", "nothing to do"' autocomplete="off">
-        </div>
-        <div class="field-group">
-          <label class="field-label">When matched</label>
-          <select id="sched-done-action" class="board-detail-session-select" style="width:100%;">
-            <option value="disable">Stop schedule (disable)</option>
-            <option value="notify">Notify only (keep running)</option>
-          </select>
-        </div>
-        <div class="field-group">
-          <label class="field-label">Watch timeout <span class="field-optional">(seconds to wait for response)</span></label>
-          <input id="sched-watch-timeout" type="number" min="10" max="600" value="120" style="width:100px;">
-        </div>
-      </div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;">
+      <!-- hidden carriers -->
+      <input type="checkbox" id="sched-watch" style="display:none;">
+      <input type="number" id="sched-watch-timeout" value="120" style="display:none;">
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
         <button class="btn" onclick="closeSchedModal()">Cancel</button>
         <button class="btn btn-primary" onclick="saveSchedModal()" id="sched-save-btn">Save</button>
       </div>
@@ -17745,26 +17737,30 @@ async function _peekLoadSchedules() {
       list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 4px;">No schedules for this session.</div>';
       return;
     }
+    // Active first, then by next_run
+    items.sort((a, b) => (b.enabled - a.enabled) || ((a.next_run || '') < (b.next_run || '') ? -1 : 1));
+    const modeIco = { loop: '↻', routine: '☀', trigger: '⚡', once: '▶' };
     list.innerHTML = items.map(s => {
-      const enabled = s.enabled ? 'enabled' : 'disabled';
-      const ebg = s.enabled ? 'rgba(63,185,80,0.15)' : 'rgba(139,148,158,0.15)';
-      const ecol = s.enabled ? '#3fb950' : 'var(--dim)';
-      const badge = '<span style="font-size:0.7rem;padding:1px 6px;border-radius:10px;background:' + ebg + ';color:' + ecol + ';">' + enabled + '</span>';
-      const stype = s.sched_type === 'recurring' ? (s.schedule_expr || 'recurring') : (s.run_at || 'once');
-      const nextRun = s.next_run ? '<span style="color:var(--dim);font-size:0.75rem;">next: ' + esc(s.next_run) + '</span>' : '';
-      const lastRun = s.last_run ? '<span style="color:var(--dim);font-size:0.75rem;">last: ' + esc(s.last_run) + '</span>' : '';
-      return '<div class="peek-issue-item" style="cursor:default;">' +
-        '<span class="peek-issue-key">' + esc(s.id) + '</span>' +
-        '<span class="peek-issue-title">' + esc(s.title || s.command || '(untitled)') + '</span>' +
-        '<span class="peek-issue-meta" style="gap:6px;">' + badge +
-          '<span style="font-size:0.72rem;color:var(--dim);font-family:monospace;">' + esc(stype) + '</span>' +
-          nextRun + lastRun +
-        '</span>' +
-        '<div style="display:flex;gap:4px;margin-top:4px;">' +
-          '<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="event.stopPropagation();_peekToggleSchedule(\'' + esc(s.id) + '\',' + (s.enabled ? 0 : 1) + ')">' + (s.enabled ? 'Disable' : 'Enable') + '</button>' +
-          '<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="event.stopPropagation();_peekRunSchedule(\'' + esc(s.id) + '\')">Run now</button>' +
-          '<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="event.stopPropagation();_peekEditSchedule(\'' + esc(s.id) + '\')">Edit</button>' +
-          '<button class="btn" style="font-size:0.7rem;padding:2px 8px;color:var(--red);" onclick="event.stopPropagation();_peekDeleteSchedule(\'' + esc(s.id) + '\')">Delete</button>' +
+      const mode = (typeof schedModeOf === 'function') ? schedModeOf(s) : 'routine';
+      const cadence = s.schedule_expr || (s.sched_type === 'once' ? (s.run_at || 'once') : (s.recurrence || 'recurring'));
+      const dotCol = s.enabled ? 'var(--green,#3fb950)' : 'var(--dim)';
+      const nextRel = (s.enabled && s.next_run) ? '<span title="' + esc(s.next_run) + '">▶ ' + esc(relTime(s.next_run)) + '</span>' : '';
+      const lastRel = s.last_run ? '<span style="color:var(--dim);" title="' + esc(s.last_run) + '">✓ ' + esc(relTime(s.last_run)) + '</span>' : '';
+      const stopBadge = s.done_pattern ? '<span style="color:var(--dim);font-size:0.62rem;">stop: <code>' + esc(s.done_pattern.length > 18 ? s.done_pattern.slice(0,18)+'…' : s.done_pattern) + '</code></span>' : '';
+      return '<div class="peek-issue-item" style="cursor:default;' + (s.enabled ? '' : 'opacity:0.55;') + '">' +
+        '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
+          '<span class="sched-run-dot" style="background:' + dotCol + ';"></span>' +
+          '<span class="peek-issue-title" style="flex:1;min-width:0;">' + (modeIco[mode] || '') + ' ' + esc(s.title || s.command || '(untitled)') + '</span>' +
+          '<code class="sched-cadence-pill">' + esc(cadence) + '</code>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;font-size:0.72rem;color:var(--dim);margin-top:3px;align-items:center;">' +
+          nextRel + lastRel + '<span title="Total runs">×' + (s.run_count || 0) + '</span>' + stopBadge +
+        '</div>' +
+        '<div style="display:flex;gap:4px;margin-top:5px;flex-wrap:wrap;">' +
+          '<button class="btn" style="font-size:0.7rem;padding:3px 10px;" onclick="event.stopPropagation();_peekToggleSchedule(\'' + esc(s.id) + '\',' + (s.enabled ? 0 : 1) + ')">' + (s.enabled ? 'Disable' : 'Enable') + '</button>' +
+          '<button class="btn" style="font-size:0.7rem;padding:3px 10px;" onclick="event.stopPropagation();_peekRunSchedule(\'' + esc(s.id) + '\')">Run now</button>' +
+          '<button class="btn" style="font-size:0.7rem;padding:3px 10px;" onclick="event.stopPropagation();_peekEditSchedule(\'' + esc(s.id) + '\')">Edit</button>' +
+          '<button class="btn" style="font-size:0.7rem;padding:3px 10px;color:var(--red);" onclick="event.stopPropagation();_peekDeleteSchedule(\'' + esc(s.id) + '\')">Delete</button>' +
         '</div>' +
       '</div>';
     }).join('');
@@ -17795,22 +17791,12 @@ async function _peekEditSchedule(id) {
   await fetchSchedules();
   openSchedModal(id);
 }
-function _peekNewSchedule() {
-  const title = prompt('Schedule title:');
-  if (!title) return;
-  const command = prompt('Command to send to session:');
-  if (!command) return;
-  const expr = prompt('Cron expression (e.g. "0 9 * * 1" for Mon 9am), or leave blank for one-time:');
-  const body = {
-    title, session: peekSession, command, kind: 'tmux',
-    sched_type: expr ? 'recurring' : 'once',
-  };
-  if (expr) body.schedule_expr = expr;
-  else body.run_at = new Date().toISOString().slice(0, 16);
-  apiCall(API + '/api/schedules', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(body)
-  }).then(() => _peekLoadSchedules());
+async function _peekNewSchedule() {
+  // Open the full modal preset to this session, so the rich mode picker is available.
+  await fetchSchedules();
+  openSchedModal();
+  const sel = document.getElementById('sched-session');
+  if (sel && peekSession) sel.value = peekSession;
 }
 
 // ── Peek notes ──
@@ -25434,25 +25420,36 @@ function _populateSessionSelect(selectId, current) {
 }
 
 // ── Schedule modal ────────────────────────────────────────────────────────────
-function updateSchedTypeUI() {
-  const t = document.getElementById('sched-type').value;
-  document.getElementById('sched-once-fields').style.display = t === 'once' ? '' : 'none';
-  document.getElementById('sched-rec-fields').style.display = t === 'recurring' ? '' : 'none';
+let _schedMode = 'loop';
+function setSchedMode(mode) {
+  _schedMode = mode;
+  ['loop','routine','trigger','once'].forEach(m => {
+    const panel = document.getElementById('sched-panel-' + m);
+    if (panel) panel.style.display = m === mode ? '' : 'none';
+  });
+  document.querySelectorAll('.sched-mode-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === mode));
+  // default the once datetime if entering once with empty value
+  if (mode === 'once') {
+    const ra = document.getElementById('sched-run-at');
+    if (ra && !ra.value) ra.value = new Date(Date.now() + 3600000).toISOString().slice(0,16);
+  }
 }
-function updateSchedRecUI() {
-  const rec = document.getElementById('sched-recurrence').value;
-  document.getElementById('sched-weekday-field').style.display = rec === 'weekly' ? '' : 'none';
-  document.getElementById('sched-monthday-field').style.display = rec === 'monthly' ? '' : 'none';
-  document.getElementById('sched-time-field').style.display = rec === 'hourly' ? 'none' : '';
+function setLoopEvery(v) {
+  document.getElementById('sched-loop-every').value = v;
+  markLoopChipActive(v);
 }
-function updateSchedWatchUI() {
-  document.getElementById('sched-watch-fields').style.display =
-    document.getElementById('sched-watch').checked ? '' : 'none';
+function markLoopChipActive(v) {
+  document.querySelectorAll('#sched-loop-chips .sched-chip').forEach(c =>
+    c.classList.toggle('active', c.dataset.every === v));
 }
-function updateSchedTriggerUI() {
-  const any = document.getElementById('sched-trigger-idle').checked ||
-              document.getElementById('sched-trigger-board').checked;
-  document.getElementById('sched-trigger-cooldown-field').style.display = any ? '' : 'none';
+function setRoutineExpr(v) {
+  document.getElementById('sched-expr').value = v;
+  markRoutineChip(v);
+}
+function markRoutineChip(v) {
+  document.querySelectorAll('#sched-routine-chips .sched-chip').forEach(c =>
+    c.classList.toggle('active', (c.getAttribute('onclick') || '').includes("'" + v + "'")));
 }
 function schedCmdSwitchMode(mode) {
   const ta = document.getElementById('sched-command');
@@ -25473,14 +25470,19 @@ function schedCmdSwitchMode(mode) {
   }
 }
 function updateSchedKindUI() {
-  const kind = document.getElementById('sched-kind').value;
-  document.getElementById('sched-session-group').style.display = kind === 'shell' ? 'none' : '';
-  document.getElementById('sched-command-label').textContent = kind === 'shell' ? 'Shell command' : 'Command';
-  document.getElementById('sched-command').placeholder = kind === 'shell'
+  const shell = document.getElementById('sched-kind-shell').checked;
+  document.getElementById('sched-kind').value = shell ? 'shell' : 'tmux';
+  document.getElementById('sched-session-group').style.display = shell ? 'none' : '';
+  document.getElementById('sched-command-label').textContent = shell ? 'Shell command' : 'Command';
+  document.getElementById('sched-command').placeholder = shell
     ? 'e.g. /bin/bash /path/to/script.sh' : 'e.g. /status or npm run build';
-  // Watch mode only works in tmux mode
-  const watchSection = document.getElementById('sched-watch');
-  if (watchSection && kind === 'shell') { watchSection.checked = false; updateSchedWatchUI(); }
+}
+// Determine which mode an existing schedule maps to
+function schedModeOf(s) {
+  if (s.trigger_on) return 'trigger';
+  if (s.sched_type === 'once' && !s.schedule_expr) return 'once';
+  if (isLoopCadence(s)) return 'loop';
+  return 'routine';
 }
 function openSchedModal(editId) {
   _schedEditId = editId || null;
@@ -25488,50 +25490,62 @@ function openSchedModal(editId) {
   // Populate session list
   const sel = document.getElementById('sched-session');
   sel.innerHTML = (sessions || []).map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
+  // Reset all fields to defaults
+  const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  const setChk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = v; };
+  setVal('sched-title', '');
+  setChk('sched-kind-shell', false);
+  setVal('sched-command', '');
+  setVal('sched-loop-every', '30m');
+  setVal('sched-expr', '');
+  setVal('sched-trigger-expr', '');
+  setVal('sched-run-at', new Date(Date.now() + 3600000).toISOString().slice(0,16));
+  setChk('sched-watch', false);
+  setVal('sched-done-pattern', '');
+  setVal('sched-done-action', 'disable');
+  setVal('sched-watch-timeout', 120);
+  setChk('sched-trigger-idle', false);
+  setChk('sched-trigger-board', false);
+  setVal('sched-trigger-cooldown', 120);
+  setVal('sched-trigger-sessions', '');
+
+  let mode = 'loop';
   if (editId) {
     const s = schedules.find(x => x.id === editId);
     if (s) {
-      document.getElementById('sched-title').value = s.title;
-      document.getElementById('sched-kind').value = s.kind || 'tmux';
+      setVal('sched-title', s.title);
+      setChk('sched-kind-shell', (s.kind || 'tmux') === 'shell');
       sel.value = s.session;
-      document.getElementById('sched-command').value = s.command;
-      document.getElementById('sched-type').value = s.sched_type;
-      document.getElementById('sched-run-at').value = s.run_at || '';
-      document.getElementById('sched-expr').value = s.schedule_expr || '';
-      if (s.recurrence) document.getElementById('sched-recurrence').value = s.recurrence;
-      document.getElementById('sched-watch').checked = !!s.watch;
-      document.getElementById('sched-done-pattern').value = s.done_pattern || '';
-      document.getElementById('sched-done-action').value = s.done_action || 'disable';
-      document.getElementById('sched-watch-timeout').value = s.watch_timeout || 120;
+      setVal('sched-command', s.command);
+      setVal('sched-run-at', s.run_at && s.run_at.includes('T') ? s.run_at : '');
+      setVal('sched-done-pattern', s.done_pattern || '');
+      setVal('sched-done-action', s.done_action || 'disable');
+      setChk('sched-watch', !!s.watch);
+      setVal('sched-watch-timeout', s.watch_timeout || 120);
       const trig = (s.trigger_on || '').split(',').map(x => x.trim());
-      document.getElementById('sched-trigger-idle').checked = trig.includes('session_idle');
-      document.getElementById('sched-trigger-board').checked = trig.includes('board');
-      document.getElementById('sched-trigger-cooldown').value = s.trigger_cooldown || 120;
-      document.getElementById('sched-trigger-sessions').value = s.trigger_sessions || '';
+      setChk('sched-trigger-idle', trig.includes('session_idle'));
+      setChk('sched-trigger-board', trig.includes('board'));
+      setVal('sched-trigger-cooldown', s.trigger_cooldown || 120);
+      setVal('sched-trigger-sessions', s.trigger_sessions || '');
+      mode = schedModeOf(s);
+      const expr = s.schedule_expr || '';
+      if (mode === 'loop') {
+        const m = expr.match(/every\s+(\d+\s*[mh])/i);
+        setVal('sched-loop-every', m ? m[1].replace(/\s+/g,'') : (expr === 'hourly' ? '1h' : '30m'));
+      } else if (mode === 'routine') {
+        setVal('sched-expr', expr);
+      } else if (mode === 'trigger') {
+        setVal('sched-trigger-expr', expr);
+      }
     }
     document.getElementById('sched-save-btn').textContent = 'Update';
   } else {
-    document.getElementById('sched-title').value = '';
-    document.getElementById('sched-kind').value = 'tmux';
-    document.getElementById('sched-command').value = '';
-    document.getElementById('sched-expr').value = '';
-    document.getElementById('sched-type').value = 'once';
-    document.getElementById('sched-run-at').value = new Date(Date.now() + 3600000).toISOString().slice(0,16);
-    document.getElementById('sched-watch').checked = false;
-    document.getElementById('sched-done-pattern').value = '';
-    document.getElementById('sched-done-action').value = 'disable';
-    document.getElementById('sched-watch-timeout').value = 120;
-    document.getElementById('sched-trigger-idle').checked = false;
-    document.getElementById('sched-trigger-board').checked = false;
-    document.getElementById('sched-trigger-cooldown').value = 120;
-    document.getElementById('sched-trigger-sessions').value = '';
     document.getElementById('sched-save-btn').textContent = 'Save';
   }
-  updateSchedTypeUI();
-  updateSchedRecUI();
-  updateSchedWatchUI();
-  updateSchedTriggerUI();
   updateSchedKindUI();
+  setSchedMode(mode);
+  setLoopEvery(document.getElementById('sched-loop-every').value);
+  markRoutineChip(document.getElementById('sched-expr').value);
   schedCmdSwitchMode('edit');
   overlay.style.display = 'flex';
   requestAnimationFrame(() => {
@@ -25549,39 +25563,44 @@ function closeSchedModal() {
 }
 async function saveSchedModal() {
   const title = document.getElementById('sched-title').value.trim();
-  const kind = document.getElementById('sched-kind').value;
-  const session = kind === 'shell' ? '' : document.getElementById('sched-session').value;
+  const shell = document.getElementById('sched-kind-shell').checked;
+  const kind = shell ? 'shell' : 'tmux';
+  const session = shell ? '' : document.getElementById('sched-session').value;
   const command = document.getElementById('sched-command').value.trim();
-  const stype = document.getElementById('sched-type').value;
-  if (!title || !command) return;
-  if (kind === 'tmux' && !session) return;
-  let run_at, recurrence;
-  if (stype === 'once') {
-    run_at = document.getElementById('sched-run-at').value;
-  } else {
-    recurrence = document.getElementById('sched-recurrence').value;
-    const time = document.getElementById('sched-time').value || '09:00';
-    if (recurrence === 'weekly') {
-      const wd = document.getElementById('sched-weekday').value;
-      run_at = wd + ':' + time;
-    } else if (recurrence === 'monthly') {
-      const md = document.getElementById('sched-monthday').value || '1';
-      run_at = md + ':' + time;
-    } else {
-      run_at = time;
-    }
-  }
-  const schedExpr = document.getElementById('sched-expr').value.trim();
-  const watch = document.getElementById('sched-watch').checked ? 1 : 0;
-  const donePattern = document.getElementById('sched-done-pattern').value.trim();
-  const doneAction = document.getElementById('sched-done-action').value;
-  const watchTimeout = parseInt(document.getElementById('sched-watch-timeout').value) || 120;
+  if (!title || !command) { showToast && showToast('Title and command are required'); return; }
+  if (!shell && !session) { showToast && showToast('Pick a session'); return; }
+
+  const v = (id) => (document.getElementById(id).value || '').trim();
+  const mode = _schedMode;
+  let stype = 'recurring', run_at = '', schedExpr = '';
+  let watch = 0, donePattern = '', doneAction = 'disable';
   const trig = [];
-  if (document.getElementById('sched-trigger-idle').checked) trig.push('session_idle');
-  if (document.getElementById('sched-trigger-board').checked) trig.push('board');
-  const triggerCooldown = parseInt(document.getElementById('sched-trigger-cooldown').value) || 120;
-  const triggerSessions = document.getElementById('sched-trigger-sessions').value.split(',').map(x => x.trim()).filter(Boolean).join(',');
-  const payload = { title, session, kind, command, sched_type: stype, recurrence: recurrence || null, run_at,
+  let triggerCooldown = 120, triggerSessions = '';
+
+  if (mode === 'loop') {
+    let every = v('sched-loop-every') || '30m';
+    if (!/^\d+\s*[mh]$/i.test(every)) { showToast && showToast('Interval looks off — try "30m" or "1h"'); return; }
+    schedExpr = 'every ' + every.replace(/\s+/g,'');
+    donePattern = v('sched-done-pattern');
+    if (donePattern) { watch = 1; doneAction = 'disable'; }
+  } else if (mode === 'routine') {
+    schedExpr = v('sched-expr');
+    if (!schedExpr) { showToast && showToast('Enter a schedule (e.g. "daily at 9am")'); return; }
+  } else if (mode === 'trigger') {
+    if (document.getElementById('sched-trigger-idle').checked) trig.push('session_idle');
+    if (document.getElementById('sched-trigger-board').checked) trig.push('board');
+    schedExpr = v('sched-trigger-expr');  // optional heartbeat
+    if (!trig.length && !schedExpr) { showToast && showToast('Pick a trigger event or add a heartbeat timer'); return; }
+    triggerCooldown = parseInt(v('sched-trigger-cooldown')) || 120;
+    triggerSessions = v('sched-trigger-sessions').split(',').map(x => x.trim()).filter(Boolean).join(',');
+  } else { // once
+    stype = 'once';
+    run_at = v('sched-run-at');
+    if (!run_at) { showToast && showToast('Pick a date & time'); return; }
+  }
+
+  const watchTimeout = parseInt(v('sched-watch-timeout')) || 120;
+  const payload = { title, session, kind, command, sched_type: stype, recurrence: null, run_at,
                     schedule_expr: schedExpr || null,
                     watch, done_pattern: donePattern || null, done_action: doneAction, watch_timeout: watchTimeout,
                     trigger_on: trig.join(','), trigger_cooldown: triggerCooldown, trigger_sessions: triggerSessions };
