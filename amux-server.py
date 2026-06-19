@@ -4252,16 +4252,17 @@ def _session_board_issue_id(session_name: str) -> str | None:
 def _complete_session_board_issue(session_name: str):
     """Move a session's active board issues to done.
 
-    Skips tasks with gh:* tags — those are owned by the SessionEnd hook
-    (board-gh-sync.py) which has gh CLI access for posting GH comments.
-    Also skips tasks in 'review' status (awaiting PR review, not abandoned).
+    Only acts on issues with status 'doing' — those are the ones currently
+    being worked on. Skips tasks with gh:* tags — those are owned by the
+    SessionEnd hook (board-gh-sync.py) which has gh CLI access for posting
+    GH comments.
     """
     try:
         db = get_db()
         rows = db.execute(
             "SELECT i.id FROM issues i "
             "WHERE i.session=? AND i.deleted IS NULL "
-            "AND i.status NOT IN ('done','verified','discarded','review') "
+            "AND i.status IN ('doing') "
             "ORDER BY i.created DESC",
             (session_name,)
         ).fetchall()
