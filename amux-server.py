@@ -13011,9 +13011,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </button>
   <div class="tile-controls">
     <button class="tile-btn" id="tile-list-btn" onclick="setLayoutMode('list')" title="List view">&#x2630;</button>
-    <button class="tile-btn" id="tile-group-btn" onclick="setLayoutMode('group')" title="Group by status" style="font-size:0.75rem;font-weight:700;">#</button>
     <button class="tile-btn tile-grid-only" id="tile-grid-btn" onclick="setLayoutMode('grid')" title="Grid view">&#x268F;</button>
     <button class="tile-btn" id="tile-sort-btn" onclick="toggleSortMode()" title="Sort alphabetically (pinned stay on top, order stops shifting)" style="font-size:0.7rem;font-weight:700;">A&#x2193;</button>
+    <button class="tile-btn" id="tile-freeze-btn" onclick="toggleFreeze()" title="Freeze session order — stops sessions from reordering by activity">&#x2744;</button>
     <button class="tile-btn" id="tile-reset-btn" onclick="resetCardOrder()" title="Reset to default order (pinned → last active)" style="display:none;font-size:0.8rem;">&#x21BA;</button>
     <button class="tile-btn" id="tile-expand-active-btn" onclick="expandActive()" title="Expand all active/waiting sessions">&#x26A1;</button>
     <button class="tile-btn" id="tile-collapse-btn" onclick="collapseAll()" title="Collapse all sessions" style="display:none;font-size:0.75rem;">&#x2B06;</button>
@@ -16090,6 +16090,18 @@ function render() {
         </div>` : ''}
       </div>
     </div>`;
+  }
+
+  // Freeze mode: flat list locked to captured order — bypasses status grouping
+  if (_frozen && cardOrder.length && layoutMode !== 'grid') {
+    const frozenList = _sortByCardOrder(filtered);
+    el.innerHTML = draftCards + frozenList.map(_renderSessionCard).join('');
+    for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
+    if (focusedId) { const inp = document.getElementById(focusedId); if (inp) { inp.focus({ preventScroll: true }); const d = savedInputs[focusedId]; if (d && inp.tagName === 'TEXTAREA') { inp.selectionStart = d.start; inp.selectionEnd = d.end; } } }
+    _renderArchivedSection();
+    requestAnimationFrame(initSortable);
+    requestAnimationFrame(() => { document.querySelectorAll('.chips[id^="card-chips-"]').forEach(el => { const name = el.id.replace('card-chips-', ''); if (name) renderChips(el, name, false); }); });
+    return;
   }
 
   // Grid mode: flat list sorted by activity or alpha, no grouping (desktop only)
@@ -23329,6 +23341,7 @@ document.addEventListener('keydown', (e) => {
 let layoutMode = localStorage.getItem('amux_layout') || 'group';
 let sortMode = localStorage.getItem('amux_sort_mode') || 'natural';
 let cardOrder = JSON.parse(localStorage.getItem('amux_card_order') || '[]');
+let _frozen = localStorage.getItem('amux_frozen') === '1';
 let _sortable = null;
 let _tileJustDragged = false; // keep for toggle() guard
 
@@ -23350,7 +23363,41 @@ function _alphaSortSessions(a, b) {
   return (a.name || '').localeCompare(b.name || '');
 }
 
+// Sort by frozen cardOrder; sessions not in the list go to the end in natural order
+function _sortByCardOrder(arr) {
+  const idx = Object.fromEntries(cardOrder.map((n, i) => [n, i]));
+  return [...arr].sort((a, b) => {
+    const ia = idx[a.name] ?? Infinity;
+    const ib = idx[b.name] ?? Infinity;
+    if (ia !== ib) return ia - ib;
+    return _naturalSortSessions(a, b);
+  });
+}
+
+function toggleFreeze() {
+  if (_frozen) {
+    _frozen = false;
+    localStorage.removeItem('amux_frozen');
+    cardOrder = [];
+    localStorage.removeItem('amux_card_order');
+  } else {
+    // Capture current rendered order across all visible cards (works across status groups)
+    const allCards = document.querySelectorAll('#cards .card[data-session]');
+    cardOrder = Array.from(allCards).map(c => c.dataset.session);
+    if (!cardOrder.length) {
+      cardOrder = [...sessions.filter(s => !s.archived)].sort(_naturalSortSessions).map(s => s.name);
+    }
+    localStorage.setItem('amux_card_order', JSON.stringify(cardOrder));
+    _frozen = true;
+    localStorage.setItem('amux_frozen', '1');
+  }
+  _updateResetBtn();
+  render();
+}
+
 function resetCardOrder() {
+  _frozen = false;
+  localStorage.removeItem('amux_frozen');
   cardOrder = [];
   localStorage.removeItem('amux_card_order');
   _updateResetBtn();
@@ -23362,13 +23409,14 @@ function _updateResetBtn() {
   if (btn) btn.style.display = cardOrder.length > 0 ? '' : 'none';
   const cb = document.getElementById('tile-collapse-btn');
   if (cb) cb.style.display = expanded.size > 0 ? '' : 'none';
+  const fb = document.getElementById('tile-freeze-btn');
+  if (fb) fb.classList.toggle('active', _frozen);
 }
 
 function setLayoutMode(mode) {
   layoutMode = mode;
   localStorage.setItem('amux_layout', mode);
   document.getElementById('tile-list-btn').classList.toggle('active', mode === 'list');
-  document.getElementById('tile-group-btn').classList.toggle('active', mode === 'group');
   document.getElementById('tile-grid-btn').classList.toggle('active', mode === 'grid');
   const cards = document.querySelector('.cards');
   if (cards) cards.classList.toggle('grid-mode', mode === 'grid');
@@ -23441,15 +23489,17 @@ document.addEventListener('DOMContentLoaded', function() {
     if (cards) cards.classList.add('grid-mode');
     document.getElementById('tile-grid-btn').classList.add('active');
     setTimeout(initSortable, 200);
-  } else if (layoutMode === 'group') {
-    document.getElementById('tile-group-btn').classList.add('active');
+  } else if (layoutMode === 'group' && !_frozen) {
+    document.getElementById('tile-list-btn').classList.add('active');
   } else {
-    layoutMode = 'list';
+    if (layoutMode === 'group') layoutMode = 'list';
     document.getElementById('tile-list-btn').classList.add('active');
     setTimeout(initSortable, 200);
   }
   const sortBtn = document.getElementById('tile-sort-btn');
   if (sortBtn) sortBtn.classList.toggle('active', sortMode === 'alpha');
+  const freezeBtn = document.getElementById('tile-freeze-btn');
+  if (freezeBtn) freezeBtn.classList.toggle('active', _frozen);
 });
 
 // ═══════ REPORTS ═══════
