@@ -32978,9 +32978,12 @@ async function _jrnlDeleteMedia(mid) {
 function _jrnlViewMedia(url) {
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.9);z-index:10000;display:flex;align-items:center;justify-content:center;cursor:pointer;';
-  overlay.onclick = () => overlay.remove();
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  overlay.onclick = close;
   overlay.innerHTML = '<img src="' + url + '" style="max-width:90vw;max-height:90vh;border-radius:8px;">';
   document.body.appendChild(overlay);
+  document.addEventListener('keydown', onKey);
 }
 
 function _jrnlGetLocation() {
