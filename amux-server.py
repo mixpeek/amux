@@ -16400,39 +16400,51 @@ function toggleMenu(name) {
   closeAllMenus();
   const el = document.getElementById('menu-' + name);
   if (!el) return;
-  // Position fixed menu relative to the ellipsis button
+  // The trigger button is the previousElementSibling of the menu in the card DOM
   const btn = el.previousElementSibling;
-  if (btn) {
-    const r = btn.getBoundingClientRect();
-    const vw = document.documentElement.clientWidth || window.innerWidth;
-    const vh = window.innerHeight;
-    let left = r.right - 200;
-    if (left < 8) left = 8;
-    if (left + 200 > vw) left = vw - 208;
-    // Check if menu would overflow bottom of viewport — if so, open upward
-    el.style.maxHeight = '';
-    const spaceBelow = vh - r.bottom - 8;
-    const spaceAbove = r.top - 8;
-    if (spaceBelow < 260 && spaceAbove > spaceBelow) {
-      // Open upward
-      el.style.bottom = (vh - r.top + 4) + 'px';
-      el.style.top = 'auto';
-      el.style.maxHeight = Math.min(500, spaceAbove) + 'px';
-    } else {
-      el.style.top = (r.bottom + 4) + 'px';
-      el.style.bottom = 'auto';
-      el.style.maxHeight = Math.min(500, spaceBelow) + 'px';
-    }
-    el.style.left = left + 'px';
-    el.style.right = 'auto';
+  if (!btn) { el.classList.add('open'); openMenu = name; return; }
+  const r = btn.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth || window.innerWidth;
+  const vh = window.innerHeight;
+  // Portal to body — escapes overflow:hidden on .card (iOS Safari clips fixed children)
+  if (el.parentElement !== document.body) {
+    el._menuOrigParent = el.parentElement;
+    el._menuOrigNext = el.nextSibling;
+    document.body.appendChild(el);
   }
+  const menuW = Math.max(el.offsetWidth || 200, 200);
+  let left = r.right - menuW;
+  if (left < 8) left = 8;
+  if (left + menuW > vw - 8) left = vw - menuW - 8;
+  el.style.maxHeight = '';
+  const spaceBelow = vh - r.bottom - 8;
+  const spaceAbove = r.top - 8;
+  if (spaceBelow < 260 && spaceAbove > spaceBelow) {
+    el.style.bottom = (vh - r.top + 4) + 'px';
+    el.style.top = 'auto';
+    el.style.maxHeight = Math.min(500, spaceAbove) + 'px';
+  } else {
+    el.style.top = (r.bottom + 4) + 'px';
+    el.style.bottom = 'auto';
+    el.style.maxHeight = Math.min(500, spaceBelow) + 'px';
+  }
+  el.style.left = left + 'px';
+  el.style.right = 'auto';
   el.classList.add('open');
   openMenu = name;
 }
 function closeAllMenus() {
   if (openMenu) {
     const el = document.getElementById('menu-' + openMenu);
-    if (el) el.classList.remove('open');
+    if (el) {
+      el.classList.remove('open');
+      // Restore from body portal back to original card location
+      if (el._menuOrigParent) {
+        try { el._menuOrigParent.insertBefore(el, el._menuOrigNext || null); } catch(e) {}
+        el._menuOrigParent = null;
+        el._menuOrigNext = null;
+      }
+    }
   }
   openMenu = null;
   const pm = document.getElementById('peek-menu');
