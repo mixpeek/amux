@@ -7740,7 +7740,10 @@ def archive_session(name: str) -> tuple[bool, str]:
         except Exception:
             pass
         stop_session(name)
-        _kill_tmux_session(name)
+    # Always tear down the tmux session — even if the process already died
+    # (is_running False), so an archived session never leaves an orphan idle
+    # shell holding memory. kill-session is a no-op if it's already gone.
+    _kill_tmux_session(name)
     cfg = parse_env_file(f)
     cfg["CC_ARCHIVED"] = "1"
     _write_env(f, cfg)
@@ -39290,30 +39293,44 @@ def _auto_archive_idle():
         slog(f"[auto-archive] archived {len(archived)} idle sessions: {', '.join(archived)}")
 
 
+def _tmux_session_exists(name: str) -> bool:
+    """True if a tmux session backs this amux session (regardless of whether
+    Claude is running in it). Unlike is_running(), this also catches an archived
+    session that's been reduced to an idle shell — which still holds memory."""
+    try:
+        r = subprocess.run(
+            ["tmux", "has-session", "-t", tmux_name(name)],
+            capture_output=True, timeout=5,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def _enforce_archived_stopped():
-    """Stop and remove any tmux processes for archived sessions."""
+    """Tear down any tmux session backing an archived (or blocked) amux session.
+
+    Gate on tmux *existence*, not is_running(): an archived session whose Claude
+    process already exited still leaves an idle `/bin/bash` pane holding a few MB
+    each. is_running() reports those as not-running (shell prompt, no child), so
+    gating on it would skip exactly the orphans we want to reap."""
     stopped = []
     for env_file in sorted(CC_SESSIONS.glob("*.env")):
         name = env_file.stem
         cfg = parse_env_file(env_file)
-        if _is_session_blocked(name):
-            if is_running(name):
-                try:
-                    stop_session(name)
-                    _kill_tmux_session(name)
-                    stopped.append(f"{name} (blocked)")
-                except Exception:
-                    pass
+        blocked = _is_session_blocked(name)
+        archived = cfg.get("CC_ARCHIVED") == "1"
+        if not (blocked or archived):
             continue
-        if cfg.get("CC_ARCHIVED") == "1" and is_running(name):
+        if _tmux_session_exists(name):
             try:
                 stop_session(name)
                 _kill_tmux_session(name)
-                stopped.append(name)
+                stopped.append(f"{name} (blocked)" if blocked else name)
             except Exception:
                 pass
     if stopped:
-        slog(f"[cleanup] stopped {len(stopped)} archived sessions still running: {', '.join(stopped)}")
+        slog(f"[cleanup] reaped {len(stopped)} orphan tmux session(s) for archived/blocked: {', '.join(stopped)}")
 
 
 def _cleanup_old_transcripts():
