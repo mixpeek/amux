@@ -2328,6 +2328,7 @@ def _send_one_push(endpoint: str, p256dh_b64: str, auth_b64: str, payload: bytes
         _, vapid_pub = _vapid_keys()
         req = _ur.Request(endpoint, data=body, method="POST", headers={
             "TTL": "2419200",
+            "Urgency": "high",            # wake the device promptly (iOS)
             "Content-Encoding": "aes128gcm",
             "Content-Type": "application/octet-stream",
             "Content-Length": str(len(body)),
