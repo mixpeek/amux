@@ -13010,8 +13010,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <span class="log-search-label">Logs</span>
   </button>
   <div class="tile-controls">
-    <button class="tile-btn" id="tile-list-btn" onclick="setLayoutMode('list')" title="List view">&#x2630;</button>
-    <button class="tile-btn tile-grid-only" id="tile-grid-btn" onclick="setLayoutMode('grid')" title="Grid view">&#x268F;</button>
     <button class="tile-btn" id="tile-sort-btn" onclick="toggleSortMode()" title="Sort alphabetically (pinned stay on top, order stops shifting)" style="font-size:0.7rem;font-weight:700;">A&#x2193;</button>
     <button class="tile-btn" id="tile-freeze-btn" onclick="toggleFreeze()" title="Freeze session order — stops sessions from reordering by activity">&#x2744;</button>
     <button class="tile-btn" id="tile-reset-btn" onclick="resetCardOrder()" title="Reset to default order (pinned → last active)" style="display:none;font-size:0.8rem;">&#x21BA;</button>
@@ -23338,7 +23336,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ═══════ LAYOUT MODES (list / grid) ═══════
-let layoutMode = localStorage.getItem('amux_layout') || 'group';
+let layoutMode = localStorage.getItem('amux_layout') || 'grid';
 let sortMode = localStorage.getItem('amux_sort_mode') || 'natural';
 let cardOrder = JSON.parse(localStorage.getItem('amux_card_order') || '[]');
 let _frozen = localStorage.getItem('amux_frozen') === '1';
@@ -23433,8 +23431,6 @@ function _updateResetBtn() {
 function setLayoutMode(mode) {
   layoutMode = mode;
   localStorage.setItem('amux_layout', mode);
-  document.getElementById('tile-list-btn').classList.toggle('active', mode === 'list');
-  document.getElementById('tile-grid-btn').classList.toggle('active', mode === 'grid');
   const cards = document.querySelector('.cards');
   if (cards) cards.classList.toggle('grid-mode', mode === 'grid');
   if (mode === 'group') destroySortable();
@@ -23502,15 +23498,12 @@ function tileMouseDown(e, name) {} // no-op — kept so card HTML doesn't break
 // Initialize layout on load
 document.addEventListener('DOMContentLoaded', function() {
   const cards = document.querySelector('.cards');
+  // Default to grid on desktop, list on mobile
   if (layoutMode === 'grid' && window.innerWidth >= 900) {
     if (cards) cards.classList.add('grid-mode');
-    document.getElementById('tile-grid-btn').classList.add('active');
     setTimeout(initSortable, 200);
-  } else if (layoutMode === 'group' && !_frozen) {
-    document.getElementById('tile-list-btn').classList.add('active');
   } else {
-    if (layoutMode === 'group') layoutMode = 'list';
-    document.getElementById('tile-list-btn').classList.add('active');
+    if (layoutMode === 'group' || (layoutMode === 'grid' && window.innerWidth < 900)) layoutMode = 'list';
     setTimeout(initSortable, 200);
   }
   const sortBtn = document.getElementById('tile-sort-btn');
