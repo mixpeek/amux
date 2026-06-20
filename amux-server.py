@@ -2182,12 +2182,176 @@ def _rate_limit_loop():
 
 
 def _push_alert(alert_type: str, session: str, message: str):
-    """Enqueue an alert to be streamed to all SSE clients."""
+    """Enqueue an alert to be streamed to all SSE clients, and fan it out to
+    any registered Web Push subscriptions so it reaches phones even when the
+    app/tab is closed."""
     global _sse_alerts
     with _sse_alert_lock:
         _sse_alerts.append({"type": alert_type, "session": session, "message": message, "ts": int(time.time())})
         if len(_sse_alerts) > 50:
             _sse_alerts = _sse_alerts[-50:]
+    try:
+        _web_push_broadcast(_ALERT_PUSH_ICONS.get(alert_type, "\U0001F514") + " " + (session or "amux"),
+                            message, session=session, tag=alert_type)
+    except Exception:
+        pass
+
+
+# ── Web Push (RFC 8030/8291/8292) — background notifications to phones ────────
+# Implemented with stdlib + `cryptography` only (no pywebpush dependency), so it
+# stays inside amux's single-file model. Delivers to the browser push service
+# (Apple/Mozilla/Google) which forwards to the device even when the PWA is shut.
+_ALERT_PUSH_ICONS = {
+    "scheduler": "⏰", "auto_restart": "\U0001F501", "auto_continue": "▶️",
+    "auto_compact": "\U0001F5DC", "rate_limit_manual": "⏳", "task_pickup": "\U0001F4CB",
+    "steering_delivered": "✉️", "uncommitted": "⚠️", "thinking_reset": "\U0001F9E0",
+}
+_VAPID_CACHE = None
+_VAPID_PATH = CC_HOME / "vapid_private.pem"
+_PUSH_SUBS_PRESENT = None  # None=unknown, False=confirmed empty (skip), True=have subs
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(s: str) -> bytes:
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def _vapid_keys():
+    """Return (private_key_obj, public_key_b64url). Generated once and persisted."""
+    global _VAPID_CACHE
+    if _VAPID_CACHE:
+        return _VAPID_CACHE
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives import serialization
+    if _VAPID_PATH.exists():
+        pk = serialization.load_pem_private_key(_VAPID_PATH.read_bytes(), password=None)
+    else:
+        pk = ec.generate_private_key(ec.SECP256R1())
+        _VAPID_PATH.write_bytes(pk.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption()))
+        try:
+            _VAPID_PATH.chmod(0o600)
+        except Exception:
+            pass
+    pub = pk.public_key().public_bytes(
+        serialization.Encoding.X962,
+        serialization.PublicFormat.UncompressedPoint)
+    _VAPID_CACHE = (pk, _b64url(pub))
+    return _VAPID_CACHE
+
+
+def _vapid_jwt(audience: str) -> str:
+    """Signed ES256 JWT for the VAPID Authorization header."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+    pk, _ = _vapid_keys()
+    sub = os.environ.get("AMUX_VAPID_SUBJECT", "mailto:amux@localhost")
+    header = _b64url(json.dumps({"alg": "ES256", "typ": "JWT"}, separators=(",", ":")).encode())
+    claims = _b64url(json.dumps(
+        {"aud": audience, "exp": int(time.time()) + 12 * 3600, "sub": sub},
+        separators=(",", ":")).encode())
+    signing_input = (header + "." + claims).encode("ascii")
+    der = pk.sign(signing_input, ec.ECDSA(hashes.SHA256()))
+    r, s = decode_dss_signature(der)
+    raw = r.to_bytes(32, "big") + s.to_bytes(32, "big")
+    return header + "." + claims + "." + _b64url(raw)
+
+
+def _encrypt_web_push(p256dh_b64: str, auth_b64: str, payload: bytes) -> bytes:
+    """Encrypt payload with aes128gcm content coding (RFC 8291). Returns the
+    full message body (salt+rs+keyid header followed by the GCM ciphertext)."""
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives import serialization, hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    ua_public_bytes = _b64url_decode(p256dh_b64)
+    auth_secret = _b64url_decode(auth_b64)
+    ua_public = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), ua_public_bytes)
+
+    as_private = ec.generate_private_key(ec.SECP256R1())
+    as_public_bytes = as_private.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+    shared = as_private.exchange(ec.ECDH(), ua_public)
+
+    # PRK / IKM per RFC 8291 §3.4
+    key_info = b"WebPush: info\x00" + ua_public_bytes + as_public_bytes
+    ikm = HKDF(algorithm=hashes.SHA256(), length=32, salt=auth_secret, info=key_info).derive(shared)
+
+    salt = os.urandom(16)
+    cek = HKDF(algorithm=hashes.SHA256(), length=16, salt=salt,
+               info=b"Content-Encoding: aes128gcm\x00").derive(ikm)
+    nonce = HKDF(algorithm=hashes.SHA256(), length=12, salt=salt,
+                 info=b"Content-Encoding: nonce\x00").derive(ikm)
+
+    # Single record: plaintext + 0x02 delimiter (last-record marker), then GCM.
+    ciphertext = AESGCM(cek).encrypt(nonce, payload + b"\x02", None)
+    rs = (4096).to_bytes(4, "big")
+    header = salt + rs + bytes([len(as_public_bytes)]) + as_public_bytes
+    return header + ciphertext
+
+
+def _send_one_push(endpoint: str, p256dh_b64: str, auth_b64: str, payload: bytes) -> int:
+    """Send one encrypted push. Returns the HTTP status (or 0 on transport error)."""
+    import urllib.request as _ur
+    from urllib.parse import urlparse as _urlparse
+    body = _encrypt_web_push(p256dh_b64, auth_b64, payload)
+    parts = _urlparse(endpoint)
+    aud = f"{parts.scheme}://{parts.netloc}"
+    _, vapid_pub = _vapid_keys()
+    req = _ur.Request(endpoint, data=body, method="POST", headers={
+        "TTL": "2419200",
+        "Content-Encoding": "aes128gcm",
+        "Content-Type": "application/octet-stream",
+        "Content-Length": str(len(body)),
+        "Authorization": f"vapid t={_vapid_jwt(aud)},k={vapid_pub}",
+    })
+    try:
+        with _ur.urlopen(req, timeout=10) as resp:
+            return resp.status
+    except _ur.HTTPError as e:
+        return e.code
+    except Exception as e:
+        slog(f"[webpush] transport error: {e}")
+        return 0
+
+
+def _web_push_broadcast(title: str, body: str, session: str = "", tag: str = "amux", url: str = "/"):
+    """Fan out a notification to every registered subscription (in a background
+    thread so callers never block on the network). Prunes dead subscriptions."""
+    # Fast path: if a prior broadcast confirmed there are no subscriptions, skip
+    # spawning a thread for every alert. Reset to True on subscribe.
+    if _PUSH_SUBS_PRESENT is False:
+        return
+    payload = json.dumps({"title": title, "body": body, "session": session, "tag": tag, "url": url}).encode()
+
+    def _run():
+        global _PUSH_SUBS_PRESENT
+        try:
+            db = get_db()
+            rows = db.execute("SELECT endpoint, p256dh, auth FROM push_subscriptions").fetchall()
+        except Exception:
+            return
+        _PUSH_SUBS_PRESENT = len(rows) > 0
+        for r in rows:
+            status = _send_one_push(r["endpoint"], r["p256dh"], r["auth"], payload)
+            if status in (404, 410):
+                try:
+                    db.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (r["endpoint"],))
+                    db.commit()
+                    slog(f"[webpush] pruned expired subscription")
+                except Exception:
+                    pass
+            elif status and status >= 400:
+                slog(f"[webpush] push to endpoint returned {status}")
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _read_jsonl_tail(filepath: Path, max_bytes: int = 5_000_000) -> list:
@@ -3112,6 +3276,13 @@ CREATE TABLE IF NOT EXISTS reports (
 CREATE TABLE IF NOT EXISTS prefs (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    p256dh   TEXT NOT NULL,
+    auth     TEXT NOT NULL,
+    ua       TEXT,
+    created  INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS logs (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -15326,6 +15497,53 @@ async function _notifFireNative(title, body, session) {
   } catch(e) {}
 }
 
+function _urlB64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+
+// Register this device for background Web Push (server can reach it with the
+// app/tab closed). Returns {ok} or {ok:false, reason}.
+async function _pushSubscribe() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return { ok: false, reason: 'push unsupported' };
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      const r = await fetch(API + '/api/push/public-key');
+      const { key } = await r.json();
+      if (!key) return { ok: false, reason: 'no server key' };
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: _urlB64ToUint8Array(key) });
+    }
+    const j = sub.toJSON();
+    await apiCall(API + '/api/push/subscribe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: j.endpoint, keys: j.keys }),
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+}
+
+async function _pushUnsubscribe() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      await apiCall(API + '/api/push/unsubscribe', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoint: sub.endpoint }),
+      });
+      await sub.unsubscribe();
+    }
+  } catch (e) {}
+}
+
 async function _notifSendTest() {
   let perm = (typeof Notification !== 'undefined') ? Notification.permission : 'unsupported';
   if (perm === 'unsupported') { showToast('This browser has no Notification API'); return; }
@@ -15338,18 +15556,27 @@ async function _notifSendTest() {
       : 'Notifications are blocked — enable them in your browser/site settings.');
     return;
   }
-  // Enable the native toggle so real alerts fire too, then route through _notifPush
-  // (logs to the panel + shows banner + fires the native notification).
   if (!_notifsNative) { _notifsNative = true; localStorage.setItem('amux_notifs', '1'); _notifUpdateNativeBtn(); }
+  // Register for background push and trigger a REAL server push — this is the
+  // true test of "arrives even when the app is closed".
+  const sub = await _pushSubscribe();
+  if (sub.ok) {
+    const r = await apiCall(API + '/api/push/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (r) { showToast('Background push sent — it should arrive even with amux closed'); return; }
+    _notifPush('\u{1F514}', 'Test notification', 'Local test (server push request failed).', '');
+    return;
+  }
+  // No background push available — a local notification still proves foreground native works.
   _notifPush('\u{1F514}', 'Test notification',
-    'If this stays on your screen / lock screen, native notifications work. Tap it to open amux.', '');
-  showToast('Test notification sent');
+    'If this stays on your screen, native notifications work. Background push unavailable (' + (sub.reason || '') + ').', '');
+  showToast('Sent a local test notification');
 }
 
 async function _notifToggleNative() {
   if (_notifsNative) {
     _notifsNative = false;
     localStorage.setItem('amux_notifs', '0');
+    _pushUnsubscribe();   // stop background pushes too
     showToast('Native notifications disabled');
   } else {
     try {
@@ -15363,7 +15590,9 @@ async function _notifToggleNative() {
     } catch(e) {}
     _notifsNative = true;
     localStorage.setItem('amux_notifs', '1');
-    showToast('Native notifications enabled');
+    // Register for background push so alerts reach this device with the app closed.
+    const sub = await _pushSubscribe();
+    showToast(sub.ok ? 'Notifications on (incl. background push)' : 'Native notifications enabled');
   }
   _notifUpdateNativeBtn();
 }
@@ -33294,7 +33523,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.6.8';
+const CACHE = 'amux-v0.6.9';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -33312,6 +33541,24 @@ self.addEventListener('activate', e => {
       Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
+});
+
+// Web Push: a push message from the server arrives here even when the PWA is
+// fully closed. We MUST call showNotification (userVisibleOnly), or the browser
+// penalises the subscription.
+self.addEventListener('push', e => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch(_) { d = { title: 'amux', body: e.data ? e.data.text() : '' }; }
+  const title = d.title || 'amux';
+  e.waitUntil(self.registration.showNotification(title, {
+    body: d.body || '',
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    tag: d.tag || 'amux-push',
+    renotify: true,
+    requireInteraction: true,
+    data: { url: d.url || '/', session: d.session || '' },
+  }));
 });
 
 // Focus the app (or open it) when a notification is tapped — required for the
@@ -34423,6 +34670,49 @@ class CCHandler(BaseHTTPRequestHandler):
                 items = [n for n in _notif_load() if n.get("id") != nid]
                 _notif_save(items)
                 return self._json({"ok": True})
+
+        # Web Push API (/api/push/*) — background notifications to phones
+        if path == "/api/push/public-key" and method == "GET":
+            try:
+                _, pub = _vapid_keys()
+                return self._json({"key": pub})
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
+
+        if path == "/api/push/subscribe" and method == "POST":
+            body = self._read_body()
+            endpoint = (body.get("endpoint") or "").strip()
+            keys = body.get("keys") or {}
+            p256dh = (keys.get("p256dh") or "").strip()
+            auth = (keys.get("auth") or "").strip()
+            if not (endpoint and p256dh and auth):
+                return self._json({"error": "endpoint, keys.p256dh and keys.auth required"}, 400)
+            db = get_db()
+            db.execute(
+                "INSERT INTO push_subscriptions (endpoint, p256dh, auth, ua, created) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET p256dh=excluded.p256dh, auth=excluded.auth, ua=excluded.ua",
+                (endpoint, p256dh, auth, self.headers.get("User-Agent", "")[:300], int(time.time())))
+            db.commit()
+            globals()["_PUSH_SUBS_PRESENT"] = True
+            return self._json({"ok": True})
+
+        if path == "/api/push/unsubscribe" and method == "POST":
+            body = self._read_body()
+            endpoint = (body.get("endpoint") or "").strip()
+            db = get_db()
+            db.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (endpoint,))
+            db.commit()
+            return self._json({"ok": True})
+
+        if path == "/api/push/test" and method == "POST":
+            db = get_db()
+            n = db.execute("SELECT COUNT(*) AS c FROM push_subscriptions").fetchone()["c"]
+            if not n:
+                return self._json({"error": "no subscriptions registered on this server"}, 400)
+            _web_push_broadcast("\U0001F514 amux background push",
+                                "It works — this arrived via Web Push, even with the app closed.",
+                                session="", tag="amux-push-test")
+            return self._json({"ok": True, "sent_to": n})
 
         # Map API (/api/map)
         if path == "/api/map":
