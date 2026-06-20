@@ -10894,7 +10894,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     display: flex; align-items: stretch;
     margin: 0 -16px 12px -16px;
     border-bottom: 1px solid var(--border);
-    position: sticky; top: var(--sticky-nav-top, 60px); z-index: 39; background: var(--bg);
+    position: sticky; top: var(--sticky-nav-top, calc(env(safe-area-inset-top, 0px) + 57px)); z-index: 39; background: var(--bg);
   }
   .tab-bar {
     display: flex; gap: 0; padding: 0 0 0 16px; flex: 1;
@@ -12560,6 +12560,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <div class="notif-panel-header">
           <span>Notifications</span>
           <div style="display:flex;gap:8px;align-items:center;">
+            <button onclick="_notifSendTest()" style="background:none;border:1px solid var(--border);color:var(--accent);cursor:pointer;font-size:0.68rem;border-radius:5px;padding:3px 9px;" title="Send a test notification to check native/iOS notifications">Test</button>
             <button onclick="_notifClearAll()" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:0.7rem;">Clear</button>
             <button onclick="_notifToggleNative()" id="notif-native-btn" style="background:none;border:none;cursor:pointer;font-size:0.75rem;" title="Toggle native notifications">&#x1F50A;</button>
           </div>
@@ -15300,13 +15301,49 @@ function _notifPush(icon, title, body, session) {
   _notifFireNative(title, body, session);
 }
 
-function _notifFireNative(title, body, session) {
+async function _notifFireNative(title, body, session) {
   if (!_notifsNative) return;
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  const opts = {
+    body, icon: '/icon-192.png', badge: '/icon-192.png',
+    tag: 'amux-' + (session || Date.now()), renotify: true, silent: false,
+    requireInteraction: true,           // stays on screen until dismissed (desktop)
+    data: { session: session || '', url: '/' },
+  };
+  // Prefer the service worker — REQUIRED on iOS (new Notification() is unsupported
+  // there) and gives persistent, lock-screen notifications on installed PWAs.
   try {
-    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-    const n = new Notification(title, { body, icon: '/icon.png', tag: 'amux-' + (session || Date.now()), renotify: true, silent: false });
+    if ('serviceWorker' in navigator) {
+      const reg = await navigator.serviceWorker.ready;
+      await reg.showNotification(title, opts);
+      return;
+    }
+  } catch(e) {}
+  // Desktop fallback for browsers without an active SW registration.
+  try {
+    const n = new Notification(title, opts);
     n.onclick = () => { window.focus(); if (session) openPeek(session); n.close(); };
   } catch(e) {}
+}
+
+async function _notifSendTest() {
+  let perm = (typeof Notification !== 'undefined') ? Notification.permission : 'unsupported';
+  if (perm === 'unsupported') { showToast('This browser has no Notification API'); return; }
+  if (perm === 'default') { try { perm = await Notification.requestPermission(); } catch(e) {} }
+  if (perm !== 'granted') {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const standalone = window.navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+    showToast(isIOS && !standalone
+      ? 'On iOS: add amux to your Home Screen (Share → Add to Home Screen), open it from there, then tap Test to allow notifications.'
+      : 'Notifications are blocked — enable them in your browser/site settings.');
+    return;
+  }
+  // Enable the native toggle so real alerts fire too, then route through _notifPush
+  // (logs to the panel + shows banner + fires the native notification).
+  if (!_notifsNative) { _notifsNative = true; localStorage.setItem('amux_notifs', '1'); _notifUpdateNativeBtn(); }
+  _notifPush('\u{1F514}', 'Test notification',
+    'If this stays on your screen / lock screen, native notifications work. Tap it to open amux.', '');
+  showToast('Test notification sent');
 }
 
 async function _notifToggleNative() {
@@ -23501,11 +23538,10 @@ function _chromeUpdateOffsets() {
     if (ctb) {
       const h = _chromeCollapsed ? 0 : ctb.offsetHeight;
       document.documentElement.style.setProperty('--chrome-tab-h', h + 'px');
-      // Body padding-top is handled by CSS: max(16px, --chrome-tab-h, safe-area-inset-top)
-      if (hr) {
-        const bodyPadTop = parseInt(getComputedStyle(document.body).paddingTop) || 0;
-        document.documentElement.style.setProperty('--sticky-nav-top', (bodyPadTop + hr.offsetHeight) + 'px');
-      }
+    }
+    if (hr) {
+      const bodyPadTop = parseInt(getComputedStyle(document.body).paddingTop) || 0;
+      document.documentElement.style.setProperty('--sticky-nav-top', (bodyPadTop + hr.offsetHeight) + 'px');
     }
   });
 }
@@ -27457,7 +27493,9 @@ loadBranding();
 
 // Initialize chrome tabs
 _chromeRender();
+_chromeUpdateOffsets();
 window.addEventListener('resize', _chromeUpdateOffsets);
+window.addEventListener('orientationchange', () => setTimeout(_chromeUpdateOffsets, 100));
 
 // Register service worker for offline asset caching
 if ('serviceWorker' in navigator) {
@@ -33253,7 +33291,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.6.7';
+const CACHE = 'amux-v0.6.8';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -33270,6 +33308,18 @@ self.addEventListener('activate', e => {
     caches.keys().then(keys =>
       Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
     ).then(() => self.clients.claim())
+  );
+});
+
+// Focus the app (or open it) when a notification is tapped — required for the
+// click to do anything on iOS, where notifications are shown via the SW.
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  e.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(cl => {
+      for (const c of cl) { if ('focus' in c) return c.focus(); }
+      if (clients.openWindow) return clients.openWindow('/');
+    })
   );
 });
 
