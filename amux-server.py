@@ -2191,8 +2191,10 @@ def _push_alert(alert_type: str, session: str, message: str):
         if len(_sse_alerts) > 50:
             _sse_alerts = _sse_alerts[-50:]
     try:
-        _web_push_broadcast(_ALERT_PUSH_ICONS.get(alert_type, "\U0001F514") + " " + (session or "amux"),
-                            message, session=session, tag=alert_type)
+        # iOS notification format (no emojis): title = session, body = "<type>\n<description>"
+        _web_push_broadcast(session or "amux",
+                            _ALERT_TYPE_LABELS.get(alert_type, alert_type) + "\n" + message,
+                            session=session, tag=alert_type)
     except Exception:
         pass
 
@@ -2201,10 +2203,11 @@ def _push_alert(alert_type: str, session: str, message: str):
 # Implemented with stdlib + `cryptography` only (no pywebpush dependency), so it
 # stays inside amux's single-file model. Delivers to the browser push service
 # (Apple/Mozilla/Google) which forwards to the device even when the PWA is shut.
-_ALERT_PUSH_ICONS = {
-    "scheduler": "⏰", "auto_restart": "\U0001F501", "auto_continue": "▶️",
-    "auto_compact": "\U0001F5DC", "rate_limit_manual": "⏳", "task_pickup": "\U0001F4CB",
-    "steering_delivered": "✉️", "uncommitted": "⚠️", "thinking_reset": "\U0001F9E0",
+# Human-readable type label shown on the notification's first body line.
+_ALERT_TYPE_LABELS = {
+    "scheduler": "schedule", "auto_restart": "auto-restart", "auto_continue": "auto-continue",
+    "auto_compact": "compact", "rate_limit_manual": "rate limit", "task_pickup": "task",
+    "steering_delivered": "steering", "uncommitted": "uncommitted", "thinking_reset": "thinking reset",
 }
 _VAPID_CACHE = None
 _VAPID_PATH = CC_HOME / "vapid_private.pem"
@@ -34798,8 +34801,8 @@ class CCHandler(BaseHTTPRequestHandler):
                 return self._json({"error": "no subscriptions registered on this server", "sent_to": 0}, 400)
             # Synchronous so the caller sees exactly how the push service responded.
             results = _web_push_send_all(
-                "\U0001F514 amux background push",
-                "It works — this arrived via Web Push, even with the app closed.",
+                "amux",
+                "test\nBackground push is working, even with the app closed.",
                 session="", tag="amux-push-test")
             ok = any(200 <= (r["status"] or 0) < 300 for r in results)
             return self._json({"ok": ok, "sent_to": n, "results": results})
