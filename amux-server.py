@@ -10192,6 +10192,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .header-row h1 { font-size: 1.1rem; flex-shrink: 0; }
     .header-row > div { gap: 6px !important; flex-shrink: 1; min-width: 0; }
   }
+  @media (max-width: 600px) {
+    .header-row { position: relative; top: auto; }
+    .tab-bar-outer { position: relative; top: auto; margin-bottom: 4px; }
+    .board-session-group { margin-bottom: 2px; }
+    .board-session-header { padding: 6px 10px; }
+    .tag-group-body { padding: 0; }
+  }
 
   /* Header + dropdown */
   .header-add-wrap { position: relative; }
