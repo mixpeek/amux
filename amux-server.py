@@ -17821,6 +17821,7 @@ async function _peekLoadSchedules() {
       return '<div class="peek-issue-item" style="cursor:default;' + (s.enabled ? '' : 'opacity:0.55;') + '">' +
         '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
           '<span class="sched-run-dot" style="background:' + dotCol + ';"></span>' +
+          '<code class="sched-id-badge" title="Schedule id — click to copy" onclick="event.stopPropagation();_copySchedId(\'' + esc(s.id) + '\')">' + esc(s.id) + '</code>' +
           '<span class="peek-issue-title" style="flex:1;min-width:0;">' + (modeIco[mode] || '') + ' ' + esc(s.title || s.command || '(untitled)') + '</span>' +
           '<code class="sched-cadence-pill">' + esc(cadence) + '</code>' +
         '</div>' +
