@@ -12815,7 +12815,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           <div style="display:flex;gap:8px;align-items:center;">
             <button onclick="_notifSendTest()" style="background:none;border:1px solid var(--border);color:var(--accent);cursor:pointer;font-size:0.68rem;border-radius:5px;padding:3px 9px;" title="Send a test notification to check native/iOS notifications">Test</button>
             <button onclick="_notifClearAll()" style="background:none;border:none;color:var(--dim);cursor:pointer;font-size:0.7rem;">Clear</button>
-            <button onclick="_notifToggleNative()" id="notif-native-btn" style="background:none;border:none;cursor:pointer;font-size:0.75rem;" title="Toggle native notifications">&#x1F50A;</button>
+            <button onclick="_notifToggleBanners()" id="notif-banner-btn" style="background:none;border:none;cursor:pointer;font-size:0.75rem;" title="Toggle in-app banner pop-ups">&#x1F4AC;</button>
+            <button onclick="_notifToggleNative()" id="notif-native-btn" style="background:none;border:none;cursor:pointer;font-size:0.75rem;" title="Toggle native (background/lock-screen) notifications">&#x1F50A;</button>
           </div>
         </div>
         <div id="notif-panel-list"></div>
@@ -15513,6 +15514,7 @@ let lastSessionsJSON = '';
 // ── In-app notification system ──
 const _prevSessionState = {};  // name → {status, running}
 let _notifsNative = localStorage.getItem('amux_notifs') === '1';
+let _notifBanners = localStorage.getItem('amux_notif_banners') !== '0';  // in-app pop-ups, default on
 let _notesDirty = false;  // set by SSE invalidate when not on notes tab
 let _notifItems = JSON.parse(localStorage.getItem('amux_notif_items') || '[]').slice(0, 100);
 let _notifUnread = _notifItems.filter(n => !n.read).length;
@@ -15532,6 +15534,7 @@ function _notifUpdateBadge() {
 }
 
 function _notifShowBanner(icon, title, body, session) {
+  if (!_notifBanners) return;
   const container = document.getElementById('notif-banners');
   if (!container) return;
   const el = document.createElement('div');
@@ -15729,6 +15732,23 @@ function _notifUpdateNativeBtn() {
   if (btn) btn.style.opacity = _notifsNative ? '1' : '0.4';
 }
 
+function _notifToggleBanners() {
+  _notifBanners = !_notifBanners;
+  localStorage.setItem('amux_notif_banners', _notifBanners ? '1' : '0');
+  if (!_notifBanners) {
+    // Clear any banners already on screen so the toggle takes effect immediately
+    const c = document.getElementById('notif-banners');
+    if (c) c.innerHTML = '';
+  }
+  _notifUpdateBannerBtn();
+  showToast(_notifBanners ? 'In-app banners on' : 'In-app banners off');
+}
+
+function _notifUpdateBannerBtn() {
+  const btn = document.getElementById('notif-banner-btn');
+  if (btn) btn.style.opacity = _notifBanners ? '1' : '0.4';
+}
+
 function toggleNotifPanel() {
   _notifPanelOpen = !_notifPanelOpen;
   const panel = document.getElementById('notif-panel');
@@ -15737,6 +15757,7 @@ function toggleNotifPanel() {
   if (_notifPanelOpen) {
     _notifRenderPanel();
     _notifUpdateNativeBtn();
+    _notifUpdateBannerBtn();
     _notifItems.forEach(n => n.read = true);
     _notifSave();
     setTimeout(() => _notifUpdateBadge(), 300);
