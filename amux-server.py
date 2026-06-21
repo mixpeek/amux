@@ -13046,10 +13046,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </button>
   <div class="tile-controls">
     <button class="tile-btn" id="tile-sort-btn" onclick="toggleSortMode()" title="Sort alphabetically (pinned stay on top, order stops shifting)" style="font-size:0.7rem;font-weight:700;">A&#x2193;</button>
-    <button class="tile-btn" id="tile-freeze-btn" onclick="toggleFreeze()" title="Freeze session order — stops sessions from reordering by activity">&#x2744;</button>
-    <button class="tile-btn" id="tile-reset-btn" onclick="resetCardOrder()" title="Reset to default order (pinned → last active)" style="display:none;font-size:0.8rem;">&#x21BA;</button>
-    <button class="tile-btn" id="tile-expand-active-btn" onclick="expandActive()" title="Expand all active/waiting sessions">&#x26A1;</button>
-    <button class="tile-btn" id="tile-collapse-btn" onclick="collapseAll()" title="Collapse all sessions" style="display:none;font-size:0.75rem;">&#x2B06;</button>
+    <button class="tile-btn" id="tile-freeze-btn" onclick="toggleFreeze()" title="Freeze session order — click again to unfreeze and reset">&#x2744;</button>
+    <button class="tile-btn" id="tile-expand-btn" onclick="toggleExpand()" title="Expand active sessions — click again to collapse all">&#x26A1;</button>
   </div>
 </div>
 <div id="tag-filters" class="tag-filters"></div>
@@ -14485,9 +14483,15 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <h2>&#x1F551; Message history</h2>
       <button class="btn" onclick="closeCmdHistoryModal()">&#x2715;</button>
     </div>
-    <input type="search" id="cmd-history-search" placeholder="Search past messages..."
-      oninput="_renderCmdHistoryList(this.value)"
-      style="width:100%;box-sizing:border-box;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.9rem;outline:none;margin-bottom:10px;">
+    <div style="display:flex;gap:8px;margin-bottom:10px;">
+      <input type="search" id="cmd-history-search" placeholder="Search past messages..."
+        oninput="_renderCmdHistoryList()"
+        style="flex:1;min-width:0;box-sizing:border-box;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.9rem;outline:none;">
+      <select id="cmd-history-session-filter" onchange="_renderCmdHistoryList()" title="Filter by session"
+        style="flex-shrink:0;max-width:200px;box-sizing:border-box;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem;outline:none;cursor:pointer;">
+        <option value="">All sessions</option>
+      </select>
+    </div>
     <div id="cmd-history-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;"></div>
   </div>
 </div>
@@ -16404,10 +16408,17 @@ function expandActive() {
   sessions.forEach(s => { if (s.running && s.status !== 'idle') expanded.add(s.name); });
   render();
   sessions.filter(s => s.running && s.status !== 'idle').forEach(s => fetchStats(s.name));
+  _updateResetBtn();
 }
 function collapseAll() {
   expanded.clear();
   render();
+  _updateResetBtn();
+}
+// Single toggle: expand active sessions, or collapse all if anything is expanded
+function toggleExpand() {
+  if (expanded.size > 0) collapseAll();
+  else expandActive();
 }
 // Double-tap header to peek
 let _lastHeaderTap = { name: null, time: 0 };
@@ -16457,6 +16468,10 @@ function toggleMenu(name) {
     el._menuOrigNext = el.nextSibling;
     document.body.appendChild(el);
   }
+  // Make the menu displayable but invisible so we can read its real rendered width.
+  // offsetWidth is 0 while display:none, which made wide menus clip past the right edge.
+  el.style.visibility = 'hidden';
+  el.classList.add('open');
   const menuW = Math.max(el.offsetWidth || 200, 200);
   let left = r.right - menuW;
   if (left < 8) left = 8;
@@ -16475,7 +16490,7 @@ function toggleMenu(name) {
   }
   el.style.left = left + 'px';
   el.style.right = 'auto';
-  el.classList.add('open');
+  el.style.visibility = '';
   openMenu = name;
 }
 function closeAllMenus() {
@@ -20865,21 +20880,37 @@ function openCmdHistoryModal() {
   m.classList.add('active');
   const s = document.getElementById('cmd-history-search');
   if (s) { s.value = ''; setTimeout(() => s.focus(), 50); }
-  _renderCmdHistoryList('');
+  _populateCmdHistorySessions();
+  _renderCmdHistoryList();
+}
+function _populateCmdHistorySessions() {
+  const sel = document.getElementById('cmd-history-session-filter');
+  if (!sel) return;
+  const prev = sel.value;
+  const names = [...new Set(_cmdHistory.map(e => typeof e === 'string' ? '' : (e.session || '')).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+  sel.innerHTML = '<option value="">All sessions</option>' + names.map(n => {
+    const safe = n.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    return '<option value="' + safe + '">' + safe + '</option>';
+  }).join('');
+  sel.value = names.includes(prev) ? prev : '';
 }
 function closeCmdHistoryModal() {
   const m = document.getElementById('cmd-history-modal');
   if (m) m.classList.remove('active');
 }
-function _renderCmdHistoryList(filter) {
+function _renderCmdHistoryList() {
   const list = document.getElementById('cmd-history-list');
   if (!list) return;
-  const q = (filter || '').trim().toLowerCase();
+  const q = (document.getElementById('cmd-history-search')?.value || '').trim().toLowerCase();
+  const sessFilter = document.getElementById('cmd-history-session-filter')?.value || '';
   const items = _cmdHistory.slice().reverse();
-  const filtered = q ? items.filter(e => { const t = typeof e === 'string' ? e : e.text; return t.toLowerCase().includes(q); }) : items;
+  let filtered = items;
+  if (sessFilter) filtered = filtered.filter(e => (typeof e === 'string' ? '' : (e.session || '')) === sessFilter);
+  if (q) filtered = filtered.filter(e => { const t = typeof e === 'string' ? e : e.text; return t.toLowerCase().includes(q); });
   if (!filtered.length) {
     list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px;text-align:center;">'
-      + (q ? 'No matches.' : 'No history yet.') + '</div>';
+      + (q || sessFilter ? 'No matches.' : 'No history yet.') + '</div>';
     return;
   }
   list.innerHTML = filtered.map(e => {
@@ -23445,20 +23476,9 @@ function toggleFreeze() {
   render();
 }
 
-function resetCardOrder() {
-  _frozen = false;
-  localStorage.removeItem('amux_frozen');
-  cardOrder = [];
-  localStorage.removeItem('amux_card_order');
-  _updateResetBtn();
-  render();
-}
-
 function _updateResetBtn() {
-  const btn = document.getElementById('tile-reset-btn');
-  if (btn) btn.style.display = cardOrder.length > 0 ? '' : 'none';
-  const cb = document.getElementById('tile-collapse-btn');
-  if (cb) cb.style.display = expanded.size > 0 ? '' : 'none';
+  const eb = document.getElementById('tile-expand-btn');
+  if (eb) eb.classList.toggle('active', expanded.size > 0);
   const fb = document.getElementById('tile-freeze-btn');
   if (fb) fb.classList.toggle('active', _frozen);
 }
