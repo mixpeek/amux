@@ -27734,15 +27734,6 @@ async function _runDeltaSync() {
 // Run delta sync shortly after startup (after queue replay window)
 setTimeout(_runDeltaSync, 2500);
 _applyTabVisibility();
-(function() {
-  function _syncTabTop() {
-    const h = document.querySelector('.header-row');
-    const t = document.querySelector('.tab-bar-outer');
-    if (h && t) t.style.top = h.offsetHeight + 'px';
-  }
-  _syncTabTop();
-  window.addEventListener('resize', _syncTabTop);
-})();
 
 // ═══════ SSE — real-time push updates ═══════
 let _sse = null;
