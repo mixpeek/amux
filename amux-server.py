@@ -11845,6 +11845,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .gp-size-btn:hover { background: rgba(88,166,255,0.12); color: #58a6ff; }
   .gp-size-btn.active { color: var(--accent); background: rgba(88,166,255,0.16); }
+  /* Session panes embed the full peek view via an iframe (peek-embed mode) */
+  .gp-peek-frame { flex: 1; min-height: 0; width: 100%; border: none; background: var(--bg); display: block; }
+  /* peek-embed mode: this page is loaded inside a Workspace tile — show only the
+     peek overlay, stripped of the app chrome, filling the iframe. */
+  body.peek-embed { padding: 0 !important; overflow: hidden; }
+  body.peek-embed .chrome-tabs-bar,
+  body.peek-embed .chrome-tab-frames,
+  body.peek-embed .header-row,
+  body.peek-embed .tab-bar-outer,
+  body.peek-embed #session-view,
+  body.peek-embed #peek-close-btn,
+  body.peek-embed #peek-focus-btn { display: none !important; }
+  body.peek-embed #peek-overlay { top: 0 !important; padding-top: 0 !important; }
   .gp-body {
     flex: 1; overflow: auto; padding: 10px;
     font-family: "SF Mono","Fira Code","Cascadia Code",monospace;
@@ -14167,7 +14180,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="btn peek-split-btn" id="peek-split-toggle" onclick="togglePeekSplit()" title="Split: file browser">&#x1F4C2;</button>
       <button class="btn" id="peek-commitguard-btn" onclick="togglePeekCommitGuard()" title="Commit guard: nudge this session to commit on idle" style="font-size:0.7rem;padding:3px 8px;opacity:0.5;">&#x1F6E1;</button>
       <button class="btn" onclick="togglePeekFocus()" id="peek-focus-btn" title="Focus mode — hide controls">&#x25B4;</button>
-      <button class="btn" onclick="closePeek()">Close</button>
+      <button class="btn" id="peek-close-btn" onclick="closePeek()">Close</button>
     </div>
   </div>
   <!-- Focus mode minimal bar (visible only in focus mode) -->
@@ -16813,6 +16826,34 @@ async function shareLayoutPreset(name) {
   await navigator.clipboard.writeText(url);
   showToast('Layout link copied to clipboard');
 }
+
+// ── Peek-embed mode ──
+// When this page is loaded inside a Workspace tile (?peekEmbed=<session>), strip
+// the app chrome and auto-open the full peek view for that session. Each tile is
+// a real, isolated peek instance (its own iframe/JS context) — full parity with
+// no singleton-state collisions.
+let _peekEmbedOpened = false;
+(function() {
+  const name = new URLSearchParams(location.search).get('peekEmbed');
+  if (!name) return;
+  window._peekEmbed = name;
+  const apply = () => document.body && document.body.classList.add('peek-embed');
+  if (document.body) apply(); else document.addEventListener('DOMContentLoaded', apply);
+})();
+function _maybeAutoOpenEmbedPeek() {
+  if (!window._peekEmbed || _peekEmbedOpened) return;
+  if (!sessions || !sessions.some(s => s.name === window._peekEmbed)) return;
+  _peekEmbedOpened = true;
+  openPeek(window._peekEmbed);
+  const ov = document.getElementById('peek-overlay');
+  if (ov) ov.classList.remove('peek-focus');  // tiles always show the full tab strip
+}
+// Fallback retry until session data arrives (SSE/fetch hooks call this too).
+(function _embedPeekRetry() {
+  if (!window._peekEmbed) return;
+  _maybeAutoOpenEmbedPeek();
+  if (!_peekEmbedOpened) setTimeout(_embedPeekRetry, 300);
+})();
 
 // Apply layout from URL parameter on load
 (function() {
@@ -27032,35 +27073,9 @@ function addGridPane(name, x, y, w, h) {
       '<button class="gp-peek-btn" onclick="openPeek(\'' + safeName + '\');event.stopPropagation();" title="Open in peek">&#x2197;</button>' +
       '<button class="gp-close" onclick="removeGridPane(\'' + safeName + '\')">&#x2715;</button>' +
     '</div>' +
-    '<div class="gp-body overlay-body" id="' + sid + '-body" onclick="_lastActivePane=\'' + safeName + '\'">Loading\u2026</div>' +
-    '<div class="gp-send">' +
-      '<div class="chips" id="' + sid + '-chips"></div>' +
-      '<div class="send-row">' +
-        '<textarea class="send-input" id="' + sid + '-input" rows="1" placeholder="Send\u2026"' +
-          ' oninput="autoGrow(this);cmdHistoryReset()"' +
-          ' onfocus="_lastActivePane=\'' + safeName + '\'"' +
-          ' onkeydown="gpSendKeydown(\'' + safeName + '\',event)"></textarea>' +
-        '<button class="btn primary" onclick="sendGridCmd(\'' + safeName + '\')">Send</button>' +
-      '</div>' +
-    '</div>';
-  const widget = _grid.addWidget({ id: name, x, y, w: w || 6, h: h || 7, content });
-  _gridPanes[name] = { widget, timer: setInterval(() => _updateGridPane(name), 2000) };
-  // Attach URL click handler (same as peek body — ensures links open in new tab in PWA mode)
-  const gpBody = document.getElementById(sid + '-body');
-  if (gpBody) {
-    gpBody.addEventListener('click', _peekOpenLink);
-    gpBody.addEventListener('touchend', _peekOpenLink, {passive: false});
-    gpBody.addEventListener('scroll', function() {
-      if (_isScrolledToBottom(this)) {
-        this._scrollLocked = false;
-        _hideScrollLockBadge(this);
-      } else {
-        this._scrollLocked = true;
-      }
-    }, {passive: true});
-  }
-  const gpChips = document.getElementById(sid + '-chips');
-  if (gpChips) renderChips(gpChips, name, false);
+    '<iframe class="gp-peek-frame" id="' + sid + '-frame" src="?peekEmbed=' + encodeURIComponent(name) + '" title="' + esc(name) + ' peek"></iframe>';
+  const widget = _grid.addWidget({ id: name, x, y, w: w || 6, h: h || 8, content });
+  _gridPanes[name] = { widget, timer: setInterval(() => _updateGridPane(name), 3000) };
   _updateGridPane(name);
   _renderGridChips();
   _gridSaveLayout();
@@ -27076,32 +27091,16 @@ function removeGridPane(name) {
   _gridSaveLayout();
 }
 
-async function _updateGridPane(name) {
+// Session panes render their content inside an isolated peek iframe, so this
+// only refreshes the header status dot from in-memory session data (no fetch).
+function _updateGridPane(name) {
   const sid = _gpSafeId(name);
-  const body = document.getElementById(sid + '-body');
-  const dot  = document.getElementById(sid + '-dot');
-  if (!body) { removeGridPane(name); return; }
-  try {
-    const data = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/peek?lines=500').then(r => r.json());
-    const atBottom = _isScrolledToBottom(body);
-    const locked = body._scrollLocked;
-    body.innerHTML = highlightPrompts(ansiToHtml(data.output || ''));
-    if (!locked && atBottom) {
-      body.scrollTop = body.scrollHeight;
-      _hideScrollLockBadge(body);
-    } else if (locked) {
-      _showScrollLockBadge(body, () => {
-        body._scrollLocked = false;
-        body.scrollTop = body.scrollHeight;
-        _hideScrollLockBadge(body);
-      });
-    }
-    if (dot) {
-      const s = (sessions || []).find(s => s.name === name);
-      dot.className = 'gp-dot' + (!s || !s.running ? '' : s.status === 'active' ? ' working' : s.status === 'waiting' ? ' waiting' : ' idle');
-    }
-  } catch(e) {
-    if (body) { body.textContent = '(error loading output)'; }
+  const dot   = document.getElementById(sid + '-dot');
+  const frame = document.getElementById(sid + '-frame');
+  if (!dot && !frame) { removeGridPane(name); return; }  // pane was removed
+  if (dot) {
+    const s = (sessions || []).find(s => s.name === name);
+    dot.className = 'gp-dot' + (!s || !s.running ? '' : s.status === 'active' ? ' working' : s.status === 'waiting' ? ' waiting' : ' idle');
   }
 }
 
