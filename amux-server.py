@@ -15464,12 +15464,9 @@ function showAlert(msg) {
 }
 
 // ── Bulk actions modal ──
-const BULK_RATE_LIMIT_PATTERN = 'API Error: Server is temporarily limiting requests';
 function openBulkActions() {
-  const matched = sessions.filter(s => {
-    const lines = s.preview_lines || [];
-    return lines.some(l => l.includes(BULK_RATE_LIMIT_PATTERN));
-  });
+  const now = Date.now() / 1000;
+  const matched = sessions.filter(s => s.rate_limited_until && s.rate_limited_until > now);
   const body = document.getElementById('bulk-actions-body');
   let html = '';
   if (matched.length) {
@@ -15493,10 +15490,8 @@ function closeBulkActions() {
   document.getElementById('bulk-actions-overlay').classList.remove('open');
 }
 async function bulkSendContinue() {
-  const matched = sessions.filter(s => {
-    const lines = s.preview_lines || [];
-    return lines.some(l => l.includes(BULK_RATE_LIMIT_PATTERN));
-  });
+  const now = Date.now() / 1000;
+  const matched = sessions.filter(s => s.rate_limited_until && s.rate_limited_until > now);
   if (!matched.length) { closeBulkActions(); return; }
   closeBulkActions();
   let sent = 0;
