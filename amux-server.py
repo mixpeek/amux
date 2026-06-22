@@ -35014,9 +35014,18 @@ class CCHandler(BaseHTTPRequestHandler):
                     output = tmux_capture(session_name, lines)
                     if output:
                         _peek_cache[session_name] = (now, lines, output)
+                # Fall back to log if tmux returned nothing, OR if it returned very few
+                # lines (< 30) compared to what was requested — this handles Claude Code's
+                # alternate screen TUI, which capture-pane sees as only the visible prompt
+                # rather than the full scrollback history.
+                tmux_lines = len(output.splitlines()) if output else 0
+                if not output or (tmux_lines < 30 and tmux_lines < lines // 4):
+                    log_out = load_session_log(session_name, tail_bytes=65_536)
+                    if log_out:
+                        output = log_out
                 if not output:
-                    output = load_session_log(session_name, tail_bytes=65_536) or "(no output)"
-                return self._json({"name": session_name, "output": output})
+                    output = "(no output)"
+                return self._json({"name": session_name, "output": output, "saved": bool(not tmux_lines or (tmux_lines < 30 and tmux_lines < lines // 4))})
 
             if method == "GET" and action == "info":
                 env_file = CC_SESSIONS / f"{session_name}.env"
