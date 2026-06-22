@@ -6065,31 +6065,31 @@ def _session_has_doing_issue(name: str) -> bool:
 
 def _board_digest(max_per_section: int = 12) -> str:
     """Compact all-sessions board snapshot for injecting into a session so it's
-    aware of what every other session has in progress / queued / recently done."""
+    aware of what every other session has in progress / queued / done-but-unverified
+    / verified. 'done' = implemented; 'verified' = confirmed working in prod
+    (CI/CD e2e green, zero regressions) — kept distinct on purpose."""
     try:
         rows = get_db().execute(
             "SELECT session, title, status FROM issues "
-            "WHERE deleted IS NULL AND status IN ('doing','todo','done') "
+            "WHERE deleted IS NULL AND status IN ('doing','todo','done','verified') "
             "ORDER BY updated DESC"
         ).fetchall()
     except Exception:
         return ""
-    doing, todo, done = [], [], []
+    buckets = {"doing": [], "todo": [], "done": [], "verified": []}
     for r in rows:
-        line = f"  [{r['session'] or '-'}] {r['title']}"
-        if r["status"] == "doing" and len(doing) < max_per_section:
-            doing.append(line)
-        elif r["status"] == "todo" and len(todo) < max_per_section:
-            todo.append(line)
-        elif r["status"] == "done" and len(done) < max_per_section:
-            done.append(line)
+        b = buckets.get(r["status"])
+        if b is not None and len(b) < max_per_section:
+            b.append(f"  [{r['session'] or '-'}] {r['title']}")
     parts = []
-    if doing:
-        parts.append("DOING (in progress across all sessions):\n" + "\n".join(doing))
-    if todo:
-        parts.append("TODO (queued):\n" + "\n".join(todo))
-    if done:
-        parts.append("RECENTLY DONE:\n" + "\n".join(done))
+    if buckets["doing"]:
+        parts.append("DOING (in progress across all sessions):\n" + "\n".join(buckets["doing"]))
+    if buckets["todo"]:
+        parts.append("TODO (queued):\n" + "\n".join(buckets["todo"]))
+    if buckets["done"]:
+        parts.append("DONE — awaiting prod verification (NOT yet confirmed in prod):\n" + "\n".join(buckets["done"]))
+    if buckets["verified"]:
+        parts.append("VERIFIED (confirmed working in prod):\n" + "\n".join(buckets["verified"]))
     return "\n\n".join(parts)
 
 
