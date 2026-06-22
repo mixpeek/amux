@@ -6685,11 +6685,14 @@ def _attach_log_streaming():
                 lf.write(f"\n\n=== Server restarted: {ts} ===\n\n".encode())
         except Exception:
             pass
-        subprocess.run(
-            ["tmux", "pipe-pane", "-t", tmux_name(name), "-o",
-             _log_pipe_command(lp)],
-            capture_output=True, timeout=5,
-        )
+        try:
+            subprocess.run(
+                ["tmux", "pipe-pane", "-t", tmux_name(name), "-o",
+                 _log_pipe_command(lp)],
+                capture_output=True, timeout=5,
+            )
+        except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError):
+            pass
 
 
 def _migrate_memory_files():
@@ -34048,7 +34051,7 @@ class ResilientHTTPSServer(ThreadingHTTPServer):
                 except OSError:
                     pass
                 return
-            request.settimeout(None)
+            request.settimeout(120)
         try:
             self.finish_request(request, client_address)
         except Exception:
@@ -34411,10 +34414,15 @@ class CCHandler(BaseHTTPRequestHandler):
         t0 = time.monotonic()
         try:
             return self._route_inner(method, path, qs)
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError) as e:
+            slog(f"ERROR {method} {path} — {e}")
         except Exception as e:
             import traceback
             slog(f"ERROR {method} {path} — {e}\n{traceback.format_exc()}")
-            return self._json({"error": str(e)}, 500)
+            try:
+                return self._json({"error": str(e)}, 500)
+            except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError):
+                pass
         finally:
             # Skip logging SSE (long-lived) connections
             if path != "/api/events":
