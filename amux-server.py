@@ -39489,16 +39489,21 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     output = tmux_capture(name, lines)
                     if output:
                         _peek_cache[name] = (now, lines, output)
-                if output:
+                tmux_lines = len(output.splitlines()) if output else 0
+                # Fall back to log if tmux returned nothing, OR too sparse (< 30 lines
+                # and < ¼ of requested) — Claude Code's alt-screen TUI causes
+                # capture-pane to return only the visible prompt, not the full history.
+                use_log = not output or (tmux_lines < 30 and tmux_lines < lines // 4)
+                if output and not use_log:
                     last_save = _last_log_save.get(name, 0)
                     if now - last_save >= _LOG_SAVE_INTERVAL:
                         threading.Thread(target=save_session_log, args=(name, output), daemon=True).start()
                     return self._json({"name": name, "output": output})
-                # Not running or empty — serve saved log (tail only to limit memory)
+                # Sparse tmux output or not running — serve saved log
                 saved = load_session_log(name, tail_bytes=65_536)
                 if saved:
                     return self._json({"name": name, "output": saved, "saved": True})
-                return self._json({"name": name, "output": "(no output)"})
+                return self._json({"name": name, "output": output or "(no output)"})
             if action == "info":
                 info = get_session_info(name)
                 return self._json(info)
