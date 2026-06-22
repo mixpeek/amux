@@ -6095,33 +6095,31 @@ def _session_has_doing_issue(name: str) -> bool:
         return False
 
 
-def _board_digest(max_per_section: int = 12) -> str:
-    """Compact all-sessions board snapshot for injecting into a session so it's
-    aware of what every other session has in progress / queued / done-but-unverified
-    / verified. 'done' = implemented; 'verified' = confirmed working in prod
-    (CI/CD e2e green, zero regressions) — kept distinct on purpose."""
+def _board_digest(session_name: str = "") -> str:
+    """Startup-only board snapshot: what's actively in flight (all sessions)
+    + this session's own queued TODOs. Skips done/verified — too verbose."""
     try:
         rows = get_db().execute(
             "SELECT session, title, status FROM issues "
-            "WHERE deleted IS NULL AND status IN ('doing','todo','done','verified') "
+            "WHERE deleted IS NULL AND status IN ('doing','todo') "
             "ORDER BY updated DESC"
         ).fetchall()
     except Exception:
         return ""
-    buckets = {"doing": [], "todo": [], "done": [], "verified": []}
+    doing = []
+    my_todo = []
     for r in rows:
-        b = buckets.get(r["status"])
-        if b is not None and len(b) < max_per_section:
-            b.append(f"  [{r['session'] or '-'}] {r['title']}")
+        s = r["status"]
+        sess = r["session"] or "-"
+        if s == "doing" and len(doing) < 8:
+            doing.append(f"  [{sess}] {r['title']}")
+        elif s == "todo" and sess == session_name and len(my_todo) < 6:
+            my_todo.append(f"  {r['title']}")
     parts = []
-    if buckets["doing"]:
-        parts.append("DOING (in progress across all sessions):\n" + "\n".join(buckets["doing"]))
-    if buckets["todo"]:
-        parts.append("TODO (queued):\n" + "\n".join(buckets["todo"]))
-    if buckets["done"]:
-        parts.append("DONE — awaiting prod verification (NOT yet confirmed in prod):\n" + "\n".join(buckets["done"]))
-    if buckets["verified"]:
-        parts.append("VERIFIED (confirmed working in prod):\n" + "\n".join(buckets["verified"]))
+    if doing:
+        parts.append("DOING (in progress across all sessions):\n" + "\n".join(doing))
+    if my_todo:
+        parts.append(f"YOUR TODO (queued for {session_name}):\n" + "\n".join(my_todo))
     return "\n\n".join(parts)
 
 
@@ -6143,9 +6141,6 @@ def _task_guard(name: str) -> bool:
                "real work, record it on the board now so every session stays aware — create "
                "an issue for your session and set its status:\n"
                "  amux board add \"<what you did>\"   # then: amux board done ITEM_ID\n")
-        digest = _board_digest()
-        if digest:
-            msg += "\nCurrent board across all sessions:\n" + digest
         if is_running(name):
             send_text(name, msg)
         _push_alert("untracked_task", name, "idle with no tracked board issue — nudged to log it")
@@ -7984,7 +7979,7 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
             # When the board-awareness system is on, also brief the session on the
             # current cross-session board state so it starts aware of all sessions' work.
             _instr = _session_instructions(name)
-            _digest = _board_digest() if _task_guard_enabled() else ""
+            _digest = _board_digest(name) if _task_guard_enabled() else ""
             if _instr or _digest:
                 def _send_boot_briefing(sname=name, instr=_instr, digest=_digest):
                     if instr:
@@ -7994,8 +7989,7 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                             time.sleep(1.0)  # space the two sends out
                         _send_after_ready(
                             sname,
-                            "Cross-session board snapshot — keep your own work logged "
-                            "here (todo/doing/done):\n\n" + digest, 60)
+                            "Board snapshot (startup):\n\n" + digest, 60)
                 threading.Thread(target=_send_boot_briefing, daemon=True,
                                  name=f"boot-{name}").start()
             return True, "started"
@@ -13090,6 +13084,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openCreate()"><span class="mi">&#x2795;</span> New session</div>
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openConnect()"><span class="mi">&#x1F517;</span> Connect tmux</div>
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openConnectIterm2()"><span class="mi">&#x1F5A5;</span> Connect iTerm2 pane</div>
+        <div class="card-menu-sep"></div>
+        <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openBulkActions()"><span class="mi">&#x26A1;</span> Bulk actions</div>
       </div>
     </div>
     <div class="settings-wrap">
@@ -14798,6 +14794,17 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 
+<!-- Bulk actions modal -->
+<div id="bulk-actions-overlay" class="modal-backdrop" onclick="if(event.target===this)closeBulkActions()">
+  <div class="modal-box" style="max-width:480px;text-align:left;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <div style="font-size:1.05rem;font-weight:700;">Bulk Actions</div>
+      <button class="btn" style="padding:4px 10px;font-size:0.8rem;" onclick="closeBulkActions()">&#x2715;</button>
+    </div>
+    <div id="bulk-actions-body"></div>
+  </div>
+</div>
+
 <!-- Skills modal -->
 <div id="skills-modal" class="overlay" style="z-index:200;" onclick="if(event.target===this)closeSkills()">
   <div style="display:flex;flex-direction:column;height:100%;max-width:600px;margin:0 auto;width:100%;">
@@ -15454,6 +15461,55 @@ function showAlert(msg) {
     btns.innerHTML = `<button class="btn primary" onclick="_modalClose(true)">OK</button>`;
     document.getElementById('modal-backdrop').classList.add('open');
   });
+}
+
+// ── Bulk actions modal ──
+const BULK_RATE_LIMIT_PATTERN = 'API Error: Server is temporarily limiting requests';
+function openBulkActions() {
+  const matched = sessions.filter(s => {
+    const lines = s.preview_lines || [];
+    return lines.some(l => l.includes(BULK_RATE_LIMIT_PATTERN));
+  });
+  const body = document.getElementById('bulk-actions-body');
+  let html = '';
+  if (matched.length) {
+    html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
+    html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">Send "continue" to rate-limited sessions</div>`;
+    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">${matched.length} session${matched.length>1?'s':''} stuck on API rate limit error:</div>`;
+    html += `<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-height:200px;overflow-y:auto;">`;
+    matched.forEach(s => {
+      html += `<div style="display:flex;align-items:center;gap:8px;font-size:0.82rem;padding:4px 8px;border-radius:6px;background:rgba(255,255,255,0.04);"><span style="color:var(--accent);">&#x25CF;</span> ${esc(s.name)}</div>`;
+    });
+    html += `</div>`;
+    html += `<button class="btn primary" style="width:100%;" onclick="bulkSendContinue()">Send "continue" to ${matched.length} session${matched.length>1?'s':''}</button>`;
+    html += `</div>`;
+  } else {
+    html += `<div style="padding:20px 0;text-align:center;color:var(--dim);font-size:0.88rem;">No rate-limited sessions found.</div>`;
+  }
+  body.innerHTML = html;
+  document.getElementById('bulk-actions-overlay').classList.add('open');
+}
+function closeBulkActions() {
+  document.getElementById('bulk-actions-overlay').classList.remove('open');
+}
+async function bulkSendContinue() {
+  const matched = sessions.filter(s => {
+    const lines = s.preview_lines || [];
+    return lines.some(l => l.includes(BULK_RATE_LIMIT_PATTERN));
+  });
+  if (!matched.length) { closeBulkActions(); return; }
+  closeBulkActions();
+  let sent = 0;
+  for (const s of matched) {
+    try {
+      await fetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/send', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({text: 'continue'})
+      });
+      sent++;
+    } catch(e) {}
+  }
+  showToast(`Sent "continue" to ${sent} session${sent>1?'s':''}`);
 }
 
 async function showSessionInfo(name) {
