@@ -11982,6 +11982,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   body.peek-embed #peek-close-btn,
   body.peek-embed #peek-focus-btn { display: none !important; }
   body.peek-embed #peek-overlay { top: 0 !important; padding-top: 0 !important; }
+  /* General view-embed mode: ?embed=<view> loads the app inside a dock/grid panel
+     showing a single view, stripped of the app chrome and filling the iframe. */
+  body.embed { padding: 0 !important; margin: 0 !important; overflow: hidden; height: 100dvh; }
+  body.embed .chrome-tabs-bar,
+  body.embed .chrome-tab-frames,
+  body.embed .header-row,
+  body.embed .tab-bar-outer,
+  body.embed #tag-filters,
+  body.embed #offline-banner,
+  body.embed #pinned-notes-home { display: none !important; }
+  /* The JS sizes the active view to fill the iframe (position:fixed inset:0). */
+  body.embed .embed-filled { position: fixed !important; inset: 0 !important; height: 100dvh !important;
+    max-height: none !important; margin: 0 !important; z-index: 30; }
   .gp-body {
     flex: 1; overflow: auto; padding: 10px;
     font-family: "SF Mono","Fira Code","Cascadia Code",monospace;
@@ -16987,6 +17000,53 @@ function _maybeAutoOpenEmbedPeek() {
   if (!window._peekEmbed) return;
   _maybeAutoOpenEmbedPeek();
   if (!_peekEmbedOpened) setTimeout(_embedPeekRetry, 300);
+})();
+
+// ── General view-embed mode (?embed=<view>) ──
+// Loads the app inside a dock/grid panel showing a single view (board, files,
+// terminal, notes, logs, …) — or peek:<session> as a shorthand for a peek tile.
+// Each panel is an isolated iframe, so singleton views never collide.
+// sessions→session-view etc.; mirror switchView's id/name mapping.
+const _EMBED_VIEW_EL = {
+  sessions:'session-view', board:'board-view', calendar:'calendar-view',
+  scheduler:'scheduler-view', files:'files-view', logs:'logs-view',
+  notes:'notes-view', crm:'crm-view', map:'map-view', metrics:'metrics-view',
+  torrents:'torrents-view', terminal:'terminal-view', browser:'browser-view',
+  graph:'graph-view', journal:'journal-view', habits:'habits-view', skills:'skills-view'
+};
+let _embedViewApplied = false;
+(function() {
+  const raw = new URLSearchParams(location.search).get('embed');
+  if (!raw) return;
+  // peek:<session> shorthand routes through the peek-embed path
+  if (raw.indexOf('peek:') === 0) {
+    const nm = raw.slice(5);
+    if (nm) {
+      window._peekEmbed = nm;
+      const ap = () => document.body && document.body.classList.add('peek-embed');
+      if (document.body) ap(); else document.addEventListener('DOMContentLoaded', ap);
+      const kick = () => { _maybeAutoOpenEmbedPeek(); if (!_peekEmbedOpened) setTimeout(kick, 300); };
+      kick();
+    }
+    return;
+  }
+  window._embedView = _EMBED_VIEW_EL[raw] ? raw : '';
+  if (!window._embedView) return;
+  const apply = () => document.body && document.body.classList.add('embed');
+  if (document.body) apply(); else document.addEventListener('DOMContentLoaded', apply);
+})();
+function _applyEmbedView() {
+  if (!window._embedView || _embedViewApplied) return;
+  _embedViewApplied = true;
+  try { switchView(window._embedView); } catch(e) {}
+  const id = _EMBED_VIEW_EL[window._embedView];
+  const el = id && document.getElementById(id);
+  if (el) el.classList.add('embed-filled');
+}
+(function _embedViewRetry() {
+  if (!window._embedView) return;
+  if (document.getElementById(_EMBED_VIEW_EL[window._embedView] || '')) _applyEmbedView();
+  if (!_embedViewApplied) setTimeout(_embedViewRetry, 200);
 })();
 
 // Apply layout from URL parameter on load
