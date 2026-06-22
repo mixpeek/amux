@@ -14410,6 +14410,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button id="piv-list" class="bv-btn" onclick="setPeekIssuesView('list')" title="List view">&#x2630;</button>
         <button id="piv-kanban" class="bv-btn" onclick="setPeekIssuesView('kanban')" title="Board view">&#x25A4;</button>
       </div>
+      <button id="piv-scope" class="btn" style="font-size:0.72rem;padding:4px 9px;" onclick="togglePeekIssuesAll()" title="Toggle between this session's issues and all sessions'">This session</button>
       <span id="peek-issues-count" style="flex:1;font-size:0.82rem;color:var(--dim);align-self:center;"></span>
       <button class="btn primary" style="font-size:0.8rem;padding:5px 12px;" onclick="openBoardAdd('backlog')">+ New issue</button>
     </div>
@@ -18362,6 +18363,7 @@ function peekGitOpenPR() {
 
 // ── Peek Issues (board issues for this session) ──────────────────────────────
 let _peekIssuesView = localStorage.getItem('amux_peek_issues_view') || 'list';
+let _peekIssuesAllSessions = localStorage.getItem('amux_peek_issues_all') === '1';
 let _peekIssuesSortables = [];
 
 function setPeekIssuesView(mode) {
@@ -18370,16 +18372,31 @@ function setPeekIssuesView(mode) {
   renderPeekIssues();
 }
 
+function togglePeekIssuesAll() {
+  _peekIssuesAllSessions = !_peekIssuesAllSessions;
+  localStorage.setItem('amux_peek_issues_all', _peekIssuesAllSessions ? '1' : '0');
+  renderPeekIssues();
+}
+
 function renderPeekIssues() {
   // Don't rebuild mid-drag — a board SSE refresh would destroy the active Sortable.
   if (document.body.classList.contains('board-dragging')) return;
   const list = document.getElementById('peek-issues-list');
   const count = document.getElementById('peek-issues-count');
-  const items = (boardItems || []).filter(i => i.session === peekSession && !i.deleted);
-  count.textContent = items.length ? items.length + ' issue' + (items.length === 1 ? '' : 's') : '';
+  const allScope = _peekIssuesAllSessions;
+  const items = (boardItems || []).filter(i => !i.deleted && (allScope || i.session === peekSession));
+  count.textContent = items.length ? items.length + ' issue' + (items.length === 1 ? '' : 's') + (allScope ? ' · all sessions' : '') : '';
+  // Scope toggle label/active state
+  const scopeBtn = document.getElementById('piv-scope');
+  if (scopeBtn) {
+    scopeBtn.textContent = allScope ? 'All sessions' : 'This session';
+    scopeBtn.classList.toggle('primary', allScope);
+  }
+  // Tab badge always reflects THIS session's count, regardless of view scope.
+  const _sessCount = (boardItems || []).filter(i => !i.deleted && i.session === peekSession).length;
   const tabCount = document.getElementById('peek-tab-issues-count');
   if (tabCount) {
-    if (items.length > 0) { tabCount.textContent = items.length; tabCount.classList.add('has-count'); }
+    if (_sessCount > 0) { tabCount.textContent = _sessCount; tabCount.classList.add('has-count'); }
     else { tabCount.textContent = ''; tabCount.classList.remove('has-count'); }
   }
   // Sync toggle active state
@@ -18392,7 +18409,8 @@ function renderPeekIssues() {
   list.classList.toggle('peek-issues-kanban', _peekIssuesView === 'kanban');
 
   if (!items.length) {
-    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 4px;">No issues for this session yet.</div>';
+    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 4px;">' +
+      (allScope ? 'No issues on the board yet.' : 'No issues for this session yet.') + '</div>';
     return;
   }
 
@@ -18405,9 +18423,13 @@ function renderPeekIssues() {
     const sty = statusStyle(item.status || 'todo');
     const badge = '<span class="status-badge" style="background:' + sty.bg + ';color:' + sty.color + ';border:1px solid ' + sty.border + ';font-size:0.7rem;padding:1px 6px;border-radius:10px;">' + esc(item.status || 'todo') + '</span>';
     const due = item.due ? '<span class="peek-issue-due">' + esc(item.due) + '</span>' : '';
+    // In all-sessions scope, tag each row with its owning session for awareness.
+    const owner = (allScope && item.session && item.session !== peekSession)
+      ? '<span class="peek-issue-owner" style="font-size:0.68rem;color:var(--accent);background:rgba(88,166,255,0.12);border-radius:8px;padding:1px 6px;margin-right:4px;">' + esc(item.session) + '</span>'
+      : '';
     return '<div class="peek-issue-item" onclick="openBoardDetail(\'' + esc(item.id) + '\')">' +
       '<span class="peek-issue-key">' + esc(item.id) + '</span>' +
-      '<span class="peek-issue-title">' + esc(item.title) + '</span>' +
+      '<span class="peek-issue-title">' + owner + esc(item.title) + '</span>' +
       '<span class="peek-issue-meta">' + badge + due + '</span>' +
       '</div>';
   }).join('');
