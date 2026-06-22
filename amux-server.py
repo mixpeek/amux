@@ -16037,6 +16037,20 @@ function stripProviderYoloFlags(flags) {
     .trim();
 }
 
+// Restore focus to an element after the card list is rebuilt — but ONLY if it
+// actually lost focus. Card inputs get destroyed by the innerHTML swap and need
+// re-focusing; the search box lives outside #cards and never loses focus, so
+// re-focusing it makes iOS Safari yank the scroll back to it on every poll
+// (the "search results scroll back" bug). Skipping the no-op focus avoids that.
+function _restoreCardFocus(focusedId, savedInputs) {
+  if (!focusedId) return;
+  const inp = document.getElementById(focusedId);
+  if (!inp || document.activeElement === inp) return;
+  inp.focus({ preventScroll: true });
+  const d = savedInputs && savedInputs[focusedId];
+  if (d && inp.tagName === 'TEXTAREA') { inp.selectionStart = d.start; inp.selectionEnd = d.end; }
+}
+
 function render() {
   // Skip render if a menu or edit overlay is open to prevent DOM clobbering
   if (openMenu || editState || document.getElementById('edit-overlay').classList.contains('active')) return;
@@ -16074,7 +16088,7 @@ function render() {
         (!online ? '<br><span style="color:var(--yellow)">You\'re offline — sessions created now will sync when connected.</span>' : '') + '</div>';
     }
     _renderArchivedSection();
-    if (focusedId) { const f = document.getElementById(focusedId); if (f) f.focus({ preventScroll: true }); }
+    _restoreCardFocus(focusedId);
     return;
   }
 
@@ -16109,7 +16123,7 @@ function render() {
   if ((q || activeTag) && !filtered.length) {
     el.innerHTML = '<div class="empty">No matching sessions.</div>';
     _renderArchivedSection();
-    if (focusedId) { const f = document.getElementById(focusedId); if (f) f.focus({ preventScroll: true }); }
+    _restoreCardFocus(focusedId);
     return;
   }
   // Save input values + cursor positions before re-rendering
@@ -16222,7 +16236,7 @@ function render() {
     const frozenList = _sortByCardOrder(filtered);
     el.innerHTML = draftCards + frozenList.map(_renderSessionCard).join('');
     for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
-    if (focusedId) { const inp = document.getElementById(focusedId); if (inp) { inp.focus({ preventScroll: true }); const d = savedInputs[focusedId]; if (d && inp.tagName === 'TEXTAREA') { inp.selectionStart = d.start; inp.selectionEnd = d.end; } } }
+    _restoreCardFocus(focusedId, savedInputs);
     _renderArchivedSection();
     requestAnimationFrame(initSortable);
     requestAnimationFrame(() => { document.querySelectorAll('.chips[id^="card-chips-"]').forEach(el => { const name = el.id.replace('card-chips-', ''); if (name) renderChips(el, name, false); }); });
@@ -16239,7 +16253,7 @@ function render() {
     }
     el.innerHTML = draftCards + sortedFiltered.map(_renderSessionCard).join('');
     for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
-    if (focusedId) { const inp = document.getElementById(focusedId); if (inp) { inp.focus({ preventScroll: true }); const d = savedInputs[focusedId]; if (d && inp.tagName === 'TEXTAREA') { inp.selectionStart = d.start; inp.selectionEnd = d.end; } } }
+    _restoreCardFocus(focusedId, savedInputs);
     _renderArchivedSection();
     requestAnimationFrame(initSortable);
     requestAnimationFrame(() => {
@@ -16319,14 +16333,7 @@ function render() {
     const inp = document.getElementById(id);
     if (inp) { inp.value = d.value; autoGrow(inp); }
   }
-  if (focusedId) {
-    const inp = document.getElementById(focusedId);
-    if (inp) {
-      inp.focus({ preventScroll: true });
-      const d = savedInputs[focusedId];
-      if (d && inp.tagName === 'TEXTAREA') { inp.selectionStart = d.start; inp.selectionEnd = d.end; }
-    }
-  }
+  _restoreCardFocus(focusedId, savedInputs);
 
   _renderArchivedSection();
 
