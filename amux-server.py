@@ -1618,6 +1618,18 @@ def save_alt_capture(name: str, capture: str):
     last = _last_log_save.get(name, 0)
     if now - last < _LOG_SAVE_INTERVAL:
         return
+    # Only persist a STABLE frame. Capturing a redrawing alt-screen mid-stream
+    # yields torn text (dropped chars/spaces) that can't be de-duplicated. Take
+    # a couple of fresh captures a beat apart; if the pane is still changing,
+    # bail WITHOUT bumping the throttle so the next poll retries once it settles.
+    f1 = tmux_capture(name, 300)
+    if not f1:
+        return
+    time.sleep(0.18)
+    f2 = tmux_capture(name, 300)
+    if not f2 or _STRIP_ANSI.sub("", f1) != _STRIP_ANSI.sub("", f2):
+        return  # still rendering — wait for a quiet frame
+    capture = f2
     conv_orig, conv_plain = _alt_conv_lines(capture)
     cnp = [p.rstrip() for p in conv_plain]
     if not any(p.strip() for p in cnp):
