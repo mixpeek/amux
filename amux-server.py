@@ -39499,10 +39499,19 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     if now - last_save >= _LOG_SAVE_INTERVAL:
                         threading.Thread(target=save_session_log, args=(name, output), daemon=True).start()
                     return self._json({"name": name, "output": output})
-                # Sparse tmux output or not running — serve saved log
+                # Sparse tmux output or not running — serve saved log for history,
+                # but append the live (sparse) capture so alt-screen TUI sessions
+                # still show their CURRENT screen (spinner/activity) at the bottom.
+                # Without this, the live window is discarded and the peek freezes on
+                # whatever was last appended to the log.
                 saved = load_session_log(name, tail_bytes=65_536)
                 if saved:
-                    return self._json({"name": name, "output": saved, "saved": True})
+                    live = output.strip() if output else ""
+                    if live and not saved.rstrip().endswith(live):
+                        combined = saved.rstrip() + "\n\n" + live + "\n"
+                    else:
+                        combined = saved
+                    return self._json({"name": name, "output": combined, "saved": True})
                 return self._json({"name": name, "output": output or "(no output)"})
             if action == "info":
                 info = get_session_info(name)
