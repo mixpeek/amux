@@ -1698,6 +1698,127 @@ def load_session_log(session: str, tail_bytes: int = 0) -> str:
     return ""
 
 
+def _session_jsonl_path(name: str):
+    """Newest Claude Code JSONL conversation file for a session's working dir,
+    or None. This is the authoritative, complete transcript (never torn like the
+    alt-screen snapshot log)."""
+    env_file = CC_SESSIONS / f"{name}.env"
+    if not env_file.exists():
+        return None
+    try:
+        cfg = parse_env_file(env_file)
+    except Exception:
+        return None
+    wd = (cfg.get("CC_DIR") or "").strip()
+    if not wd:
+        return None
+    try:
+        resolved = str(Path(wd).expanduser().resolve())
+        project_dir = CLAUDE_HOME / "projects" / resolved.replace("/", "-")
+        if not project_dir.is_dir():
+            return None
+        files = sorted(project_dir.glob("*.jsonl"),
+                       key=lambda f: f.stat().st_mtime, reverse=True)
+        return files[0] if files else None
+    except Exception:
+        return None
+
+
+def _tool_brief(name: str, inp) -> str:
+    """A short one-line argument summary for a tool_use block."""
+    if not isinstance(inp, dict):
+        return ""
+    for k in ("command", "file_path", "path", "pattern", "query", "url",
+              "prompt", "description", "old_string"):
+        v = inp.get(k)
+        if isinstance(v, str) and v.strip():
+            v = v.replace("\n", " ").strip()
+            return v[:90] + ("…" if len(v) > 90 else "")
+    return ""
+
+
+def _tool_result_text(content) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for x in content:
+            if isinstance(x, dict) and x.get("type") == "text":
+                parts.append(x.get("text", ""))
+            elif isinstance(x, str):
+                parts.append(x)
+        return "\n".join(parts)
+    return str(content)
+
+
+def _render_session_transcript(name: str, max_chars: int = 40000) -> str:
+    """Render a session's JSONL conversation as clean ANSI-colored text for the
+    peek Transcript tab — the gap-free, never-torn alternative to the alt-screen
+    snapshot history. Returns the tail (last max_chars)."""
+    path = _session_jsonl_path(name)
+    if not path:
+        return ""
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    out: list[str] = []
+    for ln in raw.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            o = json.loads(ln)
+        except Exception:
+            continue
+        if o.get("type") not in ("user", "assistant"):
+            continue
+        msg = o.get("message")
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        if isinstance(content, str):
+            blocks = [{"type": "text", "text": content}]
+        elif isinstance(content, list):
+            blocks = content
+        else:
+            continue
+        for b in blocks:
+            if not isinstance(b, dict):
+                continue
+            bt = b.get("type")
+            if bt == "text":
+                txt = (b.get("text") or "").strip()
+                if not txt:
+                    continue
+                if role == "user":
+                    out.append("\x1b[1m\x1b[38;5;220m❯ " + txt.replace("\n", "\n  ") + "\x1b[0m")
+                else:
+                    out.append("\x1b[38;5;252m" + txt + "\x1b[0m")
+                out.append("")
+            elif bt == "tool_use":
+                nm = b.get("name", "tool")
+                arg = _tool_brief(nm, b.get("input"))
+                out.append("\x1b[38;5;39m⏺ " + str(nm) + "\x1b[0m"
+                           + ("\x1b[38;5;246m " + arg + "\x1b[0m" if arg else ""))
+            elif bt == "tool_result":
+                s = _tool_result_text(b.get("content")).strip().replace("\n", " ")
+                if s:
+                    if len(s) > 220:
+                        s = s[:220] + "…"
+                    out.append("\x1b[38;5;240m  ⎿ " + s + "\x1b[0m")
+    text = "\n".join(out).strip("\n")
+    if len(text) > max_chars:
+        text = text[-max_chars:]
+        nl = text.find("\n")
+        if nl > 0:
+            text = text[nl + 1:]
+    return text
+
+
 # Tracks last JSONL backup mtime per session to avoid redundant copies
 _last_jsonl_backup: dict[str, float] = {}
 
@@ -14491,6 +14612,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <!-- Tab bar -->
   <div class="peek-tabs">
     <button class="peek-tab active" id="peek-tab-terminal" onclick="setPeekTab('terminal')">Terminal</button>
+    <button class="peek-tab" id="peek-tab-transcript" onclick="setPeekTab('transcript')" title="Clean conversation transcript (from Claude Code's JSONL — gap-free, never torn)">Transcript</button>
     <button class="peek-tab" id="peek-tab-steering" onclick="setPeekTab('steering')">Steering<span class="peek-tab-count" id="peek-tab-steering-count"></span></button>
     <button class="peek-tab" id="peek-tab-issues" onclick="setPeekTab('issues')">Issues<span class="peek-tab-count" id="peek-tab-issues-count"></span></button>
     <button class="peek-tab" id="peek-tab-schedules" onclick="setPeekTab('schedules')">Schedules<span class="peek-tab-count" id="peek-tab-schedules-count"></span></button>
@@ -14549,6 +14671,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="psf-body" class="peek-split-files-body"></div>
   </div>
   </div><!-- /peek-split-wrap -->
+  <!-- Transcript panel (clean JSONL conversation history) -->
+  <div id="peek-transcript-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
+    <div style="position:relative;flex:1;min-height:0;">
+      <div id="peek-transcript-body" class="overlay-body" style="position:absolute;inset:0;padding:12px 16px;"></div>
+    </div>
+    <div id="peek-transcript-status" class="overlay-status"></div>
+  </div>
   <!-- Steering queue panel -->
   <div id="peek-steering-panel" class="peek-tasks-panel">
     <div style="flex-shrink:0;border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;background:rgba(255,255,255,0.02);">
@@ -18054,13 +18183,47 @@ async function sendFromInput(name) {
 
 let _peekTab = 'terminal';
 let _peekGitData = null;
+let _transcriptTimer = null;
+
+// ── Transcript tab: clean JSONL conversation history ──
+async function loadPeekTranscript(showLoading) {
+  const body = document.getElementById('peek-transcript-body');
+  const status = document.getElementById('peek-transcript-status');
+  if (!peekSession || !body) return;
+  const name = peekSession;
+  if (showLoading && !body.innerHTML) body.innerHTML = '<div style="color:var(--dim);padding:20px;">Loading transcript…</div>';
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/transcript');
+    const d = await r.json();
+    if (_peekTab !== 'transcript' || peekSession !== name) return;
+    if (d.empty || !d.output) {
+      body.innerHTML = '<div style="color:var(--dim);padding:20px;">No JSONL transcript found for this session.</div>';
+      if (status) status.textContent = '';
+      return;
+    }
+    const atBottom = _isScrolledToBottom(body);
+    const html = ansiToHtml(d.output);
+    if (html !== body._lastHTML) {
+      body._lastHTML = html;
+      body.innerHTML = html;
+      if (atBottom) body.scrollTop = body.scrollHeight;
+    }
+    if (status) status.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · from conversation JSONL';
+  } catch (e) {
+    if (status) status.textContent = 'Failed to load transcript';
+  }
+}
+
 function setPeekTab(tab) {
   _peekTab = tab;
   // Flush peek notes save when switching away
   if (tab !== 'notes' && _peekNotesSaveTimer) {
     clearTimeout(_peekNotesSaveTimer); _peekNotesSaveTimer = null; _peekNotesSave();
   }
+  // Stop transcript auto-refresh when leaving the tab
+  if (tab !== 'transcript' && _transcriptTimer) { clearInterval(_transcriptTimer); _transcriptTimer = null; }
   document.getElementById('peek-tab-terminal').classList.toggle('active', tab === 'terminal');
+  document.getElementById('peek-tab-transcript').classList.toggle('active', tab === 'transcript');
   document.getElementById('peek-tab-steering').classList.toggle('active', tab === 'steering');
   document.getElementById('peek-tab-issues').classList.toggle('active', tab === 'issues');
   document.getElementById('peek-tab-git').classList.toggle('active', tab === 'git');
@@ -18069,6 +18232,12 @@ function setPeekTab(tab) {
   document.getElementById('peek-tab-notes').classList.toggle('active', tab === 'notes');
   document.getElementById('peek-terminal-panel').style.display = tab === 'terminal' ? '' : 'none';
   document.getElementById('peek-split-wrap').style.display = tab === 'terminal' ? '' : 'none';
+  const transcript = document.getElementById('peek-transcript-panel');
+  if (tab === 'transcript') {
+    transcript.classList.add('active');
+    loadPeekTranscript(true);
+    _transcriptTimer = setInterval(() => loadPeekTranscript(false), 3000);
+  } else { transcript.classList.remove('active'); }
   const steering = document.getElementById('peek-steering-panel');
   if (tab === 'steering') { steering.classList.add('active'); _steeringRender(); loadPeekInstructions(); }
   else { steering.classList.remove('active'); }
@@ -19321,6 +19490,9 @@ async function saveGlobalMemory() {
 
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
+  if (_transcriptTimer) { clearInterval(_transcriptTimer); _transcriptTimer = null; }
+  const _tb = document.getElementById('peek-transcript-body');
+  if (_tb) { _tb.innerHTML = ''; _tb._lastHTML = null; }
   clearPeekFiles();  // clear any stale attachments from previous peek
   peekSession = name;
   _peekScrollLocked = false;
@@ -19436,6 +19608,7 @@ function closePeek() {
   ov.style.bottom = '';
   ov.style.paddingBottom = '';
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
+  if (_transcriptTimer) { clearInterval(_transcriptTimer); _transcriptTimer = null; }
   sessionStorage.removeItem('peekState');
 }
 
@@ -39677,6 +39850,14 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                         combined = saved
                     return self._json({"name": name, "output": combined, "saved": True})
                 return self._json({"name": name, "output": output or "(no output)"})
+            if action == "transcript":
+                # Clean, gap-free conversation history rendered from Claude Code's
+                # JSONL — the authoritative alternative to torn alt-screen snapshots.
+                mx = int(qs.get("max", ["40000"])[0])
+                txt = _render_session_transcript(name, max_chars=mx)
+                if not txt:
+                    return self._json({"name": name, "output": "", "empty": True})
+                return self._json({"name": name, "output": txt, "source": "transcript"})
             if action == "info":
                 info = get_session_info(name)
                 return self._json(info)
