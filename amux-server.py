@@ -6099,6 +6099,23 @@ def _detect_claude_status(raw_output: str) -> str:
         if "interrupted" in sl and "what should claude do" in sl:
             return "waiting"
 
+    # ── 2b. Wider active-spinner scan ──
+    # Claude Code can push the spinner well above the bottom 12 lines when it
+    # renders extra chrome below it — a long task list, or the "How is Claude
+    # doing this session?" feedback survey ("1: Bad 2: Fine 3: Good 0: Dismiss").
+    # The spinner (dingbat + …, no " for ") only shows while actively working and
+    # the captured viewport is the current screen (alt-screen has no scrollback),
+    # so scan a wider window before falling through to the status-bar "idle"
+    # default — otherwise a working session reads as idle.
+    for l in reversed(lines[-30:]):
+        s = l.strip()
+        if not s:
+            continue
+        if "✀" <= s[0] <= "➿" and "…" in s and " for " not in s:
+            return "active"
+        if s.startswith("Running…") or re.match(r"Reading \d+ file", s):
+            return "active"
+
     # ── 3. Status bar secondary checks ──
     if status_bar:
         # Tool approval pending (only when bypass is off)
