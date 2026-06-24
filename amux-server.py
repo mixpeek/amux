@@ -6042,6 +6042,21 @@ def _detect_claude_status(raw_output: str) -> str:
     if not lines:
         return ""
 
+    # ── 0. Active spinner (highest precedence, wide window) ──
+    # An active spinner (dingbat U+2700-27BF + …) only renders while Claude is
+    # generating, and the captured alt-screen IS the current viewport, so it's
+    # authoritative wherever it appears. Scan a wide window because Claude can
+    # push it well above the bottom: a long task list, or the "How is Claude
+    # doing this session?" feedback survey below it. Checking this FIRST also
+    # avoids a task-list item like "✔ … for col_x" being misread as a completed
+    # spinner ("idle") by the bottom-up scan below.
+    for l in reversed(lines[-30:]):
+        s = l.strip()
+        if s and "✀" <= s[0] <= "➿" and "…" in s:
+            return "active"
+        if s.startswith("Running…") or re.match(r"Reading \d+ file", s):
+            return "active"
+
     # ── 1. Status bar (bottom 3 lines — always the very last line when visible) ──
     status_bar = ""
     for l in reversed(lines[-3:]):
@@ -6083,7 +6098,10 @@ def _detect_claude_status(raw_output: str) -> str:
         # ── Completed signals (= idle, Claude finished and returned to prompt) ──
         # Completed spinner: dingbat + past tense + "for" + duration (no ellipsis)
         #   e.g. "✻ Brewed for 1m 8s"  "✻ Sautéed for 4m 19s"
-        if s and "\u2700" <= s[0] <= "\u27bf" and " for " in s and "\u2026" not in s:
+        # Require an actual duration after "for" so task-list checkmark items like
+        #   "\u2714 MI-834 TRUE-LOSS LIST for col_6c9e294720" aren't misread as idle.
+        if (s and "\u2700" <= s[0] <= "\u27bf" and "\u2026" not in s
+                and re.search(r" for \d+\s*[hms]\b", s)):
             return "idle"
 
         # ── Waiting signals (needs user action) ──
@@ -6098,23 +6116,6 @@ def _detect_claude_status(raw_output: str) -> str:
         # "Interrupted" with follow-up question
         if "interrupted" in sl and "what should claude do" in sl:
             return "waiting"
-
-    # ── 2b. Wider active-spinner scan ──
-    # Claude Code can push the spinner well above the bottom 12 lines when it
-    # renders extra chrome below it — a long task list, or the "How is Claude
-    # doing this session?" feedback survey ("1: Bad 2: Fine 3: Good 0: Dismiss").
-    # The spinner (dingbat + …, no " for ") only shows while actively working and
-    # the captured viewport is the current screen (alt-screen has no scrollback),
-    # so scan a wider window before falling through to the status-bar "idle"
-    # default — otherwise a working session reads as idle.
-    for l in reversed(lines[-30:]):
-        s = l.strip()
-        if not s:
-            continue
-        if "✀" <= s[0] <= "➿" and "…" in s and " for " not in s:
-            return "active"
-        if s.startswith("Running…") or re.match(r"Reading \d+ file", s):
-            return "active"
 
     # ── 3. Status bar secondary checks ──
     if status_bar:
