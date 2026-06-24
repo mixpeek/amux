@@ -2014,6 +2014,27 @@ _MONTHS = {
     'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
 }
 
+# Weekly/usage-cap banner: "resets Jun 26 at 5am" / "resets Jun 26 at 5:30 pm" /
+# "resets Jun 26, 2026 at 5am" — month + day, OPTIONAL year, hour with am/pm,
+# OPTIONAL minutes. Distinct from the strict absolute pattern above (which needs
+# a year AND :MM), this catches the weekly-limit format which omits both.
+_RATE_LIMIT_RESET_MONTHDAY_RE = re.compile(
+    r'reset(?:s|\s+on)?\s+(?:on\s+)?'
+    r'(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|'
+    r'aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+    r'\s+(\d{1,2})(?:,?\s+(\d{4}))?\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)',
+    re.IGNORECASE,
+)
+
+# The weekly/usage-limit banner itself (no interactive menu to answer, unlike
+# the 5-hour /rate-limit-options prompt). Detecting it lets amux record the
+# reset time so badges, bulk actions and auto-resume treat it like any other
+# rate limit. e.g. "You've hit your weekly limit · resets Jun 26 at 5am (...)".
+_WEEKLY_LIMIT_RE = re.compile(
+    r"(?:you'?ve\s+)?(?:hit|reached)\s+your\s+(?:weekly|usage)\s+limit",
+    re.IGNORECASE,
+)
+
 # Permissive fallback: any bare HH:MM (optionally with AM/PM) in the
 # scrollback when none of the labeled patterns above match. Real-world
 # Claude Code rendering wraps lines and may push the "resets" label off
@@ -2073,6 +2094,33 @@ def _parse_rate_limit_reset(text: str, now: float | None = None) -> int | None:
         if month and 0 <= hour < 24 and 0 <= minute < 60:
             try:
                 dt = _dt.datetime(year, month, day, hour, minute)
+                return int(dt.timestamp())
+            except ValueError:
+                pass
+
+    # 2b. Absolute month/day "resets Jun 26 at 5am" (weekly-limit banner) —
+    #     optional year, optional minutes. Checked before the bare HH:MM scan so
+    #     the full date wins (otherwise "5am" would resolve to the next 5am, not
+    #     the correct future day).
+    m = _RATE_LIMIT_RESET_MONTHDAY_RE.search(text)
+    if m:
+        month = _MONTHS.get(m.group(1).lower()[:3])
+        day = int(m.group(2))
+        has_year = m.group(3) is not None
+        year = int(m.group(3)) if has_year else base.year
+        hour = int(m.group(4))
+        minute = int(m.group(5) or 0)
+        meridiem = m.group(6).lower()
+        if meridiem == 'pm' and hour != 12:
+            hour += 12
+        elif meridiem == 'am' and hour == 12:
+            hour = 0
+        if month and 0 <= hour < 24 and 0 <= minute < 60:
+            try:
+                dt = _dt.datetime(year, month, day, hour, minute)
+                # No explicit year and the date already passed → roll to next year.
+                if not has_year and dt.timestamp() <= now_ts:
+                    dt = dt.replace(year=year + 1)
                 return int(dt.timestamp())
             except ValueError:
                 pass
@@ -2271,9 +2319,15 @@ def _rate_limit_auto_respond():
                     _rate_limit_last_responded[name] = now
                     matched_idx = i
                     break
-            if matched_idx < 0:
+            # Weekly/usage-cap banner has no menu to answer — detect it on its own
+            # so we still record the reset time (badges, bulk actions, auto-resume).
+            is_weekly = matched_idx < 0 and bool(_WEEKLY_LIMIT_RE.search(clean))
+            if matched_idx < 0 and not is_weekly:
                 continue
+            if is_weekly:
+                _rate_limit_last_responded[name] = now  # cooldown; nothing to press
             actions = _session_auto_actions.setdefault(name, {})
+            actions["rate_limit_weekly"] = is_weekly
             parsed_reset = _parse_rate_limit_reset(clean, now=now)
             actions["rate_limit_last_event_ts"] = int(now)
             if parsed_reset:
@@ -2283,15 +2337,13 @@ def _rate_limit_auto_respond():
                 slog(f"[rate-limit] session={name} auto-selected option 1, "
                      f"reset_at={reset_at}")
             else:
-                # Couldn't parse a reset time. Apply a 5-minute safety
-                # fallback so auto-resume still has a target — Claude
-                # Code's actual rate-limit windows are always much
-                # longer (1h+, usually 5h), so 5 min cannot trigger a
-                # premature resume. If the prompt is still showing
-                # when the fallback fires, the auto-respond loop will
-                # press 1 again and the auto-resume's state-aware skip
-                # predicate prevents fighting.
-                reset_at = int(now + 300)
+                # Couldn't parse a reset time. Apply a safety fallback so
+                # auto-resume still has a target. For the 5-hour prompt, 5 min is
+                # safe (real windows are 1h+). For the WEEKLY cap, a 5-min retry
+                # would just re-hit the cap in a loop, so fall back to 6h — far
+                # enough to avoid churn, and the banner re-detection will refine
+                # it once a parseable reset is on screen.
+                reset_at = int(now + (6 * 3600 if is_weekly else 300))
                 actions["rate_limit_reset_at"] = reset_at
                 actions["rate_limit_reset_at_fallback"] = True
                 # Log a sanitized snippet so future debugging can see
@@ -6575,6 +6627,7 @@ def list_sessions() -> list:
             "auto_continue": cfg.get("CC_AUTO_CONTINUE") in ("1", "true", "yes"),
             "steering": _steering_queue.get(name, []),
             "rate_limited_until": _session_auto_actions.get(name, {}).get("rate_limit_reset_at", 0),
+            "rate_limit_weekly": bool(_session_auto_actions.get(name, {}).get("rate_limit_weekly")),
             "tags": [t.strip() for t in cfg.get("CC_TAGS", "").split(",") if t.strip()],
             "flags": cfg.get("CC_FLAGS", ""),
             "creator": cfg.get("CC_CREATOR", ""),
@@ -15736,23 +15789,39 @@ function showAlert(msg) {
 }
 
 // ── Bulk actions modal ──
+function _rlRow(s, accent) {
+  const reset = s.rate_limited_until
+    ? `<span style="margin-left:auto;color:var(--dim);font-size:0.76rem;white-space:nowrap;">resets ${_fmtResetTime(s.rate_limited_until)}</span>` : '';
+  return `<div style="display:flex;align-items:center;gap:8px;font-size:0.82rem;padding:4px 8px;border-radius:6px;background:rgba(255,255,255,0.04);"><span style="color:${accent};flex-shrink:0;">&#x25CF;</span> <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name)}</span>${reset}</div>`;
+}
 function openBulkActions() {
   const now = Date.now() / 1000;
-  const matched = sessions.filter(s => s.rate_limited_until && s.rate_limited_until > now);
+  const limited = sessions.filter(s => s.rate_limited_until && s.rate_limited_until > now);
+  const weekly = limited.filter(s => s.rate_limit_weekly);
+  const transient = limited.filter(s => !s.rate_limit_weekly);
   const body = document.getElementById('bulk-actions-body');
   let html = '';
-  if (matched.length) {
+  if (transient.length) {
     html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
-    html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">Send "continue" to rate-limited sessions</div>`;
-    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">${matched.length} session${matched.length>1?'s':''} stuck on API rate limit error:</div>`;
-    html += `<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-height:200px;overflow-y:auto;">`;
-    matched.forEach(s => {
-      html += `<div style="display:flex;align-items:center;gap:8px;font-size:0.82rem;padding:4px 8px;border-radius:6px;background:rgba(255,255,255,0.04);"><span style="color:var(--accent);">&#x25CF;</span> ${esc(s.name)}</div>`;
-    });
+    html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">Rate-limited sessions</div>`;
+    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">${transient.length} session${transient.length>1?'s':''} stuck on an API rate-limit error:</div>`;
+    html += `<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-height:180px;overflow-y:auto;">`;
+    transient.forEach(s => { html += _rlRow(s, 'var(--accent)'); });
     html += `</div>`;
-    html += `<button class="btn primary" style="width:100%;" onclick="bulkSendContinue()">Send "continue" to ${matched.length} session${matched.length>1?'s':''}</button>`;
+    html += `<button class="btn primary" style="width:100%;" onclick="bulkSendContinue(false)">Send "continue" to ${transient.length} session${transient.length>1?'s':''}</button>`;
     html += `</div>`;
-  } else {
+  }
+  if (weekly.length) {
+    html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
+    html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">&#x1F4C5; Weekly limit reached</div>`;
+    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">${weekly.length} session${weekly.length>1?'s':''} hit the weekly cap. amux auto-resumes each at its reset time — no action needed.</div>`;
+    html += `<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-height:180px;overflow-y:auto;">`;
+    weekly.forEach(s => { html += _rlRow(s, '#f0a020'); });
+    html += `</div>`;
+    html += `<button class="btn" style="width:100%;" onclick="bulkSendContinue(true)">Send "continue" anyway to ${weekly.length} session${weekly.length>1?'s':''}</button>`;
+    html += `</div>`;
+  }
+  if (!limited.length) {
     html += `<div style="padding:20px 0;text-align:center;color:var(--dim);font-size:0.88rem;">No rate-limited sessions found.</div>`;
   }
   body.innerHTML = html;
@@ -15761,9 +15830,10 @@ function openBulkActions() {
 function closeBulkActions() {
   document.getElementById('bulk-actions-overlay').classList.remove('open');
 }
-async function bulkSendContinue() {
+async function bulkSendContinue(weeklyOnly) {
   const now = Date.now() / 1000;
-  const matched = sessions.filter(s => s.rate_limited_until && s.rate_limited_until > now);
+  const matched = sessions.filter(s => s.rate_limited_until && s.rate_limited_until > now
+    && (weeklyOnly ? s.rate_limit_weekly : !s.rate_limit_weekly));
   if (!matched.length) { closeBulkActions(); return; }
   closeBulkActions();
   let sent = 0;
@@ -16488,7 +16558,8 @@ function updatePeekStatus() {
   else if (s.status === 'idle')    badge = '<span class="status-badge idle">idle</span>';
   else if (!s.running)             badge = '<span class="status-badge" style="background:rgba(255,255,255,0.06);color:var(--dim);border:1px solid var(--border);">stopped</span>';
   if (s.rate_limited_until) {
-    badge += `<span class="status-badge rate-limited" style="margin-left:6px;">Rate-limited until ${_fmtClockTime(s.rate_limited_until)}</span>`;
+    const _lbl = s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until';
+    badge += `<span class="status-badge rate-limited" style="margin-left:6px;">${_lbl} ${_fmtResetTime(s.rate_limited_until)}</span>`;
   }
   el.innerHTML = badge;
   // Update input placeholder based on session state
@@ -16708,7 +16779,7 @@ function render() {
           ${s.status === 'active' ? '<span class="status-badge active">working</span>' : ''}
           ${s.status === 'waiting' ? '<span class="status-badge waiting">needs input</span>' : ''}
           ${s.status === 'idle' ? '<span class="status-badge idle">idle</span>' : ''}
-          ${s.rate_limited_until ? `<span class="status-badge rate-limited" title="Rate-limited — auto-resume at ${_fmtClockTime(s.rate_limited_until)}">Rate-limited until ${_fmtClockTime(s.rate_limited_until)}</span>` : ''}
+          ${s.rate_limited_until ? `<span class="status-badge rate-limited" title="${s.rate_limit_weekly ? 'Weekly limit' : 'Rate-limited'} — auto-resume at ${_fmtResetTime(s.rate_limited_until)}">${s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until'} ${_fmtResetTime(s.rate_limited_until)}</span>` : ''}
           ${s.steering && s.steering.length ? `<span class="status-badge steering" title="${s.steering.length} steering message${s.steering.length>1?'s':''} queued">${s.steering.length} queued</span>` : ''}
           ${s.tokens ? `<span class="token-count">${fmtTokens(s.tokens)}</span>` : ''}
           ${s.last_activity ? `<span class="last-active">${timeAgo(s.last_activity)}</span>` : ''}
@@ -16906,6 +16977,15 @@ function _fmtClockTime(epoch) {
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   return hh + ':' + mm;
+}
+// Like _fmtClockTime but includes the date when the reset isn't today — weekly
+// caps reset days out, so "5:00 AM" alone would be ambiguous.
+function _fmtResetTime(epoch) {
+  if (!epoch) return '';
+  const d = new Date(epoch * 1000);
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (d.toDateString() === new Date().toDateString()) return time;
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + time;
 }
 
 // ═══════ GIT BRANCH AWARENESS ═══════
@@ -41729,6 +41809,26 @@ def _run_selftests() -> int:
     expected = int(_dt.datetime(2026, 4, 15, 22, 49).timestamp())
     check("format3 absolute 'Month D, YYYY at H:MM PM'",
           out == expected, detail=f"got {out}, want {expected}")
+
+    # Format 4: weekly-limit banner "resets Jun 26 at 5am" (no year, no minutes)
+    out = _parse_rate_limit_reset(
+        "You've hit your weekly limit · resets Jun 26 at 5am (America/New_York)",
+        now=ref_ts,
+    )
+    expected = int(_dt.datetime(2026, 6, 26, 5, 0).timestamp())
+    check("format4 weekly 'Month D at Ham'", out == expected,
+          detail=f"got {out}, want {expected}")
+    # Format 4b: with minutes + pm
+    out = _parse_rate_limit_reset("resets Jun 26 at 5:30pm", now=ref_ts)
+    expected = int(_dt.datetime(2026, 6, 26, 17, 30).timestamp())
+    check("format4 weekly 'Month D at H:MMpm'", out == expected,
+          detail=f"got {out}, want {expected}")
+    # Weekly banner detector — positive and negative
+    check("weekly banner detected",
+          bool(_WEEKLY_LIMIT_RE.search("You've hit your weekly limit · resets Jun 26 at 5am")))
+    check("weekly banner not triggered by transient rate-limit",
+          not _WEEKLY_LIMIT_RE.search(
+              "Server is temporarily limiting requests (not your usage limit) · Rate limited"))
 
     # Malformed input
     check("malformed input returns None",
