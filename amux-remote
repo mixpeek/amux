@@ -141,7 +141,10 @@ _use_cc() {
   case "${AMUX_CC:-auto}" in
     1|yes|true|on)   return 0 ;;
     0|no|false|off)  return 1 ;;
-    *) [[ "${TERM_PROGRAM:-}" == "iTerm.app" || "${LC_TERMINAL:-}" == "iTerm2" ]] ;;
+    # ITERM_SESSION_ID survives nested shells/ssh where TERM_PROGRAM gets dropped,
+    # so check it too — otherwise the native experience silently falls back to plain.
+    *) [[ "${TERM_PROGRAM:-}" == "iTerm.app" || "${LC_TERMINAL:-}" == "iTerm2" \
+          || -n "${ITERM_SESSION_ID:-}" || -n "${ITERM_PROFILE:-}" ]] ;;
   esac
 }
 
@@ -165,9 +168,15 @@ cmd_attach() {
   local tmux_cmd="tmux attach-session" note=""
   if _use_cc; then
     tmux_cmd="tmux -CC attach-session"; note=" ${DIM}(iTerm2 native)${RESET}"
+  else
+    note=" ${DIM}(plain — set AMUX_CC=1 or run in iTerm2 for native tabs)${RESET}"
   fi
+  # A non-login ssh command shell has a minimal PATH (/usr/bin:/bin) that omits
+  # Homebrew, so `tmux` isn't found. Prepend the usual install dirs on the REMOTE
+  # ($HOME/$PATH are escaped so they expand there, not locally).
+  local remote_pre='export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH";'
   echo "${DIM}→ ssh ${user}@${host} — ${tmux_cmd} -t ${tname}${RESET}${note}"
-  exec ssh "${user}@${host}" -t "${tmux_cmd} -t '${tname}' || (echo 'Session ${tname} not found. Running sessions:' && tmux ls 2>/dev/null; exit 1)"
+  exec ssh "${user}@${host}" -t "${remote_pre} ${tmux_cmd} -t '${tname}' || { echo 'Session ${tname} not found. Running sessions:'; tmux ls 2>/dev/null; exit 1; }"
 }
 
 usage() {
