@@ -1531,7 +1531,7 @@ def _log_path(session: str) -> Path:
 _last_log_save: dict[str, float] = {}  # session -> monotonic time of last save
 _LOG_SAVE_INTERVAL = 30  # seconds between saves per session
 
-_peek_cache: dict[str, tuple[float, int, str]] = {}  # session -> (monotonic_time, lines, output)
+_peek_cache: dict[str, tuple[float, int, dict]] = {}  # session -> (monotonic_time, lines, response_dict)
 _PEEK_CACHE_TTL = 4.0  # seconds — must exceed client poll interval (3s) to avoid cache misses
 
 
@@ -35512,15 +35512,8 @@ class CCHandler(BaseHTTPRequestHandler):
                 now = time.monotonic()
                 cached = _peek_cache.get(session_name)
                 if cached and cached[1] >= lines and (now - cached[0]) < _PEEK_CACHE_TTL:
-                    output = cached[2]
-                else:
-                    output = tmux_capture(session_name, lines)
-                    if output:
-                        _peek_cache[session_name] = (now, lines, output)
-                # Fall back to log if tmux returned nothing, OR if it returned very few
-                # lines (< 30) compared to what was requested — this handles Claude Code's
-                # alternate screen TUI, which capture-pane sees as only the visible prompt
-                # rather than the full scrollback history.
+                    return self._json(cached[2])
+                output = tmux_capture(session_name, lines)
                 tmux_lines = len(output.splitlines()) if output else 0
                 if not output or (tmux_lines < 30 and tmux_lines < lines // 4):
                     log_out = load_session_log(session_name, tail_bytes=65_536)
@@ -35528,7 +35521,9 @@ class CCHandler(BaseHTTPRequestHandler):
                         output = log_out
                 if not output:
                     output = "(no output)"
-                return self._json({"name": session_name, "output": output, "saved": bool(not tmux_lines or (tmux_lines < 30 and tmux_lines < lines // 4))})
+                resp = {"name": session_name, "output": output, "saved": bool(not tmux_lines or (tmux_lines < 30 and tmux_lines < lines // 4))}
+                _peek_cache[session_name] = (now, lines, resp)
+                return self._json(resp)
 
             if method == "GET" and action == "info":
                 env_file = CC_SESSIONS / f"{session_name}.env"
@@ -39987,45 +39982,23 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 now = time.monotonic()
                 cached = _peek_cache.get(name)
                 if cached and cached[1] >= lines and (now - cached[0]) < _PEEK_CACHE_TTL:
-                    output = cached[2]
-                else:
-                    output = tmux_capture(name, lines)
-                    if output:
-                        _peek_cache[name] = (now, lines, output)
+                    return self._json(cached[2])
+                output = tmux_capture(name, lines)
                 tmux_lines = len(output.splitlines()) if output else 0
-                # Fall back to log if tmux returned nothing, OR too sparse (< 30 lines
-                # and < ¼ of requested), OR the pane is in the alternate screen
-                # buffer — Claude Code's alt-screen TUI has NO scrollback, so
-                # capture-pane only returns the visible window (no scroll-up).
-                # The saved log carries the history; the live capture is appended
-                # to the bottom below so the current screen still shows.
                 use_log = (not output or _tmux_alt_screen(name)
                            or (tmux_lines < 30 and tmux_lines < lines // 4))
                 if output and not use_log:
                     last_save = _last_log_save.get(name, 0)
                     if now - last_save >= _LOG_SAVE_INTERVAL:
                         threading.Thread(target=save_session_log, args=(name, output), daemon=True).start()
-                    return self._json({"name": name, "output": output})
-                # Sparse tmux output or not running — serve saved log for history,
-                # but append the live (sparse) capture so alt-screen TUI sessions
-                # still show their CURRENT screen (spinner/activity) at the bottom.
-                # Without this, the live window is discarded and the peek freezes on
-                # whatever was last appended to the log.
-                # Keep saving the live capture (throttled) so the alt-screen log
-                # keeps accumulating scroll-up history — the alt buffer has no
-                # native scrollback, so this is the only history source. Use the
-                # de-duplicating saver so the redrawn viewport doesn't stack into
-                # dozens of near-identical snapshots.
+                    resp = {"name": name, "output": output}
+                    _peek_cache[name] = (now, lines, resp)
+                    return self._json(resp)
                 if output:
                     last_save = _last_log_save.get(name, 0)
                     if now - last_save >= _LOG_SAVE_INTERVAL:
                         threading.Thread(target=save_alt_capture, args=(name, output), daemon=True).start()
                 saved = load_session_log(name, tail_bytes=65_536)
-                # Self-heal pre-stable-frame garbage: if the saved tail is torn
-                # TUI-redraw spam (logs that accumulated before the stable-frame
-                # saver and never refreshed because the session stayed busy),
-                # serve clean history from the JSONL transcript and rebuild the
-                # on-disk log in the background so later peeks are cheap reads.
                 if saved and _log_looks_torn(saved):
                     clean = _render_session_transcript(name, max_chars=120_000)
                     if clean:
@@ -40038,8 +40011,12 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                         combined = saved.rstrip() + "\n\n" + live + "\n"
                     else:
                         combined = saved
-                    return self._json({"name": name, "output": combined, "saved": True})
-                return self._json({"name": name, "output": output or "(no output)"})
+                    resp = {"name": name, "output": combined, "saved": True}
+                    _peek_cache[name] = (now, lines, resp)
+                    return self._json(resp)
+                resp = {"name": name, "output": output or "(no output)"}
+                _peek_cache[name] = (now, lines, resp)
+                return self._json(resp)
             if action == "transcript":
                 # Clean, gap-free conversation history rendered from Claude Code's
                 # JSONL — the authoritative alternative to torn alt-screen snapshots.
