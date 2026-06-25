@@ -1663,7 +1663,9 @@ def save_alt_capture(name: str, capture: str):
     if not any(_STRIP_ANSI.sub("", l).strip() for l in new_lines):
         return  # nothing new since last save
     CC_LOGS.mkdir(parents=True, exist_ok=True)
-    chunk = ("\n".join(new_lines) + "\n").encode("utf-8", errors="replace")
+    # Collapse the alt-screen's big empty band (input box anchored at the bottom)
+    # so the log stays a tight transcript instead of accumulating blank gaps.
+    chunk = (_collapse_blank_runs("\n".join(new_lines)) + "\n").encode("utf-8", errors="replace")
     try:
         existing_size = lp.stat().st_size if lp.exists() else 0
         if existing_size + len(chunk) > MAX_LOG_BYTES:
@@ -1693,6 +1695,25 @@ def _log_looks_torn(text: str) -> bool:
         return False
     c = len(_CURSOR_MOVE_RE.findall(text))
     return c >= 20 and (c / (n / 1024)) >= 2.0
+
+
+def _collapse_blank_runs(text: str, keep: int = 1) -> str:
+    """Collapse runs of blank lines down to `keep`. Claude Code's alt-screen
+    anchors its input box at the bottom of the terminal, so a short conversation
+    leaves a big empty band between the content and the prompt that capture-pane
+    records verbatim — that band reads as 'funky whitespace' in the peek. Blank
+    detection is ANSI-aware (a line of only colour codes counts as blank)."""
+    out: list[str] = []
+    blanks = 0
+    for ln in text.split("\n"):
+        if _STRIP_ANSI.sub("", ln).strip() == "":
+            blanks += 1
+            if blanks <= keep:
+                out.append("")
+        else:
+            blanks = 0
+            out.append(ln)
+    return "\n".join(out)
 
 
 def load_session_log(session: str, tail_bytes: int = 0) -> str:
@@ -39991,7 +40012,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     last_save = _last_log_save.get(name, 0)
                     if now - last_save >= _LOG_SAVE_INTERVAL:
                         threading.Thread(target=save_session_log, args=(name, output), daemon=True).start()
-                    resp = {"name": name, "output": output}
+                    resp = {"name": name, "output": _collapse_blank_runs(output)}
                     _peek_cache[name] = (now, lines, resp)
                     return self._json(resp)
                 if output:
@@ -40011,10 +40032,10 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                         combined = saved.rstrip() + "\n\n" + live + "\n"
                     else:
                         combined = saved
-                    resp = {"name": name, "output": combined, "saved": True}
+                    resp = {"name": name, "output": _collapse_blank_runs(combined), "saved": True}
                     _peek_cache[name] = (now, lines, resp)
                     return self._json(resp)
-                resp = {"name": name, "output": output or "(no output)"}
+                resp = {"name": name, "output": _collapse_blank_runs(output or "(no output)")}
                 _peek_cache[name] = (now, lines, resp)
                 return self._json(resp)
             if action == "transcript":
