@@ -6493,6 +6493,8 @@ def _task_guard(name: str) -> bool:
         return False
 
 
+_commit_guard_cotenant_skip: dict[str, float] = {}  # session -> last cotenant-skip timestamp
+
 def _commit_guard(name: str) -> bool:
     """When a session goes idle, if it left uncommitted work, nudge it once per
     dirty episode to commit (re-armed once the tree goes clean). amux only detects
@@ -6504,17 +6506,21 @@ def _commit_guard(name: str) -> bool:
         wd = _session_work_dir(name)
         if not wd:
             return False
+        # Check cotenant BEFORE the expensive git-status call: if a busy peer
+        # shares this checkout the dirt is unattributable and we'd skip anyway.
+        peer = _checkout_busy_cotenant(name, wd)
+        if peer:
+            now = time.time()
+            last = _commit_guard_cotenant_skip.get(name, 0)
+            if now - last >= 60:
+                slog(f"[commit-guard] {name}: shared checkout with active '{peer}' — "
+                     f"dirt unattributable, skipping nudge")
+                _commit_guard_cotenant_skip[name] = now
+            return False
+        _commit_guard_cotenant_skip.pop(name, None)
         files = _session_dirty_files(name, wd)
         if not files:
             _commit_guard_nudged.pop(name, None)   # clean → re-arm for the next episode
-            return False
-        peer = _checkout_busy_cotenant(name, wd)
-        if peer:
-            # Shared checkout with an actively-working peer → this dirt is
-            # unattributable by path. Nudging would blame `name` for the peer's
-            # in-flight work (the exact failure that derailed a session). Skip.
-            slog(f"[commit-guard] {name}: shared checkout with active '{peer}' — "
-                 f"dirt unattributable, skipping nudge")
             return False
         if _commit_guard_nudged.get(name):
             return False   # already nudged this episode; don't re-nag, allow normal flow
@@ -7057,7 +7063,7 @@ def _evict_stale_caches():
         _model_cache.pop(k, None)
     # Prune session-keyed dicts for sessions that no longer have .env files
     live_sessions = {f.stem for f in CC_SESSIONS.glob("*.env")}
-    for d in (_session_auto_actions, _yolo_last_responded, _last_jsonl_backup, _session_prev_status, _commit_guard_nudged, _task_guard_nudged):
+    for d in (_session_auto_actions, _yolo_last_responded, _last_jsonl_backup, _session_prev_status, _commit_guard_nudged, _commit_guard_cotenant_skip, _task_guard_nudged):
         stale_keys = [k for k in d if k not in live_sessions]
         for k in stale_keys:
             d.pop(k, None)
@@ -7074,6 +7080,7 @@ def _cleanup_session_state(name: str):
     _last_jsonl_backup.pop(name, None)
     _session_prev_status.pop(name, None)
     _commit_guard_nudged.pop(name, None)
+    _commit_guard_cotenant_skip.pop(name, None)
     _task_guard_nudged.pop(name, None)
     with _send_locks_lock:
         _send_locks.pop(name, None)
