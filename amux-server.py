@@ -1532,7 +1532,7 @@ _last_log_save: dict[str, float] = {}  # session -> monotonic time of last save
 _LOG_SAVE_INTERVAL = 30  # seconds between saves per session
 
 _peek_cache: dict[str, tuple[float, int, dict]] = {}  # session -> (monotonic_time, lines, response_dict)
-_PEEK_CACHE_TTL = 4.0  # seconds — must exceed client poll interval (3s) to avoid cache misses
+_PEEK_CACHE_TTL = 4.0  # seconds — exceeds client poll interval (3s) so most polls hit cache
 
 
 def save_session_log(session: str, content: str, force: bool = False):
@@ -19745,7 +19745,7 @@ function openPeek(name, opts) {
     }
   });
   refreshPeek();
-  peekTimer = setInterval(refreshPeek, 1500);
+  peekTimer = setInterval(refreshPeek, 3000);
   _savePeekState();
 }
 
