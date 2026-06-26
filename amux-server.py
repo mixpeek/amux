@@ -1846,19 +1846,12 @@ def _render_session_transcript(name: str, max_chars: int = 40000) -> str:
     path = _session_jsonl_path(name)
     if not path:
         return ""
-    try:
-        raw = path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return ""
+    # Read only the tail of the file — JSONL entries are much larger than their
+    # rendered form, so 5x max_chars (min 5MB) is a safe overread estimate.
+    # This avoids loading 50+ MB files into memory on every peek poll.
+    max_read = max(max_chars * 5, 5_000_000)
     out: list[str] = []
-    for ln in raw.splitlines():
-        ln = ln.strip()
-        if not ln:
-            continue
-        try:
-            o = json.loads(ln)
-        except Exception:
-            continue
+    for o in _iter_jsonl_tail(path, max_bytes=max_read):
         if o.get("type") not in ("user", "assistant"):
             continue
         msg = o.get("message")
