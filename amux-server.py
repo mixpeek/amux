@@ -6828,6 +6828,9 @@ def list_sessions() -> list:
             "steering": _steering_queue.get(name, []),
             "rate_limited_until": _session_auto_actions.get(name, {}).get("rate_limit_reset_at", 0),
             "rate_limit_weekly": bool(_session_auto_actions.get(name, {}).get("rate_limit_weekly")),
+            # True for any menu-less usage-cap banner (weekly OR 5-hour session) —
+            # these auto-resume at their reset time, no manual action needed.
+            "rate_limit_banner": bool(_session_auto_actions.get(name, {}).get("rate_limit_banner")),
             "tags": [t.strip() for t in cfg.get("CC_TAGS", "").split(",") if t.strip()],
             "flags": cfg.get("CC_FLAGS", ""),
             "creator": cfg.get("CC_CREATOR", ""),
@@ -16002,8 +16005,12 @@ function _rlRow(s, accent) {
 function openBulkActions() {
   const now = Date.now() / 1000;
   const limited = sessions.filter(s => s.rate_limited_until && s.rate_limited_until > now);
-  const weekly = limited.filter(s => s.rate_limit_weekly);
-  const transient = limited.filter(s => !s.rate_limit_weekly);
+  // Group by behavior, not by the weekly/non-weekly flag: any usage-cap banner
+  // (weekly OR 5-hour session limit) auto-resumes at its reset time, so it needs
+  // no action. Everything else is a transient/API rate-limit where sending
+  // "continue" now can unblock immediately.
+  const capped = limited.filter(s => s.rate_limit_banner || s.rate_limit_weekly);
+  const transient = limited.filter(s => !(s.rate_limit_banner || s.rate_limit_weekly));
   const body = document.getElementById('bulk-actions-body');
   let html = '';
   if (transient.length) {
@@ -16016,14 +16023,14 @@ function openBulkActions() {
     html += `<button class="btn primary" style="width:100%;" onclick="bulkSendContinue(false)">Send "continue" to ${transient.length} session${transient.length>1?'s':''}</button>`;
     html += `</div>`;
   }
-  if (weekly.length) {
+  if (capped.length) {
     html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
-    html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">&#x1F4C5; Weekly limit reached</div>`;
-    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">${weekly.length} session${weekly.length>1?'s':''} hit the weekly cap. amux auto-resumes each at its reset time — no action needed.</div>`;
+    html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">&#x1F4C5; Usage limit reached</div>`;
+    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">${capped.length} session${capped.length>1?'s':''} hit a usage cap (weekly or 5-hour session). amux auto-resumes each at the reset time shown — no action needed.</div>`;
     html += `<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-height:180px;overflow-y:auto;">`;
-    weekly.forEach(s => { html += _rlRow(s, '#f0a020'); });
+    capped.forEach(s => { html += _rlRow(s, '#f0a020'); });
     html += `</div>`;
-    html += `<button class="btn" style="width:100%;" onclick="bulkSendContinue(true)">Send "continue" anyway to ${weekly.length} session${weekly.length>1?'s':''}</button>`;
+    html += `<button class="btn" style="width:100%;" onclick="bulkSendContinue(true)">Send "continue" anyway to ${capped.length} session${capped.length>1?'s':''}</button>`;
     html += `</div>`;
   }
   if (!limited.length) {
@@ -16035,10 +16042,11 @@ function openBulkActions() {
 function closeBulkActions() {
   document.getElementById('bulk-actions-overlay').classList.remove('open');
 }
-async function bulkSendContinue(weeklyOnly) {
+async function bulkSendContinue(cappedOnly) {
   const now = Date.now() / 1000;
+  const isCapped = s => s.rate_limit_banner || s.rate_limit_weekly;
   const matched = sessions.filter(s => s.rate_limited_until && s.rate_limited_until > now
-    && (weeklyOnly ? s.rate_limit_weekly : !s.rate_limit_weekly));
+    && (cappedOnly ? isCapped(s) : !isCapped(s)));
   if (!matched.length) { closeBulkActions(); return; }
   closeBulkActions();
   let sent = 0;
