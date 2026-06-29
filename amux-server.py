@@ -38479,10 +38479,11 @@ class CCHandler(BaseHTTPRequestHandler):
                 lookback_secs = max(lookback_days * 86400, 3600)
                 max_msgs = min(count, 100)
                 lookback_days_frac = lookback_secs / 86400
-                acct_filter_line = ""
-                if account_filter:
-                    safe_acct = account_filter.replace('"', '\\"')
-                    acct_filter_line = f'if acctName is not equal to "{safe_acct}" then'
+                # No-account script: iterate every account's INBOX. The
+                # per-account filter case has its own dedicated script below.
+                # (Earlier this branch interpolated a stray `end if` with no
+                # opening `if` when no account filter was given, which made the
+                # default inbox read fail with AppleScript syntax error -2741.)
                 script = f"""
 set NL to ASCII character 10
 set output to ""
@@ -38491,9 +38492,6 @@ set msgCount to 0
 tell application "Mail"
     repeat with acct in accounts
         set acctName to name of acct
-        {acct_filter_line}
-        {"" if not account_filter else "-- skip non-matching accounts"}
-        {("end if" if not account_filter else "")}
         try
             repeat with mb in mailboxes of acct
                 if name of mb is "INBOX" then
