@@ -39044,7 +39044,9 @@ return "not_found"
                 return self._json({"ok": True, "name": name}, 201)
         if path.startswith("/api/layout-presets/") and method == "DELETE":
             name = path[len("/api/layout-presets/"):]
-            from urllib.parse import unquote
+            # `unquote` is imported at module level; a local re-import here would
+            # shadow it for the whole handler and break earlier uses (e.g.
+            # /api/email/message) with "cannot access local variable 'unquote'".
             name = unquote(name)
             db = get_db()
             db.execute("DELETE FROM layout_presets WHERE name=?", (name,))
