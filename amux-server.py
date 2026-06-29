@@ -38722,29 +38722,58 @@ end tell
             exit repeat
         end if
     end repeat"""
+                acct_hint = body.get("account", "").strip()
+                if acct_hint:
+                    acct_hint_safe = acct_hint.replace('"', '\\"')
+                    acct_scope = f'(accounts whose name is "{acct_hint_safe}")'
+                else:
+                    acct_scope = "accounts"
                 script = f"""
 tell application "Mail"
     set targetMsg to missing value
-    -- Search ALL mailboxes, not just INBOX
-    repeat with acct in accounts
+    -- Fast path: search the INBOX of the scoped account(s) first. Replies are
+    -- almost always to a message just read from an inbox. Scanning every
+    -- mailbox of every account (Gmail "All Mail"/Archive, etc.) with a `whose`
+    -- filter is what made this time out. Pass `account` to scope it; we fall
+    -- back to a full mailbox sweep of the scoped accounts only on an inbox miss.
+    repeat with acct in {acct_scope}
         try
-            repeat with mb in mailboxes of acct
-                set msgs to (messages of mb whose message id is "{msg_id_safe}")
-                if (count of msgs) > 0 then
-                    set targetMsg to item 1 of msgs
-                    exit repeat
-                end if
-            end repeat
+            set inb to mailbox "INBOX" of acct
+            set msgs to (messages of inb whose message id is "{msg_id_safe}")
+            if (count of msgs) > 0 then
+                set targetMsg to item 1 of msgs
+                exit repeat
+            end if
         end try
-        if targetMsg is not missing value then exit repeat
     end repeat
+    if targetMsg is missing value then
+        repeat with acct in {acct_scope}
+            try
+                repeat with mb in mailboxes of acct
+                    set msgs to (messages of mb whose message id is "{msg_id_safe}")
+                    if (count of msgs) > 0 then
+                        set targetMsg to item 1 of msgs
+                        exit repeat
+                    end if
+                end repeat
+            end try
+            if targetMsg is not missing value then exit repeat
+        end repeat
+    end if
     if targetMsg is missing value then
         error "Message not found in any mailbox"
     end if
     set replyMsg to {reply_cmd} targetMsg opening window no
+    -- The reply draft needs ~3s to materialize before `set content` sticks
+    -- (with a shorter delay the set silently no-ops and a blank reply goes out).
     delay 3
     set replyBody to {body_expr}
-    set content of replyMsg to replyBody & linefeed & linefeed & (content of replyMsg)
+    -- Set the body as a PLAIN string. Concatenating the existing quoted-original
+    -- content into its own `set content` clears the body on a windowless reply
+    -- (Mail quirk), so we don't quote. Threading is preserved by the `reply`
+    -- command's In-Reply-To / References headers, not by body quoting.
+    set content of replyMsg to replyBody
+    delay 1
     {from_block}
     -- Verify body was actually applied before sending
     set finalContent to content of replyMsg
@@ -38752,15 +38781,15 @@ tell application "Mail"
         error "Content verification failed: reply body was not applied. Aborting send."
     end if
     send replyMsg
-    return (length of finalContent) as string
+    return (count of characters of finalContent) as string
 end tell
 """
                 try:
-                    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=60)
+                    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=90)
                     if r.returncode != 0:
                         err = r.stderr.strip()
                         if "Message not found" in err:
-                            return self._json({"error": "message not found in any mailbox — check message_id"}, 404)
+                            return self._json({"error": "message not found — check message_id, or pass the owning 'account' (from /inbox or /search) to scope the search"}, 404)
                         if "Content verification failed" in err:
                             return self._json({"error": err}, 500)
                         return self._json({"error": err or "AppleScript failed"}, 500)
