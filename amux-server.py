@@ -9124,6 +9124,28 @@ def schedule_job(func, interval: float, *, name: str | None = None, initial_dela
     })
 
 
+EMAIL_SEND_LOG = os.path.join(os.path.expanduser("~/.amux"), "logs", "email-sent.jsonl")
+
+
+def _email_log(record: dict) -> None:
+    """Append a one-line JSON audit record for every email SENT via the API.
+
+    Captures who/what went out so a send can always be traced (e.g. "did an agent
+    send X?"). Fail-safe: a logging error must never break or block a send.
+    NOTE: this only sees sends that go THROUGH this API. Emails sent from a human
+    client (Mail.app, Spark, Gmail web) bypass it and won't appear here.
+    """
+    try:
+        import datetime as _dt
+        record = dict(record)
+        record.setdefault("ts", _dt.datetime.now(_dt.timezone.utc).isoformat())
+        os.makedirs(os.path.dirname(EMAIL_SEND_LOG), exist_ok=True)
+        with open(EMAIL_SEND_LOG, "a") as _f:
+            _f.write(json.dumps(record, default=str) + "\n")
+    except Exception:
+        pass
+
+
 def _email_last_synced() -> int:
     """Return unix timestamp of last successful email sync (0 = never)."""
     row = get_db().execute(
@@ -38892,6 +38914,11 @@ return output
                                               include_signature=include_sig)
                     if res.get("error"):
                         return self._json(res, 502)
+                    _email_log({"endpoint": "send", "via": "gmail", "from": from_acct,
+                                "to": to, "cc": cc or None, "subject": subject,
+                                "body_chars": len(message), "body_preview": message[:240],
+                                "id": res.get("id"), "thread_id": res.get("thread_id"),
+                                "session": self.headers.get("X-Amux-Session")})
                     return self._json({"ok": True, "to": to, "subject": subject,
                                        "from": from_acct, "cc": cc or None, "via": "gmail",
                                        "id": res.get("id"), "thread_id": res.get("thread_id"),
@@ -38950,6 +38977,10 @@ end tell
                     if r.returncode != 0:
                         return self._json({"error": r.stderr.strip() or "AppleScript failed"}, 500)
                     actual_len = r.stdout.strip()
+                    _email_log({"endpoint": "send", "via": "mailapp", "from": from_acct or "(default)",
+                                "to": to, "cc": cc or None, "subject": subject,
+                                "body_chars": len(message), "body_preview": message[:240],
+                                "session": self.headers.get("X-Amux-Session")})
                     return self._json({"ok": True, "to": to, "subject": subject,
                                        "from": from_acct or "(default)", "cc": cc or None,
                                        "body_length": int(actual_len) if actual_len.isdigit() else actual_len})
@@ -38978,6 +39009,11 @@ end tell
                                             reply_all=bool(reply_all))
                     if res.get("error"):
                         return self._json(res, 502)
+                    _email_log({"endpoint": "reply", "via": "gmail", "from": gmail_from,
+                                "in_reply_to": message_id, "reply_all": bool(reply_all),
+                                "body_chars": len(reply_body), "body_preview": reply_body[:240],
+                                "id": res.get("id"), "thread_id": res.get("thread_id"),
+                                "session": self.headers.get("X-Amux-Session")})
                     return self._json({"ok": True, "message_id": message_id,
                                        "reply_all": bool(reply_all), "from": gmail_from,
                                        "via": "gmail", "id": res.get("id"),
@@ -39081,6 +39117,10 @@ end tell
                             return self._json({"error": err}, 500)
                         return self._json({"error": err or "AppleScript failed"}, 500)
                     actual_len = r.stdout.strip()
+                    _email_log({"endpoint": "reply", "via": "mailapp", "from": from_acct or "(default)",
+                                "in_reply_to": message_id, "reply_all": reply_all,
+                                "body_chars": len(reply_body), "body_preview": reply_body[:240],
+                                "session": self.headers.get("X-Amux-Session")})
                     return self._json({"ok": True, "message_id": message_id, "reply_all": reply_all,
                                        "from": from_acct or "(default)",
                                        "body_length": int(actual_len) if actual_len.isdigit() else actual_len})
