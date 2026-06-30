@@ -8957,6 +8957,19 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
                 ["tmux", "send-keys", "-t", t, "Enter"],
                 check=True, capture_output=True, timeout=5,
             )
+            # A message containing an @file-path mention (e.g. an attached image
+            # at @/Users/.../uploads/x.png) opens Claude Code's file-autocomplete
+            # popup; the Enter above commits/closes that popup instead of
+            # submitting, leaving the message unsent. Send a second Enter to
+            # actually submit. Targeted to path mentions (they contain '/');
+            # @session mentions have no '/'. Safe when no popup was open — Enter
+            # on an empty input is a no-op.
+            if re.search(r'@\S*/\S', text):
+                time.sleep(0.2)
+                subprocess.run(
+                    ["tmux", "send-keys", "-t", t, "Enter"],
+                    capture_output=True, timeout=5,
+                )
             return True, "sent"
         except subprocess.CalledProcessError as e:
             return False, e.stderr.decode(errors="replace")
