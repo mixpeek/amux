@@ -12753,8 +12753,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   /* Session panes embed the full peek view via an iframe (peek-embed mode) */
   .gp-peek-frame { flex: 1; min-height: 0; width: 100%; border: none; background: var(--bg); display: block; }
   /* peek-embed mode: this page is loaded inside a Workspace tile — show only the
-     peek overlay, stripped of the app chrome, filling the iframe. */
-  body.peek-embed { padding: 0 !important; overflow: hidden; }
+     peek overlay, stripped of the app chrome, filling the iframe. Zoom out the
+     embedded peek so the FULL session (terminal + command bar + message box) is
+     visible by default in a workspace pane instead of being cut off. */
+  body.peek-embed { padding: 0 !important; overflow: hidden; zoom: 0.8; }
   body.peek-embed .chrome-tabs-bar,
   body.peek-embed .chrome-tab-frames,
   body.peek-embed .header-row,
