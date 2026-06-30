@@ -38583,6 +38583,18 @@ class CCHandler(BaseHTTPRequestHandler):
                     reply_msg_id=body.get("reply_to_message_id", ""),
                     thread_id=body.get("thread_id", ""),
                 )
+                # Audit-log this legacy send path too, so there are NO untraced
+                # API sends (same reason as /api/email/*). Only on success.
+                if result.get("ok"):
+                    _email_log({"endpoint": "gmail_send_legacy", "via": "gmail",
+                                "from": body.get("account", ""),
+                                "to": body.get("to", ""),
+                                "subject": body.get("subject", ""),
+                                "body_chars": len(body.get("body", "")),
+                                "body_preview": (body.get("body", ""))[:240],
+                                "in_reply_to": body.get("reply_to_message_id") or None,
+                                "id": result.get("id"), "thread_id": result.get("thread_id"),
+                                "session": self.headers.get("X-Amux-Session")})
                 return self._json(result)
 
             return self._json({"error": "not found"}, 404)
