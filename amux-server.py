@@ -831,6 +831,41 @@ def _term_read(tid: str, max_bytes: int = 65536) -> bytes:
         pass
     return b""
 
+def _term_read_wait(tid: str, timeout: float, max_bytes: int = 262144) -> bytes:
+    """Long-poll read: block up to `timeout`s for the FIRST output byte, then
+    briefly coalesce a burst (e.g. a screen redraw) into one response. Returns
+    the instant the PTY produces data, so the client gets near-real-time output
+    instead of waiting out a fixed polling interval. Empty bytes on timeout.
+    """
+    with _term_lock:
+        t = _terminals.get(tid)
+    if not t:
+        return b""
+    fd = t["fd"]
+    try:
+        ready, _, _ = select.select([fd], [], [], max(0.0, timeout))
+        if not ready:
+            return b""
+        chunks: list[bytes] = []
+        total = 0
+        # Drain what's available, coalescing a short burst to cut round-trips.
+        while total < max_bytes:
+            try:
+                buf = os.read(fd, 65536)
+            except (OSError, IOError):
+                break
+            if not buf:
+                break
+            chunks.append(buf)
+            total += len(buf)
+            more, _, _ = select.select([fd], [], [], 0.015)
+            if not more:
+                break
+        return b"".join(chunks)
+    except (OSError, IOError):
+        return b""
+
+
 def _term_write(tid: str, data: bytes):
     """Write input to terminal."""
     with _term_lock:
@@ -28797,7 +28832,7 @@ function _wsTermStartPoll(pid) {
   async function tick() {
     if (!p.poll || !p.ptyId) return;
     try {
-      const r = await fetch(API + '/api/terminal/' + p.ptyId + '/output');
+      const r = await fetch(API + '/api/terminal/' + p.ptyId + '/output?wait=25');
       const d = await r.json();
       if (d.data) {
         const bytes = Uint8Array.from(atob(d.data), c => c.charCodeAt(0));
@@ -28809,10 +28844,13 @@ function _wsTermStartPoll(pid) {
         _wsTermSavePtyId(pid, null);
         return;
       }
-    } catch(e) {}
-    if (p.poll) p.poll = setTimeout(tick, 100);
+    } catch(e) {
+      if (p.poll) p.poll = setTimeout(tick, 500);  // transient — back off
+      return;
+    }
+    if (p.poll) p.poll = setTimeout(tick, 0);  // re-poll immediately (long-poll)
   }
-  p.poll = setTimeout(tick, 100);
+  p.poll = setTimeout(tick, 0);
 }
 
 function wsTermSendTmux(pid) {
@@ -31807,11 +31845,13 @@ async function _termConnect() {
     }).catch(() => {});
   });
 
-  // Poll for output (sequential setTimeout to avoid request pileup)
+  // Stream output via long-poll: each request blocks server-side until output
+  // is available (up to 25s), then we re-request immediately — near-real-time
+  // with no fixed polling lag. Only back off on transient errors.
   async function _termTick() {
     if (!_termPoll || !_termId) return;
     try {
-      const r = await fetch(API + '/api/terminal/' + _termId + '/output');
+      const r = await fetch(API + '/api/terminal/' + _termId + '/output?wait=25');
       const d = await r.json();
       if (d.data) {
         const bytes = Uint8Array.from(atob(d.data), c => c.charCodeAt(0));
@@ -31825,10 +31865,13 @@ async function _termConnect() {
         document.getElementById('term-disconnect-btn').style.display = 'none';
         return;
       }
-    } catch (e) {}
-    if (_termPoll) _termPoll = setTimeout(_termTick, 100);
+    } catch (e) {
+      if (_termPoll) _termPoll = setTimeout(_termTick, 500);  // transient — back off
+      return;
+    }
+    if (_termPoll) _termPoll = setTimeout(_termTick, 0);  // re-poll immediately
   }
-  _termPoll = setTimeout(_termTick, 100);
+  _termPoll = setTimeout(_termTick, 0);
 
   _term.focus();
 }
@@ -40133,11 +40176,19 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 _term_write(tid, data)
                 return self._json({"ok": True})
 
-            # GET /api/terminal/<id>/output
+            # GET /api/terminal/<id>/output[?wait=<seconds>]
+            # wait>0 long-polls (returns the instant output is available, up to
+            # `wait`s) so the client streams output with ~round-trip latency
+            # instead of a fixed poll interval. wait=0 keeps the quick read.
             m_term = re.match(r"^/api/terminal/([^/]+)/output$", path)
             if method == "GET" and m_term:
                 tid = m_term.group(1)
-                data = _term_read(tid)
+                try:
+                    wait = float(parse_qs(urlparse(self.path).query).get("wait", ["0"])[0])
+                except Exception:
+                    wait = 0.0
+                wait = max(0.0, min(wait, 30.0))
+                data = _term_read_wait(tid, wait) if wait > 0 else _term_read(tid)
                 alive = _term_alive(tid)
                 return self._json({
                     "data": base64.b64encode(data).decode() if data else "",
