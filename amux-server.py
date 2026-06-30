@@ -1970,6 +1970,53 @@ def _render_session_transcript(name: str, max_chars: int = 40000) -> str:
     return text
 
 
+def _dedup_transcript_live(transcript: str, live: str) -> str:
+    """Trim the tail of the rendered transcript that the live terminal frame
+    already shows, so the most recent messages aren't rendered twice in the peek
+    (once as raw-markdown transcript, once as the live frame). The live frame is
+    the authoritative current screen, so we keep it and cut the transcript where
+    the frame begins. Conservative: only trims on a confident match of a long,
+    distinctive line (confirmed by the following line); otherwise returns the
+    transcript unchanged so we never drop real history on a false match.
+    """
+    if not transcript or not live:
+        return transcript
+
+    def _norm(s: str) -> str:
+        s = _STRIP_ANSI.sub("", s)
+        # drop markdown / box-drawing decoration so raw-markdown transcript lines
+        # match their rendered live-frame counterparts
+        s = re.sub(r"[*#`_|│┌┐└┘├┤┬┴┼─=>•»❯⎿⏺✻✦]+", " ", s)
+        return re.sub(r"\s+", " ", s).strip().lower()
+
+    tl = transcript.split("\n")
+    ntl = [_norm(x) for x in tl]
+    # distinctive (long, content-rich) live lines, in screen order
+    live_norm = [n for n in (_norm(x) for x in live.split("\n")) if len(n) >= 30]
+    if not live_norm:
+        return transcript
+    anchor = live_norm[0]
+    nxt = live_norm[1] if len(live_norm) > 1 else None
+    # search transcript from the end for the most recent line matching the
+    # live frame's first distinctive line
+    for ti in range(len(tl) - 1, -1, -1):
+        n = ntl[ti]
+        if not n or len(n) < 30:
+            continue
+        if not (n == anchor or (len(anchor) > 45 and anchor in n) or (len(n) > 45 and n in anchor)):
+            continue
+        if nxt:  # confirm with the next distinctive transcript line
+            tj = ti + 1
+            while tj < len(tl) and (not ntl[tj] or len(ntl[tj]) < 30):
+                tj += 1
+            if tj < len(tl):
+                m = ntl[tj]
+                if not (m == nxt or nxt in m or m in nxt):
+                    continue
+        return "\n".join(tl[:ti]).rstrip()
+    return transcript
+
+
 _healing_logs: set = set()  # sessions whose log is being rebuilt right now
 
 
@@ -40555,8 +40602,12 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     transcript = _render_session_transcript(name, max_chars=120_000)
                     live = output.strip() if output else ""
                     if transcript and live:
-                        resp = {"name": name, "output": _collapse_blank_runs(
-                            transcript.rstrip() + "\n\n" + live)}
+                        # The live frame re-shows the most recent messages the
+                        # transcript ends with — trim that overlap so they don't
+                        # render twice (raw-markdown transcript + rendered frame).
+                        transcript = _dedup_transcript_live(transcript, live)
+                        joined = (transcript.rstrip() + "\n\n" + live) if transcript else live
+                        resp = {"name": name, "output": _collapse_blank_runs(joined)}
                     elif live:
                         resp = {"name": name, "output": _collapse_blank_runs(live)}
                     elif transcript:
