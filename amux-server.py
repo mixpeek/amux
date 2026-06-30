@@ -1939,11 +1939,27 @@ def _render_session_transcript(name: str, max_chars: int = 40000) -> str:
                 out.append("\x1b[38;5;39m⏺ " + str(nm) + "\x1b[0m"
                            + ("\x1b[38;5;246m " + arg + "\x1b[0m" if arg else ""))
             elif bt == "tool_result":
-                s = _tool_result_text(b.get("content")).strip().replace("\n", " ")
-                if s:
-                    if len(s) > 220:
-                        s = s[:220] + "…"
-                    out.append("\x1b[38;5;240m  ⎿ " + s + "\x1b[0m")
+                # Preserve multi-line tool output (tables, query results, logs)
+                # as indented continuation lines — matching Claude Code's own ⎿
+                # display — instead of flattening newlines into one dense run-on
+                # line, which rendered as garbled "logs" in the peek.
+                raw = _tool_result_text(b.get("content"))
+                rlines = [ln.rstrip() for ln in raw.split("\n")]
+                while rlines and not rlines[0].strip():
+                    rlines.pop(0)
+                while rlines and not rlines[-1].strip():
+                    rlines.pop()
+                if rlines:
+                    MAXL, MAXW = 6, 200
+                    for k, ln in enumerate(rlines[:MAXL]):
+                        if len(ln) > MAXW:
+                            ln = ln[:MAXW] + "…"
+                        prefix = "  ⎿ " if k == 0 else "     "
+                        out.append("\x1b[38;5;240m" + prefix + ln + "\x1b[0m")
+                    extra = len(rlines) - MAXL
+                    if extra > 0:
+                        out.append("\x1b[38;5;240m     … +" + str(extra)
+                                   + (" more lines" if extra != 1 else " more line") + "\x1b[0m")
     text = "\n".join(out).strip("\n")
     if len(text) > max_chars:
         text = text[-max_chars:]
