@@ -1975,46 +1975,62 @@ def _dedup_transcript_live(transcript: str, live: str) -> str:
     already shows, so the most recent messages aren't rendered twice in the peek
     (once as raw-markdown transcript, once as the live frame). The live frame is
     the authoritative current screen, so we keep it and cut the transcript where
-    the frame begins. Conservative: only trims on a confident match of a long,
-    distinctive line (confirmed by the following line); otherwise returns the
-    transcript unchanged so we never drop real history on a false match.
+    the frame's content begins.
+
+    We don't anchor on the live frame's *first* line — that line is often a
+    status/response that sits ABOVE the echoed user message and isn't in the
+    transcript, which used to leave the message duplicated. Instead we scan the
+    transcript tail and trim the contiguous block of lines that are present on
+    the live screen. Never trims if the tail isn't on-screen (so real history is
+    never dropped when the transcript is ahead of the frame).
     """
     if not transcript or not live:
         return transcript
 
     def _norm(s: str) -> str:
         s = _STRIP_ANSI.sub("", s)
-        # drop markdown / box-drawing decoration so raw-markdown transcript lines
-        # match their rendered live-frame counterparts
-        s = re.sub(r"[*#`_|│┌┐└┘├┤┬┴┼─=>•»❯⎿⏺✻✦]+", " ", s)
+        # drop markdown / box-drawing / status decoration so raw-markdown
+        # transcript lines match their rendered live-frame counterparts
+        s = re.sub(r"[*#`_|│┌┐└┘├┤┬┴┼─=>•·»❯⎿⏺✻✦●]+", " ", s)
         return re.sub(r"\s+", " ", s).strip().lower()
 
     tl = transcript.split("\n")
     ntl = [_norm(x) for x in tl]
-    # distinctive (long, content-rich) live lines, in screen order
-    live_norm = [n for n in (_norm(x) for x in live.split("\n")) if len(n) >= 30]
-    if not live_norm:
+    live_lines = [n for n in (_norm(x) for x in live.split("\n")) if n]
+    live_set = {n for n in live_lines if len(n) >= 8}
+    long_live = [n for n in live_lines if len(n) >= 46]
+
+    def _in_live(n: str) -> bool:
+        if len(n) < 8:
+            return False
+        if n in live_set:
+            return True
+        if len(n) >= 46:  # tolerate wrapping differences on long lines
+            for lv in long_live:
+                if n in lv or lv in n:
+                    return True
+        return False
+
+    # Anchor = the deepest transcript tail line that's on the live screen (the
+    # frame is ~50 lines, so only scan the tail). If none of the tail is
+    # on-screen, there's no overlap to trim.
+    anchor = None
+    for ti in range(len(tl) - 1, max(-1, len(tl) - 70), -1):
+        if len(ntl[ti]) >= 12 and _in_live(ntl[ti]):
+            anchor = ti
+            break
+    if anchor is None:
         return transcript
-    anchor = live_norm[0]
-    nxt = live_norm[1] if len(live_norm) > 1 else None
-    # search transcript from the end for the most recent line matching the
-    # live frame's first distinctive line
-    for ti in range(len(tl) - 1, -1, -1):
+    # Walk further up while lines stay on-screen (blanks/short lines absorbed),
+    # so the whole overlapping block is trimmed — not just its last line.
+    cut = anchor
+    for ti in range(anchor - 1, -1, -1):
         n = ntl[ti]
-        if not n or len(n) < 30:
-            continue
-        if not (n == anchor or (len(anchor) > 45 and anchor in n) or (len(n) > 45 and n in anchor)):
-            continue
-        if nxt:  # confirm with the next distinctive transcript line
-            tj = ti + 1
-            while tj < len(tl) and (not ntl[tj] or len(ntl[tj]) < 30):
-                tj += 1
-            if tj < len(tl):
-                m = ntl[tj]
-                if not (m == nxt or nxt in m or m in nxt):
-                    continue
-        return "\n".join(tl[:ti]).rstrip()
-    return transcript
+        if len(n) < 12 or _in_live(n):
+            cut = ti
+        else:
+            break
+    return "\n".join(tl[:cut]).rstrip()
 
 
 _healing_logs: set = set()  # sessions whose log is being rebuilt right now
