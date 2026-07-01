@@ -95,6 +95,23 @@ load_session() {
 # Load global defaults
 load_defaults() {
   [[ -f "$CC_DEFAULTS" ]] && source "$CC_DEFAULTS"
+  # Load ~/.amux/server.env so CLI-spawned sessions see the same AMUX_* knobs
+  # the server process uses (e.g. AMUX_CLAUDE_CMD). Parsed manually rather than
+  # `source`d so values are never shell-expanded — mirrors the Python loader at
+  # the top of amux-server.py, which treats entries as literal key=value pairs
+  # and is safe for values containing $, backticks, etc.
+  local _se="$CC_HOME/server.env"
+  if [[ -f "$_se" ]]; then
+    local _k _v
+    while IFS='=' read -r _k _v; do
+      # Trim all leading/trailing whitespace (matches Python's .strip()).
+      # Standard glob [![:space:]] — no extglob needed.
+      _k="${_k#"${_k%%[![:space:]]*}"}"; _k="${_k%"${_k##*[![:space:]]}"}"
+      _v="${_v#"${_v%%[![:space:]]*}"}"; _v="${_v%"${_v##*[![:space:]]}"}"
+      [[ -z "$_k" || "$_k" == \#* || -z "$_v" ]] && continue
+      export "$_k=$_v"
+    done < "$_se"
+  fi
 }
 
 # Get tmux session name (prefixed to avoid conflicts)
@@ -281,17 +298,25 @@ EOF
 }
 
 cmd_start() {
-  local name
+  local name dry_run=false
   name=$(resolve_session "${1:-}")
   shift 2>/dev/null || true
-  need_tmux
+  # Strip our own --dry-run flag(s) before inline claude args. Placed before
+  # `--` so `amux start NAME --dry-run -- --some-claude-flag` still works.
+  while [[ "${1:-}" == "--dry-run" ]]; do
+    dry_run=true
+    shift
+  done
+  # dry-run is a pure command preview — no tmux session is spawned, so the
+  # tmux dependency only matters for the real start path.
+  $dry_run || need_tmux
   load_defaults
   load_session "$name"
 
   local tname
   tname=$(tmux_name "$name")
 
-  if is_running "$name"; then
+  if ! $dry_run && is_running "$name"; then
     echo "${YELLOW}already running:${RESET} $name — attaching..."
     tmux attach-session -t "=$tname"
     return
@@ -326,7 +351,7 @@ cmd_start() {
       cmd="codex"
     fi
   else
-    cmd="claude"
+    cmd="${AMUX_CLAUDE_CMD:-claude}"
   fi
   # Apply global defaults from defaults.env (skip for codex — Claude flags don't apply)
   if [[ "$provider" != "codex" && -n "${CC_DEFAULT_FLAGS:-}" ]]; then
@@ -377,6 +402,11 @@ cmd_start() {
     if [[ -f "$HOME/.claude.json" ]] && grep -q '"oauthAccount"' "$HOME/.claude.json" 2>/dev/null; then
       shell_setup="${shell_setup}unset ANTHROPIC_API_KEY; "
     fi
+  fi
+  if $dry_run; then
+    echo "${BOLD}$name${RESET} in $dir"
+    echo "  ${DIM}$cmd${RESET}"
+    return
   fi
   tmux new-session -d -s "$tname" -n "$name" -c "$dir" "${shell_setup}cd $(printf '%q' "$dir"); $cmd"
   # Lock the window name so Claude can't overwrite it with escape sequences
@@ -991,7 +1021,8 @@ ${BOLD}amux${RESET} — phone-friendly Claude Code session manager ${DIM}v${CC_V
 
 ${BOLD}Session management:${RESET}
   amux register <name> [flags]   Register a session with Claude Code flags
-  amux start <name>              Start a registered session in tmux
+  amux start <name> [--dry-run]  Start a registered session in tmux
+                                (--dry-run: print the command without spawning)
   amux exec <name> [flags]       Register + start in one step
   amux stop <name>               Stop a running session
   amux rm <name>                 Remove a session (stops if running)
