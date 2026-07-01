@@ -9304,6 +9304,82 @@ def _email_log(record: dict) -> None:
         pass
 
 
+CRM_SYNC_PROVIDER = os.getenv("CRM_SYNC_PROVIDER", "auto")  # auto | lightfield | off
+
+
+def _crm_sync_external(kind, cid, name, company, email, notes):
+    """Mirror an amux CRM write to the CONFIGURED external CRM (currently Lightfield).
+
+    kind='create' -> create the external contact + an initial note carrying the full
+    context; kind='update' -> append an activity note (Lightfield contacts have no
+    PATCH and no settable upsert key, so updates are captured as notes rather than
+    duplicating the contact). Config via CRM_SYNC_PROVIDER (auto|lightfield|off);
+    'auto' enables Lightfield whenever LIGHTFIELD_API_KEY is set. Fire-and-forget in
+    a daemon thread — never blocks or breaks the CRM write, and never touches the
+    amux DB (all inputs are passed in, so no cross-thread SQLite handle).
+    """
+    if CRM_SYNC_PROVIDER == "off":
+        return
+    key = os.getenv("LIGHTFIELD_API_KEY")
+    if not key or CRM_SYNC_PROVIDER not in ("auto", "lightfield"):
+        return
+
+    def _run():
+        try:
+            import ssl as _ssl
+            import urllib.request
+
+            base = os.getenv("LIGHTFIELD_API_URL", "https://api.lightfield.app/v1")
+            ver = os.getenv("LIGHTFIELD_VERSION", "2026-03-01")
+            # Verify TLS — we're sending contact PII to a third party; a MITM must
+            # not be able to intercept it. If the cert can't be verified the request
+            # raises and the fail-safe below silently skips the sync (safer than
+            # shipping PII over an unverified connection).
+            ctx = _ssl.create_default_context()
+            try:
+                import certifi
+                ctx.load_verify_locations(certifi.where())
+            except Exception:
+                pass
+            hdr = {"Authorization": "Bearer " + key,
+                   "Lightfield-Version": ver, "Content-Type": "application/json"}
+
+            def _post(path, payload):
+                req = urllib.request.Request(
+                    base + path, data=json.dumps(payload).encode(),
+                    method="POST", headers=hdr)
+                with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
+                    return json.loads(resp.read().decode())
+
+            if kind == "create":
+                parts = (name or "Unknown").split(" ", 1)
+                fields = {"$name": {"firstName": parts[0],
+                                    "lastName": parts[1] if len(parts) > 1 else ""}}
+                if email:
+                    fields["$email"] = [email]
+                try:
+                    _post("/contacts", {"fields": fields})
+                except Exception:
+                    pass
+            # The note carries the amux context ($notes is not a create field on a
+            # Lightfield contact, so it lives as a separate note entity).
+            if notes or kind == "create":
+                suffix = " (amux CRM)" if kind == "create" else " (amux update)"
+                title = f"{company or name or 'contact'} [{cid}]{suffix}"
+                header = (f"Contact: {name}\nCompany: {company}\nEmail: {email}\n\n"
+                          if kind == "create" else "")
+                try:
+                    _post("/notes", {"fields": {
+                        "$title": title[:200],
+                        "$content": (header + (notes or ""))[:6000]}})
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def _email_last_synced() -> int:
     """Return unix timestamp of last successful email sync (0 = never)."""
     row = get_db().execute(
@@ -40291,6 +40367,8 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                         except Exception: pass
                 db.commit()
                 _crm_version += 1
+                _crm_sync_external("create", cid, name, body.get("company", ""),
+                                   body.get("email", ""), body.get("notes", ""))
                 return self._json({"id": cid, "ok": True}, 201)
 
             # GET/PATCH/DELETE /api/crm/contacts/:id
@@ -40320,6 +40398,16 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                                 except Exception: pass
                     db.commit()
                     _crm_version += 1
+                    # Mirror a notes change to the configured external CRM as an
+                    # activity note (fields-only/tag-only edits are not synced to
+                    # avoid note spam). Read current values in this (DB-owning) thread.
+                    if "notes" in fields:
+                        _r = db.execute(
+                            "SELECT name,company,email,notes FROM crm_contacts WHERE id=?",
+                            (cid,)).fetchone()
+                        if _r:
+                            _crm_sync_external("update", cid, _r["name"], _r["company"],
+                                               _r["email"], _r["notes"])
                     return self._json({"ok": True})
                 if method == "DELETE":
                     db.execute("UPDATE crm_contacts SET deleted=? WHERE id=?", (now, cid))
