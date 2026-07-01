@@ -1887,6 +1887,88 @@ def _tool_result_text(content) -> str:
     return str(content)
 
 
+# ── Markdown → ANSI (make transcript history look like Claude Code's terminal
+#    render instead of raw markdown source) ─────────────────────────────────────
+_MD_TABLE_SEP_RE = re.compile(r'^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?\s*$')
+# base fg the assistant text is wrapped in — inline styles restore to it
+_MD_BASE = "\x1b[38;5;252m"
+
+
+def _md_inline(s: str) -> str:
+    """Render inline Markdown (bold, inline code) to ANSI. Restores to the base
+    assistant color so the surrounding wrapper's colour is preserved."""
+    # inline code first so ** inside code isn't treated as bold
+    s = re.sub(r'`([^`\n]+)`', lambda m: '\x1b[38;5;179m' + m.group(1) + _MD_BASE, s)
+    # **bold** / __bold__
+    s = re.sub(r'\*\*([^*\n]+?)\*\*', lambda m: '\x1b[1m' + m.group(1) + '\x1b[22m', s)
+    s = re.sub(r'(?<!\w)__([^_\n]+?)__(?!\w)', lambda m: '\x1b[1m' + m.group(1) + '\x1b[22m', s)
+    return s
+
+
+def _md_render_table(block: list) -> str:
+    """Render a Markdown table block (header row, separator, body rows) as an
+    aligned box-drawing table, matching how Claude Code shows tables."""
+    def cells(row: str) -> list:
+        r = row.strip()
+        if r.startswith('|'):
+            r = r[1:]
+        if r.endswith('|'):
+            r = r[:-1]
+        return [c.strip() for c in r.split('|')]
+    rows = [cells(block[0])] + [cells(r) for r in block[2:]]
+    ncol = max((len(r) for r in rows), default=0)
+    if ncol == 0:
+        return "\n".join(block)
+    for r in rows:
+        r.extend([''] * (ncol - len(r)))
+    fmt = [[_md_inline(c) for c in r] for r in rows]
+
+    def vis(x: str) -> int:
+        return len(_STRIP_ANSI.sub('', x))
+    widths = [max((vis(fmt[ri][ci]) for ri in range(len(fmt))), default=0) for ci in range(ncol)]
+
+    def prow(cs: list) -> str:
+        return '│ ' + ' │ '.join(cs[ci] + ' ' * (widths[ci] - vis(cs[ci])) for ci in range(ncol)) + ' │'
+    top = '┌' + '┬'.join('─' * (w + 2) for w in widths) + '┐'
+    mid = '├' + '┼'.join('─' * (w + 2) for w in widths) + '┤'
+    bot = '└' + '┴'.join('─' * (w + 2) for w in widths) + '┘'
+    res = [top, prow(fmt[0]), mid]
+    res.extend(prow(r) for r in fmt[1:])
+    res.append(bot)
+    return "\n".join(res)
+
+
+def _md_to_ansi(text: str) -> str:
+    """Render a practical subset of Markdown (bold, inline code, headers, and
+    tables) to ANSI so transcript history matches Claude Code's terminal render
+    rather than showing raw `**`, backticks and `| pipe |` tables."""
+    lines = text.split("\n")
+    out: list = []
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        # table: a pipe row followed by a |---|---| separator
+        if (ln.strip().startswith('|') and ln.count('|') >= 2
+                and i + 1 < len(lines) and _MD_TABLE_SEP_RE.match(lines[i + 1])):
+            blk = [ln, lines[i + 1]]
+            j = i + 2
+            while j < len(lines) and lines[j].strip().startswith('|') and lines[j].count('|') >= 2:
+                blk.append(lines[j])
+                j += 1
+            out.append(_md_render_table(blk))
+            i = j
+            continue
+        # ATX header → bold, drop the leading #s
+        hm = re.match(r'^(#{1,6})\s+(.*)$', ln)
+        if hm:
+            out.append('\x1b[1m' + _md_inline(hm.group(2)) + '\x1b[22m')
+            i += 1
+            continue
+        out.append(_md_inline(ln))
+        i += 1
+    return "\n".join(out)
+
+
 def _render_session_transcript(name: str, max_chars: int = 40000) -> str:
     """Render a session's JSONL conversation as clean ANSI-colored text for the
     peek Transcript tab — the gap-free, never-torn alternative to the alt-screen
@@ -1931,7 +2013,7 @@ def _render_session_transcript(name: str, max_chars: int = 40000) -> str:
                 if role == "user":
                     out.append("\x1b[1m\x1b[38;5;220m❯ " + txt.replace("\n", "\n  ") + "\x1b[0m")
                 else:
-                    out.append("\x1b[38;5;252m" + txt + "\x1b[0m")
+                    out.append("\x1b[38;5;252m" + _md_to_ansi(txt) + "\x1b[0m")
                 out.append("")
             elif bt == "tool_use":
                 nm = b.get("name", "tool")
