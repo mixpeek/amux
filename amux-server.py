@@ -41807,22 +41807,68 @@ _AUTO_UPDATE_BRANCH = os.environ.get("AMUX_AUTO_UPDATE_BRANCH", "main")
 _AUTO_UPDATE_INTERVAL = int(os.environ.get("AMUX_AUTO_UPDATE_INTERVAL", "60"))  # seconds
 
 
+def _tree_has_recent_activity(path: Path, cutoff: float) -> bool:
+    """True if `path` OR anything nested inside it was modified at/after cutoff.
+    Short-circuits on the first recent entry, so active trees are cheap to test;
+    only genuinely-stale trees get walked in full. On any stat/scan error we
+    return True (assume in-use) so a scan failure never causes deletion."""
+    try:
+        if os.stat(path).st_mtime >= cutoff:
+            return True
+        for root, dirs, files in os.walk(path):
+            for nm in files + dirs:
+                try:
+                    if os.lstat(os.path.join(root, nm)).st_mtime >= cutoff:
+                        return True
+                except OSError:
+                    pass
+    except OSError:
+        return True
+    return False
+
+
 def _cleanup_tmp():
-    """Prune stale Claude Code sandbox files from /private/tmp to prevent disk full."""
+    """Prune stale Claude Code sandbox dirs from /private/tmp to reclaim disk —
+    WITHOUT nuking sessions that are still using them. Two safeguards, both
+    learned from repeated mid-session scratchpad deletions:
+
+      * A directory's OWN mtime only bumps when its DIRECT children change. A
+        live session writes NESTED files (…/<uuid>/scratchpad/…, …/tasks/…),
+        which never touch the top-level project dir's mtime — so the old
+        top-level-mtime check saw an actively-used tree as 'stale' after 1h and
+        rmtree'd it out from under the running session (destroying scratchpad
+        and background-task output). We now scan the whole tree for activity.
+      * Project dirs belonging to currently-running sessions are never pruned,
+        even if momentarily idle (the tmp dir name is the session's CC_DIR with
+        '/' → '-', matching Claude Code's sandbox naming)."""
+    import shutil
     tmp_dir = Path(f"/private/tmp/claude-{os.getuid()}")
     if not tmp_dir.is_dir():
         return
-    cutoff = time.time() - 3600  # older than 1 hour
+    live = set()
+    try:
+        for env_file in CC_SESSIONS.glob("*.env"):
+            name = env_file.stem
+            if not is_running(name):
+                continue
+            d = (parse_env_file(env_file).get("CC_DIR") or "").strip()
+            if d:
+                live.add(os.path.expanduser(d).rstrip("/").replace("/", "-"))
+    except Exception:
+        pass
+    cutoff = time.time() - 4 * 3600  # older than 4h (was 1h — too aggressive)
     cleaned = 0
     for entry in tmp_dir.iterdir():
         try:
-            if entry.stat().st_mtime < cutoff:
-                if entry.is_dir():
-                    import shutil
-                    shutil.rmtree(entry, ignore_errors=True)
-                else:
-                    entry.unlink(missing_ok=True)
-                cleaned += 1
+            if entry.name in live:
+                continue
+            if _tree_has_recent_activity(entry, cutoff):
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+            cleaned += 1
         except Exception:
             pass
     if cleaned:
