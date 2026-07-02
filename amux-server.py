@@ -8423,7 +8423,8 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 cmd = f"gemini{_gemini_opts} --session-id {shlex.quote(gemini_session_id)}"
                 print(f"[start] {name}: gemini fresh start {gemini_session_id}")
         else:
-            cmd = "claude"
+            _custom_claude = os.environ.get("AMUX_CLAUDE_CMD", "").strip()
+            cmd = _custom_claude or "claude"
             if default_flags:
                 cmd += f" {_shell_quote_flags(default_flags)}"
             if flags:
@@ -8442,6 +8443,11 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
             # Default to sonnet if no --model specified anywhere
             if "--model" not in cmd:
                 cmd += " --model sonnet"
+            # Only log when a custom executable is active — avoids leaking
+            # flags (e.g. --system-prompt, paths) into server logs, matching
+            # the codex/gemini paths which log provider+action only.
+            if _custom_claude:
+                print(f"[start] {name}: AMUX_CLAUDE_CMD={_custom_claude}")
         try:
             tmux_sess = tmux_name(name)
             # Build shell setup string — skip Claude env cleanup for codex
