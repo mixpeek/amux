@@ -1905,9 +1905,13 @@ def _md_inline(s: str) -> str:
     return s
 
 
-def _md_render_table(block: list) -> str:
-    """Render a Markdown table block (header row, separator, body rows) as an
-    aligned box-drawing table, matching how Claude Code shows tables."""
+def _md_render_table(block: list, max_width: int = 100) -> str:
+    """Render a Markdown table as a box-drawing table, WRAPPING cells so the whole
+    table fits within max_width columns — like Claude Code's terminal render. This
+    caps table width so a wide cell can't blow the row out to hundreds of columns
+    and break the peek (the box-drawing then wraps mid-glyph in the browser)."""
+    import textwrap
+
     def cells(row: str) -> list:
         r = row.strip()
         if r.startswith('|'):
@@ -1915,25 +1919,53 @@ def _md_render_table(block: list) -> str:
         if r.endswith('|'):
             r = r[:-1]
         return [c.strip() for c in r.split('|')]
-    rows = [cells(block[0])] + [cells(r) for r in block[2:]]
+
+    def strip_md(s: str) -> str:  # width math is on plain text; no ANSI inside cells
+        s = re.sub(r'`([^`]+)`', r'\1', s)
+        s = re.sub(r'\*\*([^*]+)\*\*', r'\1', s)
+        s = re.sub(r'__([^_]+)__', r'\1', s)
+        return s
+
+    rows = [[strip_md(c) for c in cells(block[0])]] + [[strip_md(c) for c in cells(r)] for r in block[2:]]
     ncol = max((len(r) for r in rows), default=0)
     if ncol == 0:
         return "\n".join(block)
     for r in rows:
         r.extend([''] * (ncol - len(r)))
-    fmt = [[_md_inline(c) for c in r] for r in rows]
+    natural = [max((len(rows[ri][ci]) for ri in range(len(rows))), default=0) for ci in range(ncol)]
+    avail = max(ncol * 6, max_width - (3 * ncol + 1))   # leave room for the borders
+    widths = list(natural)
+    guard = 0
+    while sum(widths) > avail and guard < 10000:        # shrink the widest column until it fits
+        guard += 1
+        mx = max(range(ncol), key=lambda c: widths[c])
+        if widths[mx] <= 6:
+            break
+        widths[mx] -= 1
 
-    def vis(x: str) -> int:
-        return len(_STRIP_ANSI.sub('', x))
-    widths = [max((vis(fmt[ri][ci]) for ri in range(len(fmt))), default=0) for ci in range(ncol)]
+    widths = [max(1, w) for w in widths]   # never 0 — textwrap.wrap(w=0) raises
 
-    def prow(cs: list) -> str:
-        return '│ ' + ' │ '.join(cs[ci] + ' ' * (widths[ci] - vis(cs[ci])) for ci in range(ncol)) + ' │'
+    def wrap_cell(text: str, w: int) -> list:
+        return textwrap.wrap(text, max(1, w), break_long_words=True, break_on_hyphens=False) or ['']
+
+    def render_row(cs: list, header: bool = False) -> str:
+        wrapped = [wrap_cell(cs[ci], widths[ci]) for ci in range(ncol)]
+        h = max(len(w) for w in wrapped)
+        out = []
+        for k in range(h):
+            parts = []
+            for ci in range(ncol):
+                seg = wrapped[ci][k] if k < len(wrapped[ci]) else ''
+                pad = seg + ' ' * (widths[ci] - len(seg))
+                parts.append(('\x1b[1m' + pad + '\x1b[22m') if (header and seg) else pad)
+            out.append('│ ' + ' │ '.join(parts) + ' │')
+        return '\n'.join(out)
+
     top = '┌' + '┬'.join('─' * (w + 2) for w in widths) + '┐'
     mid = '├' + '┼'.join('─' * (w + 2) for w in widths) + '┤'
     bot = '└' + '┴'.join('─' * (w + 2) for w in widths) + '┘'
-    res = [top, prow(fmt[0]), mid]
-    res.extend(prow(r) for r in fmt[1:])
+    res = [top, render_row(rows[0], header=True), mid]
+    res.extend(render_row(r) for r in rows[1:])
     res.append(bot)
     return "\n".join(res)
 
@@ -1941,7 +1973,18 @@ def _md_render_table(block: list) -> str:
 def _md_to_ansi(text: str) -> str:
     """Render a practical subset of Markdown (bold, inline code, headers, and
     tables) to ANSI so transcript history matches Claude Code's terminal render
-    rather than showing raw `**`, backticks and `| pipe |` tables."""
+    rather than showing raw `**`, backticks and `| pipe |` tables.
+
+    Fail-safe: any rendering error returns the ORIGINAL text — a formatting bug
+    must never blank the transcript (a table crash once turned peeks into
+    "(no output)")."""
+    try:
+        return _md_to_ansi_inner(text)
+    except Exception:
+        return text
+
+
+def _md_to_ansi_inner(text: str) -> str:
     lines = text.split("\n")
     out: list = []
     i = 0
