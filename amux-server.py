@@ -5194,45 +5194,20 @@ def _session_board_issue_id(session_name: str) -> str | None:
 
 
 def _complete_session_board_issue(session_name: str):
-    """Move a session's active board issues to done.
+    """DISABLED (2026-07-02) — this used to move a session's 'doing' board issues
+    to 'done' whenever the session went idle or was stopped. That corrupts the
+    ledger: a session goes idle after EVERY turn (and can be stopped mid-task),
+    which is NOT the same as the work being done. It silently reverted in-flight
+    items to 'done' (BACKE-2459/2461/2462 incident) — and done != implemented/
+    verified, so a false 'done' can make someone skip a live prod step
+    (BACKE-2462 was a scheduled prod-quiesce change).
 
-    Only acts on issues with status 'doing' — those are the ones currently
-    being worked on. Skips tasks with gh:* tags — those are owned by the
-    SessionEnd hook (board-gh-sync.py) which has gh CLI access for posting
-    GH comments.
-
-    Only auto-closes owner_type='agent' issues. A session-tagged human
-    commitment/tracker must NOT be marked done just because the session went
-    idle — its work is the human's, not the agent's (done != verified). See
-    AMUX-1471 (footgun hit by MO-2029 / MS-921).
+    A move to 'done' must be a deliberate act by whoever did the work, never an
+    automatic side effect of a session's run-state. This is now a no-op; board
+    items only transition to 'done' via an explicit PATCH. All existing callers
+    are intentionally left as harmless no-ops.
     """
-    try:
-        db = get_db()
-        rows = db.execute(
-            "SELECT i.id FROM issues i "
-            "WHERE i.session=? AND i.deleted IS NULL "
-            "AND i.status IN ('doing') "
-            "AND i.owner_type='agent' "
-            "ORDER BY i.created DESC",
-            (session_name,)
-        ).fetchall()
-        if not rows:
-            return
-        now = int(time.time())
-        for row in rows:
-            # Skip gh-linked tasks — the SessionEnd hook handles those
-            gh_tag = db.execute(
-                "SELECT 1 FROM issue_tags WHERE issue_id=? AND tag LIKE 'gh:%' LIMIT 1",
-                (row["id"],)
-            ).fetchone()
-            if gh_tag:
-                continue
-            _append_board_log(row["id"], "Session completed")
-            db.execute("UPDATE issues SET status='done', updated=? WHERE id=?", (now, row["id"]))
-        db.commit()
-        _board_changed()
-    except Exception:
-        pass
+    return
 
 
 def _pickup_next_board_task(session_name: str):
