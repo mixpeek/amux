@@ -1895,13 +1895,22 @@ _MD_BASE = "\x1b[38;5;252m"
 
 
 def _md_inline(s: str) -> str:
-    """Render inline Markdown (bold, inline code) to ANSI. Restores to the base
-    assistant color so the surrounding wrapper's colour is preserved."""
-    # inline code first so ** inside code isn't treated as bold
-    s = re.sub(r'`([^`\n]+)`', lambda m: '\x1b[38;5;179m' + m.group(1) + _MD_BASE, s)
+    """Render inline Markdown (bold, italic, inline code) to ANSI, matching how
+    Claude Code renders it in the terminal. Restores to the base assistant color
+    so the surrounding wrapper's colour is preserved."""
+    # inline code first so ** inside code isn't treated as bold. Light-blue to
+    # match Claude Code's terminal inline-code colour (was orange, which read as
+    # a different style than the terminal).
+    s = re.sub(r'`([^`\n]+)`', lambda m: '\x1b[38;5;75m' + m.group(1) + _MD_BASE, s)
     # **bold** / __bold__
     s = re.sub(r'\*\*([^*\n]+?)\*\*', lambda m: '\x1b[1m' + m.group(1) + '\x1b[22m', s)
     s = re.sub(r'(?<!\w)__([^_\n]+?)__(?!\w)', lambda m: '\x1b[1m' + m.group(1) + '\x1b[22m', s)
+    # *italic* / _italic_ — single delimiter, not adjacent to a word char or a
+    # space (so it never eats `2*3`, `*.py` globs, `- ` bullets, or math).
+    s = re.sub(r'(?<![\w*])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![\w*])',
+               lambda m: '\x1b[3m' + m.group(1) + '\x1b[23m', s)
+    s = re.sub(r'(?<![\w_])_(?!\s)([^_\n]+?)(?<!\s)_(?![\w_])',
+               lambda m: '\x1b[3m' + m.group(1) + '\x1b[23m', s)
     return s
 
 
