@@ -5211,15 +5211,26 @@ def _complete_session_board_issue(session_name: str):
 
 
 def _pickup_next_board_task(session_name: str):
-    """Pick up the next queued (todo) board task for this session.
-    Called after a session completes its current task and goes idle.
-    Moves the task to 'doing' and sends the title+desc to the session.
+    """Pick up the next queued (todo) board task for this session — OPT-IN only.
+    Called when a session goes idle; moves the oldest agent todo to 'doing' and
+    injects its title+desc as a prompt.
+
+    A session must explicitly enable this with CC_AUTO_PICKUP=1 in its env — the
+    autonomous-loop behavior. Default OFF: a session goes idle after every turn,
+    so auto-promoting + re-injecting a queued todo into a session that sequences
+    its own work (or coordinates a timed prod window) creates duplicate/
+    conflicting work in the shared checkout (backend incident, 2026-07-02, where
+    a mid-implementation todo was re-picked and a 06:00Z prod item risked early
+    re-injection).
 
     Only auto-runs owner_type='agent' tasks. A session-tagged human
     commitment/tracker must never be silently executed by the agent — it's a
     thing the human owns, queued to the session only for visibility. See
     AMUX-1471 (footgun hit by MO-2029 / MS-921)."""
     try:
+        cfg = parse_env_file(CC_SESSIONS / f"{session_name}.env")
+        if cfg.get("CC_AUTO_PICKUP", "").strip().lower() not in ("1", "true", "yes"):
+            return  # not opted into the autonomous loop
         time.sleep(3)
         db = get_db()
         row = db.execute(
