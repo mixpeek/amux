@@ -1,6 +1,6 @@
 <img src="site/github-header.svg" alt="amux — The Agent Control Plane" width="1280"/>
 
-**Open-source control plane for AI agents.** Run dozens of parallel agent sessions from your browser or phone — with a web dashboard, kanban board, notes, CRM, email, browser automation, slash-command skills, and agent-to-agent orchestration. Self-healing, single-file, zero external dependencies. Currently supports Claude Code via tmux.
+**Open-source control plane for AI agents.** Run dozens of parallel agent sessions from your browser or phone — with a web dashboard, kanban board, notes, CRM, email, browser automation, slash-command skills, and agent-to-agent orchestration. Self-healing, single-file, zero external dependencies. Works with Claude Code, Codex, and Gemini CLI via tmux.
 
 > **[amux.io](https://amux.io)** · [Getting started](https://amux.io/guides/getting-started/) · [FAQ](https://amux.io/faq/) · [Blog](https://amux.io/blog/)
 
@@ -52,7 +52,7 @@ amux serve   # → https://localhost:8822
 ### Built-in tools
 - **Notes** — full markdown notes system with rich editor, find-in-page, and inter-session sharing
 - **CRM** — contacts, companies, interaction logs, follow-up tracking, and tags
-- **Email** — send and read email through the Mail.app API integration
+- **Email** — send, reply, and read email via the Gmail API (with your real Gmail signature auto-appended), plus a Mail.app fallback for non-Gmail accounts
 - **Browser automation** — shared Playwright instance with saved auth profiles, screenshots, and an AI agent mode
 - **Skills / slash commands** — project-level custom commands (e.g. `/commit`, `/review-pr`) that agents can invoke
 - **Scheduler** — named recurring jobs with cron expressions and a management UI

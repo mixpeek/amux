@@ -1,0 +1,1 @@
+Faster, more reliable session monitoring, plus bug fixes and stability improvements.

@@ -1,0 +1,19 @@
+amux is a self-hosted control plane for AI coding agents. Run, monitor, and orchestrate dozens of parallel Claude Code, Codex, and Gemini sessions from your iPhone or iPad — the native app connects to your own amux server over the network.
+
+WHAT YOU CAN DO
+• Watch every agent's live terminal output in real time
+• Send prompts and commands to any session from anywhere
+• Track work on a shared kanban board with atomic task claiming
+• Get agents to coordinate — delegate tasks between sessions
+• Manage notes, contacts (CRM), and recurring scheduled jobs
+• Keep agents running unattended with a self-healing watchdog
+
+BRING YOUR OWN SERVER
+amux is open source. Run the single-file amux server on your own Mac, Linux box, or cloud VM, then connect this app to it — over Tailscale, your LAN, or amux Cloud. Your code and agents never leave your infrastructure.
+
+BUILT FOR PARALLEL WORK
+Instead of babysitting one AI assistant, run a whole fleet — one agent per feature, per bug, per module, all supervised from a single dashboard in your pocket.
+
+Self-healing keeps sessions alive: amux auto-compacts context, restarts on corruption, unblocks stuck prompts, and handles rate limits fleet-wide so your agents keep shipping overnight.
+
+Learn more at amux.io
