@@ -1898,7 +1898,27 @@ def _session_jsonl_path_uncached(name: str):
             return None
         files = sorted(project_dir.glob("*.jsonl"),
                        key=lambda f: f.stat().st_mtime, reverse=True)
-        return files[0] if files else None
+        if not files:
+            return None
+        if len(files) == 1:
+            return files[0]
+        # Multiple conversations live in this project dir — several amux sessions
+        # share one CC_DIR (e.g. studio-plg + mixpeek-studio). Returning the
+        # newest bleeds ANOTHER session's transcript into this session's peek, so
+        # resolve to THIS session's own conversation by matching Claude Code's
+        # per-conversation title (set from the launch `--name`) to the amux
+        # session name. Files are mtime-desc, so the first match is this
+        # session's newest conversation.
+        for jf in files:
+            try:
+                with jf.open() as fh:
+                    rec = json.loads(fh.readline() or "{}")
+            except Exception:
+                continue
+            if rec.get("customTitle") == name or rec.get("sessionName") == name:
+                return jf
+        # No titled match (older Claude, or title not written yet) — best effort.
+        return files[0]
     except Exception:
         return None
 
