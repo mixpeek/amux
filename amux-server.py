@@ -1891,17 +1891,17 @@ def _tool_result_text(content) -> str:
 #    render instead of raw markdown source) ─────────────────────────────────────
 _MD_TABLE_SEP_RE = re.compile(r'^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?\s*$')
 # base fg the assistant text is wrapped in — inline styles restore to it
-_MD_BASE = "\x1b[38;5;252m"
+_MD_BASE = "\x1b[39m"
 
 
 def _md_inline(s: str) -> str:
     """Render inline Markdown (bold, italic, inline code) to ANSI, matching how
     Claude Code renders it in the terminal. Restores to the base assistant color
     so the surrounding wrapper's colour is preserved."""
-    # inline code first so ** inside code isn't treated as bold. Light-blue to
-    # match Claude Code's terminal inline-code colour (was orange, which read as
-    # a different style than the terminal).
-    s = re.sub(r'`([^`\n]+)`', lambda m: '\x1b[38;5;75m' + m.group(1) + _MD_BASE, s)
+    # inline code first so ** inside code isn't treated as bold. Colour 153
+    # (lavender) is Claude Code's actual terminal inline-code colour — verified
+    # against live `tmux capture-pane -e` frames; earlier blue/orange were wrong.
+    s = re.sub(r'`([^`\n]+)`', lambda m: '\x1b[38;5;153m' + m.group(1) + _MD_BASE, s)
     # **bold** / __bold__
     s = re.sub(r'\*\*([^*\n]+?)\*\*', lambda m: '\x1b[1m' + m.group(1) + '\x1b[22m', s)
     s = re.sub(r'(?<!\w)__([^_\n]+?)__(?!\w)', lambda m: '\x1b[1m' + m.group(1) + '\x1b[22m', s)
@@ -2065,13 +2065,18 @@ def _render_session_transcript(name: str, max_chars: int = 40000) -> str:
                 if role == "user":
                     out.append("\x1b[1m\x1b[38;5;220m❯ " + txt.replace("\n", "\n  ") + "\x1b[0m")
                 else:
-                    out.append("\x1b[38;5;252m" + _md_to_ansi(txt) + "\x1b[0m")
+                    # Claude Code prefixes each assistant message with a white
+                    # ⏺ bullet and renders prose in the default fg (not dim);
+                    # continuation lines indent 2 cols under the bullet.
+                    body = _md_to_ansi(txt).replace("\n", "\n  ")
+                    out.append("\x1b[38;5;231m⏺\x1b[39m " + body + "\x1b[0m")
                 out.append("")
             elif bt == "tool_use":
                 nm = b.get("name", "tool")
                 arg = _tool_brief(nm, b.get("input"))
-                out.append("\x1b[38;5;39m⏺ " + str(nm) + "\x1b[0m"
-                           + ("\x1b[38;5;246m " + arg + "\x1b[0m" if arg else ""))
+                # Claude's tool line: green ⏺ + bold ToolName + (args) in default fg
+                out.append("\x1b[38;5;114m⏺\x1b[39m \x1b[1m" + str(nm) + "\x1b[0m"
+                           + ("(" + arg + ")" if arg else ""))
             elif bt == "tool_result":
                 # Preserve multi-line tool output (tables, query results, logs)
                 # as indented continuation lines — matching Claude Code's own ⎿
@@ -2088,11 +2093,11 @@ def _render_session_transcript(name: str, max_chars: int = 40000) -> str:
                     for k, ln in enumerate(rlines[:MAXL]):
                         if len(ln) > MAXW:
                             ln = ln[:MAXW] + "…"
-                        prefix = "  ⎿ " if k == 0 else "     "
-                        out.append("\x1b[38;5;240m" + prefix + ln + "\x1b[0m")
+                        prefix = "  ⎿  " if k == 0 else "     "
+                        out.append("\x1b[38;5;246m" + prefix + ln + "\x1b[0m")
                     extra = len(rlines) - MAXL
                     if extra > 0:
-                        out.append("\x1b[38;5;240m     … +" + str(extra)
+                        out.append("\x1b[38;5;246m     … +" + str(extra)
                                    + (" more lines" if extra != 1 else " more line") + "\x1b[0m")
     text = "\n".join(out).strip("\n")
     if len(text) > max_chars:
