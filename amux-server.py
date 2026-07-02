@@ -1800,6 +1800,51 @@ def _collapse_blank_runs(text: str, keep: int = 1) -> str:
     return "\n".join(out)
 
 
+# amux's session-launch/relaunch scaffolding — leaks into a live capture whenever
+# Claude has exited to a shell and been restarted (rate-limit, crash, /compact).
+# All of it forms a contiguous block at the TOP of the frame, above the real
+# terminal content, so we cut through the LAST scaffolding line we find.
+_LAUNCH_MARKERS = re.compile(
+    r'--dangerously-skip-permissions\s+--name\b'
+    r'|unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT'
+    r'|Resume this session with:'
+    r'|claude --resume\b'
+    r'|The default interactive shell is now zsh'
+    r'|please visit https://support\.apple\.com/kb/HT208050'
+)
+_BARE_PROMPT_RE = re.compile(r'^[A-Za-z0-9._-]{1,24}\$$')
+
+
+def _strip_launch_noise(text: str) -> str:
+    """Remove amux's session-launch scaffolding from a captured frame (the
+    `unset …; cd …; claude --model … --name <s>` relaunch command, the macOS zsh
+    notice, and 'Resume this session with:' blocks). Conservative: only acts when
+    a scaffolding marker is present, cuts through the LAST such line plus any
+    trailing blank/bare-shell-prompt lines, and if nothing real remains it
+    returns the input unchanged rather than blanking the peek."""
+    if not text or ("--name" not in text and "Resume this session with" not in text
+                    and "shell is now zsh" not in text):
+        return text
+    lines = text.split("\n")
+    last = -1
+    for i, ln in enumerate(lines):
+        if _LAUNCH_MARKERS.search(_STRIP_ANSI.sub("", ln)):
+            last = i
+    if last < 0:
+        return text
+    j = last + 1
+    while j < len(lines):
+        clean = _STRIP_ANSI.sub("", lines[j]).strip()
+        if clean == "" or _BARE_PROMPT_RE.match(clean):
+            j += 1
+        else:
+            break
+    kept = lines[j:]
+    if not any(_STRIP_ANSI.sub("", l).strip() for l in kept):
+        return text  # frame is all scaffolding — leave it rather than blank the peek
+    return "\n".join(kept)
+
+
 def load_session_log(session: str, tail_bytes: int = 0) -> str:
     """Load saved session log from disk.
 
@@ -40848,7 +40893,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                         if now - last_save >= _LOG_SAVE_INTERVAL:
                             threading.Thread(target=save_alt_capture, args=(name, output), daemon=True).start()
                     transcript = _render_session_transcript(name, max_chars=120_000)
-                    live = output.strip() if output else ""
+                    live = _strip_launch_noise(output.strip()) if output else ""
                     if transcript and live:
                         # The live frame re-shows the most recent messages the
                         # transcript ends with — trim that overlap so they don't
@@ -40869,7 +40914,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     last_save = _last_log_save.get(name, 0)
                     if now - last_save >= _LOG_SAVE_INTERVAL:
                         threading.Thread(target=save_session_log, args=(name, output), daemon=True).start()
-                    resp = {"name": name, "output": _collapse_blank_runs(output)}
+                    resp = {"name": name, "output": _collapse_blank_runs(_strip_launch_noise(output))}
                     _peek_cache[name] = (now, lines, resp)
                     return self._json(resp)
                 saved = load_session_log(name, tail_bytes=65_536)
@@ -40880,7 +40925,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                         threading.Thread(target=_heal_log_from_transcript,
                                          args=(name,), daemon=True).start()
                 if saved:
-                    live = output.strip() if output else ""
+                    live = _strip_launch_noise(output.strip()) if output else ""
                     if live and not saved.rstrip().endswith(live):
                         combined = saved.rstrip() + "\n\n" + live + "\n"
                     else:
