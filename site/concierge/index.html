@@ -278,7 +278,7 @@
   .syschip img{width:16px;height:16px;border-radius:3px;display:block;object-fit:contain}
 
   /* ── HERO ART + ANIMATED DEMOS ── */
-  .hero-grid{display:grid; grid-template-columns:1.05fr .95fr; gap:44px; align-items:center}
+  .hero-grid{display:grid; grid-template-columns:2fr 1fr; gap:44px; align-items:center}
   .hero-art{border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow); overflow:hidden; background:#fff}
   .hero-art svg, .demo-card svg{display:block; width:100%; height:auto}
   .demo-wrap{margin-top:2px}
@@ -286,7 +286,7 @@
   .demo-card{border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); overflow-x:auto; -webkit-overflow-scrolling:touch; background:#fff}
   .demo-card svg{min-width:480px}
   .panel-demo{padding:20px 28px 2px}
-  .panel-demo .demo-card{max-width:620px}
+  .panel-demo .demo-card{max-width:none}
 
   /* ── RESPONSIVE ── */
   @media (max-width:860px){
@@ -426,11 +426,11 @@
         <div class="panel-demo">
           <div class="demo-cap">Live · predetermination workflow</div>
           <div class="demo-card">
-            <svg viewBox="0 0 600 200" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif" role="img" aria-label="Animated demo: amux checks eligibility, assembles the packet, submits to the payer, and returns an estimate.">
-              <rect width="600" height="200" fill="#ffffff"/>
+            <svg viewBox="0 0 900 200" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif" role="img" aria-label="Animated demo: amux checks eligibility, assembles the packet, submits to the payer, and returns an estimate.">
+              <rect width="900" height="200" fill="#ffffff"/>
               <circle cx="22" cy="21" r="4" fill="#f87171"/><circle cx="37" cy="21" r="4" fill="#fbbf24"/><circle cx="52" cy="21" r="4" fill="#34d399"/>
               <text x="72" y="25" font-family="JetBrains Mono, monospace" font-size="12" fill="#64748b">amux · predetermination</text>
-              <line x1="0" y1="42" x2="600" y2="42" stroke="#eef2f7"/>
+              <line x1="0" y1="42" x2="900" y2="42" stroke="#eef2f7"/>
               <g opacity="0" font-family="JetBrains Mono, monospace" font-size="14">
                 <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.05;0.09;0.95;1"/>
                 <text x="24" y="74" fill="#94a3b8">›</text><text x="44" y="74" fill="#334155">eligibility · Delta Dental … <tspan fill="#059669">ok</tspan></text>
@@ -442,8 +442,8 @@
               <g opacity="0">
                 <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.34;0.38;0.95;1"/>
                 <text x="24" y="138" font-family="JetBrains Mono, monospace" font-size="14" fill="#334155">submitting to payer…</text>
-                <rect x="232" y="130" width="344" height="8" rx="4" fill="#eef2f7"/>
-                <rect x="232" y="130" width="0" height="8" rx="4" fill="#2563eb"><animate attributeName="width" dur="6s" repeatCount="indefinite" values="0;0;344;344;0" keyTimes="0;0.38;0.62;0.95;1"/></rect>
+                <rect x="232" y="130" width="636" height="8" rx="4" fill="#eef2f7"/>
+                <rect x="232" y="130" width="0" height="8" rx="4" fill="#2563eb"><animate attributeName="width" dur="6s" repeatCount="indefinite" values="0;0;636;636;0" keyTimes="0;0.38;0.62;0.95;1"/></rect>
               </g>
               <g opacity="0">
                 <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.70;0.74;0.95;1"/>
@@ -493,11 +493,11 @@
         <div class="panel-demo">
           <div class="demo-cap">Live · referral intake workflow</div>
           <div class="demo-card">
-            <svg viewBox="0 0 600 200" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif" role="img" aria-label="Animated demo: amux ingests a referral, structures it, verifies benefits, and matches a bed for review.">
-              <rect width="600" height="200" fill="#ffffff"/>
+            <svg viewBox="0 0 900 200" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif" role="img" aria-label="Animated demo: amux ingests a referral, structures it, verifies benefits, and matches a bed for review.">
+              <rect width="900" height="200" fill="#ffffff"/>
               <circle cx="22" cy="21" r="4" fill="#f87171"/><circle cx="37" cy="21" r="4" fill="#fbbf24"/><circle cx="52" cy="21" r="4" fill="#34d399"/>
               <text x="72" y="25" font-family="JetBrains Mono, monospace" font-size="12" fill="#64748b">amux · referral intake</text>
-              <line x1="0" y1="42" x2="600" y2="42" stroke="#eef2f7"/>
+              <line x1="0" y1="42" x2="900" y2="42" stroke="#eef2f7"/>
               <g opacity="0" font-family="JetBrains Mono, monospace" font-size="14">
                 <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.05;0.09;0.95;1"/>
                 <text x="24" y="74" fill="#94a3b8">›</text><text x="44" y="74" fill="#334155">new referral · fax · St. Mary's</text>
@@ -509,8 +509,8 @@
               <g opacity="0">
                 <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.34;0.38;0.95;1"/>
                 <text x="24" y="138" font-family="JetBrains Mono, monospace" font-size="14" fill="#334155">verifying benefits…</text>
-                <rect x="210" y="130" width="366" height="8" rx="4" fill="#eef2f7"/>
-                <rect x="210" y="130" width="0" height="8" rx="4" fill="#2563eb"><animate attributeName="width" dur="6s" repeatCount="indefinite" values="0;0;366;366;0" keyTimes="0;0.38;0.62;0.95;1"/></rect>
+                <rect x="210" y="130" width="658" height="8" rx="4" fill="#eef2f7"/>
+                <rect x="210" y="130" width="0" height="8" rx="4" fill="#2563eb"><animate attributeName="width" dur="6s" repeatCount="indefinite" values="0;0;658;658;0" keyTimes="0;0.38;0.62;0.95;1"/></rect>
               </g>
               <g opacity="0">
                 <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.70;0.74;0.95;1"/>

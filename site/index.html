@@ -110,6 +110,26 @@
   }
   .site-header nav a.nav-cta-primary:hover { opacity: 0.85; color: var(--bg); }
 
+  /* ---------- concierge promo bar ---------- */
+  .promo-bar {
+    display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;
+    padding: 9px 16px; background: var(--bg-2); border-bottom: 1px solid var(--line);
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px; color: var(--fg); opacity: .92; text-decoration: none; text-align: center;
+  }
+  .promo-bar:hover { background: var(--bg-3); opacity: 1; }
+  .promo-bar b { font-weight: 700; }
+  .promo-bar .promo-tag {
+    font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--accent); border: 1px solid var(--line-2); background: var(--bg-3);
+    border-radius: 999px; padding: 3px 9px;
+  }
+  .promo-bar .promo-arr { color: var(--accent); font-weight: 700; }
+  @media (max-width: 600px) {
+    .promo-bar { font-size: 11px; padding: 8px 12px; gap: 7px; }
+    .promo-bar .promo-hide { display: none; }
+  }
+
   /* ---------- buttons ---------- */
   .btn {
     --bg-btn: var(--bg-3);
@@ -791,6 +811,13 @@
 </head>
 <body>
 
+<!-- =================== CONCIERGE PROMO =================== -->
+<a class="promo-bar" href="/concierge/">
+  <span class="promo-tag">Concierge</span>
+  <span>Want it run <b>for you</b>? Done-for-you automation for your business, from your phone<span class="promo-hide"> &middot; dental, skilled nursing &amp; more</span></span>
+  <span class="promo-arr">Learn more &rarr;</span>
+</a>
+
 <!-- =================== NAV =================== -->
 <header class="site-header">
   <a class="logo" href="/">amux</a>
@@ -800,6 +827,7 @@
     <a href="/compare/" class="hide-mobile">compare</a>
     <a href="/demos/" class="hide-mobile">demos</a>
     <a href="/blog/" class="hide-mobile">blog</a>
+    <a href="/concierge/" class="hide-mobile">concierge</a>
     <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
     <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
   </nav>
