@@ -6685,12 +6685,13 @@ def _detect_claude_status(raw_output: str) -> str:
     # appears there at ALL times (even at idle), so we skip this check and let
     # the spinner scan below determine the real state.
     if not status_bar:
-        # Compact/resume dialog has "Esc to cancel" which would false-positive as
-        # "esc t" → active. Detect it first and return "waiting" instead.
         if "Resume from summary" in clean and "Resume full session" in clean:
             return "waiting"
+        # Background-tasks mode replaces the status bar with "esc to interrupt · ctrl+t to hide tasks".
+        # Match only this specific string to avoid false-positives from "esc to cancel",
+        # "esc to accept all", or any other idle-state "esc to ..." text.
         for l in lines[-5:]:
-            if re.search(r"esc t", l.lower()):
+            if "esc to interrupt" in l.lower():
                 return "active"
 
     # ── 2. Scan last 12 lines bottom-up for the most recent signal ──
