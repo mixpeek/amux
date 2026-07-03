@@ -3831,6 +3831,12 @@ def _snapshot_all_sessions_inner():
                         with _steering_lock:
                             q = _steering_queue.get(name, [])
                             _steering_queue[name] = [m for m in q if m["id"] != msg["id"]]
+                        try:
+                            db = get_db()
+                            db.execute("DELETE FROM steering_queue WHERE id=?", (msg["id"],))
+                            db.commit()
+                        except Exception:
+                            pass
                         _push_alert("steering_delivered", name,
                                     f"Steering message delivered to '{name}'")
 
@@ -4385,6 +4391,13 @@ CREATE TABLE IF NOT EXISTS cmd_history (
     ts       INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cmd_history_ts ON cmd_history(ts DESC);
+CREATE TABLE IF NOT EXISTS steering_queue (
+    id          TEXT PRIMARY KEY,
+    session     TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    queued_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_steering_session ON steering_queue(session);
 """
 
 
@@ -4828,6 +4841,7 @@ def _init_db():
             db.commit()
         except Exception:
             pass  # column already exists
+    _load_steering_from_db()
     # One-time migration: import existing flat skill files into SQLite
     skills_dir = CC_HOME / "skills"
     if skills_dir.exists():
@@ -4841,6 +4855,20 @@ def _init_db():
             except Exception:
                 pass
         db.commit()
+
+
+def _load_steering_from_db():
+    """Populate _steering_queue from SQLite on startup."""
+    db = get_db()
+    rows = db.execute(
+        "SELECT id, session, text, queued_at FROM steering_queue ORDER BY queued_at ASC"
+    ).fetchall()
+    with _steering_lock:
+        _steering_queue.clear()
+        for row in rows:
+            _steering_queue.setdefault(row["session"], []).append(
+                {"id": row["id"], "text": row["text"], "queued_at": row["queued_at"]}
+            )
 
 
 def _load_board_raw() -> dict:
@@ -41221,6 +41249,12 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     else:
                         removed = len(_steering_queue.get(name, []))
                         _steering_queue[name] = []
+                db = get_db()
+                if msg_id:
+                    db.execute("DELETE FROM steering_queue WHERE id=?", (msg_id,))
+                else:
+                    db.execute("DELETE FROM steering_queue WHERE session=?", (name,))
+                db.commit()
                 return self._json({"ok": True, "cleared": removed})
             if method == "POST":
                 body = self._read_body()
@@ -41231,6 +41265,12 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 entry = {"id": msg_id, "text": text, "queued_at": time.time()}
                 with _steering_lock:
                     _steering_queue.setdefault(name, []).append(entry)
+                db = get_db()
+                db.execute(
+                    "INSERT OR REPLACE INTO steering_queue(id, session, text, queued_at) VALUES(?,?,?,?)",
+                    (msg_id, name, text, entry["queued_at"]),
+                )
+                db.commit()
                 return self._json({"ok": True, "id": msg_id, "message": "queued for next turn boundary"})
             return self._json({"error": "method not allowed"}, 405)
 
