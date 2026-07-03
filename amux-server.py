@@ -1867,6 +1867,32 @@ def load_session_log(session: str, tail_bytes: int = 0) -> str:
     return ""
 
 
+def _plain_log_path(session: str) -> Path:
+    """Path to the ANSI-stripped mirror of a session log. Kept in a hidden
+    subdir so it never collides with a real `<name>.log` or gets swept up by
+    CC_LOGS.glob('*.log') (log-search, session listing)."""
+    return CC_LOGS / ".plain" / f"{session}.log"
+
+
+def _write_plain_log(session: str):
+    """Materialize an ANSI-stripped copy of the session log — colour SGR *and*
+    torn cursor-move escapes removed, blank runs collapsed — so a session can
+    Read its own history as clean text instead of a wall of escape codes.
+    Returns (path, size_bytes) or None when there is no source log."""
+    lp = _log_path(session)
+    if not lp.exists():
+        return None
+    try:
+        text = _collapse_blank_runs(_STRIP_ANSI.sub("", lp.read_text(errors="replace")))
+        data = text.encode("utf-8", errors="replace")
+        cp = _plain_log_path(session)
+        cp.parent.mkdir(parents=True, exist_ok=True)
+        cp.write_bytes(data)
+        return cp, len(data)
+    except Exception:
+        return None
+
+
 def _session_jsonl_path(name: str):
     """Newest Claude Code JSONL conversation file for a session's working dir,
     or None. This is the authoritative, complete transcript (never torn like the
@@ -21399,12 +21425,16 @@ function peekDownloadLog() {
 async function peekLoadLogIntoSession() {
   if (!peekSession) return;
   const sess = peekSession;
-  // Get the resolved log size first so we can warn on huge logs.
+  // Ask for the ANSI-stripped mirror (?plain=1) so the session reads clean text
+  // instead of a wall of escape codes, and get its resolved path + size so we
+  // point the Read tool at the right file and can warn on huge logs.
   let sizeNote = '';
+  let logPath = '~/.amux/logs/' + sess + '.log';
   try {
-    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(sess) + '/log/info');
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(sess) + '/log/info?plain=1');
     if (r.ok) {
       const d = await r.json();
+      if (d && d.path) logPath = d.path;
       if (d && typeof d.size === 'number') {
         const mb = d.size / (1024 * 1024);
         sizeNote = mb >= 1 ? ` (~${mb.toFixed(1)} MB)` : ` (~${Math.round(d.size/1024)} KB)`;
@@ -21412,8 +21442,8 @@ async function peekLoadLogIntoSession() {
       }
     }
   } catch(e) {}
-  const msg = 'Please use your Read tool to read your full session log at ~/.amux/logs/' + sess + '.log' + sizeNote +
-    ' — this is the complete terminal history of everything you have done in this amux session. ' +
+  const msg = 'Please use your Read tool to read your full session log at ' + logPath + sizeNote +
+    ' — this is the complete terminal history (ANSI-stripped) of everything you have done in this amux session. ' +
     'Use it as context for what we work on next. If the file is large, read it in chunks.';
   await doSend(sess, msg);
   showToast('Asked ' + sess + ' to read its full log');
@@ -41008,17 +41038,33 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 })
             if action == "log":
                 lp = _log_path(name)
+                want_plain = (qs.get("plain", ["0"])[0] or "").lower() in ("1", "true", "yes")
                 if action_subid == "info":
                     # Lightweight metadata — used by the dashboard before asking
-                    # the session to load its log into context.
+                    # the session to load its log into context. ?plain=1 also
+                    # materializes an ANSI-stripped mirror and returns ITS path +
+                    # size, so the session Reads clean text rather than a wall of
+                    # escape codes.
+                    if want_plain:
+                        res = _write_plain_log(name)
+                        if not res:
+                            return self._json({"exists": False, "size": 0, "path": str(_plain_log_path(name)), "plain": True})
+                        cp, size = res
+                        return self._json({"exists": True, "size": size, "mtime": int(cp.stat().st_mtime), "path": str(cp), "plain": True})
                     if not lp.exists():
                         return self._json({"exists": False, "size": 0, "path": str(lp)})
                     st = lp.stat()
                     return self._json({"exists": True, "size": st.st_size, "mtime": int(st.st_mtime), "path": str(lp)})
-                # Download raw terminal log file
+                # Download the saved terminal log. Default streams it raw (colour
+                # SGR intact, so the download / `cat` matches the coloured peek).
+                # ?plain=1 strips ALL ANSI (colour + torn cursor-move garbage) and
+                # collapses blank runs so the file reads as clean plain text.
                 if not lp.exists():
                     return self._json({"error": "no log"}, 404)
                 data = lp.read_bytes()
+                if want_plain:
+                    text = _collapse_blank_runs(_STRIP_ANSI.sub("", data.decode("utf-8", errors="replace")))
+                    data = text.encode("utf-8", errors="replace")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Content-Disposition", f'attachment; filename="{name}.log"')
