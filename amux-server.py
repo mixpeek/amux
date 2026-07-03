@@ -15596,8 +15596,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <!-- Input row -->
         <div class="ac-wrap" style="flex:1;min-width:0;position:relative;">
           <textarea class="send-input" id="peek-cmd-input" rows="1" placeholder="Type a message or drop a file..."
-            autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true"
-            enterkeyhint="enter" style="width:100%;"
+            autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+            enterkeyhint="send" style="width:100%;"
             oninput="autoGrow(this);slashAcUpdate();cmdHistoryReset()" onkeydown="slashAcKeydown(event)"
             onpaste="handlePeekPaste(event)"></textarea>
           <div id="slash-ac-list" class="ac-list slash-ac"></div>
@@ -22565,6 +22565,7 @@ function slashAcPick(i) {
 }
 
 function slashAcKeydown(e) {
+  if (e.isComposing || e.keyCode === 229) return; // ignore IME composition Enter
   const inp = document.getElementById('peek-cmd-input');
   const el = document.getElementById('slash-ac-list');
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendPeekCmd(); return; }
