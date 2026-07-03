@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>amux Concierge — Run, build &amp; grow your business from your phone</title>
+<meta name="description" content="Done-for-you workflow automation for your business. We set up your first automation, teach your team to build more, and run it all from your phone — on your own machine, under your own logins. HIPAA-compliant. Built for dental practices, skilled nursing facilities, and beyond.">
+<link rel="canonical" href="https://amux.io/concierge/">
+<meta name="robots" content="index, follow">
+
+<!-- Open Graph / Twitter -->
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://amux.io/concierge/">
+<meta property="og:title" content="amux Concierge — Run your business from your phone">
+<meta property="og:description" content="We set up your first workflow automation, teach you to build more, and run it all from your phone — on your own machine, under your own logins. HIPAA-compliant.">
+<meta property="og:image" content="https://amux.io/og-image.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="amux Concierge — Run your business from your phone">
+<meta name="twitter:description" content="Done-for-you workflow automation for your business, run entirely from your phone. Built for dental, skilled nursing, and beyond.">
+<meta name="twitter:image" content="https://amux.io/og-image.png">
+
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
+
+<!-- Structured data: Service + Offer -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Service",
+  "name": "amux Concierge",
+  "serviceType": "Done-for-you business workflow automation",
+  "provider": { "@type": "Organization", "name": "amux", "url": "https://amux.io" },
+  "areaServed": "US",
+  "audience": { "@type": "BusinessAudience", "audienceType": "Dental practices, Skilled nursing facilities, Small and mid-sized businesses" },
+  "description": "amux sets up your first workflow automation, teaches your team to build more, and runs it all from your phone — on hardware you own, under your own logins. HIPAA-compliant and BAA-backed.",
+  "offers": {
+    "@type": "Offer",
+    "priceCurrency": "USD",
+    "price": "5000",
+    "description": "$5,000 one-time onboarding, then $5,000/month for support, maintenance, and ongoing feature development. AI usage passed through at cost (typically ~$200/month)."
+  }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "Who should take the first meeting?", "acceptedAnswer": { "@type": "Answer", "text": "The person who owns the outcome — a dental practice owner, a skilled nursing administrator or operator, the business owner. The highest-leverage decision-maker, so we can scope the workflow that matters most." } },
+    { "@type": "Question", "name": "Is my data secure?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. amux runs on hardware you own, inside your office, under your own logins. Your data and credentials never leave your walls. We are HIPAA-compliant and sign a Business Associate Agreement (BAA) before touching any protected health information." } },
+    { "@type": "Question", "name": "What if I don't have a spare desktop?", "acceptedAnswer": { "@type": "Answer", "text": "We procure a Mac Studio for you, set it up, and keep it online 24/7 so your automations never go dark." } },
+    { "@type": "Question", "name": "When would I hit AI usage overage?", "acceptedAnswer": { "@type": "Answer", "text": "Rarely. The monthly fee covers normal business volume and AI usage is typically about $200/month, passed through at cost. You'd only exceed it as an extreme power user running tens of thousands of AI-driven actions a month — at which point the automation is already paying for itself many times over." } }
+  ]
+}
+</script>
+
+<style>
+  :root{
+    --bg:#ffffff; --bg-soft:#f8fafc; --bg-soft2:#f1f5f9;
+    --ink:#0f172a; --ink-2:#334155; --ink-3:#475569; --mute:#64748b;
+    --line:#e2e8f0; --line-2:#cbd5e1;
+    --brand:#f59e0b;                 /* amux amber — brand mark */
+    --accent:#2563eb; --accent-2:#1d4ed8; --accent-soft:#eff6ff;
+    --ok:#059669; --ok-soft:#ecfdf5;
+    --radius:14px; --maxw:1080px;
+    --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --shadow:0 1px 2px rgba(15,23,42,.04), 0 12px 32px -16px rgba(15,23,42,.16);
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+  body{
+    background:var(--bg); color:var(--ink); font-family:var(--sans);
+    font-size:17px; line-height:1.6; -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility; overflow-x:hidden;
+  }
+  a{color:var(--accent); text-decoration:none}
+  a:hover{color:var(--accent-2)}
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 24px}
+  .eyebrow{
+    font-family:var(--mono); font-size:12px; font-weight:600; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--accent);
+  }
+
+  /* ── HEADER ── */
+  header.site{
+    position:sticky; top:0; z-index:50; background:rgba(255,255,255,.85);
+    backdrop-filter:saturate(180%) blur(12px); border-bottom:1px solid var(--line);
+  }
+  header.site .wrap{display:flex; align-items:center; justify-content:space-between; height:64px}
+  .logo{display:flex; align-items:center; gap:10px; font-family:var(--mono); font-weight:700; font-size:18px; color:var(--ink); letter-spacing:-.02em}
+  .logo .mark{
+    display:grid; place-items:center; width:26px; height:26px; border-radius:6px;
+    background:#fff7ed; border:1px solid #fed7aa; color:var(--brand); font-size:14px; font-weight:700;
+  }
+  header.site nav{display:flex; align-items:center; gap:20px}
+  header.site nav a.txt{font-size:14px; color:var(--ink-3); font-weight:500}
+  header.site nav a.txt:hover{color:var(--ink)}
+  .btn{
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    font-family:var(--sans); font-size:15px; font-weight:600; line-height:1;
+    padding:13px 20px; border-radius:10px; border:1px solid transparent; cursor:pointer;
+    min-height:46px; transition:transform .04s ease, background .15s ease, box-shadow .15s ease;
+  }
+  .btn:active{transform:translateY(1px)}
+  .btn-primary{background:var(--accent); color:#fff; box-shadow:0 8px 20px -10px rgba(37,99,235,.7)}
+  .btn-primary:hover{background:var(--accent-2); color:#fff}
+  .btn-ghost{background:#fff; color:var(--ink); border-color:var(--line-2)}
+  .btn-ghost:hover{border-color:var(--accent); color:var(--accent)}
+  .btn-lg{font-size:16px; padding:16px 26px; min-height:54px}
+  header.site .btn{padding:9px 16px; min-height:40px; font-size:14px}
+
+  /* ── HERO ── */
+  .hero{padding:76px 0 40px; background:
+     radial-gradient(60% 55% at 50% -10%, #eff6ff 0%, rgba(239,246,255,0) 70%), var(--bg);}
+  .hero h1{
+    font-size:clamp(2.1rem,5.4vw,3.6rem); line-height:1.06; letter-spacing:-.03em;
+    font-weight:800; max-width:16ch; margin:16px 0 0;
+  }
+  .hero h1 .grad{background:linear-gradient(100deg,var(--accent),#7c3aed); -webkit-background-clip:text; background-clip:text; color:transparent}
+  .hero .lead{font-size:clamp(1.05rem,2.2vw,1.3rem); color:var(--ink-3); max-width:62ch; margin:22px 0 0}
+  .hero .cta-row{display:flex; flex-wrap:wrap; gap:12px; margin-top:32px}
+  .trust{display:flex; flex-wrap:wrap; gap:8px 22px; margin-top:30px; font-size:14px; color:var(--mute)}
+  .trust span{display:inline-flex; align-items:center; gap:7px}
+  .trust .dot{width:7px; height:7px; border-radius:50%; background:var(--ok)}
+
+  /* ── SECTION scaffolding ── */
+  section{padding:56px 0}
+  .section-soft{background:var(--bg-soft); border-top:1px solid var(--line); border-bottom:1px solid var(--line)}
+  h2.sec{font-size:clamp(1.5rem,3.4vw,2.15rem); letter-spacing:-.025em; font-weight:800; line-height:1.15; max-width:20ch}
+  .sec-sub{font-size:1.05rem; color:var(--ink-3); max-width:60ch; margin-top:12px}
+
+  /* ── INDUSTRY PICKER ── */
+  .picker-head{text-align:center; max-width:640px; margin:0 auto 28px}
+  .picker-head h2{margin:8px auto 0}
+  .tabs{display:flex; flex-wrap:wrap; gap:10px; justify-content:center}
+  .tab{
+    font-family:var(--sans); font-size:15px; font-weight:600; color:var(--ink-2);
+    background:#fff; border:1px solid var(--line-2); border-radius:999px;
+    padding:11px 20px; min-height:44px; cursor:pointer; display:inline-flex; align-items:center; gap:9px;
+  }
+  .tab .ic{font-size:17px}
+  .tab:hover{border-color:var(--accent); color:var(--accent)}
+  .tab[aria-selected="true"]{background:var(--accent); border-color:var(--accent); color:#fff}
+  .panel{display:none; margin-top:30px}
+  .panel.active{display:block; animation:fade .35s ease}
+  @keyframes fade{from{opacity:0; transform:translateY(6px)}to{opacity:1; transform:none}}
+
+  .panel-card{
+    background:#fff; border:1px solid var(--line); border-radius:var(--radius);
+    box-shadow:var(--shadow); overflow:hidden;
+  }
+  .panel-top{padding:26px 28px 22px; border-bottom:1px solid var(--line); background:linear-gradient(180deg,#fbfdff,#fff)}
+  .panel-top .kicker{font-family:var(--mono); font-size:12px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--accent)}
+  .panel-top h3{font-size:1.5rem; font-weight:800; letter-spacing:-.02em; margin:6px 0 0}
+  .panel-top p{color:var(--ink-3); margin-top:10px; max-width:70ch; font-size:1.02rem}
+  .panel-body{display:grid; grid-template-columns:1.35fr 1fr; gap:0}
+  .panel-body > div{padding:24px 28px}
+  .panel-body .left{border-right:1px solid var(--line)}
+  .panel-label{font-family:var(--mono); font-size:11px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--mute); margin-bottom:14px}
+  ul.check{list-style:none; display:flex; flex-direction:column; gap:12px}
+  ul.check li{position:relative; padding-left:30px; color:var(--ink-2); font-size:15.5px; line-height:1.5}
+  ul.check li::before{
+    content:""; position:absolute; left:0; top:2px; width:20px; height:20px; border-radius:6px;
+    background:var(--ok-soft) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23059669' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E") center/13px no-repeat;
+  }
+  .sys-list{display:flex; flex-wrap:wrap; gap:7px; margin-top:6px}
+  .chip{font-family:var(--mono); font-size:12px; font-weight:600; color:var(--ink-2); background:var(--bg-soft2); border:1px solid var(--line); border-radius:7px; padding:5px 9px}
+  .safe{
+    margin-top:18px; background:var(--accent-soft); border:1px solid #bfdbfe; border-radius:10px;
+    padding:14px 16px; font-size:14px; color:#1e3a8a; line-height:1.55;
+  }
+  .safe strong{color:#1e3a8a}
+  .stat{margin-top:20px}
+  .stat .big{font-size:1.05rem; color:var(--ink); font-weight:600; line-height:1.45}
+  .stat .cite{font-size:12.5px; color:var(--mute); margin-top:6px}
+
+  /* ── STEPS ── */
+  .steps{display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-top:34px}
+  .step{background:#fff; border:1px solid var(--line); border-radius:var(--radius); padding:22px; box-shadow:var(--shadow)}
+  .step .n{font-family:var(--mono); font-weight:700; font-size:14px; color:var(--accent); width:30px; height:30px; display:grid; place-items:center; border:1px solid #bfdbfe; background:var(--accent-soft); border-radius:8px}
+  .step h3{font-size:1.05rem; font-weight:700; margin:14px 0 6px; letter-spacing:-.01em}
+  .step p{font-size:14.5px; color:var(--ink-3)}
+
+  /* ── SECURITY ── */
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:30px}
+  .feat{background:#fff; border:1px solid var(--line); border-radius:var(--radius); padding:24px; box-shadow:var(--shadow)}
+  .feat .ic{width:40px; height:40px; border-radius:10px; display:grid; place-items:center; background:var(--accent-soft); font-size:20px; margin-bottom:14px}
+  .feat h3{font-size:1.12rem; font-weight:700; letter-spacing:-.01em; margin-bottom:7px}
+  .feat p{font-size:15px; color:var(--ink-3)}
+  .feat p strong{color:var(--ink)}
+
+  /* ── PRICING ── */
+  .price-wrap{display:grid; grid-template-columns:1.1fr .9fr; gap:22px; margin-top:32px; align-items:start}
+  .price-card{background:#fff; border:2px solid var(--accent); border-radius:18px; padding:30px; box-shadow:0 24px 60px -30px rgba(37,99,235,.45)}
+  .price-row{display:flex; align-items:baseline; justify-content:space-between; gap:12px; padding:16px 0; border-bottom:1px dashed var(--line)}
+  .price-row:last-of-type{border-bottom:none}
+  .price-row .label{font-weight:600; color:var(--ink)}
+  .price-row .label small{display:block; font-weight:400; color:var(--mute); font-size:13px; margin-top:3px}
+  .price-row .amt{font-family:var(--mono); font-weight:700; font-size:1.35rem; white-space:nowrap}
+  .price-row .amt small{font-size:13px; color:var(--mute); font-weight:500}
+  .price-note{background:var(--bg-soft); border:1px solid var(--line); border-radius:12px; padding:18px 20px; font-size:14.5px; color:var(--ink-3)}
+  .price-note h3{font-size:1rem; color:var(--ink); margin-bottom:8px}
+  .incl{list-style:none; display:flex; flex-direction:column; gap:11px; margin-top:4px}
+  .incl li{position:relative; padding-left:28px; color:var(--ink-2); font-size:15px}
+  .incl li::before{content:""; position:absolute; left:0; top:3px; width:18px; height:18px; border-radius:5px; background:var(--ok-soft) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23059669' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E") center/12px no-repeat}
+  .incl li strong{color:var(--ink)}
+
+  /* ── FAQ ── */
+  .faq{max-width:760px; margin:26px auto 0}
+  details.q{border:1px solid var(--line); border-radius:12px; background:#fff; margin-bottom:10px; overflow:hidden}
+  details.q summary{list-style:none; cursor:pointer; padding:18px 20px; font-weight:650; font-size:16px; color:var(--ink); display:flex; justify-content:space-between; align-items:center; gap:12px}
+  details.q summary::-webkit-details-marker{display:none}
+  details.q summary::after{content:"+"; font-family:var(--mono); color:var(--accent); font-size:20px; line-height:1}
+  details.q[open] summary::after{content:"–"}
+  details.q .a{padding:0 20px 18px; color:var(--ink-3); font-size:15px; line-height:1.6}
+
+  /* ── FINAL CTA ── */
+  .final{background:linear-gradient(135deg,#0f172a,#1e293b); color:#fff; border-radius:20px; padding:48px 40px; text-align:center; margin:8px 0 0}
+  .final h2{font-size:clamp(1.6rem,3.6vw,2.3rem); font-weight:800; letter-spacing:-.02em; color:#fff; max-width:24ch; margin:0 auto}
+  .final p{color:#cbd5e1; font-size:1.08rem; max-width:56ch; margin:14px auto 0}
+  .final .cta-row{justify-content:center; margin-top:28px}
+  .final .btn-ghost{background:transparent; color:#fff; border-color:rgba(255,255,255,.35)}
+  .final .btn-ghost:hover{border-color:#fff; color:#fff}
+  .final .fine{margin-top:18px; font-size:13.5px; color:#94a3b8}
+
+  /* ── FOOTER ── */
+  footer.site{border-top:1px solid var(--line); padding:34px 0; background:var(--bg-soft); font-size:14px; color:var(--mute)}
+  footer.site .wrap{display:flex; flex-wrap:wrap; gap:16px; justify-content:space-between; align-items:center}
+  footer.site a{color:var(--ink-3); font-weight:500}
+  footer.site a:hover{color:var(--accent)}
+  footer.site .flinks{display:flex; gap:20px; flex-wrap:wrap}
+
+  /* ── DIAGRAMS ── */
+  .diagram{overflow-x:auto; -webkit-overflow-scrolling:touch; margin-top:26px; padding-bottom:4px}
+  .diagram svg{display:block; width:100%; min-width:640px; height:auto}
+  .diag-cap{font-size:13px; color:var(--mute); text-align:center; margin-top:12px}
+
+  /* ── SETUP: voice / video ── */
+  .setup-grid{display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:30px}
+  .setup{background:#fff; border:1px solid var(--line); border-radius:var(--radius); padding:26px; box-shadow:var(--shadow)}
+  .setup .ic{width:46px; height:46px; border-radius:12px; display:grid; place-items:center; font-size:22px; margin-bottom:16px; background:var(--accent-soft)}
+  .setup h3{font-size:1.2rem; font-weight:750; letter-spacing:-.01em; margin-bottom:8px}
+  .setup p{color:var(--ink-3); font-size:15.5px}
+  .setup .say{margin-top:16px; background:var(--bg-soft); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:8px; padding:12px 14px; font-size:14.5px; color:var(--ink-2); font-style:italic}
+
+  /* ── RESPONSIVE ── */
+  @media (max-width:860px){
+    .panel-body{grid-template-columns:1fr}
+    .panel-body .left{border-right:none; border-bottom:1px solid var(--line)}
+    .steps{grid-template-columns:1fr 1fr}
+    .grid2{grid-template-columns:1fr}
+    .price-wrap{grid-template-columns:1fr}
+    .setup-grid{grid-template-columns:1fr}
+  }
+  @media (max-width:560px){
+    body{font-size:16px}
+    .wrap{padding:0 18px}
+    header.site nav a.txt{display:none}
+    .hero{padding:54px 0 30px}
+    .steps{grid-template-columns:1fr}
+    section{padding:44px 0}
+    .final{padding:36px 22px; border-radius:16px}
+    .cta-row .btn{width:100%}
+  }
+</style>
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="https://amux.io"><span class="mark">▌</span> amux</a>
+    <nav>
+      <a class="txt" href="#how">How it works</a>
+      <a class="txt" href="#pricing">Pricing</a>
+      <a class="btn btn-primary js-schedule" href="#schedule">Schedule a meeting</a>
+    </nav>
+  </div>
+</header>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="wrap">
+    <span class="eyebrow">amux Concierge · done-for-you automation</span>
+    <h1>Run, build, and grow your business — <span class="grad">entirely from your phone.</span></h1>
+    <p class="lead">
+      We set you up with your first SOP and workflow automation, teach your team to build the next ones,
+      and integrate it all into how you already work. Done-for-you to start. Yours to grow.
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary btn-lg js-schedule" href="#schedule">Schedule a meeting →</a>
+      <a class="btn btn-ghost btn-lg" href="#adventure">Show me my industry</a>
+    </div>
+    <div class="trust">
+      <span><i class="dot"></i> Runs on your own machine</span>
+      <span><i class="dot"></i> Your logins, your data</span>
+      <span><i class="dot"></i> HIPAA-compliant &amp; BAA-backed</span>
+    </div>
+  </div>
+</section>
+
+<!-- CHOOSE YOUR ADVENTURE -->
+<section id="adventure" class="section-soft">
+  <div class="wrap">
+    <div class="picker-head">
+      <span class="eyebrow">Choose your path</span>
+      <h2 class="sec">Where do you work?</h2>
+      <p class="sec-sub" style="margin-left:auto;margin-right:auto">Pick your world and we'll show you exactly what we'd automate first — the real systems, the real safeguards.</p>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label="Choose your industry">
+      <button class="tab" role="tab" aria-selected="true"  aria-controls="p-dental"  id="t-dental"  data-panel="p-dental"><span class="ic">🦷</span> Dental practice</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="p-snf"     id="t-snf"     data-panel="p-snf"><span class="ic">🏥</span> Skilled nursing facility</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="p-other"   id="t-other"   data-panel="p-other"><span class="ic">✨</span> Something else</button>
+    </div>
+
+    <!-- DENTAL -->
+    <div class="panel active" id="p-dental" role="tabpanel" aria-labelledby="t-dental">
+      <div class="panel-card">
+        <div class="panel-top">
+          <div class="kicker">Dental practices</div>
+          <h3>Start with insurance predetermination &amp; eligibility</h3>
+          <p>The front-office grind — verifying benefits, assembling predetermination packets, chasing payers — commonly eats <strong>10–20+ hours a week per location</strong>. We take the paperwork off your team's plate so they can focus on patients.</p>
+        </div>
+        <div class="panel-body">
+          <div class="left">
+            <div class="panel-label">What we automate first</div>
+            <ul class="check">
+              <li>Pull real-time eligibility &amp; benefits (X12 270/271) before the patient sits down.</li>
+              <li>Assemble payer-specific predetermination packets — radiographs, perio charting, clinical notes, procedure codes.</li>
+              <li>Draft the clinical narrative for your team to review.</li>
+              <li>Submit through your existing clearinghouse or payer portal, then poll for status so nobody babysits a fax.</li>
+              <li>Flag denials early and prep the resubmission or appeal.</li>
+              <li>Post the estimate back into the patient record and ledger.</li>
+            </ul>
+          </div>
+          <div class="right">
+            <div class="panel-label">Systems we connect (on your logins)</div>
+            <div class="sys-list">
+              <span class="chip">Dentrix</span><span class="chip">Eaglesoft</span><span class="chip">Open Dental</span><span class="chip">Curve</span>
+              <span class="chip">DentalXChange</span><span class="chip">Vyne</span><span class="chip">Change Healthcare</span>
+            </div>
+            <div class="safe">
+              <strong>Accelerate, never approve.</strong> amux speeds up the paperwork — it doesn't decide coverage. Payers approve claims, and a predetermination is an <em>estimate</em>, not a guarantee of payment. Every submission is yours to review.
+            </div>
+            <div class="stat">
+              <div class="big">Roughly 1 in 5 claims is denied on first pass. We aim to give those hours — and that rework — back.</div>
+              <div class="cite">Figures commonly reported by dental billing sources; your numbers will vary by payer and plan.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SNF -->
+    <div class="panel" id="p-snf" role="tabpanel" aria-labelledby="t-snf" hidden>
+      <div class="panel-card">
+        <div class="panel-top">
+          <div class="kicker">Skilled nursing facilities</div>
+          <h3>Start with referral intake &amp; census</h3>
+          <p>The work that happens at nights and weekends and decides your occupancy. PointClickCare runs roughly <strong>60% of U.S. skilled nursing</strong>, and nurses can spend <strong>~40% of a shift documenting</strong>. We take the keying, the chasing, and the reporting off their plate.</p>
+        </div>
+        <div class="panel-body">
+          <div class="left">
+            <div class="panel-label">What we automate first</div>
+            <ul class="check">
+              <li>Ingest referrals from fax, email, and hospital-discharge packets and structure them for review — with insurance details pulled.</li>
+              <li>Keep a live census / bed-board and generate occupancy &amp; payer-mix reports for owners and operators.</li>
+              <li>Track MDS / RAI assessment windows and pre-fill drafts from the existing chart for your MDS coordinator to verify.</li>
+              <li>Draft and summarize progress notes for clinician review.</li>
+              <li>Push the numbers that matter to a dashboard you check from your phone.</li>
+            </ul>
+          </div>
+          <div class="right">
+            <div class="panel-label">Systems we connect (on your logins)</div>
+            <div class="sys-list">
+              <span class="chip">PointClickCare</span><span class="chip">QuickMAR / eMAR</span><span class="chip">Fax &amp; email intake</span><span class="chip">Owner dashboards</span>
+            </div>
+            <div class="safe">
+              <strong>Why on-your-machine is the right way.</strong> PointClickCare has no open, plug-and-play public API — real automation has to run on your own PCC login, with a human in the loop. That's <em>exactly</em> how amux works: on hardware you own, under your credentials. No vendor partnership to wait on; your data never leaves your control.
+            </div>
+            <div class="stat">
+              <div class="big">amux drafts, extracts, reminds, and reports. Your MDS coordinator, DON, and business office still verify, sign, and decide.</div>
+              <div class="cite">Nothing clinical, coded, or billed is ever auto-submitted — which keeps you audit-safe under CMS / PDPM.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- OTHER -->
+    <div class="panel" id="p-other" role="tabpanel" aria-labelledby="t-other" hidden>
+      <div class="panel-card">
+        <div class="panel-top">
+          <div class="kicker">Every other business</div>
+          <h3>If it has a screen, a login, and a routine — we can probably automate it</h3>
+          <p>Dental and skilled nursing are where we've gone deep, but the model is the same everywhere. You tell us the repetitive, high-leverage workflow that runs your business; we build it to run on your machine, under your logins, controlled from your phone.</p>
+        </div>
+        <div class="panel-body">
+          <div class="left">
+            <div class="panel-label">How we scope your first workflow</div>
+            <ul class="check">
+              <li>We find the task your team does over and over that touches software all day.</li>
+              <li>We map the systems and logins it lives in — no API required.</li>
+              <li>We build it as a real, running automation on hardware you own.</li>
+              <li>We teach your team to build the next one themselves.</li>
+            </ul>
+          </div>
+          <div class="right">
+            <div class="panel-label">Good fits</div>
+            <div class="sys-list">
+              <span class="chip">Insurance &amp; billing ops</span><span class="chip">Intake &amp; scheduling</span><span class="chip">Data entry between systems</span><span class="chip">Reporting &amp; dashboards</span><span class="chip">Email &amp; follow-ups</span>
+            </div>
+            <div class="safe">
+              <strong>Bring your workflow to the call.</strong> We'll scope your highest-leverage automation live and tell you honestly whether it's a fit before you commit to anything.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- HUMAN IN THE LOOP -->
+<section id="control">
+  <div class="wrap">
+    <span class="eyebrow">You're always in control</span>
+    <h2 class="sec">Every workflow keeps a human in the loop.</h2>
+    <p class="sec-sub">amux does the tedious middle — gathering, drafting, chasing, reporting. You approve what matters. Nothing clinical, coded, or billed goes out without your sign-off.</p>
+    <div class="diagram" role="img" aria-label="Diagram: work comes in from fax, email and insurance; amux gathers and drafts it; you review and approve; the system is updated.">
+      <svg viewBox="0 0 862 158" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
+        <!-- node 1 -->
+        <rect x="8" y="30" width="176" height="80" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+        <text x="96" y="66" text-anchor="middle" font-size="14" font-weight="700" fill="#0f172a">Work comes in</text>
+        <text x="96" y="86" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#64748b">fax · email · insurance</text>
+        <!-- node 2 -->
+        <rect x="234" y="30" width="176" height="80" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+        <text x="322" y="66" text-anchor="middle" font-size="14" font-weight="700" fill="#0f172a"><tspan fill="#f59e0b">▌ </tspan>amux prepares</text>
+        <text x="322" y="86" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#64748b">gather · draft · assemble</text>
+        <!-- node 3 (human) -->
+        <rect x="460" y="30" width="176" height="80" rx="12" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+        <text x="548" y="66" text-anchor="middle" font-size="14" font-weight="700" fill="#065f46">You approve <tspan fill="#059669">✓</tspan></text>
+        <text x="548" y="86" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#047857">review &amp; sign off</text>
+        <!-- node 4 -->
+        <rect x="686" y="30" width="176" height="80" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+        <text x="774" y="66" text-anchor="middle" font-size="14" font-weight="700" fill="#0f172a">It's done</text>
+        <text x="774" y="86" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#64748b">system updated</text>
+        <!-- arrows -->
+        <g fill="#94a3b8">
+          <path d="M188 70 h34 M216 65 l8 5 -8 5 z"/>
+          <path d="M414 70 h34 M442 65 l8 5 -8 5 z"/>
+          <path d="M640 70 h34 M668 65 l8 5 -8 5 z"/>
+        </g>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section id="how">
+  <div class="wrap">
+    <span class="eyebrow">How it works</span>
+    <h2 class="sec">From first call to running in your pocket.</h2>
+    <p class="sec-sub">Four steps. We do the heavy lifting; your team keeps the keys.</p>
+    <div class="steps">
+      <div class="step">
+        <div class="n">1</div>
+        <h3>Talk to us</h3>
+        <p>One call with the person who owns the outcome — the practice owner or administrator. We scope your highest-leverage workflow together.</p>
+      </div>
+      <div class="step">
+        <div class="n">2</div>
+        <h3>We set up amux on your machine</h3>
+        <p>On a desktop in your office — or a Mac Studio we procure and keep online 24/7. It connects to your email and the software you already use.</p>
+      </div>
+      <div class="step">
+        <div class="n">3</div>
+        <h3>We build your first workflow</h3>
+        <p>A real, running SOP automation — built with you, not handed over as a slide deck. Then we teach your team to build the next one.</p>
+      </div>
+      <div class="step">
+        <div class="n">4</div>
+        <h3>You run it from your phone</h3>
+        <p>Watch it work, kick off tasks, and grow from anywhere. We handle support, maintenance, and new features — and you can build your own.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SETUP: VOICE + VIDEO -->
+<section id="setup">
+  <div class="wrap">
+    <span class="eyebrow">No forms. No typing. No code.</span>
+    <h2 class="sec">Set it up by talking. Or by showing.</h2>
+    <p class="sec-sub">You don't operate amux like software — you tell it what you want, or you show it once, and it handles the rest.</p>
+    <div class="setup-grid">
+      <div class="setup">
+        <div class="ic">🎙️</div>
+        <h3>Just say what you want done</h3>
+        <p>Optionally run your whole business by voice, from your phone. Describe the outcome in plain words and amux makes it happen — no dashboards to learn, no forms to fill, nothing to type.</p>
+        <div class="say">"Get the predeterminations out for tomorrow's crowns, and tell me which ones need X-rays."</div>
+      </div>
+      <div class="setup">
+        <div class="ic">🎥</div>
+        <h3>Show it once, and it becomes a workflow</h3>
+        <p>Record a quick video of yourself doing a task the way your office does it. amux turns that recording into a standard operating procedure your automations follow — so your team's know-how becomes a repeatable system instead of tribal knowledge.</p>
+        <div class="say">Record it → we build the SOP → it runs on demand, the same way every time.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SECURITY -->
+<section id="security" class="section-soft">
+  <div class="wrap">
+    <span class="eyebrow">Security by architecture</span>
+    <h2 class="sec">Your machine. Your logins. Your data.</h2>
+    <p class="sec-sub">amux isn't another cloud vendor you hand your patient data to. It runs inside your walls — which is why it's both more private and more capable.</p>
+
+    <div class="diagram" role="img" aria-label="Diagram: the amux server runs on a machine inside your office, connected to your existing software, email, and payer portals. Your data and logins never leave the building — only encrypted control reaches your phone.">
+      <svg viewBox="0 0 900 350" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
+        <!-- boundary: your office -->
+        <rect x="20" y="48" width="560" height="282" rx="18" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6 6"/>
+        <rect x="36" y="36" width="120" height="24" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+        <text x="96" y="52" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#475569" letter-spacing="1">YOUR OFFICE</text>
+
+        <!-- amux server node -->
+        <rect x="48" y="92" width="196" height="96" rx="14" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+        <rect x="66" y="110" width="28" height="28" rx="7" fill="#fff7ed" stroke="#fed7aa"/>
+        <text x="80" y="131" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="16" font-weight="700" fill="#f59e0b">▌</text>
+        <text x="104" y="124" font-size="14.5" font-weight="700" fill="#0f172a">amux server</text>
+        <text x="104" y="143" font-size="11.5" fill="#64748b">on a machine you own</text>
+        <line x1="66" y1="160" x2="226" y2="160" stroke="#eef2f7" stroke-width="1"/>
+        <text x="66" y="178" font-size="11.5" fill="#475569">installed &amp; run by us</text>
+
+        <!-- your software chips -->
+        <rect x="44" y="232" width="164" height="48" rx="10" fill="#f1f5f9" stroke="#e2e8f0"/>
+        <text x="126" y="261" text-anchor="middle" font-size="12" fill="#334155">Practice / PCC software</text>
+        <rect x="218" y="232" width="150" height="48" rx="10" fill="#f1f5f9" stroke="#e2e8f0"/>
+        <text x="293" y="261" text-anchor="middle" font-size="12" fill="#334155">Email &amp; scheduling</text>
+        <rect x="378" y="232" width="176" height="48" rx="10" fill="#f1f5f9" stroke="#e2e8f0"/>
+        <text x="466" y="261" text-anchor="middle" font-size="12" fill="#334155">Payer portals &amp; billing</text>
+
+        <!-- amux → software connectors -->
+        <g stroke="#cbd5e1" stroke-width="1.4">
+          <line x1="146" y1="188" x2="126" y2="232"/>
+          <line x1="160" y1="188" x2="293" y2="232"/>
+          <line x1="200" y1="188" x2="466" y2="232"/>
+        </g>
+
+        <text x="40" y="312" font-size="12.5" fill="#475569">Your data &amp; logins never leave these walls.</text>
+
+        <!-- amux → phone (encrypted control leaving the walls) -->
+        <path d="M244 138 C 420 138 500 150 690 152" fill="none" stroke="#2563eb" stroke-width="2"/>
+        <text x="392" y="123" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#2563eb">encrypted control</text>
+        <!-- lock badge at the wall -->
+        <circle cx="566" cy="146" r="15" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+        <rect x="560" y="146" width="12" height="9" rx="1.5" fill="#2563eb"/>
+        <path d="M562.5 146 v-3 a3.5 3.5 0 0 1 7 0 v3" fill="none" stroke="#2563eb" stroke-width="1.6"/>
+
+        <!-- phone (outside the walls) -->
+        <rect x="680" y="92" width="150" height="214" rx="24" fill="#0f172a"/>
+        <rect x="735" y="101" width="40" height="6" rx="3" fill="#1e293b"/>
+        <rect x="693" y="118" width="124" height="172" rx="12" fill="#0b1220"/>
+        <text x="708" y="143" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700" fill="#f59e0b">▌</text>
+        <text x="723" y="143" font-size="12" fill="#e2e8f0">amux</text>
+        <circle cx="797" cy="138" r="4" fill="#34d399"/>
+        <rect x="708" y="156" width="98" height="9" rx="4" fill="#1e293b"/>
+        <rect x="708" y="172" width="72" height="9" rx="4" fill="#1e293b"/>
+        <rect x="708" y="198" width="100" height="24" rx="7" fill="#0e2a1a" stroke="#14532d"/>
+        <text x="758" y="214" text-anchor="middle" font-size="11" fill="#34d399">approve ✓</text>
+        <text x="755" y="330" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">You — anywhere</text>
+      </svg>
+    </div>
+    <div class="diag-cap">Control leaves for your phone. Your data and logins never do.</div>
+
+    <div class="grid2">
+      <div class="feat">
+        <div class="ic">🔒</div>
+        <h3>It runs on hardware you own</h3>
+        <p>amux installs on a machine <strong>inside your office</strong>, not our cloud. It works under your own logins, so your credentials and data <strong>never leave your building</strong>.</p>
+      </div>
+      <div class="feat">
+        <div class="ic">🖥️</div>
+        <h3>No spare computer? We'll ship one</h3>
+        <p>All you need is a desktop with connectivity to your systems. If you don't have one, <strong>we procure a Mac Studio</strong>, set it up, and keep it online so it never goes dark.</p>
+      </div>
+      <div class="feat">
+        <div class="ic">📱</div>
+        <h3>Controlled entirely from your phone</h3>
+        <p>Connect, interface, build, and grow from anywhere. amux links to your email and existing software and streams it all to <strong>the phone in your pocket</strong>.</p>
+      </div>
+      <div class="feat">
+        <div class="ic">🛡️</div>
+        <h3>HIPAA-compliant, BAA-backed</h3>
+        <p>We sign a <strong>Business Associate Agreement</strong> before touching any protected health information, and a human stays accountable for anything clinical, coded, or billed.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PRICING -->
+<section id="pricing">
+  <div class="wrap">
+    <span class="eyebrow">Pricing</span>
+    <h2 class="sec">Simple, transparent pricing.</h2>
+    <p class="sec-sub">One team, one number. We set it up, keep it running, and keep building — for a fraction of the staff time it replaces.</p>
+    <div class="price-wrap">
+      <div class="price-card">
+        <div class="price-row">
+          <div class="label">Onboarding <small>One-time — we scope, install &amp; ship your first working workflow</small></div>
+          <div class="amt">$5,000</div>
+        </div>
+        <div class="price-row">
+          <div class="label">Monthly <small>Support, maintenance, ongoing feature development &amp; unlimited workflows you build</small></div>
+          <div class="amt">$5,000<small>/mo</small></div>
+        </div>
+        <div class="price-row">
+          <div class="label">AI usage <small>Passed through at cost from the best-in-class AI provider of the moment</small></div>
+          <div class="amt">~$200<small>/mo</small></div>
+        </div>
+        <div style="margin-top:22px">
+          <a class="btn btn-primary btn-lg js-schedule" href="#schedule" style="width:100%">Schedule a meeting →</a>
+        </div>
+      </div>
+      <div>
+        <div class="price-note" style="margin-bottom:18px">
+          <h3>When would I ever pay overage?</h3>
+          The monthly fee covers normal business volume, and AI usage is a straight pass-through — typically about <strong>$200/month</strong>. You'd only exceed that as an <strong>extreme power user</strong>: tens of thousands of AI-driven actions a month, like processing hundreds of predeterminations or referrals <em>every single day</em>. If you're there, the automation is already paying for itself many times over.
+        </div>
+        <div class="price-note">
+          <h3>What the $5k / month includes</h3>
+          <ul class="incl">
+            <li><strong>Priority support</strong> — we're on call for your team.</li>
+            <li><strong>Maintenance</strong> — we keep it running, updated, and online.</li>
+            <li><strong>Feature enhancements</strong> — we build new automations as you grow.</li>
+            <li><strong>Build-your-own</strong> — your team can create its own workflows, no waiting on us.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section class="section-soft">
+  <div class="wrap">
+    <span class="eyebrow" style="display:block;text-align:center">Questions</span>
+    <h2 class="sec" style="text-align:center;margin:8px auto 0;max-width:none">Before you book</h2>
+    <div class="faq">
+      <details class="q" open>
+        <summary>Who should take the first meeting?</summary>
+        <div class="a">The person who owns the outcome — the dental practice owner, the skilled nursing administrator or operator, the business owner. We want the highest-leverage decision-maker on the call so we can scope the workflow that actually moves the needle.</div>
+      </details>
+      <details class="q">
+        <summary>Is my data secure?</summary>
+        <div class="a">Yes. amux runs on hardware you own, inside your office, under your own logins — your data and credentials never leave your walls. We're HIPAA-compliant and sign a Business Associate Agreement (BAA) before touching any protected health information.</div>
+      </details>
+      <details class="q">
+        <summary>I don't have a spare desktop. Is that a problem?</summary>
+        <div class="a">Not at all. We'll procure a Mac Studio for you, set it up, and keep it online 24/7 so your automations never go dark. It just needs connectivity to the systems you already use.</div>
+      </details>
+      <details class="q">
+        <summary>Do you integrate with PointClickCare / Dentrix / my software?</summary>
+        <div class="a">We run on your own logins with a human in the loop — so we don't need a vendor to grant us API access. That means we can automate software that has no open API (like PointClickCare), and nothing clinical, coded, or billed is ever submitted without your team's sign-off.</div>
+      </details>
+      <details class="q">
+        <summary>When would I hit AI usage overage?</summary>
+        <div class="a">Rarely. Usage is typically ~$200/month, passed through at cost. You'd only exceed it running tens of thousands of AI-driven actions a month — and at that volume the automation is already saving you far more than it costs.</div>
+      </details>
+      <details class="q">
+        <summary>Is this only for dental and skilled nursing?</summary>
+        <div class="a">No — those are where we've gone deepest, but the model generalizes. If your business runs on repetitive work across screens and logins, we can automate it. Bring your workflow to the call and we'll scope it live.</div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- FINAL CTA -->
+<section id="schedule">
+  <div class="wrap">
+    <div class="final">
+      <span class="eyebrow" style="color:#93c5fd">Let's build your first workflow</span>
+      <h2>Talk to us. We'll scope your first automation live.</h2>
+      <p>Bring the owner or administrator. In one call we'll find your highest-leverage workflow and tell you honestly whether we're a fit — before you commit to anything.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary btn-lg js-schedule" href="#">Schedule a meeting →</a>
+      </div>
+      <div class="fine">$5,000 onboarding · $5,000/month · AI usage at cost (~$200/mo) · Runs on your machine<br>Prefer email? <a class="js-schedule" href="#" style="color:#93c5fd;font-weight:600">Reach us directly →</a></div>
+    </div>
+  </div>
+</section>
+
+<footer class="site">
+  <div class="wrap">
+    <a class="logo" href="https://amux.io"><span class="mark" style="width:22px;height:22px;font-size:12px">▌</span> amux</a>
+    <div class="flinks">
+      <a class="js-schedule" href="#">Schedule a meeting</a>
+      <a href="https://amux.io/privacy/">Privacy</a>
+    </div>
+    <div>© amux · Run, build &amp; grow from your phone</div>
+  </div>
+</footer>
+
+<script>
+  // ── Single swappable scheduling destination ──
+  // Swap this for your Calendly / cal.com link (e.g. "https://cal.com/amux/onboarding").
+  // Defaults to a booking email so the page works out of the box.
+  var SCHEDULE_URL = "mailto:ethan@mixpeek.com?subject=" +
+    encodeURIComponent("amux onboarding — schedule a meeting") +
+    "&body=" + encodeURIComponent(
+      "Hi — I'd like to book an onboarding call.\n\n" +
+      "Business name:\nIndustry (dental / skilled nursing / other):\nMy role:\nSoftware we use:\nBest times to meet:\n");
+  document.querySelectorAll("a.js-schedule").forEach(function(a){ a.setAttribute("href", SCHEDULE_URL); });
+
+  // ── Choose-your-adventure industry picker ──
+  var tabs = document.querySelectorAll(".tab");
+  tabs.forEach(function(tab){
+    tab.addEventListener("click", function(){
+      var id = tab.getAttribute("data-panel");
+      tabs.forEach(function(t){ t.setAttribute("aria-selected", t === tab ? "true" : "false"); });
+      document.querySelectorAll(".panel").forEach(function(p){
+        var on = p.id === id;
+        p.classList.toggle("active", on);
+        if (on) { p.removeAttribute("hidden"); } else { p.setAttribute("hidden",""); }
+      });
+    });
+  });
+</script>
+</body>
+</html>

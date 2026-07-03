@@ -1,5 +1,15 @@
 <img src="site/github-header.svg" alt="amux — The Agent Control Plane" width="1280"/>
 
+<h3 align="center">💼 Want it done for you? → <a href="https://amux.io/concierge/">amux.io/concierge</a></h3>
+
+<p align="center">
+  <b>Run, build &amp; grow your business — entirely from your phone.</b><br/>
+  We set up your first workflow automation, teach your team to build more, and run it all for you.<br/>
+  <a href="https://amux.io/concierge/"><b>→ Schedule an onboarding call</b></a>
+</p>
+
+---
+
 **Open-source control plane for AI agents.** Run dozens of parallel agent sessions from your browser or phone — with a web dashboard, kanban board, notes, CRM, email, browser automation, slash-command skills, and agent-to-agent orchestration. Self-healing, single-file, zero external dependencies. Works with Claude Code, Codex, and Gemini CLI via tmux.
 
 > **[amux.io](https://amux.io)** · [Getting started](https://amux.io/guides/getting-started/) · [FAQ](https://amux.io/faq/) · [Blog](https://amux.io/blog/)
