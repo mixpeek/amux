@@ -15549,7 +15549,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button class="search-clear" onclick="event.stopPropagation();clearPeekSearch()">&#x2715;</button>
       </div>
       <button class="btn peek-split-btn" id="peek-split-toggle" onclick="togglePeekSplit()" title="Split: file browser">&#x1F4C2;</button>
-      <button class="btn" id="peek-commitguard-btn" onclick="togglePeekCommitGuard()" title="Commit guard: nudge this session to commit on idle" style="font-size:0.7rem;padding:3px 8px;opacity:0.5;">&#x1F6E1;</button>
       <button class="btn" onclick="togglePeekFocus()" id="peek-focus-btn" title="Focus mode — hide controls">&#x25B4;</button>
       <button class="btn" id="peek-close-btn" onclick="closePeek()">Close</button>
     </div>
