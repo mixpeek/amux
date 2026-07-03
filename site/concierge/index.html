@@ -277,6 +277,17 @@
   .syschip{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;font-weight:600;color:var(--ink-2);background:var(--bg-soft2);border:1px solid var(--line);border-radius:7px;padding:5px 9px 5px 7px}
   .syschip img{width:16px;height:16px;border-radius:3px;display:block;object-fit:contain}
 
+  /* ── HERO ART + ANIMATED DEMOS ── */
+  .hero-grid{display:grid; grid-template-columns:1.05fr .95fr; gap:44px; align-items:center}
+  .hero-art{border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow); overflow:hidden; background:#fff}
+  .hero-art svg, .demo-card svg{display:block; width:100%; height:auto}
+  .demo-wrap{margin-top:2px}
+  .demo-cap{font-family:var(--mono); font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--mute); margin-bottom:10px}
+  .demo-card{border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); overflow-x:auto; -webkit-overflow-scrolling:touch; background:#fff}
+  .demo-card svg{min-width:480px}
+  .panel-demo{padding:20px 28px 2px}
+  .panel-demo .demo-card{max-width:620px}
+
   /* ── RESPONSIVE ── */
   @media (max-width:860px){
     .panel-body{grid-template-columns:1fr}
@@ -285,6 +296,8 @@
     .grid2{grid-template-columns:1fr}
     .price-wrap{grid-template-columns:1fr}
     .setup-grid{grid-template-columns:1fr}
+    .hero-grid{grid-template-columns:1fr; gap:30px}
+    .hero-art{max-width:460px}
   }
   @media (max-width:560px){
     body{font-size:16px}
@@ -314,20 +327,75 @@
 <!-- HERO -->
 <section class="hero">
   <div class="wrap">
-    <span class="eyebrow">amux Concierge · done-for-you automation</span>
-    <h1>Run, build, and grow your business, <span class="grad">all from your phone.</span></h1>
-    <p class="lead">
-      We build your first workflow with you, teach your team to build more, and wire it into
-      the tools you already use. Done for you to start, yours to grow.
-    </p>
-    <div class="cta-row">
-      <a class="btn btn-primary btn-lg js-schedule" href="#schedule">Schedule a meeting →</a>
-      <a class="btn btn-ghost btn-lg" href="#adventure">Show me my industry</a>
-    </div>
-    <div class="trust">
-      <span><i class="dot"></i> Runs on your own machine</span>
-      <span><i class="dot"></i> Your logins, your data</span>
-      <span><i class="dot"></i> HIPAA-compliant &amp; BAA-backed</span>
+    <div class="hero-grid">
+      <div class="hero-text">
+        <span class="eyebrow">amux Concierge · done-for-you automation</span>
+        <h1>Run, build, and grow your business, <span class="grad">all from your phone.</span></h1>
+        <p class="lead">
+          We build your first workflow with you, teach your team to build more, and wire it into
+          the tools you already use. Done for you to start, yours to grow.
+        </p>
+        <div class="cta-row">
+          <a class="btn btn-primary btn-lg js-schedule" href="#schedule">Schedule a meeting →</a>
+          <a class="btn btn-ghost btn-lg" href="#adventure">Show me my industry</a>
+        </div>
+        <div class="trust">
+          <span><i class="dot"></i> Runs on your own machine</span>
+          <span><i class="dot"></i> Your logins, your data</span>
+          <span><i class="dot"></i> HIPAA-compliant &amp; BAA-backed</span>
+        </div>
+      </div>
+      <div class="hero-art">
+        <svg viewBox="0 0 470 372" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif" role="img" aria-label="Animated demo: amux receives a task, prepares a draft, waits for your approval, then completes it.">
+          <rect width="470" height="372" fill="#ffffff"/>
+          <circle cx="26" cy="25" r="5" fill="#f87171"/>
+          <circle cx="44" cy="25" r="5" fill="#fbbf24"/>
+          <circle cx="62" cy="25" r="5" fill="#34d399"/>
+          <text x="88" y="30" font-family="JetBrains Mono, monospace" font-size="13" fill="#64748b">amux · workflow</text>
+          <circle cx="410" cy="25" r="4" fill="#34d399"/>
+          <text x="424" y="29" font-family="JetBrains Mono, monospace" font-size="11" fill="#059669">live</text>
+          <line x1="0" y1="49" x2="470" y2="49" stroke="#eef2f7" stroke-width="1"/>
+
+          <g opacity="0">
+            <animate attributeName="opacity" dur="7s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.05;0.10;0.95;1"/>
+            <text x="28" y="89" font-family="JetBrains Mono, monospace" font-size="14" fill="#f59e0b">▌</text>
+            <text x="46" y="89" font-size="15" font-weight="600" fill="#0f172a">New task</text>
+            <text x="46" y="108" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#64748b">process referral · fax</text>
+          </g>
+
+          <g opacity="0">
+            <animate attributeName="opacity" dur="7s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.16;0.20;0.95;1"/>
+            <text x="28" y="144" font-size="14.5" fill="#0f172a">amux preparing packet…</text>
+            <rect x="28" y="156" width="414" height="8" rx="4" fill="#eef2f7"/>
+            <rect x="28" y="156" width="0" height="8" rx="4" fill="#2563eb">
+              <animate attributeName="width" dur="7s" repeatCount="indefinite" values="0;0;414;414;0" keyTimes="0;0.20;0.44;0.95;1"/>
+            </rect>
+          </g>
+
+          <g opacity="0">
+            <animate attributeName="opacity" dur="7s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.47;0.51;0.95;1"/>
+            <text x="28" y="198" font-size="15" font-weight="600" fill="#0f172a">Draft ready</text>
+            <text x="28" y="217" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#64748b">waiting for your OK</text>
+          </g>
+
+          <g opacity="0">
+            <animate attributeName="opacity" dur="7s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.52;0.56;0.95;1"/>
+            <rect x="28" y="234" width="152" height="42" rx="11" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+            <text x="104" y="260" text-anchor="middle" font-size="15" font-weight="600" fill="#065f46">Approve ✓</text>
+          </g>
+
+          <g opacity="0">
+            <animate attributeName="opacity" dur="7s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.66;0.70;0.95;1"/>
+            <circle cx="38" cy="308" r="12" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+            <path d="M33 308 l4 4 7-8" fill="none" stroke="#059669" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <text x="58" y="304" font-size="15" font-weight="600" fill="#0f172a">Done · sent to payer</text>
+            <text x="58" y="322" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#64748b">12 minutes saved</text>
+          </g>
+
+          <line x1="0" y1="344" x2="470" y2="344" stroke="#eef2f7" stroke-width="1"/>
+          <text x="28" y="361" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#94a3b8">runs on your machine · you approve every step</text>
+        </svg>
+      </div>
     </div>
   </div>
 </section>
@@ -354,6 +422,35 @@
           <div class="kicker">Dental practices</div>
           <h3>Start with insurance predetermination &amp; eligibility</h3>
           <p>Verifying benefits, assembling predetermination packets, and chasing payers commonly eats <strong>10 to 20+ hours a week per location</strong>. We take that paperwork off your team so they can focus on patients.</p>
+        </div>
+        <div class="panel-demo">
+          <div class="demo-cap">Live · predetermination workflow</div>
+          <div class="demo-card">
+            <svg viewBox="0 0 600 200" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif" role="img" aria-label="Animated demo: amux checks eligibility, assembles the packet, submits to the payer, and returns an estimate.">
+              <rect width="600" height="200" fill="#ffffff"/>
+              <circle cx="22" cy="21" r="4" fill="#f87171"/><circle cx="37" cy="21" r="4" fill="#fbbf24"/><circle cx="52" cy="21" r="4" fill="#34d399"/>
+              <text x="72" y="25" font-family="JetBrains Mono, monospace" font-size="12" fill="#64748b">amux · predetermination</text>
+              <line x1="0" y1="42" x2="600" y2="42" stroke="#eef2f7"/>
+              <g opacity="0" font-family="JetBrains Mono, monospace" font-size="14">
+                <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.05;0.09;0.95;1"/>
+                <text x="24" y="74" fill="#94a3b8">›</text><text x="44" y="74" fill="#334155">eligibility · Delta Dental … <tspan fill="#059669">ok</tspan></text>
+              </g>
+              <g opacity="0" font-family="JetBrains Mono, monospace" font-size="14">
+                <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.20;0.24;0.95;1"/>
+                <text x="24" y="104" fill="#94a3b8">›</text><text x="44" y="104" fill="#334155">packet · x-rays + perio + narrative</text>
+              </g>
+              <g opacity="0">
+                <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.34;0.38;0.95;1"/>
+                <text x="24" y="138" font-family="JetBrains Mono, monospace" font-size="14" fill="#334155">submitting to payer…</text>
+                <rect x="232" y="130" width="344" height="8" rx="4" fill="#eef2f7"/>
+                <rect x="232" y="130" width="0" height="8" rx="4" fill="#2563eb"><animate attributeName="width" dur="6s" repeatCount="indefinite" values="0;0;344;344;0" keyTimes="0;0.38;0.62;0.95;1"/></rect>
+              </g>
+              <g opacity="0">
+                <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.70;0.74;0.95;1"/>
+                <text x="24" y="172" font-family="JetBrains Mono, monospace" font-size="14" font-weight="600" fill="#059669">✓ estimate returned · $842 covered</text>
+              </g>
+            </svg>
+          </div>
         </div>
         <div class="panel-body">
           <div class="left">
@@ -392,6 +489,35 @@
           <div class="kicker">Skilled nursing facilities</div>
           <h3>Start with referral intake &amp; census</h3>
           <p>This is the work that happens on nights and weekends, and it decides your occupancy. PointClickCare runs about <strong>60% of U.S. skilled nursing</strong>, and nurses can spend <strong>nearly 40% of a shift documenting</strong>. We take the keying, chasing, and reporting off their plate.</p>
+        </div>
+        <div class="panel-demo">
+          <div class="demo-cap">Live · referral intake workflow</div>
+          <div class="demo-card">
+            <svg viewBox="0 0 600 200" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif" role="img" aria-label="Animated demo: amux ingests a referral, structures it, verifies benefits, and matches a bed for review.">
+              <rect width="600" height="200" fill="#ffffff"/>
+              <circle cx="22" cy="21" r="4" fill="#f87171"/><circle cx="37" cy="21" r="4" fill="#fbbf24"/><circle cx="52" cy="21" r="4" fill="#34d399"/>
+              <text x="72" y="25" font-family="JetBrains Mono, monospace" font-size="12" fill="#64748b">amux · referral intake</text>
+              <line x1="0" y1="42" x2="600" y2="42" stroke="#eef2f7"/>
+              <g opacity="0" font-family="JetBrains Mono, monospace" font-size="14">
+                <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.05;0.09;0.95;1"/>
+                <text x="24" y="74" fill="#94a3b8">›</text><text x="44" y="74" fill="#334155">new referral · fax · St. Mary's</text>
+              </g>
+              <g opacity="0" font-family="JetBrains Mono, monospace" font-size="14">
+                <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.20;0.24;0.95;1"/>
+                <text x="24" y="104" fill="#94a3b8">›</text><text x="44" y="104" fill="#334155">structured · dx + meds + insurance</text>
+              </g>
+              <g opacity="0">
+                <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.34;0.38;0.95;1"/>
+                <text x="24" y="138" font-family="JetBrains Mono, monospace" font-size="14" fill="#334155">verifying benefits…</text>
+                <rect x="210" y="130" width="366" height="8" rx="4" fill="#eef2f7"/>
+                <rect x="210" y="130" width="0" height="8" rx="4" fill="#2563eb"><animate attributeName="width" dur="6s" repeatCount="indefinite" values="0;0;366;366;0" keyTimes="0;0.38;0.62;0.95;1"/></rect>
+              </g>
+              <g opacity="0">
+                <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.70;0.74;0.95;1"/>
+                <text x="24" y="172" font-family="JetBrains Mono, monospace" font-size="14" font-weight="600" fill="#059669">✓ bed matched · Unit A-12 · ready for review</text>
+              </g>
+            </svg>
+          </div>
         </div>
         <div class="panel-body">
           <div class="left">
