@@ -3,7 +3,7 @@
 <h3 align="center">💼 Want it done for you? → <a href="https://amux.io/concierge/">amux.io/concierge</a></h3>
 
 <p align="center">
-  <b>Run, build &amp; grow your business — entirely from your phone.</b><br/>
+  <b>Run, build &amp; grow your business, all from your phone.</b><br/>
   We set up your first workflow automation, teach your team to build more, and run it all for you.<br/>
   <a href="https://amux.io/concierge/"><b>→ Schedule an onboarding call</b></a>
 </p>
