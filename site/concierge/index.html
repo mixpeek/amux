@@ -246,6 +246,16 @@
   .setup p{color:var(--ink-3); font-size:15.5px}
   .setup .say{margin-top:16px; background:var(--bg-soft); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:8px; padding:12px 14px; font-size:14.5px; color:var(--ink-2); font-style:italic}
 
+  /* ── FUTURE-PROOF / AI AGE ── */
+  .future-viz{background:#fff; border:1px solid var(--line); border-radius:var(--radius); padding:22px; box-shadow:var(--shadow); margin-top:30px}
+  .const-bar{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; background:linear-gradient(90deg,#eff6ff,#f5f3ff); border:1px solid #dbeafe; border-radius:10px; padding:14px 18px}
+  .const-bar strong{font-size:1.05rem; color:var(--ink)}
+  .const-bar span{font-family:var(--mono); font-size:12px; color:var(--mute)}
+  .engine-label{font-family:var(--mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--mute); margin:16px 0 10px}
+  .engine-row{display:flex; align-items:center; gap:9px; flex-wrap:wrap}
+  .engine-row .arrow{color:var(--line-2); font-weight:700}
+  .chip-live{background:var(--ok-soft); border-color:#a7f3d0; color:#065f46}
+
   /* ── RESPONSIVE ── */
   @media (max-width:860px){
     .panel-body{grid-template-columns:1fr}
@@ -597,6 +607,52 @@
         <div class="ic">🛡️</div>
         <h3>HIPAA-compliant, BAA-backed</h3>
         <p>We sign a <strong>Business Associate Agreement</strong> before touching any protected health information, and a human stays accountable for anything clinical, coded, or billed.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FUTURE-PROOF / AI AGE -->
+<section id="future" style="background:linear-gradient(180deg,#f8fbff,#eef4ff); border-top:1px solid var(--line); border-bottom:1px solid var(--line)">
+  <div class="wrap">
+    <span class="eyebrow">Built for the AI age</span>
+    <h2 class="sec">Set your business up to win the AI age — and every upgrade after.</h2>
+    <p class="sec-sub">The AI landscape changes every month. Bet your business on a single tool and you're re-buying and re-learning every year. amux is the opposite: a foundation that always runs on the best AI available, and turns every new breakthrough into an upgrade you already own.</p>
+
+    <div class="future-viz">
+      <div class="const-bar"><strong>Your workflows &amp; SOPs</strong><span>built once · yours forever</span></div>
+      <div class="engine-label">The AI engine underneath — we upgrade it for you</div>
+      <div class="engine-row">
+        <span class="chip">today's best model</span>
+        <span class="arrow">→</span>
+        <span class="chip">next best</span>
+        <span class="arrow">→</span>
+        <span class="chip">whatever leads next</span>
+        <span class="arrow">→</span>
+        <span class="chip chip-live">always current</span>
+      </div>
+    </div>
+
+    <div class="grid2" style="margin-top:30px">
+      <div class="feat">
+        <div class="ic">⚡</div>
+        <h3>Always best-in-class</h3>
+        <p>We run your workflows on whatever AI leads the field — and swap in the next one the day it's better. You <strong>never re-buy, re-train, or migrate</strong>.</p>
+      </div>
+      <div class="feat">
+        <div class="ic">📈</div>
+        <h3>Every advance compounds</h3>
+        <p>The automations you build are assets. As AI gets more capable, the same workflows do more — your investment <strong>appreciates instead of aging out</strong>.</p>
+      </div>
+      <div class="feat">
+        <div class="ic">🧭</div>
+        <h3>You own the foundation</h3>
+        <p>It runs on your machine, on your workflows — <strong>never locked to one vendor's roadmap</strong>, pricing, or pace. The AI underneath changes; your business keeps compounding.</p>
+      </div>
+      <div class="feat">
+        <div class="ic">🛠️</div>
+        <h3>New capabilities, on tap</h3>
+        <p>When a new AI capability arrives, it becomes a feature you can use — we fold it in, and your team can build with it too. <strong>Set up once, get better forever.</strong></p>
       </div>
     </div>
   </div>
