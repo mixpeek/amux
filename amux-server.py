@@ -15800,7 +15800,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           style="position:absolute;width:0;height:0;opacity:0;overflow:hidden;pointer-events:none;" onchange="handlePeekFileInput(event)">
         <button class="peek-attach-btn" title="Attach file" onclick="document.getElementById('peek-file-input').click()">&#128206;</button>
         <button class="peek-attach-btn" id="peek-hist-btn" onclick="openCmdHistoryModal()" title="Message history">&#x1F551;</button>
-        <div class="send-split"><button class="btn primary send-split-main" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, sendPeekCmd)" onclick="_btnFire(event, sendPeekCmd)">Send</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
+        <div class="send-split"><button class="btn primary send-split-main" onpointerdown="event.preventDefault();_tapTraceEv('pointerdown')" onpointerup="_tapTraceEv('pointerup');_btnFire(event, sendPeekCmd)" onpointercancel="_tapTraceEv('pointercancel')" onclick="_tapTraceEv('click');_btnFire(event, sendPeekCmd)">Send</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
       </div>
       <!-- Drag-over hint (shown by CSS when drag-over class is on peek-overlay) -->
       <div class="peek-drag-hint" style="display:none;">&#128206; Drop to attach</div>
@@ -20745,7 +20745,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.8.8';   // bump together with the sw.js CACHE version
+const APP_VER = '0.8.9';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21058,6 +21058,58 @@ function _syncPeekOverlayToVisualViewport() {
 // (POST /api/client-debug) so mobile layout bugs are diagnosed from real
 // device numbers — no user round-trips.
 let _geoBeaconSent = false;
+// Second snapshot with the keyboard UP (fires once, on first input focus) —
+// the keyboard-down beacon can't show keyboard-state bugs.
+let _kbdBeaconSent = false;
+function _peekKbdBeacon() {
+  if (_kbdBeaconSent || window.innerWidth > 700) return;
+  _kbdBeaconSent = true;
+  setTimeout(() => {
+    try {
+      const ov = document.getElementById('peek-overlay');
+      const bar = document.querySelector('.peek-cmd-bar');
+      const row = document.querySelector('.peek-cmd-row');
+      const vv = window.visualViewport || {};
+      const b = bar.getBoundingClientRect(), r = row.getBoundingClientRect();
+      // what's rendered just below the input row? (identifies the gap content)
+      const below = document.elementFromPoint(Math.round(window.innerWidth / 2), Math.min(Math.round(r.bottom + 8), window.innerHeight - 2));
+      fetch(API + '/api/client-debug', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'peek-geo-kbd', ver: APP_VER,
+          appliedZoom: document.documentElement.style.zoom || '1',
+          win: window.innerWidth + 'x' + window.innerHeight,
+          vvH: Math.round(vv.height || 0), vvTop: Math.round(vv.offsetTop || 0),
+          ovPadB: getComputedStyle(ov).paddingBottom,
+          barBottom: Math.round(b.bottom), rowBottom: Math.round(r.bottom),
+          vvBottom: Math.round((vv.height || 0) + (vv.offsetTop || 0)),
+          belowRow: below ? (below.id || below.className.toString().slice(0, 40) || below.tagName) : '(none)',
+        }),
+      }).catch(() => {});
+    } catch (e) {}
+  }, 1200);
+}
+// Tap tracer: record every pointer/click event on the Send buttons; if a
+// pointerdown is not followed by a handler fire within 600ms, report the event
+// trace — catches the "dead first tap" with event-level evidence.
+let _tapTrace = [], _tapReported = 0;
+function _tapTraceEv(ev) {
+  _tapTrace.push({ t: Math.round(performance.now()), e: ev });
+  if (_tapTrace.length > 24) _tapTrace = _tapTrace.slice(-24);
+  if (ev === 'pointerdown') {
+    const started = Math.round(performance.now());
+    setTimeout(() => {
+      const fired = _tapTrace.some(x => x.e === 'FIRE' && x.t >= started);
+      if (!fired && Date.now() - _tapReported > 15000) {
+        _tapReported = Date.now();
+        fetch(API + '/api/client-debug', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind: 'dead-tap', ver: APP_VER, trace: _tapTrace.slice(-12) }),
+        }).catch(() => {});
+      }
+    }, 600);
+  }
+}
 function _peekGeoBeacon() {
   if (_geoBeaconSent || window.innerWidth > 700) return;
   _geoBeaconSent = true;
@@ -21144,7 +21196,7 @@ function _vvTick() {
   // Keyboard show/hide always follows a focus change inside the overlay
   const ov = document.getElementById('peek-overlay');
   if (ov) {
-    ov.addEventListener('focusin', () => _vvKick(1500));
+    ov.addEventListener('focusin', () => { _vvKick(1500); _peekKbdBeacon(); });
     ov.addEventListener('focusout', () => _vvKick(1500));
   }
 })();
@@ -22967,8 +23019,9 @@ function _sendBeforeInput(e, send) {
 function _btnFire(e, fn) {
   const t = e.currentTarget;
   const now = performance.now();
-  if (t._fireTs && now - t._fireTs < 350) return;   // click echo of the same tap
+  if (t._fireTs && now - t._fireTs < 350) { _tapTraceEv('DEDUP'); return; }   // click echo of the same tap
   t._fireTs = now;
+  _tapTraceEv('FIRE');
   fn();
 }
 function slashAcBeforeInput(e) { _sendBeforeInput(e, sendPeekCmd); }
@@ -35998,7 +36051,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.8.8';
+const CACHE = 'amux-v0.8.9';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
