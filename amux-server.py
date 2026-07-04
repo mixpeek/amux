@@ -15683,7 +15683,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div id="peek-body" class="overlay-body" style="position:absolute;inset:0;"></div>
       <button class="peek-copy-btn" id="peek-copy-btn" onclick="copyPeekContent()" title="Copy all">&#x2398; Copy</button>
     </div>
-    <div id="peek-status" class="overlay-status"></div>
+    <div id="peek-status" class="overlay-status" onclick="_peekGeoDebug()" title="Tap for layout debug"></div>
     <div class="peek-cmd-bar">
       <button class="peek-cmd-toggle" id="peek-cmd-toggle" onclick="togglePeekCmd()">&#x25BC; Send command</button>
       <div class="peek-cmd-row open" id="peek-cmd-row" style="flex-wrap:wrap;">
@@ -20614,7 +20614,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.8.3';   // bump together with the sw.js CACHE version
+const APP_VER = '0.8.4';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -20919,6 +20919,36 @@ function _syncPeekOverlayToVisualViewport() {
   ov.style.setProperty('padding-bottom', kb + 'px', 'important');
   ov.classList.toggle('vv-compact', kb > window.innerHeight * 0.15);
 }
+// Tap the "Updated … · vX.Y.Z" status line to dump exact bottom-edge geometry
+// from the running device — for diagnosing layout gaps that only reproduce on
+// real hardware (safe areas, standalone-PWA viewport quirks).
+let _peekGeoHold = 0;   // while set, refreshPeek leaves the status line alone
+function _peekGeoDebug() {
+  _peekGeoHold = performance.now() + 12000;
+  try {
+    const ov = document.getElementById('peek-overlay');
+    const bar = document.querySelector('.peek-cmd-bar');
+    const row = document.querySelector('.peek-cmd-row');
+    const vv = window.visualViewport || {};
+    const o = ov.getBoundingClientRect(), b = bar.getBoundingClientRect();
+    const r = row ? row.getBoundingClientRect() : { bottom: 0 };
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;bottom:0;height:env(safe-area-inset-bottom,0px);width:1px;visibility:hidden;';
+    document.body.appendChild(probe);
+    const sab = Math.round(probe.getBoundingClientRect().height);
+    probe.remove();
+    const s = 'geo v' + APP_VER +
+      ' win=' + window.innerWidth + 'x' + window.innerHeight +
+      ' vv=' + Math.round(vv.height || 0) + '+' + Math.round(vv.offsetTop || 0) +
+      ' sab=' + sab +
+      ' ovB=' + Math.round(o.bottom) + ' ovPadB=' + getComputedStyle(ov).paddingBottom +
+      ' barB=' + Math.round(b.bottom) + ' barPadB=' + getComputedStyle(bar).paddingBottom +
+      ' rowB=' + Math.round(r.bottom) +
+      ' standalone=' + (navigator.standalone ? 1 : 0);
+    document.getElementById('peek-status').textContent = s;
+    console.log(s);
+  } catch (e) { document.getElementById('peek-status').textContent = 'geo err: ' + e.message; }
+}
 // iOS reports stale visualViewport values while the keyboard animates, and a
 // single resize/scroll event can land mid-animation — freezing the overlay at
 // a half-animated height (squished terminal, page visible underneath, buttons
@@ -21213,7 +21243,7 @@ async function refreshPeek() {
     const output = data.output || '(no output)';
     // Skip re-render when output is identical — saves ansiToHtml work on every poll tick
     if (output === _lastPeekRaw && lastPeekHTML && !peekSearchQuery.trim()) {
-      statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
+      if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
       return;
     }
     _lastPeekRaw = output;
@@ -21240,7 +21270,7 @@ async function refreshPeek() {
         _hideScrollLockBadge(body);
       });
     }
-    statusEl.textContent = (data.saved ? 'Saved log' : 'Updated') + ' ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
+    if (performance.now() > _peekGeoHold) statusEl.textContent = (data.saved ? 'Saved log' : 'Updated') + ' ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
     // Cache peek output for offline browsing
     _idb.set('peek_' + peekSession, { output, time: Date.now() });
   } catch(e) {
@@ -35789,7 +35819,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.8.3';
+const CACHE = 'amux-v0.8.4';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
