@@ -1971,6 +1971,20 @@ def _session_jsonl_path_uncached(name: str):
     if not wd:
         return None
     try:
+        # Deterministic path first: the PostToolUse hook reports Claude's live
+        # session_id (+ real cwd) on every tool call — <id>.jsonl IS this
+        # session's conversation. Title matching below is only a fallback: in
+        # shared workdirs conversations get resumed across sessions and titles
+        # go stale, which made peeks render another session's (or an old)
+        # transcript — whole turns missing vs tmux.
+        meta = _load_meta(name)
+        conv_id = (meta.get("cc_conversation_id") or "").strip()
+        for base in ((meta.get("cc_cwd") or "").strip(), wd):
+            if not (conv_id and base):
+                continue
+            cand = CLAUDE_HOME / "projects" / _project_name(base) / f"{conv_id}.jsonl"
+            if cand.is_file():
+                return cand
         project_dir = CLAUDE_HOME / "projects" / _project_name(wd)
         if not project_dir.is_dir():
             return None
@@ -41796,6 +41810,19 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
             if isinstance(files, str):
                 files = [files]
             if method == "POST":
+                # The PostToolUse hook also reports Claude's live session_id +
+                # cwd — the ONLY deterministic link from an amux session to its
+                # conversation JSONL. Title matching is unreliable in shared
+                # workdirs (conversations get resumed across sessions, titles
+                # go stale), which showed whole missing turns in alt-screen
+                # peeks. Refreshed on every tool call, so it survives /clear
+                # and compaction rotations.
+                conv_id = (body.get("conversation_id") or "").strip()
+                if conv_id and re.fullmatch(r"[0-9a-fA-F-]{8,64}", conv_id):
+                    meta["cc_conversation_id"] = conv_id
+                cwd = (body.get("cwd") or "").strip()
+                if cwd and cwd.startswith("/"):
+                    meta["cc_cwd"] = cwd
                 existing = set(tracked)
                 for fp in files:
                     if fp and fp not in existing:
