@@ -12096,6 +12096,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   /* Peek command bar */
   .peek-cmd-bar { flex-shrink: 0; padding-bottom: max(4px, env(safe-area-inset-bottom)); }
+  /* Safari-iOS (browser tab, NOT the installed PWA): Safari overlays the
+     bottom of the viewport with its toolbar/pill zone and consumes the first
+     tap there to re-show its chrome — a dead Send tap that never reaches the
+     page (device traces show zero events). Keep the controls clear of that
+     zone; the installed PWA has no Safari chrome and stays flush. */
+  body.safari-tab .peek-cmd-bar { padding-bottom: max(34px, env(safe-area-inset-bottom)); }
   .peek-cmd-toggle {
     width: 100%; padding: 3px; border: none; background: transparent;
     color: var(--dim); font-size: 0.75rem; cursor: pointer; text-align: center;
@@ -20745,7 +20751,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.8.9';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.0';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21189,6 +21195,16 @@ function _vvTick() {
   _syncPeekOverlayToVisualViewport();
   if (performance.now() < _vvUntil) _vvRaf = requestAnimationFrame(_vvTick);
 }
+// Mark Safari-in-a-tab on iPhone (not the installed PWA) so CSS can keep
+// bottom controls clear of Safari's tap-stealing toolbar zone.
+(function() {
+  try {
+    if (/iPhone|iPod/.test(navigator.userAgent) && !navigator.standalone) {
+      const apply = () => document.body && document.body.classList.add('safari-tab');
+      if (document.body) apply(); else document.addEventListener('DOMContentLoaded', apply);
+    }
+  } catch (e) {}
+})();
 (function() {
   if (!window.visualViewport) return;
   window.visualViewport.addEventListener('resize', () => _vvKick());
@@ -36051,7 +36067,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.8.9';
+const CACHE = 'amux-v0.9.0';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
