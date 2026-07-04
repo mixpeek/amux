@@ -12011,7 +12011,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none;
     overscroll-behavior-x: contain; touch-action: pan-x; }
   .peek-tabs::-webkit-scrollbar { display: none; }
-  .peek-tab { padding: 8px 14px; font-size: 0.82rem; background: none; border: none;
+  .peek-tab { padding: 5px 12px; font-size: 0.8rem; background: none; border: none;
     border-bottom: 2px solid transparent; color: var(--dim); cursor: pointer;
     margin-bottom: -1px; -webkit-tap-highlight-color: transparent; flex-shrink: 0; white-space: nowrap; }
   .peek-tab.active { color: var(--text); border-bottom-color: var(--accent); }
@@ -12020,7 +12020,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     border-radius: 9px; background: rgba(88,166,255,0.14); color: var(--accent);
     border: 1px solid rgba(88,166,255,0.28); vertical-align: 1px; line-height: 1.2; }
   .peek-tab-count.has-count { display: inline-block; }
-  .peek-dir-bar { display: flex; align-items: center; gap: 8px; padding: 6px 14px;
+  .peek-dir-bar { display: flex; align-items: center; gap: 8px; padding: 3px 14px;
     font-size: 0.75rem; color: var(--dim); border-bottom: 1px solid var(--border);
     flex-shrink: 0; min-width: 0; overflow: hidden; }
   .peek-dir-bar span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; font-family: "SF Mono","Fira Code",monospace; }
@@ -15569,17 +15569,17 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 
 <!-- Peek overlay -->
 <div id="peek-overlay" class="overlay">
-  <div class="overlay-header" style="flex-direction:column;gap:6px;padding-bottom:10px;">
-    <div style="display:flex;align-items:center;gap:10px;min-width:0;">
-      <h2 id="peek-title" style="margin:0;font-size:1.05rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">peek</h2>
+  <div class="overlay-header" style="flex-wrap:wrap;gap:6px 8px;align-items:center;padding-bottom:6px;">
+    <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 auto;">
+      <h2 id="peek-title" style="margin:0;font-size:0.92rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">peek</h2>
       <span id="peek-session-status"></span>
       <span id="peek-model-badge" style="font-size:0.75rem;padding:2px 8px;border-radius:9999px;background:rgba(255,255,255,0.06);color:var(--dim);border:1px solid var(--border);white-space:nowrap;"></span>
     </div>
-    <div id="peek-task-row" style="display:none;align-items:center;gap:6px;min-width:0;">
+    <div id="peek-task-row" style="display:none;align-items:center;gap:6px;min-width:0;flex-basis:100%;order:5;">
       <span style="font-size:0.72rem;color:var(--dim);flex-shrink:0;">Task:</span>
       <span id="peek-task-label" style="font-size:0.82rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;" onclick="editField(peekSession,'task',this.textContent.trim())" title="Click to edit task label"></span>
     </div>
-    <div style="display:flex;gap:8px;align-items:center;">
+    <div style="display:flex;gap:6px;align-items:center;flex:0 0 auto;">
       <div class="peek-find-wrap" id="peek-search-wrap">
         <input class="search-input" id="peek-search" type="text" placeholder="Find..." autocomplete="off" autocorrect="off"
           oninput="peekSearchQuery=this.value;document.getElementById('peek-search-wrap').classList.toggle('has-value',!!this.value);applyPeekSearch()"
@@ -35576,7 +35576,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.7.0';
+const CACHE = 'amux-v0.7.1';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
