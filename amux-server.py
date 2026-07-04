@@ -20517,7 +20517,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.7.8';   // bump together with the sw.js CACHE version
+const APP_VER = '0.7.9';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -20648,7 +20648,7 @@ function closePeek() {
   ov.style.height = '';
   ov.style.top = '';
   ov.style.bottom = '';
-  ov.style.paddingBottom = '';
+  ov.style.removeProperty('padding-bottom');   // was set with !important
   ov._vvSig = null;   // styles were reset behind the sync cache
   if (document.body.style.position === 'fixed') {
     document.body.style.position = '';
@@ -20789,39 +20789,33 @@ async function _psfViewFile(filePath) {
   }
 }
 
-// Keep peek overlay fitted to the visual viewport so it stays visible
-// when the user pinches to zoom or the on-screen keyboard appears.
-// Only apply inline sizing when visual viewport differs from layout viewport
-// (pinch zoom or virtual keyboard). Desktop browser zoom (Cmd+/-) keeps them
-// equal and is handled by CSS position:fixed + inset:0.
+// Keep the peek input visible above the on-screen keyboard WITHOUT ever
+// shrinking the overlay box. Earlier versions resized the overlay to the
+// visual viewport (top/height) — but iOS PWA reports flaky vv numbers mid
+// keyboard-animation, so the overlay came out shorter than the space above
+// the keyboard and the session list bled through underneath it.
+//
+// New approach: the overlay always stays full-screen (position:fixed, inset:0,
+// solid background), and we only pad its BOTTOM by the keyboard height so the
+// flex column lifts the command bar to just above the keyboard. Because the
+// overlay never shrinks, nothing can ever show through behind it, even if the
+// keyboard-height estimate is off by a few px.
 function _syncPeekOverlayToVisualViewport() {
   const ov = document.getElementById('peek-overlay');
   if (!window.visualViewport || !ov) return;
   const vv = window.visualViewport;
-  // Pinch/auto zoom shrinks vv.height in CSS px (height/scale) — fitting the
-  // overlay to a zoomed viewport wrecks the layout (half-height overlay with
-  // the page bleeding through underneath). While zoomed, fall back to natural
-  // CSS sizing; zoom-out fires another resize and we re-fit then.
+  // Pinch/auto zoom shrinks vv.height in CSS px (height/scale); don't treat that
+  // as a keyboard. Zoom-out fires another resize and we recompute then.
   const scaled = vv.scale > 1.02;
-  const constrained = !scaled && (vv.height < window.innerHeight * 0.95 || vv.offsetTop > 5);
-  // Only touch the DOM when geometry actually changed — this runs per-frame
-  // during keyboard animations.
-  const sig = constrained ? Math.round(vv.offsetTop) + ':' + Math.round(vv.height) : 'free';
+  // Keyboard height = how much shorter the visual viewport is than the layout
+  // viewport (the keyboard does NOT change window.innerHeight on iOS Safari).
+  const kb = scaled ? 0 : Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+  const sig = 'kb' + kb;
   if (ov._vvSig === sig) return;
   ov._vvSig = sig;
-  if (constrained) {
-    ov.style.top = Math.round(vv.offsetTop) + 'px';
-    ov.style.height = Math.round(vv.height) + 'px';
-    // !important: the mobile stylesheet pins #peek-overlay { bottom: 0 !important }
-    ov.style.setProperty('bottom', 'auto', 'important');
-    ov.style.paddingBottom = '0px';
-  } else {
-    ov.style.top = '';
-    ov.style.height = '';
-    ov.style.bottom = '';
-    ov.style.paddingBottom = '';
-  }
-  ov.classList.toggle('vv-compact', constrained && vv.height < window.innerHeight * 0.7);
+  // setProperty important: the mobile stylesheet pins padding-bottom:0!important.
+  ov.style.setProperty('padding-bottom', kb + 'px', 'important');
+  ov.classList.toggle('vv-compact', kb > window.innerHeight * 0.15);
 }
 // iOS reports stale visualViewport values while the keyboard animates, and a
 // single resize/scroll event can land mid-animation — freezing the overlay at
@@ -35660,7 +35654,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.7.8';
+const CACHE = 'amux-v0.7.9';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
