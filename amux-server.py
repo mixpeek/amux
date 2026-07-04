@@ -1165,7 +1165,7 @@ def _refresh_token_cache():
             cfg = parse_env_file(f)
             raw_dir = cfg.get("CC_DIR", "")
             if raw_dir:
-                needed_proj_keys.add(str(Path(raw_dir).expanduser().resolve()).replace("/", "-"))
+                needed_proj_keys.add(_project_name(raw_dir))
     for proj_dir in projects_dir.iterdir():
         if not proj_dir.is_dir():
             continue
@@ -1971,8 +1971,7 @@ def _session_jsonl_path_uncached(name: str):
     if not wd:
         return None
     try:
-        resolved = str(Path(wd).expanduser().resolve())
-        project_dir = CLAUDE_HOME / "projects" / resolved.replace("/", "-")
+        project_dir = CLAUDE_HOME / "projects" / _project_name(wd)
         if not project_dir.is_dir():
             return None
         files = sorted(project_dir.glob("*.jsonl"),
@@ -2371,8 +2370,7 @@ def backup_session_jsonl(session: str, reason: str = "manual") -> str | None:
     wd = _session_work_dir_early(session)
     if not wd:
         return None
-    resolved = str(Path(wd).expanduser().resolve())
-    project_dir = CLAUDE_HOME / "projects" / resolved.replace("/", "-")
+    project_dir = CLAUDE_HOME / "projects" / _project_name(wd)
     if not project_dir.is_dir():
         return None
     jsonl_files = sorted(project_dir.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
@@ -3391,8 +3389,7 @@ def _last_meaningful_user_message(work_dir: str) -> str:
     """Extract the last meaningful user message (>20 chars) from the session's JSONL history."""
     if not work_dir:
         return ""
-    resolved = str(Path(work_dir).expanduser().resolve())
-    project_dir = CLAUDE_HOME / "projects" / resolved.replace("/", "-")
+    project_dir = CLAUDE_HOME / "projects" / _project_name(work_dir)
     if not project_dir.is_dir():
         return ""
     jsonl_files = sorted(project_dir.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
@@ -4102,7 +4099,7 @@ def get_claude_stats(work_dir: str) -> dict:
     if not work_dir:
         return {"tokens": 0, "last_active": ""}
     # Map dir path to Claude project directory name
-    project_name = work_dir.replace("/", "-")
+    project_name = _project_name(work_dir)
     project_dir = CLAUDE_HOME / "projects" / project_name
     if not project_dir.is_dir():
         return {"tokens": 0, "last_active": ""}
@@ -4137,8 +4134,7 @@ def detect_active_model(work_dir: str, conversation_id: str = "") -> str:
     """Detect the model in use from the session's own JSONL conversation file."""
     if not work_dir:
         return ""
-    resolved = str(Path(work_dir).expanduser().resolve())
-    project_name = resolved.replace("/", "-")
+    project_name = _project_name(work_dir)
     project_dir = CLAUDE_HOME / "projects" / project_name
     if not project_dir.is_dir():
         return ""
@@ -6394,7 +6390,7 @@ def get_daily_token_stats() -> dict:
         cfg = parse_env_file(f)
         d = cfg.get("CC_DIR", "")
         if d:
-            resolved = str(Path(d).expanduser().resolve()).replace("/", "-")
+            resolved = _project_name(d)
             amux_dirs.setdefault(resolved, []).append(f.stem)
 
     total_in = 0
@@ -7353,7 +7349,7 @@ def list_sessions() -> list:
         # Token count from JSONL cache (refreshed once above the loop).
         # Prefer per-conversation lookup (avoids sharing counts across sessions
         # that share the same CC_DIR, common in cloud where all sessions run in /root/).
-        proj_key = resolved_dir.replace("/", "-") if resolved_dir else ""
+        proj_key = _project_name(raw_dir) if raw_dir else ""
         conv_id = meta.get("cc_conversation_id", "")
         if conv_id and proj_key:
             tokens = _token_cache["data"].get((proj_key, conv_id), 0)
@@ -7423,8 +7419,7 @@ def get_session_info(name: str) -> dict | None:
 def _find_latest_session_id(work_dir: str) -> str:
     """Find the most recent Claude Code conversation session ID for a working directory.
     Skips snapshot-only files that have no user/assistant messages (claude --resume exits on those)."""
-    resolved = str(Path(work_dir).expanduser().resolve())
-    project_name = resolved.replace("/", "-")
+    project_name = _project_name(work_dir)
     project_dir = CLAUDE_HOME / "projects" / project_name
     if not project_dir.is_dir():
         return ""
@@ -7455,9 +7450,14 @@ def _ascript_str(s: str) -> str:
 
 
 def _project_name(work_dir: str) -> str:
-    """Return the Claude project folder name for a given work dir (mirrors Claude's own encoding)."""
+    """Return the Claude project folder name for a given work dir (mirrors
+    Claude's own encoding). Claude replaces EVERY non-alphanumeric character
+    with '-', not just slashes — a workdir containing a space or dot (e.g.
+    '~/Obsidian Vault/Self' -> '-Users-ethan-Obsidian-Vault-Self') otherwise
+    resolves to a project dir Claude never writes, silently breaking
+    transcripts, token counts, and model/resume detection for that session."""
     resolved = str(Path(work_dir).expanduser().resolve())
-    return resolved.replace("/", "-")
+    return re.sub(r"[^A-Za-z0-9]", "-", resolved)
 
 
 def _live_conv_id(name: str, work_dir: str = "") -> str:
@@ -42575,7 +42575,7 @@ def _cleanup_tmp():
                 continue
             d = (parse_env_file(env_file).get("CC_DIR") or "").strip()
             if d:
-                live.add(os.path.expanduser(d).rstrip("/").replace("/", "-"))
+                live.add(_project_name(d))
     except Exception:
         pass
     cutoff = time.time() - 4 * 3600  # older than 4h (was 1h — too aggressive)
