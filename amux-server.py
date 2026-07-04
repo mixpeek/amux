@@ -16173,7 +16173,6 @@ let _logSearchTimer = null;
 let _logSearchAbort = null;
 let peekSession = null;
 let peekTimer = null;
-let _peekBusy = false;   // prevents overlapping peek fetches when polling fast
 let peekSessionDir = '';
 let peekSearchQuery = '';
 let peekSearchIndex = 0;
@@ -21020,8 +21019,6 @@ async function refreshPeek() {
   if (peekSelecting) return;
   const sel = window.getSelection();
   if (sel && sel.toString().length > 0) return;
-  if (_peekBusy) return;   // a previous poll is still in flight (slow network) — skip
-  _peekBusy = true;
   const body = document.getElementById('peek-body');
   const statusEl = document.getElementById('peek-status');
   try {
@@ -21076,8 +21073,6 @@ async function refreshPeek() {
         statusEl.textContent = 'Offline — no cache';
       }
     }
-  } finally {
-    _peekBusy = false;
   }
 }
 
