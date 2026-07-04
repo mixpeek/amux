@@ -12030,7 +12030,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   /* Peek search highlight */
   .peek-highlight { background: rgba(210,153,34,0.35); color: #fff; border-radius: 2px; }
   .peek-highlight.current { background: rgba(210,153,34,0.85); color: #000; }
-  .peek-prompt { display: block; border-left: 3px solid rgba(210,180,60,0.5); padding-left: 8px; margin-left: -11px; background: rgba(210,180,60,0.07); border-radius: 0 3px 3px 0; }
+  /* Prompt lines keep their span (block) but no added decoration — the peek
+     should render what tmux renders, not restyle it (user feedback). */
+  .peek-prompt { display: block; }
 
   /* Peek overlay — flush to bottom, cmd bar handles its own safe-area padding */
   #peek-overlay { padding-bottom: 0 !important; bottom: 0 !important; }
@@ -13356,6 +13358,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   body.peek-embed #peek-close-btn,
   body.peek-embed #peek-focus-btn { display: none !important; }
   body.peek-embed #peek-overlay { top: 0 !important; padding-top: 0 !important; }
+  /* Tile chrome diet: the pane header already names the session, so the peek's
+     own header (title/status/find) + task/dir rows are dead space at tile size */
+  body.peek-embed .overlay-header,
+  body.peek-embed #peek-task-row,
+  body.peek-embed .peek-dir-bar { display: none !important; }
   /* General view-embed mode: ?embed=<view> loads the app inside a dock/grid panel
      showing a single view, stripped of the app chrome and filling the iframe. */
   body.embed { padding: 0 !important; margin: 0 !important; overflow: hidden; height: 100dvh; }
@@ -18506,6 +18513,37 @@ function _maybeAutoOpenEmbedPeek() {
   openPeek(window._peekEmbed);
   const ov = document.getElementById('peek-overlay');
   if (ov) ov.classList.remove('peek-focus');  // tiles always show the full tab strip
+  // fit the terminal once content lands, then keep it fitted
+  setTimeout(_embedFitZoom, 700);
+  setTimeout(_embedFitZoom, 2500);
+  setInterval(_embedFitZoom, 5000);
+  window.addEventListener('resize', () => setTimeout(_embedFitZoom, 150));
+}
+// Workspace tiles: zoom ONLY the terminal body so the session's full capture
+// width (canonical ~220 cols) fits the tile without wrapping — a scaled-down
+// but correctly-shaped screen instead of mangled wrapped lines. Controls stay
+// full-size. No-ops outside embed mode.
+function _embedFitZoom() {
+  if (!window._peekEmbed) return;
+  const body = document.getElementById('peek-body');
+  if (!body || !body.offsetParent) return;
+  // widest source line (textContent keeps source newlines, unaffected by wrap)
+  let cols = 0;
+  for (const l of (body.textContent || '').split('\n')) if (l.length > cols) cols = l.length;
+  cols = cols > 10 ? Math.min(240, Math.max(80, cols)) : 220;
+  body.style.zoom = '1';
+  const probe = document.createElement('span');
+  probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;';
+  probe.textContent = '0'.repeat(50);
+  body.appendChild(probe);
+  const chW = probe.getBoundingClientRect().width / 50;
+  probe.remove();
+  const avail = body.clientWidth - 20;
+  let z = Math.max(0.35, Math.min(1, avail / (cols * chW)));
+  z = Math.round(z * 100) / 100;
+  if (Math.abs((body._embedZ || 1) - z) < 0.03) z = body._embedZ || 1;
+  body._embedZ = z;
+  body.style.zoom = z;
 }
 // Fallback retry until session data arrives (SSE/fetch hooks call this too).
 (function _embedPeekRetry() {
@@ -20667,7 +20705,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.8.4';   // bump together with the sw.js CACHE version
+const APP_VER = '0.8.5';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -28841,9 +28879,9 @@ function enterGridMode() {
   const ref = tabBar || document.querySelector('.header-row');
   if (ref) {
     const rect = ref.getBoundingClientRect();
-    // Add computed marginBottom to close the gap between tab bar and grid
-    const marginBottom = parseFloat(getComputedStyle(ref).marginBottom) || 0;
-    view.style.top = (rect.bottom + marginBottom) + 'px';
+    // Flush under the tab bar — adding the ref's marginBottom here left a
+    // visible strip of page background above the workspace toolbar.
+    view.style.top = rect.bottom + 'px';
   }
   view.classList.add('active');
   _torrentStopTimer();
@@ -35872,7 +35910,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.8.4';
+const CACHE = 'amux-v0.8.5';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
