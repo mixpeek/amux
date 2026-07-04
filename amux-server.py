@@ -15643,7 +15643,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <!-- Input row -->
         <div class="ac-wrap" style="flex:1;min-width:0;position:relative;">
           <textarea class="send-input" id="peek-cmd-input" rows="1" placeholder="Type a message or drop a file..."
-            autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+            autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true"
             enterkeyhint="send" style="width:100%;"
             oninput="autoGrow(this);slashAcUpdate();cmdHistoryReset()" onkeydown="slashAcKeydown(event)"
             onpaste="handlePeekPaste(event)"></textarea>
@@ -15653,7 +15653,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           style="position:absolute;width:0;height:0;opacity:0;overflow:hidden;pointer-events:none;" onchange="handlePeekFileInput(event)">
         <button class="peek-attach-btn" title="Attach file" onclick="document.getElementById('peek-file-input').click()">&#128206;</button>
         <button class="peek-attach-btn" id="peek-hist-btn" onclick="openCmdHistoryModal()" title="Message history">&#x1F551;</button>
-        <div class="send-split"><button class="btn primary send-split-main" onmousedown="event.preventDefault()" onclick="sendPeekCmd()">Send</button><button class="btn primary send-split-arrow" onmousedown="event.preventDefault()" onclick="_toggleSendMode(event)" title="Switch send mode">&#x25BC;</button></div>
+        <div class="send-split"><button class="btn primary send-split-main" onpointerdown="event.preventDefault()" onclick="sendPeekCmd()">Send</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onclick="_toggleSendMode(event)" title="Switch send mode">&#x25BC;</button></div>
       </div>
       <!-- Drag-over hint (shown by CSS when drag-over class is on peek-overlay) -->
       <div class="peek-drag-hint" style="display:none;">&#128206; Drop to attach</div>
@@ -17754,11 +17754,11 @@ function render() {
         <div class="send-row" style="position:relative;">
           <div id="card-ac-${s.name}" class="ac-list slash-ac"></div>
           <textarea class="send-input" id="input-${s.name}" rows="1"
-            placeholder="Send to ${esc(s.name)}..." autocomplete="off" autocorrect="off"
-            autocapitalize="off" spellcheck="false" enterkeyhint="send"
+            placeholder="Send to ${esc(s.name)}..." autocomplete="off" autocorrect="on"
+            autocapitalize="sentences" spellcheck="true" enterkeyhint="send"
             oninput="autoGrow(this);cardSlashAcUpdate('${s.name}');cmdHistoryReset()"
             onkeydown="cardSlashAcKeydown('${s.name}',event)"></textarea>
-          <button class="btn primary" onmousedown="event.preventDefault()" onclick="sendFromInput('${s.name}')">Send</button>
+          <button class="btn primary" onpointerdown="event.preventDefault()" onclick="sendFromInput('${s.name}')">Send</button>
         </div>` : ''}
       </div>
     </div>`;
@@ -20517,7 +20517,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.7.7';   // bump together with the sw.js CACHE version
+const APP_VER = '0.7.8';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -35660,7 +35660,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.7.7';
+const CACHE = 'amux-v0.7.8';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
