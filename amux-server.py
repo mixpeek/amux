@@ -15697,6 +15697,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true"
             enterkeyhint="send" style="width:100%;"
             oninput="autoGrow(this);slashAcUpdate();cmdHistoryReset()" onkeydown="slashAcKeydown(event)"
+            onbeforeinput="slashAcBeforeInput(event)"
             onpaste="handlePeekPaste(event)"></textarea>
           <div id="slash-ac-list" class="ac-list slash-ac"></div>
         </div>
@@ -17844,7 +17845,8 @@ function render() {
             placeholder="Send to ${esc(s.name)}..." autocomplete="off" autocorrect="on"
             autocapitalize="sentences" spellcheck="true" enterkeyhint="send"
             oninput="autoGrow(this);cardSlashAcUpdate('${s.name}');cmdHistoryReset()"
-            onkeydown="cardSlashAcKeydown('${s.name}',event)"></textarea>
+            onkeydown="cardSlashAcKeydown('${s.name}',event)"
+            onbeforeinput="cardSlashAcBeforeInput('${s.name}',event)"></textarea>
           <button class="btn primary" onpointerdown="event.preventDefault()" onclick="sendFromInput('${s.name}')">Send</button>
         </div>` : ''}
       </div>
@@ -20612,7 +20614,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.8.0';   // bump together with the sw.js CACHE version
+const APP_VER = '0.8.1';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21206,7 +21208,7 @@ async function refreshPeek() {
     const output = data.output || '(no output)';
     // Skip re-render when output is identical — saves ansiToHtml work on every poll tick
     if (output === _lastPeekRaw && lastPeekHTML && !peekSearchQuery.trim()) {
-      statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
       return;
     }
     _lastPeekRaw = output;
@@ -21233,7 +21235,7 @@ async function refreshPeek() {
         _hideScrollLockBadge(body);
       });
     }
-    statusEl.textContent = (data.saved ? 'Saved log' : 'Updated') + ' ' + new Date().toLocaleTimeString();
+    statusEl.textContent = (data.saved ? 'Saved log' : 'Updated') + ' ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
     // Cache peek output for offline browsing
     _idb.set('peek_' + peekSession, { output, time: Date.now() });
   } catch(e) {
@@ -22734,7 +22736,26 @@ function slashAcPick(i) {
   inp.focus({ preventScroll: true });
 }
 
+// With autocorrect/predictive text ON, iOS delivers the send-key press as an
+// IME event (keydown isComposing / keyCode 229), which the keydown handlers
+// below deliberately ignore — so the first Enter only committed the autocorrect
+// and a newline slipped in ("press enter twice to send"). The line break still
+// arrives as a CANCELABLE beforeinput 'insertLineBreak' after the composition
+// commits, so we catch the composed path there. Normal Enter never reaches
+// beforeinput (keydown preventDefaults it); Shift+Enter is tracked via the flag
+// so it still inserts a newline.
+let _lastKeyShiftEnter = false;
+function _sendBeforeInput(e, send) {
+  if (e.inputType !== 'insertLineBreak') return;
+  if (_lastKeyShiftEnter) return;   // Shift+Enter = newline
+  e.preventDefault();
+  send();
+}
+function slashAcBeforeInput(e) { _sendBeforeInput(e, sendPeekCmd); }
+function cardSlashAcBeforeInput(name, e) { _sendBeforeInput(e, () => sendFromInput(name)); }
+
 function slashAcKeydown(e) {
+  _lastKeyShiftEnter = (e.key === 'Enter' && e.shiftKey);
   if (e.isComposing || e.keyCode === 229) return; // ignore IME composition Enter
   const inp = document.getElementById('peek-cmd-input');
   const el = document.getElementById('slash-ac-list');
@@ -22999,6 +23020,7 @@ function cardSlashAcPick(name, i) {
 }
 
 function cardSlashAcKeydown(name, e) {
+  _lastKeyShiftEnter = (e.key === 'Enter' && e.shiftKey);
   if (e.isComposing || e.keyCode === 229) return; // ignore IME composition Enter
   const inp = document.getElementById('input-' + name);
   const el = document.getElementById('card-ac-' + name);
@@ -35749,7 +35771,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.8.0';
+const CACHE = 'amux-v0.8.1';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
