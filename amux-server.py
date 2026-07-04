@@ -20582,6 +20582,7 @@ function openPeek(name, opts) {
   peekOv.classList.toggle('peek-focus', focusPref);
   document.getElementById('peek-focus-title').textContent = _peekTask ? name + ' — ' + _peekTask : name;
   _syncPeekOverlayToVisualViewport();
+  _vvKick();   // keyboard may already be up or mid-animation when peek opens
   // Load cached peek instantly while fetching fresh data
   _idb.get('peek_' + name).then(cached => {
     if (peekSession !== name) return;  // session changed before cache resolved
@@ -20637,6 +20638,7 @@ function closePeek() {
   ov.style.top = '';
   ov.style.bottom = '';
   ov.style.paddingBottom = '';
+  ov._vvSig = null;   // styles were reset behind the sync cache
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
   if (_transcriptTimer) { clearInterval(_transcriptTimer); _transcriptTimer = null; }
   sessionStorage.removeItem('peekState');
@@ -20780,9 +20782,14 @@ function _syncPeekOverlayToVisualViewport() {
   if (!window.visualViewport || !ov) return;
   const vv = window.visualViewport;
   const constrained = vv.height < window.innerHeight * 0.95 || vv.offsetTop > 5;
+  // Only touch the DOM when geometry actually changed — this runs per-frame
+  // during keyboard animations.
+  const sig = constrained ? Math.round(vv.offsetTop) + ':' + Math.round(vv.height) : 'free';
+  if (ov._vvSig === sig) return;
+  ov._vvSig = sig;
   if (constrained) {
-    ov.style.top = vv.offsetTop + 'px';
-    ov.style.height = vv.height + 'px';
+    ov.style.top = Math.round(vv.offsetTop) + 'px';
+    ov.style.height = Math.round(vv.height) + 'px';
     ov.style.bottom = 'auto';
     ov.style.paddingBottom = '0px';
   } else {
@@ -20793,23 +20800,36 @@ function _syncPeekOverlayToVisualViewport() {
   }
   ov.classList.toggle('vv-compact', constrained && vv.height < window.innerHeight * 0.7);
 }
+// iOS reports stale visualViewport values while the keyboard animates, and a
+// single resize/scroll event can land mid-animation — freezing the overlay at
+// a half-animated height (squished terminal, page visible underneath, buttons
+// shifting out from under a tap). Never trust one event: every trigger opens a
+// short per-frame tracking window that follows the geometry through the whole
+// animation and past its settle point.
+let _vvRaf = 0, _vvUntil = 0;
+function _vvKick(ms) {
+  if (!window.visualViewport) return;
+  const until = performance.now() + (ms || 1200);
+  if (until > _vvUntil) _vvUntil = until;
+  if (!_vvRaf) _vvRaf = requestAnimationFrame(_vvTick);
+}
+function _vvTick() {
+  _vvRaf = 0;
+  const ov = document.getElementById('peek-overlay');
+  if (!ov || !ov.classList.contains('active')) return;   // stops when peek closes
+  _syncPeekOverlayToVisualViewport();
+  if (performance.now() < _vvUntil) _vvRaf = requestAnimationFrame(_vvTick);
+}
 (function() {
   if (!window.visualViewport) return;
-  window.visualViewport.addEventListener('resize', () => {
-    if (document.getElementById('peek-overlay')?.classList.contains('active')) {
-      _syncPeekOverlayToVisualViewport();
-    }
-  });
-  window.visualViewport.addEventListener('scroll', () => {
-    if (document.getElementById('peek-overlay')?.classList.contains('active')) {
-      _syncPeekOverlayToVisualViewport();
-    }
-  });
-  // iOS keyboard: re-sync after animation settles so input stays visible
-  document.getElementById('peek-cmd-input')?.addEventListener('focus', () => {
-    setTimeout(_syncPeekOverlayToVisualViewport, 100);
-    setTimeout(_syncPeekOverlayToVisualViewport, 400);
-  });
+  window.visualViewport.addEventListener('resize', () => _vvKick());
+  window.visualViewport.addEventListener('scroll', () => _vvKick());
+  // Keyboard show/hide always follows a focus change inside the overlay
+  const ov = document.getElementById('peek-overlay');
+  if (ov) {
+    ov.addEventListener('focusin', () => _vvKick(1500));
+    ov.addEventListener('focusout', () => _vvKick(1500));
+  }
 })();
 
 // Swipe right to close peek (but never when touching the terminal body — preserve text selection)
@@ -35587,7 +35607,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.7.5';
+const CACHE = 'amux-v0.7.6';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
