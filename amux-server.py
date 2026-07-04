@@ -6769,6 +6769,46 @@ def _detect_claude_status(raw_output: str) -> str:
     return ""
 
 
+# ── Status hysteresis (client-facing only) ──────────────────────────────────
+# _detect_claude_status parses a single tmux frame. Claude's spinner is animated
+# and captures can be torn, so an unlucky frame reads 'idle'/'' while Claude is
+# still working. On its own that makes the UI flicker between working/idle AND
+# makes 'queue' sends fall through to an immediate (often lost) send. We hold
+# 'active' for a short grace window after the last active detection to bridge the
+# gap; a definitive completed-turn line ("Sautéed for 4m 19s") flips to idle at
+# once. Only the CLIENT-facing session status uses this — the server's steering
+# delivery loop keeps using the raw status, so a queued message still delivers
+# the instant the session is genuinely idle.
+_STATUS_ACTIVE_GRACE = 4.0  # seconds
+_status_last_active: dict[str, float] = {}
+_COMPLETED_TURN_RE = re.compile(r" for \d+\s*[hms]\b")
+
+
+def _detect_session_status(name: str, raw_output: str) -> str:
+    raw = _detect_claude_status(raw_output)
+    now = time.monotonic()
+    if raw == "active":
+        _status_last_active[name] = now
+        return "active"
+    if raw in ("idle", ""):
+        definitive_idle = False
+        if raw == "idle":
+            clean = _STRIP_ANSI.sub("", raw_output)
+            for l in clean.splitlines()[-12:]:
+                ls = l.strip()
+                if (ls and "✀" <= ls[0] <= "➿" and "…" not in ls
+                        and _COMPLETED_TURN_RE.search(ls)):
+                    definitive_idle = True
+                    break
+        if not definitive_idle:
+            last = _status_last_active.get(name, 0.0)
+            if last and (now - last) < _STATUS_ACTIVE_GRACE:
+                return "active"  # bridge a torn/between-frame capture
+        _status_last_active.pop(name, None)
+        return raw  # '' stays '' (non-Claude sessions never grace), 'idle' stays 'idle'
+    return raw  # 'waiting' passes through untouched
+
+
 def _tmux_info_map() -> dict:
     """Get activity, creation time, and pane title for all tmux sessions."""
     result = {}
@@ -7123,7 +7163,7 @@ def list_sessions() -> list:
             lines = [l for l in raw.splitlines() if l.strip()]
             preview = strip_ansi(lines[-1][:120]) if lines else ""
             if running:
-                status = _detect_claude_status(raw)
+                status = _detect_session_status(name, raw)
             # Detect session becoming idle → auto-complete board issue, then pick up next queued task
             prev = _session_prev_status.get(name)
             if status == "idle" and prev in ("active", "waiting"):
