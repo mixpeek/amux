@@ -20517,6 +20517,8 @@ async function saveGlobalMemory() {
   }
 }
 
+const APP_VER = '0.7.7';   // bump together with the sw.js CACHE version
+let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
   if (_transcriptTimer) { clearInterval(_transcriptTimer); _transcriptTimer = null; }
@@ -20577,6 +20579,15 @@ function openPeek(name, opts) {
   updateConnectionStatus();
   const peekOv = document.getElementById('peek-overlay');
   peekOv.classList.add('active');
+  // Freeze the page behind the overlay: otherwise iOS scrolls the session list
+  // to reveal the focused input, sliding content around under the fixed overlay
+  // and feeding bogus offsets into the viewport math.
+  if (!document.body.classList.contains('peek-embed') && document.body.style.position !== 'fixed') {
+    _peekScrollLockY = window.scrollY || 0;
+    document.body.style.position = 'fixed';
+    document.body.style.top = (-_peekScrollLockY) + 'px';
+    document.body.style.width = '100%';
+  }
   // Restore focus mode preference
   const focusPref = localStorage.getItem('peekFocus') === '1';
   peekOv.classList.toggle('peek-focus', focusPref);
@@ -20639,6 +20650,12 @@ function closePeek() {
   ov.style.bottom = '';
   ov.style.paddingBottom = '';
   ov._vvSig = null;   // styles were reset behind the sync cache
+  if (document.body.style.position === 'fixed') {
+    document.body.style.position = '';
+    document.body.style.top = '';
+    document.body.style.width = '';
+    window.scrollTo(0, _peekScrollLockY || 0);
+  }
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
   if (_transcriptTimer) { clearInterval(_transcriptTimer); _transcriptTimer = null; }
   sessionStorage.removeItem('peekState');
@@ -20781,7 +20798,12 @@ function _syncPeekOverlayToVisualViewport() {
   const ov = document.getElementById('peek-overlay');
   if (!window.visualViewport || !ov) return;
   const vv = window.visualViewport;
-  const constrained = vv.height < window.innerHeight * 0.95 || vv.offsetTop > 5;
+  // Pinch/auto zoom shrinks vv.height in CSS px (height/scale) — fitting the
+  // overlay to a zoomed viewport wrecks the layout (half-height overlay with
+  // the page bleeding through underneath). While zoomed, fall back to natural
+  // CSS sizing; zoom-out fires another resize and we re-fit then.
+  const scaled = vv.scale > 1.02;
+  const constrained = !scaled && (vv.height < window.innerHeight * 0.95 || vv.offsetTop > 5);
   // Only touch the DOM when geometry actually changed — this runs per-frame
   // during keyboard animations.
   const sig = constrained ? Math.round(vv.offsetTop) + ':' + Math.round(vv.height) : 'free';
@@ -20790,12 +20812,13 @@ function _syncPeekOverlayToVisualViewport() {
   if (constrained) {
     ov.style.top = Math.round(vv.offsetTop) + 'px';
     ov.style.height = Math.round(vv.height) + 'px';
-    ov.style.bottom = 'auto';
+    // !important: the mobile stylesheet pins #peek-overlay { bottom: 0 !important }
+    ov.style.setProperty('bottom', 'auto', 'important');
     ov.style.paddingBottom = '0px';
   } else {
     ov.style.top = '';
     ov.style.height = '';
-    ov.style.bottom = '0';
+    ov.style.bottom = '';
     ov.style.paddingBottom = '';
   }
   ov.classList.toggle('vv-compact', constrained && vv.height < window.innerHeight * 0.7);
@@ -29806,9 +29829,38 @@ if ('serviceWorker' in navigator) {
     });
   // Auto-reload when a new SW takes control (ensures fresh HTML after update)
   navigator.serviceWorker.addEventListener('controllerchange', () => {
+    // Rescue in-progress peek input from the reload
+    try {
+      const inp = document.getElementById('peek-cmd-input');
+      if (typeof peekSession !== 'undefined' && peekSession && inp && inp.value.trim()) {
+        const st = JSON.parse(sessionStorage.getItem('peekState') || '{}');
+        st.session = st.session || peekSession;
+        st.draft = inp.value;
+        sessionStorage.setItem('peekState', JSON.stringify(st));
+      }
+    } catch (e) {}
     location.reload();
   });
   }).catch(() => {});
+
+  // A PWA kept in the foreground never re-checks the SW, so it can run stale
+  // code for days. Nudge an update check on every foreground/network return
+  // (throttled); skipWaiting + controllerchange above finish the swap.
+  let _swLastCheck = 0;
+  const _swCheckUpdate = () => {
+    const now = Date.now();
+    if (now - _swLastCheck < 60000) return;
+    _swLastCheck = now;
+    navigator.serviceWorker.getRegistration().then(reg => {
+      if (!reg) return;
+      reg.update().then(() => {
+        if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+      }).catch(() => {});
+    }).catch(() => {});
+  };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) _swCheckUpdate(); });
+  window.addEventListener('pageshow', _swCheckUpdate);
+  window.addEventListener('online', _swCheckUpdate);
 }
 
 // Dual-write drafts and queue to both localStorage and IndexedDB
@@ -31007,6 +31059,7 @@ _handleDeeplink(location.hash);
 try {
   const _ps = JSON.parse(sessionStorage.getItem('peekState') || 'null');
   if (_ps && _ps.session) {
+    if (_ps.draft) _peekDrafts[_ps.session] = _ps.draft;   // rescued from pre-update reload
     setTimeout(() => {
       openPeek(_ps.session);
       if (_ps.split && window.innerWidth > 600) {
@@ -35607,7 +35660,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.7.6';
+const CACHE = 'amux-v0.7.7';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
