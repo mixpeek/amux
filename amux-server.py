@@ -2266,67 +2266,51 @@ def _render_session_transcript(name: str, max_chars: int = 40000) -> str:
     return text
 
 
-def _dedup_transcript_live(transcript: str, live: str) -> str:
-    """Trim the tail of the rendered transcript that the live terminal frame
-    already shows, so the most recent messages aren't rendered twice in the peek
-    (once as raw-markdown transcript, once as the live frame). The live frame is
-    the authoritative current screen, so we keep it and cut the transcript where
-    the frame's content begins.
-
-    We don't anchor on the live frame's *first* line — that line is often a
-    status/response that sits ABOVE the echoed user message and isn't in the
-    transcript, which used to leave the message duplicated. Instead we scan the
-    transcript tail and trim the contiguous block of lines that are present on
-    the live screen. Never trims if the tail isn't on-screen (so real history is
-    never dropped when the transcript is ahead of the frame).
-    """
+def _trim_live_overlap(transcript: str, live: str) -> str:
+    """Return the live frame minus the portion that re-renders content the
+    transcript already covers. History must render from ONE source: the
+    transcript is canonical and width-stable, while the frame re-renders the
+    same messages at whatever width the tmux window happens to be at the time
+    (attach/detach resizes change it) — the old approach kept the whole frame
+    and trimmed the transcript, so width-mismatched re-renders slipped past the
+    string matching and the same table/paragraph appeared twice at two
+    different wraps. The frame's unique value is only its tail: in-progress
+    streaming output (not yet flushed to the JSONL), the input box, and the
+    status bar — everything after the last frame line the transcript already
+    has. If fewer than 3 frame lines match the transcript tail, the frame is
+    assumed disjoint (transcript stale/empty) and kept whole."""
     if not transcript or not live:
-        return transcript
+        return live
 
     def _norm(s: str) -> str:
         s = _STRIP_ANSI.sub("", s)
         # drop markdown / box-drawing / status decoration so raw-markdown
         # transcript lines match their rendered live-frame counterparts
-        s = re.sub(r"[*#`_|│┌┐└┘├┤┬┴┼─=>•·»❯⎿⏺✻✦●]+", " ", s)
+        s = re.sub(r"[*#`_|\u2502\u250c\u2510\u2514\u2518\u251c\u2524\u252c\u2534\u253c\u2500=>\u2022\u00b7\u00bb\u276f\u23bf\u23fa\u273b\u2726\u25cf]+", " ", s)
         return re.sub(r"\s+", " ", s).strip().lower()
 
-    tl = transcript.split("\n")
-    ntl = [_norm(x) for x in tl]
-    live_lines = [n for n in (_norm(x) for x in live.split("\n")) if n]
-    live_set = {n for n in live_lines if len(n) >= 8}
-    long_live = [n for n in live_lines if len(n) >= 46]
+    tail_norm = [n for n in (_norm(x) for x in transcript.split("\n")[-140:]) if len(n) >= 12]
+    tail_set = set(tail_norm)
+    long_tail = [n for n in tail_norm if len(n) >= 46]
 
-    def _in_live(n: str) -> bool:
-        if len(n) < 8:
+    def _in_transcript(n: str) -> bool:
+        if len(n) < 12:
             return False
-        if n in live_set:
+        if n in tail_set:
             return True
-        if len(n) >= 46:  # tolerate wrapping differences on long lines
-            for lv in long_live:
-                if n in lv or lv in n:
+        # Wrap tolerance: a frame line wrapped at the tmux width is a substring
+        # of the transcript's full logical line (or vice versa for short rows).
+        if len(n) >= 24:
+            for tv in long_tail:
+                if n in tv or tv in n:
                     return True
         return False
 
-    # Anchor = the deepest transcript tail line that's on the live screen (the
-    # frame is ~50 lines, so only scan the tail). If none of the tail is
-    # on-screen, there's no overlap to trim.
-    anchor = None
-    for ti in range(len(tl) - 1, max(-1, len(tl) - 70), -1):
-        if len(ntl[ti]) >= 12 and _in_live(ntl[ti]):
-            anchor = ti
-            break
-    if anchor is None:
-        return transcript
-    # Walk further up while lines stay on-screen (blanks/short lines absorbed),
-    # so the whole overlapping block is trimmed — not just its last line.
-    cut = anchor
-    for ti in range(anchor - 1, -1, -1):
-        n = ntl[ti]
-        if len(n) < 12 or _in_live(n):
-            cut = ti
-        else:
-            break
-    return "\n".join(tl[:cut]).rstrip()
+    ll = live.split("\n")
+    matches = [i for i, x in enumerate(ll) if _in_transcript(_norm(x))]
+    if len(matches) < 3:
+        return live
+    return "\n".join(ll[matches[-1] + 1:]).lstrip("\n")
 
 
 _healing_logs: set = set()  # sessions whose log is being rebuilt right now
@@ -41578,7 +41562,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                         # The live frame re-shows the most recent messages the
                         # transcript ends with — trim that overlap so they don't
                         # render twice (raw-markdown transcript + rendered frame).
-                        transcript = _dedup_transcript_live(transcript, live)
+                        live = _trim_live_overlap(transcript, live)
                         joined = (transcript.rstrip() + "\n\n" + live) if transcript else live
                         resp = {"name": name, "output": _collapse_blank_runs(joined)}
                     elif live:
