@@ -15705,7 +15705,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           style="position:absolute;width:0;height:0;opacity:0;overflow:hidden;pointer-events:none;" onchange="handlePeekFileInput(event)">
         <button class="peek-attach-btn" title="Attach file" onclick="document.getElementById('peek-file-input').click()">&#128206;</button>
         <button class="peek-attach-btn" id="peek-hist-btn" onclick="openCmdHistoryModal()" title="Message history">&#x1F551;</button>
-        <div class="send-split"><button class="btn primary send-split-main" onpointerdown="event.preventDefault()" onclick="sendPeekCmd()">Send</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onclick="_toggleSendMode(event)" title="Switch send mode">&#x25BC;</button></div>
+        <div class="send-split"><button class="btn primary send-split-main" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, sendPeekCmd)" onclick="_btnFire(event, sendPeekCmd)">Send</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
       </div>
       <!-- Drag-over hint (shown by CSS when drag-over class is on peek-overlay) -->
       <div class="peek-drag-hint" style="display:none;">&#128206; Drop to attach</div>
@@ -17847,7 +17847,7 @@ function render() {
             oninput="autoGrow(this);cardSlashAcUpdate('${s.name}');cmdHistoryReset()"
             onkeydown="cardSlashAcKeydown('${s.name}',event)"
             onbeforeinput="cardSlashAcBeforeInput('${s.name}',event)"></textarea>
-          <button class="btn primary" onpointerdown="event.preventDefault()" onclick="sendFromInput('${s.name}')">Send</button>
+          <button class="btn primary" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => sendFromInput('${s.name}'))" onclick="_btnFire(event, () => sendFromInput('${s.name}'))">Send</button>
         </div>` : ''}
       </div>
     </div>`;
@@ -20614,7 +20614,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.8.2';   // bump together with the sw.js CACHE version
+const APP_VER = '0.8.3';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -22755,6 +22755,19 @@ function _sendBeforeInput(e, send) {
   if (_lastKeyShiftEnter) return;   // Shift+Enter = newline
   e.preventDefault();
   send();
+}
+// Send-button firing: onpointerdown preventDefault keeps the input focused
+// (no keyboard collapse mid-tap) — but on real iOS Safari, canceling
+// pointerdown ALSO suppresses the click event (WebKit divergence from Chrome),
+// so onclick alone never fires on the tap ("press send twice"). Fire on
+// pointerup (never suppressed) and keep click as the fallback for non-pointer
+// environments, deduped per-button so one tap can't double-fire.
+function _btnFire(e, fn) {
+  const t = e.currentTarget;
+  const now = performance.now();
+  if (t._fireTs && now - t._fireTs < 350) return;   // click echo of the same tap
+  t._fireTs = now;
+  fn();
 }
 function slashAcBeforeInput(e) { _sendBeforeInput(e, sendPeekCmd); }
 function cardSlashAcBeforeInput(name, e) { _sendBeforeInput(e, () => sendFromInput(name)); }
@@ -35776,7 +35789,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.8.2';
+const CACHE = 'amux-v0.8.3';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
