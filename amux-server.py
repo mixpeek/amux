@@ -20551,6 +20551,7 @@ function openPeek(name, opts) {
   });
   refreshPeek();
   peekTimer = setInterval(refreshPeek, 1200);
+  _updateSendSplit();   // sync the Send/Queue button label to the current mode
   _savePeekState();
 }
 
@@ -21299,7 +21300,7 @@ function handlePeekPaste(e) {
   });
 })();
 
-let _sendMode = localStorage.getItem('amux_send_mode') || 'send'; // 'send' or 'queue'
+let _sendMode = localStorage.getItem('amux_send_mode') || 'queue'; // 'queue' or 'send'
 function _toggleSendMode(e) {
   e?.stopPropagation();
   _sendMode = _sendMode === 'send' ? 'queue' : 'send';
@@ -21334,21 +21335,11 @@ async function sendPeekCmd() {
     await steerSession(peekSession, text);
     return;
   }
-  // Send mode with active session: show dialog
-  if (_sendMode === 'send' && sess && sess.status === 'active' && files.length === 0 && !text.startsWith('/')) {
-    const choice = await _showSteerPrompt(text);
-    if (choice === 'queue') {
-      cmdHistoryAdd(text, {type:'steering'});
-      inp.value = '';
-      inp.style.height = 'auto';
-      delete _peekDrafts[peekSession];
-      await steerSession(peekSession, text);
-      return;
-    } else if (choice === 'cancel') {
-      return;
-    }
-    // choice === 'send' — fall through to normal send
-  }
+  // 'send' mode + active session sends immediately. The old confirmation dialog
+  // here required a second Enter (or click) to confirm — that was the real
+  // "press enter twice" bug. The safe default is 'queue' mode (handled just
+  // above), which reliably delivers at the next turn boundary; use the send-mode
+  // toggle to switch between queue and send.
   cmdHistoryAdd(text);
 
   // Build message: inline @path references (no newlines — tmux treats \n as Enter,
