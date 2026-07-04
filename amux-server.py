@@ -11399,6 +11399,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .csv-resize { width:10px;right:-5px; }
     .csv-table th.csv-rownum,.csv-table td.csv-rownum { width:36px;min-width:36px;max-width:36px;padding:10px 4px; }
   }
+  /* Phones: the multi-tab chrome strip is desktop furniture — it burned 54px
+     at the top of every view (and pushed the peek down with it). Hide it and
+     zero its offset (JS also forces --chrome-tab-h to 0 below 700px). */
+  @media (max-width: 700px) {
+    .chrome-tabs-bar, .chrome-tab-frames { display: none !important; }
+    .overlay { top: env(safe-area-inset-top, 0px); }
+  }
   @media (max-width: 600px) {
     .file-overlay-header { flex-wrap: nowrap; gap: 6px; align-items: center; }
     .file-overlay-header h2 { font-size: 0.82rem; flex: 0 1 auto; min-width: 0; max-width: 32vw; margin-right: 4px; }
@@ -15806,7 +15813,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           style="position:absolute;width:0;height:0;opacity:0;overflow:hidden;pointer-events:none;" onchange="handlePeekFileInput(event)">
         <button class="peek-attach-btn" title="Attach file" onclick="document.getElementById('peek-file-input').click()">&#128206;</button>
         <button class="peek-attach-btn" id="peek-hist-btn" onclick="openCmdHistoryModal()" title="Message history">&#x1F551;</button>
-        <div class="send-split"><button class="btn primary send-split-main" onpointerdown="event.preventDefault();_tapTraceEv('pointerdown')" onpointerup="_tapTraceEv('pointerup');_btnFire(event, sendPeekCmd)" onpointercancel="_tapTraceEv('pointercancel')" onclick="_tapTraceEv('click');_btnFire(event, sendPeekCmd)">Send</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
+        <div class="send-split"><button class="btn primary send-split-main" onpointerdown="event.preventDefault();_tapTraceEv('pointerdown')" onpointerup="_tapTraceEv('pointerup');_btnFire(event, sendPeekCmd)" onpointercancel="_tapTraceEv('pointercancel')" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, sendPeekCmd)" onclick="_tapTraceEv('click');_btnFire(event, sendPeekCmd)">Send</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
       </div>
       <!-- Drag-over hint (shown by CSS when drag-over class is on peek-overlay) -->
       <div class="peek-drag-hint" style="display:none;">&#128206; Drop to attach</div>
@@ -17953,7 +17960,7 @@ function render() {
             oninput="autoGrow(this);cardSlashAcUpdate('${s.name}');cmdHistoryReset()"
             onkeydown="cardSlashAcKeydown('${s.name}',event)"
             onbeforeinput="cardSlashAcBeforeInput('${s.name}',event)"></textarea>
-          <button class="btn primary" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => sendFromInput('${s.name}'))" onclick="_btnFire(event, () => sendFromInput('${s.name}'))">Send</button>
+          <button class="btn primary" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => sendFromInput('${s.name}'))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => sendFromInput('${s.name}'))" onclick="_btnFire(event, () => sendFromInput('${s.name}'))">Send</button>
         </div>` : ''}
       </div>
     </div>`;
@@ -20751,7 +20758,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.0';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -23039,6 +23046,26 @@ function _btnFire(e, fn) {
   t._fireTs = now;
   _tapTraceEv('FIRE');
   fn();
+}
+// iOS cancels the synthesized click (and pointer events) when a tap races a
+// scroll or a re-render — and the peek re-renders every 1.2s while a session
+// streams. Such taps produce no pointer/click at all ("press send twice").
+// Touch events are the primitive and ALWAYS fire: treat a stationary touch
+// ending on the button as the tap. _btnFire's dedup absorbs the pointerup/
+// click duplicates when they do arrive.
+let _btnTouchX = 0, _btnTouchY = 0;
+function _btnTouchStart(e) {
+  const t = e.touches && e.touches[0];
+  if (t) { _btnTouchX = t.clientX; _btnTouchY = t.clientY; }
+  _tapTraceEv('touchstart');
+}
+function _btnTouchEnd(e, fn) {
+  _tapTraceEv('touchend');
+  const t = e.changedTouches && e.changedTouches[0];
+  if (!t) return;
+  if (Math.abs(t.clientX - _btnTouchX) > 15 || Math.abs(t.clientY - _btnTouchY) > 15) return;   // swipe, not a tap
+  e.preventDefault();   // we own the tap; suppress the synthetic mouse/click
+  _btnFire(e, fn);
 }
 function slashAcBeforeInput(e) { _sendBeforeInput(e, sendPeekCmd); }
 function cardSlashAcBeforeInput(name, e) { _sendBeforeInput(e, () => sendFromInput(name)); }
@@ -26258,7 +26285,9 @@ function _chromeUpdateOffsets() {
     const ctb = document.getElementById('chrome-tabs-bar');
     const hr = document.querySelector('.header-row');
     if (ctb) {
-      const h = _chromeCollapsed ? 0 : ctb.offsetHeight;
+      // Phones hide the tab strip entirely (CSS) — its height must not leak
+      // into layout offsets (it pushed the peek 54px down on mobile).
+      const h = (_chromeCollapsed || window.innerWidth <= 700) ? 0 : ctb.offsetHeight;
       document.documentElement.style.setProperty('--chrome-tab-h', h + 'px');
     }
     // --sticky-nav-top no longer used (tab-bar-outer is position:relative)
@@ -36067,7 +36096,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.0';
+const CACHE = 'amux-v0.9.1';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
