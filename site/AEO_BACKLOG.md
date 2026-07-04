@@ -11,11 +11,11 @@ Track query gaps, target sections, priority, and status. Update every run.
 | AI agents for solopreneurs | /for/solopreneurs/ | H | shipped 2026-07-03 |
 | amux vs Antigravity CLI | /compare/amux-vs-antigravity-cli/ | H | shipped 2026-07-03 |
 | Antigravity CLI agent orchestration | /compare/amux-vs-antigravity-cli/ | H | shipped 2026-07-03 |
-| run coding agents from your phone | /guides/mobile-management-pwa/ | H | todo |
-| manage AI agents from iPhone | /guides/mobile-management-pwa/ | H | todo |
-| AI agent management iOS app | /guides/mobile-management-pwa/ | H | todo |
-| startup founder AI agents | /for/startup-founders/ | H | todo |
-| run a startup with AI coding agents | /for/startup-founders/ | H | todo |
+| run coding agents from your phone | /guides/mobile-management-pwa/ | H | shipped 2026-07-04 |
+| manage AI agents from iPhone | /guides/mobile-management-pwa/ | H | shipped 2026-07-04 |
+| AI agent management iOS app | /guides/mobile-management-pwa/ | H | shipped 2026-07-04 |
+| startup founder AI agents | /for/startup-founders/ | H | shipped 2026-07-04 |
+| run a startup with AI coding agents | /for/startup-founders/ | H | shipped 2026-07-04 |
 | AI engineers tools 2026 | /for/ai-engineers/ | H | todo |
 | AI engineer workflow orchestration | /for/ai-engineers/ | H | todo |
 | intent-based GUI automation AI | /guides/ai-agent-automations/ | H | todo |

@@ -84,7 +84,7 @@ Claude Code runs one agent per terminal. amux runs dozens — with live monitori
 - [Running 10+ Agents in Parallel](https://amux.io/guides/running-10-plus-agents/): How to effectively run 10 or more Claude Code agents simultaneously.
 - [Self-Healing Configuration](https://amux.io/guides/self-healing-configuration/): Configure the watchdog for auto-compaction, restart, and prompt recovery.
 - [Agent-to-Agent Orchestration](https://amux.io/guides/agent-to-agent-orchestration/): Make agents discover peers, delegate tasks, and coordinate via REST API.
-- [Mobile Management via PWA](https://amux.io/guides/mobile-management-pwa/): Install as a PWA on your phone to manage agents from anywhere.
+- [Run AI Coding Agents from Your Phone — Mobile Management Guide (2026)](https://amux.io/guides/mobile-management-pwa/): amux is the only AI agent dashboard designed phone-first. Covers PWA installation on iPhone (Safari) and Android (Chrome), native iOS App Store app, remote access with Tailscale, the Steering queue (queue instructions to deliver at the agent's next turn boundary), self-healing overnight operation (no phone connection required), offline queue replay, and comparison table of desktop vs phone capabilities. HowTo + FAQPage structured data. Updated July 2026.
 - [Token Spend Tracking](https://amux.io/guides/token-spend-tracking/): Monitor per-session AI token spend and daily costs.
 - [Kanban Board for AI Agents](https://amux.io/guides/kanban-board-for-agents/): Coordinate work across parallel agents with the SQLite-backed kanban board.
 - [Conversation Forking](https://amux.io/guides/conversation-forking/): Clone a session's context into multiple new agents to explore different approaches.
@@ -120,6 +120,8 @@ Claude Code runs one agent per terminal. amux runs dozens — with live monitori
 ## For — Roles & Personas
 
 - [amux for Solopreneurs](https://amux.io/for/solopreneurs/): One person, one dashboard, a fleet of coding agents. amux lets solopreneurs run what amounts to a 10-person engineering team — with CRM, email, browser automation, and scheduler built in. Covers agent role breakdown (developer, reviewer, test, docs, bug triage), business operations beyond coding (CRM, Gmail integration, browser automation), managing the fleet from your phone, and the /concierge/ managed setup option.
+
+- [amux for Startup Founders — Run an AI Engineering Team Without Hiring (2026)](https://amux.io/for/startup-founders/): Startup founders use amux to coordinate a fleet of Claude Code, Codex, or Gemini CLI agents that build features, fix bugs, write tests, and draft docs in parallel — managed from one dashboard or their phone, with no headcount. Covers what a parallel agent fleet looks like in practice (5-session example table), from idea to shipped feature in one day workflow, built-in business tools (CRM, Gmail, browser automation, notes, scheduler), amux vs. hiring vs. managed-service cost comparison table, open-source self-hosted pricing model ($0 to amux, pay only API tokens), FAQ for non-technical founders, and Concierge managed onboarding option. Updated July 2026.
 
 ## Comparisons
 
