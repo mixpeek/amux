@@ -3546,6 +3546,58 @@ def _snapshot_all_sessions():
     finally:
         _snapshot_running = False
 
+def _steer_try_deliver(name: str, status: str) -> None:
+    """Deliver the head of a session's steering queue if it sits at a turn
+    boundary (raw status idle/waiting). Shared by the 60s snapshot loop and
+    the fast steering tick; the in-flight marker under the lock prevents the
+    two loops from double-delivering the same message."""
+    if status not in ("waiting", "idle"):
+        return
+    with _steering_lock:
+        queue = _steering_queue.get(name, [])
+        if not queue:
+            return
+        msg = queue[0]
+        if msg.get("_inflight"):
+            return
+        msg["_inflight"] = True
+    ok, err = send_text(name, msg["text"])
+    if ok:
+        with _steering_lock:
+            q = _steering_queue.get(name, [])
+            _steering_queue[name] = [m for m in q if m["id"] != msg["id"]]
+        try:
+            db = get_db()
+            db.execute("DELETE FROM steering_queue WHERE id=?", (msg["id"],))
+            db.commit()
+        except Exception:
+            pass
+        _push_alert("steering_delivered", name,
+                    f"Steering message delivered to '{name}'")
+    else:
+        with _steering_lock:
+            msg.pop("_inflight", None)
+
+
+def _steering_fast_tick():
+    """Deliver queued steering to idle/waiting sessions within seconds — the
+    snapshot loop only ticks every 60s, which read as 'queue does nothing'
+    when a message was queued to an already-idle session. Only captures
+    sessions that actually have a queue, so it costs nothing when empty."""
+    with _steering_lock:
+        names = [n for n, q in _steering_queue.items() if q]
+    for name in names:
+        try:
+            if not is_running(name):
+                continue
+            raw = tmux_capture(name, 60)
+            if not raw:
+                continue
+            _steer_try_deliver(name, _detect_claude_status(raw))
+        except Exception:
+            pass
+
+
 def _snapshot_all_sessions_inner():
     # Fetch running tmux sessions once to avoid spawning a subprocess per session
     running_sessions = set()
@@ -3920,24 +3972,7 @@ def _snapshot_all_sessions_inner():
                 actions.pop("ac_waiting_since", None)
 
             # ── 5. Steering: deliver queued messages at turn boundary ────────
-            if status in ("waiting", "idle"):
-                with _steering_lock:
-                    queue = _steering_queue.get(name, [])
-                if queue:
-                    msg = queue[0]
-                    ok, err = send_text(name, msg["text"])
-                    if ok:
-                        with _steering_lock:
-                            q = _steering_queue.get(name, [])
-                            _steering_queue[name] = [m for m in q if m["id"] != msg["id"]]
-                        try:
-                            db = get_db()
-                            db.execute("DELETE FROM steering_queue WHERE id=?", (msg["id"],))
-                            db.commit()
-                        except Exception:
-                            pass
-                        _push_alert("steering_delivered", name,
-                                    f"Steering message delivered to '{name}'")
+            _steer_try_deliver(name, status)
 
         except Exception:
             pass
@@ -20705,7 +20740,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.8.5';   // bump together with the sw.js CACHE version
+const APP_VER = '0.8.6';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21626,9 +21661,13 @@ async function sendPeekCmd() {
     _submitSuggestion(peekSession, true);
     return;
   }
-  const sess = (sessions || []).find(s => s.name === peekSession);
-  // Queue mode: bypass dialog, always queue at next turn boundary
-  if (_sendMode === 'queue' && sess && sess.status === 'active' && files.length === 0 && !text.startsWith('/')) {
+  // Queue mode: ALWAYS enqueue to the steering queue — no status check. The
+  // client's status is a snapshot, and racing it was exactly how queued
+  // messages fell through to direct sends. The server delivers at the next
+  // turn boundary; an idle session picks it up within seconds via the fast
+  // steering tick. (File attachments still send directly — steering carries
+  // text only.)
+  if (_sendMode === 'queue' && files.length === 0) {
     cmdHistoryAdd(text, {type:'steering'});
     inp.value = '';
     inp.style.height = 'auto';
@@ -35910,7 +35949,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.8.5';
+const CACHE = 'amux-v0.8.6';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -43187,6 +43226,7 @@ def main():
     schedule_job(_yolo_loop,             interval=3,                    name="yolo",        initial_delay=3)
     schedule_job(_rate_limit_loop,       interval=15,                   name="rate_limit",  initial_delay=4)
     schedule_job(_snapshot_loop,         interval=60,                   name="snapshot",    initial_delay=0)
+    schedule_job(_steering_fast_tick,    interval=4,                    name="steering_fast", initial_delay=8)
     schedule_job(_tmux_size_watchdog,    interval=60,                   name="tmux_size",   initial_delay=45)
     schedule_job(_reap_stale_browsers,  interval=120,                  name="browser_reap", initial_delay=60)
     schedule_job(_kill_stale_ray,        interval=600,                  name="ray_reap",     initial_delay=120)
