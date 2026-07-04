@@ -1420,6 +1420,59 @@ def tmux_capture(session: str, lines: int = 500) -> str:
         return ""
 
 
+# Canonical tmux window size for amux sessions. tmux's default `window-size
+# latest` resizes a window to whatever client attached to it most recently —
+# and a headless/scripted attach defaults to 80x24. Every width change makes
+# Claude Code redraw its whole transcript reflowed and tmux rewrap scrollback,
+# so the peek shows content "reformatted" at whatever width touched the
+# session last (tables mangled at 80 cols, prose rewrapped mid-history).
+try:
+    _TMUX_COLS = int(os.environ.get("AMUX_TMUX_COLS", "220"))
+except ValueError:
+    _TMUX_COLS = 220
+try:
+    _TMUX_ROWS = int(os.environ.get("AMUX_TMUX_ROWS", "50"))
+except ValueError:
+    _TMUX_ROWS = 50
+
+
+def _tmux_size_watchdog():
+    """Restore DETACHED amux sessions to the canonical window size.
+
+    A live human terminal always owns the size while attached (window-size
+    latest); once every client detaches, drift is restored so all future
+    turns render at a stable, wide width for the peek. resize-window flips
+    the window to manual sizing, so 'latest' is reset right after to keep
+    the next human attach working normally.
+    """
+    try:
+        r = subprocess.run(
+            ["tmux", "list-windows", "-a", "-F",
+             "#{session_name}\t#{session_attached}\t#{window_width}\t#{window_height}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode != 0:
+            return
+        for line in r.stdout.splitlines():
+            try:
+                name, attached, w, h = line.split("\t")
+            except ValueError:
+                continue
+            if not name.startswith("amux-") or attached != "0":
+                continue
+            if w == str(_TMUX_COLS) and h == str(_TMUX_ROWS):
+                continue
+            subprocess.run(["tmux", "resize-window", "-t", name,
+                            "-x", str(_TMUX_COLS), "-y", str(_TMUX_ROWS)],
+                           capture_output=True, timeout=5)
+            subprocess.run(["tmux", "set-option", "-w", "-t", name,
+                            "window-size", "latest"],
+                           capture_output=True, timeout=5)
+            slog(f"[tmux-size] {name}: {w}x{h} -> {_TMUX_COLS}x{_TMUX_ROWS} (detached drift restored)")
+    except Exception:
+        pass
+
+
 def _tmux_alt_screen(session: str) -> bool:
     """True if the pane is in the alternate screen buffer (TUI mode, e.g. Claude
     Code). The alt buffer has NO scrollback, so capture-pane only ever returns
@@ -8783,7 +8836,7 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 # New tmux session -- start bash shell (not Claude directly)
                 subprocess.run(
                     ["tmux", "new-session", "-d", "-s", tmux_sess, "-n", name, "-c", work_dir,
-                     "-x", "220", "-y", "50",
+                     "-x", str(_TMUX_COLS), "-y", str(_TMUX_ROWS),
                      "-e", "TMUX_SESSION_NAME=" + name,
                      "-e", "AMUX_SESSION=" + name,
                      "-e", ("AMUX_URL=http" if "--no-tls" in sys.argv else "AMUX_URL=https") + "://localhost:8822",
@@ -43096,6 +43149,7 @@ def main():
     schedule_job(_yolo_loop,             interval=3,                    name="yolo",        initial_delay=3)
     schedule_job(_rate_limit_loop,       interval=15,                   name="rate_limit",  initial_delay=4)
     schedule_job(_snapshot_loop,         interval=60,                   name="snapshot",    initial_delay=0)
+    schedule_job(_tmux_size_watchdog,    interval=60,                   name="tmux_size",   initial_delay=45)
     schedule_job(_reap_stale_browsers,  interval=120,                  name="browser_reap", initial_delay=60)
     schedule_job(_kill_stale_ray,        interval=600,                  name="ray_reap",     initial_delay=120)
     schedule_job(_refresh_token_cache,   interval=120,                  name="token_cache", initial_delay=5)
