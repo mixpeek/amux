@@ -1591,7 +1591,7 @@ _last_log_save: dict[str, float] = {}  # session -> monotonic time of last save
 _LOG_SAVE_INTERVAL = 30  # seconds between saves per session
 
 _peek_cache: dict[str, tuple[float, int, dict]] = {}  # session -> (monotonic_time, lines, response_dict)
-_PEEK_CACHE_TTL = 4.0  # seconds
+_PEEK_CACHE_TTL = 1.2  # seconds
 
 _transcript_render_cache: dict[tuple, tuple[float, int, str]] = {}  # (path, max_chars) -> (mtime, size, rendered)
 _jsonl_path_cache: dict[str, tuple[float, "Path | None"]] = {}  # session -> (monotonic, path)
@@ -16173,6 +16173,7 @@ let _logSearchTimer = null;
 let _logSearchAbort = null;
 let peekSession = null;
 let peekTimer = null;
+let _peekBusy = false;   // prevents overlapping peek fetches when polling fast
 let peekSessionDir = '';
 let peekSearchQuery = '';
 let peekSearchIndex = 0;
@@ -20549,7 +20550,7 @@ function openPeek(name, opts) {
     }
   });
   refreshPeek();
-  peekTimer = setInterval(refreshPeek, 3000);
+  peekTimer = setInterval(refreshPeek, 1200);
   _savePeekState();
 }
 
@@ -21018,6 +21019,8 @@ async function refreshPeek() {
   if (peekSelecting) return;
   const sel = window.getSelection();
   if (sel && sel.toString().length > 0) return;
+  if (_peekBusy) return;   // a previous poll is still in flight (slow network) — skip
+  _peekBusy = true;
   const body = document.getElementById('peek-body');
   const statusEl = document.getElementById('peek-status');
   try {
@@ -21072,6 +21075,8 @@ async function refreshPeek() {
         statusEl.textContent = 'Offline — no cache';
       }
     }
+  } finally {
+    _peekBusy = false;
   }
 }
 
@@ -22590,9 +22595,11 @@ function slashAcKeydown(e) {
     slashAcHighlight();
   } else if (e.key === 'Enter') {
     e.preventDefault();
+    // Only accept an autocomplete suggestion if the user explicitly navigated to
+    // one with the arrow keys. Otherwise Enter always sends — no more double-enter
+    // when the @-mention or slash dropdown just happens to be open.
     if (getSel() >= 0) slashAcPick(getSel());
-    else if (atMode) slashAcPick(0);
-    else { el.classList.remove('open'); sendPeekCmd(); }
+    else { el.classList.remove('open'); el._atItems = null; el._atSel = -1; sendPeekCmd(); }
   } else if (e.key === 'Tab') {
     e.preventDefault();
     slashAcPick(getSel() >= 0 ? getSel() : 0);
@@ -22848,9 +22855,9 @@ function cardSlashAcKeydown(name, e) {
     cardSlashAcHighlight(name);
   } else if (e.key === 'Enter') {
     e.preventDefault();
+    // Enter always sends unless the user explicitly arrow-selected a suggestion.
     if (getSel() >= 0) cardSlashAcPick(name, getSel());
-    else if (atMode) cardSlashAcPick(name, 0);
-    else el.classList.remove('open');
+    else { el.classList.remove('open'); el._atItems = null; el._atSel = -1; sendFromInput(name); }
   } else if (e.key === 'Tab') {
     e.preventDefault();
     cardSlashAcPick(name, getSel() >= 0 ? getSel() : 0);
