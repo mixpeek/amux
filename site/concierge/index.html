@@ -281,8 +281,8 @@
   .syschip img{width:16px;height:16px;border-radius:3px;display:block;object-fit:contain}
 
   /* ── HERO ART + ANIMATED DEMOS ── */
-  .hero-grid{display:grid; grid-template-columns:2fr 1fr; gap:44px; align-items:center}
-  .hero-art{border:1px solid #38321f; border-radius:16px; box-shadow:var(--shadow); overflow:hidden; background:var(--dark-2)}
+  .hero-grid{display:grid; grid-template-columns:2fr 1fr; gap:44px; align-items:stretch}
+  .hero-art{display:flex; align-items:stretch; justify-content:center}
   .hero-art svg, .demo-card svg{display:block; width:100%; height:auto}
   .demo-wrap{margin-top:2px}
   .demo-cap{font-family:var(--mono); font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--mute); margin-bottom:10px}
@@ -300,7 +300,7 @@
     .price-wrap{grid-template-columns:1fr}
     .setup-grid{grid-template-columns:1fr}
     .hero-grid{grid-template-columns:1fr; gap:30px}
-    .hero-art{max-width:460px}
+    .hero-art{display:none}
   }
   @media (max-width:560px){
     body{font-size:16px}
@@ -333,6 +333,52 @@
   .on-dark .chip { background: var(--dark-3); border-color: #3a3428; color: var(--cream-dim); }
   .on-dark .chip-live { background: rgba(95,138,74,.18); border-color: #5f8a4a; color: #9bc27f; }
   .on-dark .engine-row .arrow { color: #5a5344; }
+
+  /* ── HERO PHONE (non-technical app mockup) ── */
+  .phone{width:100%; max-width:300px; align-self:stretch; min-height:430px; background:#1b1813; border-radius:42px; padding:12px; box-shadow:0 40px 80px -30px rgba(27,24,19,.5); display:flex}
+  .phone-screen{position:relative; flex:1; background:#fdfbf7; border-radius:32px; padding:22px 18px; display:flex; flex-direction:column; overflow:hidden}
+  .phone-notch{position:absolute; left:50%; top:18px; transform:translateX(-50%); width:46px; height:6px; border-radius:3px; background:#38321f; z-index:2}
+  .pa-head{display:flex; align-items:center; gap:8px; margin-top:6px}
+  .pa-mark{font-family:var(--mono); color:var(--accent); font-weight:700; font-size:16px}
+  .pa-name{font-weight:700; font-size:16px; color:var(--ink)}
+  .pa-live{width:8px; height:8px; border-radius:50%; background:#5f8a4a; margin-left:auto; box-shadow:0 0 0 3px rgba(95,138,74,.16)}
+  .pa-greet{font-family:var(--mono); font-size:12px; color:var(--mute); margin-top:4px}
+  .pa-flow{margin-top:16px; display:flex; flex-direction:column; gap:11px}
+  .pa-card{display:flex; align-items:center; gap:10px; background:#f4ede0; border:1px solid #e6e0d3; border-radius:13px; padding:11px 12px}
+  .pa-ic{width:32px; height:32px; border-radius:9px; background:var(--accent-soft); display:grid; place-items:center; flex-shrink:0}
+  .pa-ic .i{width:17px; height:17px; stroke:var(--accent)}
+  .pa-ct{display:flex; flex-direction:column; line-height:1.3}
+  .pa-ct b{font-size:14px; color:var(--ink); font-weight:600}
+  .pa-ct small{font-size:11px; color:var(--mute)}
+  .pa-plabel{font-size:12.5px; color:var(--ink-2); margin-bottom:7px}
+  .pa-track{height:7px; background:#ece4d4; border-radius:4px; overflow:hidden}
+  .pa-fill{display:block; height:100%; width:0; background:var(--accent); border-radius:4px}
+  .pa-btnslot{position:relative; height:44px}
+  .pa-btn{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; gap:6px; border-radius:12px; font-weight:600; font-size:14.5px}
+  .pa-btn .i{width:16px; height:16px}
+  .pa-btn-primary{background:var(--accent); color:#fff}
+  .pa-btn-done{background:#e9efdf; color:#3f6a2c; border:1px solid #bcd3a8}
+  .pa-btn-done .i{stroke:#3f6a2c}
+  .pa-result{display:flex; align-items:center; gap:7px; font-size:13px; color:#3f6a2c; font-weight:500}
+  .pa-result .i{width:15px; height:15px; stroke:#3f6a2c}
+  .pa-hist{margin-top:auto; padding-top:16px; border-top:1px solid #eee4d3}
+  .pa-hlabel{font-family:var(--mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--mute); margin-bottom:10px}
+  .pa-hrow{display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--ink-3); margin-bottom:9px; opacity:.75}
+  .pa-hcheck{width:16px; height:16px; border-radius:5px; background:#e9efdf; display:grid; place-items:center; flex-shrink:0}
+  .pa-hcheck .i{width:11px; height:11px; stroke:#5f8a4a}
+  .pa-anim-card{animation:paCard 7s ease-in-out infinite}
+  .pa-anim-prep{animation:paPrep 7s ease-in-out infinite}
+  .pa-anim-fill{animation:paFill 7s ease-in-out infinite}
+  .pa-anim-approve{animation:paApprove 7s ease-in-out infinite}
+  .pa-anim-approved{animation:paApproved 7s ease-in-out infinite; opacity:0}
+  .pa-anim-done{animation:paDone 7s ease-in-out infinite}
+  @keyframes paCard{0%,3%{opacity:0;transform:translateY(8px)} 8%,95%{opacity:1;transform:none} 100%{opacity:0}}
+  @keyframes paPrep{0%,15%{opacity:0;transform:translateY(6px)} 20%,95%{opacity:1;transform:none} 100%{opacity:0}}
+  @keyframes paFill{0%,20%{width:0} 46%,95%{width:100%} 100%{width:0}}
+  @keyframes paApprove{0%,30%{opacity:0} 36%,54%{opacity:1} 60%,100%{opacity:0}}
+  @keyframes paApproved{0%,58%{opacity:0} 64%,95%{opacity:1} 100%{opacity:0}}
+  @keyframes paDone{0%,68%{opacity:0;transform:translateY(6px)} 74%,95%{opacity:1;transform:none} 100%{opacity:0}}
+  @media (prefers-reduced-motion: reduce){ .pa-anim-card,.pa-anim-prep,.pa-anim-fill,.pa-anim-approve,.pa-anim-approved,.pa-anim-done{animation:none} .pa-anim-approve{opacity:0} .pa-anim-approved{opacity:1} .pa-fill{width:100%} }
 </style>
 </head>
 <body>
@@ -370,55 +416,38 @@
         </div>
       </div>
       <div class="hero-art">
-        <svg viewBox="0 0 470 372" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif" role="img" aria-label="Animated demo: amux receives a task, prepares a draft, waits for your approval, then completes it.">
-          <rect width="470" height="372" fill="#211d14"/>
-          <circle cx="26" cy="25" r="5" fill="#f87171"/>
-          <circle cx="44" cy="25" r="5" fill="#fbbf24"/>
-          <circle cx="62" cy="25" r="5" fill="#34d399"/>
-          <text x="88" y="30" font-family="JetBrains Mono, monospace" font-size="13" fill="#a69e8b">amux · workflow</text>
-          <circle cx="410" cy="25" r="4" fill="#34d399"/>
-          <text x="424" y="29" font-family="JetBrains Mono, monospace" font-size="11" fill="#8ab87a">live</text>
-          <line x1="0" y1="49" x2="470" y2="49" stroke="#38321f" stroke-width="1"/>
-
-          <g opacity="0">
-            <animate attributeName="opacity" dur="7s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.05;0.10;0.95;1"/>
-            <text x="28" y="89" font-family="JetBrains Mono, monospace" font-size="14" fill="#e0a458">▌</text>
-            <text x="46" y="89" font-size="15" font-weight="600" fill="#f4efe4">New task</text>
-            <text x="46" y="108" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#a69e8b">process referral · fax</text>
-          </g>
-
-          <g opacity="0">
-            <animate attributeName="opacity" dur="7s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.16;0.20;0.95;1"/>
-            <text x="28" y="144" font-size="14.5" fill="#f4efe4">amux preparing packet…</text>
-            <rect x="28" y="156" width="414" height="8" rx="4" fill="#38321f"/>
-            <rect x="28" y="156" width="0" height="8" rx="4" fill="#c75b2e">
-              <animate attributeName="width" dur="7s" repeatCount="indefinite" values="0;0;414;414;0" keyTimes="0;0.20;0.44;0.95;1"/>
-            </rect>
-          </g>
-
-          <g opacity="0">
-            <animate attributeName="opacity" dur="7s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.47;0.51;0.95;1"/>
-            <text x="28" y="198" font-size="15" font-weight="600" fill="#f4efe4">Draft ready</text>
-            <text x="28" y="217" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#a69e8b">waiting for your OK</text>
-          </g>
-
-          <g opacity="0">
-            <animate attributeName="opacity" dur="7s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.52;0.56;0.95;1"/>
-            <rect x="28" y="234" width="152" height="42" rx="11" fill="#233a1e" stroke="#8ab87a" stroke-width="1.5"/>
-            <text x="104" y="260" text-anchor="middle" font-size="15" font-weight="600" fill="#9bc27f">Approve ✓</text>
-          </g>
-
-          <g opacity="0">
-            <animate attributeName="opacity" dur="7s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.66;0.70;0.95;1"/>
-            <circle cx="38" cy="308" r="12" fill="#233a1e" stroke="#8ab87a" stroke-width="1.5"/>
-            <path d="M33 308 l4 4 7-8" fill="none" stroke="#8ab87a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            <text x="58" y="304" font-size="15" font-weight="600" fill="#f4efe4">Done · sent to payer</text>
-            <text x="58" y="322" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#a69e8b">12 minutes saved</text>
-          </g>
-
-          <line x1="0" y1="344" x2="470" y2="344" stroke="#38321f" stroke-width="1"/>
-          <text x="28" y="361" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#7a7360">runs on your machine · you approve every step</text>
-        </svg>
+        <div class="phone">
+          <div class="phone-notch"></div>
+          <div class="phone-screen">
+            <div class="pa-head">
+              <span class="pa-mark">▌</span>
+              <span class="pa-name">amux</span>
+              <span class="pa-live"></span>
+            </div>
+            <div class="pa-greet">Handling your work today</div>
+            <div class="pa-flow">
+              <div class="pa-card pa-anim-card">
+                <span class="pa-ic"><svg class="i" viewBox="0 0 24 24"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg></span>
+                <span class="pa-ct"><b>New referral</b><small>St. Mary&#39;s Hospital · just now</small></span>
+              </div>
+              <div class="pa-prep pa-anim-prep">
+                <div class="pa-plabel">amux is preparing the packet</div>
+                <div class="pa-track"><span class="pa-fill pa-anim-fill"></span></div>
+              </div>
+              <div class="pa-btnslot">
+                <div class="pa-btn pa-btn-primary pa-anim-approve">Approve</div>
+                <div class="pa-btn pa-btn-done pa-anim-approved"><svg class="i" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg> Approved</div>
+              </div>
+              <div class="pa-result pa-anim-done"><svg class="i" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg> Done · 12 minutes saved</div>
+            </div>
+            <div class="pa-hist">
+              <div class="pa-hlabel">Earlier today</div>
+              <div class="pa-hrow"><span class="pa-hcheck"><svg class="i" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span> Predetermination · approved</div>
+              <div class="pa-hrow"><span class="pa-hcheck"><svg class="i" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span> Census report · sent</div>
+              <div class="pa-hrow"><span class="pa-hcheck"><svg class="i" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span> Eligibility · verified</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
