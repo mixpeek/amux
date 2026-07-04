@@ -15653,7 +15653,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           style="position:absolute;width:0;height:0;opacity:0;overflow:hidden;pointer-events:none;" onchange="handlePeekFileInput(event)">
         <button class="peek-attach-btn" title="Attach file" onclick="document.getElementById('peek-file-input').click()">&#128206;</button>
         <button class="peek-attach-btn" id="peek-hist-btn" onclick="openCmdHistoryModal()" title="Message history">&#x1F551;</button>
-        <div class="send-split"><button class="btn primary send-split-main" onclick="sendPeekCmd()">Send</button><button class="btn primary send-split-arrow" onclick="_toggleSendMode(event)" title="Switch send mode">&#x25BC;</button></div>
+        <div class="send-split"><button class="btn primary send-split-main" onmousedown="event.preventDefault()" onclick="sendPeekCmd()">Send</button><button class="btn primary send-split-arrow" onmousedown="event.preventDefault()" onclick="_toggleSendMode(event)" title="Switch send mode">&#x25BC;</button></div>
       </div>
       <!-- Drag-over hint (shown by CSS when drag-over class is on peek-overlay) -->
       <div class="peek-drag-hint" style="display:none;">&#128206; Drop to attach</div>
@@ -17758,7 +17758,7 @@ function render() {
             autocapitalize="off" spellcheck="false" enterkeyhint="send"
             oninput="autoGrow(this);cardSlashAcUpdate('${s.name}');cmdHistoryReset()"
             onkeydown="cardSlashAcKeydown('${s.name}',event)"></textarea>
-          <button class="btn primary" onclick="sendFromInput('${s.name}')">Send</button>
+          <button class="btn primary" onmousedown="event.preventDefault()" onclick="sendFromInput('${s.name}')">Send</button>
         </div>` : ''}
       </div>
     </div>`;
@@ -22608,7 +22608,10 @@ function slashAcKeydown(e) {
   const el = document.getElementById('slash-ac-list');
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendPeekCmd(); return; }
   if (!el.classList.contains('open')) {
-    if (e.key === 'Enter' && !e.shiftKey && (!matchMedia('(pointer: coarse)').matches || !inp.value.trim())) { e.preventDefault(); sendPeekCmd(); return; }
+    // Enter always sends (the mobile keyboard key is labeled "send" via enterkeyhint);
+    // Shift+Enter inserts a newline. The old touch-device carve-out made the send key
+    // insert newlines on phones, which read as "Enter does nothing / send twice".
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPeekCmd(); return; }
     if (e.key === 'ArrowUp' && inp.selectionStart === 0) { e.preventDefault(); cmdHistoryUp(inp); return; }
     if (e.key === 'ArrowDown' && _cmdHistoryIdx !== -1) { e.preventDefault(); cmdHistoryDown(inp); return; }
     return;
@@ -22864,11 +22867,13 @@ function cardSlashAcPick(name, i) {
 }
 
 function cardSlashAcKeydown(name, e) {
+  if (e.isComposing || e.keyCode === 229) return; // ignore IME composition Enter
   const inp = document.getElementById('input-' + name);
   const el = document.getElementById('card-ac-' + name);
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendFromInput(name); return; }
   if (!el || !el.classList.contains('open')) {
-    if (e.key === 'Enter' && !e.shiftKey && (!matchMedia('(pointer: coarse)').matches || !(inp && inp.value.trim()))) { e.preventDefault(); sendFromInput(name); return; }
+    // Enter always sends (keyboard key is labeled "send"); Shift+Enter = newline.
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendFromInput(name); return; }
     if (e.key === 'ArrowUp' && inp && inp.selectionStart === 0) { e.preventDefault(); cmdHistoryUp(inp); return; }
     if (e.key === 'ArrowDown' && _cmdHistoryIdx !== -1) { e.preventDefault(); if (inp) cmdHistoryDown(inp); return; }
     return;
@@ -35582,7 +35587,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.7.4';
+const CACHE = 'amux-v0.7.5';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
