@@ -16379,7 +16379,12 @@ const ZOOM_STEPS = [50, 60, 70, 75, 80, 85, 90, 95, 100, 110, 120, 130, 150, 175
 let _zoomLevel = parseInt(localStorage.getItem('amux_zoom')) || 100;
 if (!ZOOM_STEPS.includes(_zoomLevel)) _zoomLevel = 100;
 function _applyZoom() {
-  document.documentElement.style.zoom = (_zoomLevel / 100);
+  // CSS zoom on the root breaks position:fixed geometry in WebKit — a zoomed
+  // page renders the peek overlay short of the physical screen bottom (dead
+  // strip under the command bar). Zoom is a desktop affordance; phones pinch.
+  // Force 100% on touch devices while keeping the stored preference for desktop.
+  const z = matchMedia('(pointer: coarse)').matches ? 100 : _zoomLevel;
+  document.documentElement.style.zoom = (z / 100);
   localStorage.setItem('amux_zoom', _zoomLevel);
   const el = document.getElementById('zoom-level-display');
   if (el) el.textContent = _zoomLevel + '%';
@@ -20740,7 +20745,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.8.7';   // bump together with the sw.js CACHE version
+const APP_VER = '0.8.8';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -20817,6 +20822,7 @@ function openPeek(name, opts) {
   document.getElementById('peek-focus-title').textContent = _peekTask ? name + ' — ' + _peekTask : name;
   _syncPeekOverlayToVisualViewport();
   _vvKick();   // keyboard may already be up or mid-animation when peek opens
+  setTimeout(_peekGeoBeacon, 1500);   // mobile geometry self-report (once per load)
   // Load cached peek instantly while fetching fresh data
   _idb.get('peek_' + name).then(cached => {
     if (peekSession !== name) return;  // session changed before cache resolved
@@ -21048,6 +21054,42 @@ function _syncPeekOverlayToVisualViewport() {
 // Tap the "Updated … · vX.Y.Z" status line to dump exact bottom-edge geometry
 // from the running device — for diagnosing layout gaps that only reproduce on
 // real hardware (safe areas, standalone-PWA viewport quirks).
+// Auto-beacon: small screens self-report peek geometry once per page load
+// (POST /api/client-debug) so mobile layout bugs are diagnosed from real
+// device numbers — no user round-trips.
+let _geoBeaconSent = false;
+function _peekGeoBeacon() {
+  if (_geoBeaconSent || window.innerWidth > 700) return;
+  _geoBeaconSent = true;
+  try {
+    const ov = document.getElementById('peek-overlay');
+    const bar = document.querySelector('.peek-cmd-bar');
+    const row = document.querySelector('.peek-cmd-row');
+    const vv = window.visualViewport || {};
+    const o = ov.getBoundingClientRect(), b = bar.getBoundingClientRect();
+    const r = row ? row.getBoundingClientRect() : { bottom: 0 };
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;bottom:0;height:env(safe-area-inset-bottom,0px);width:1px;visibility:hidden;';
+    document.body.appendChild(probe);
+    const sabH = Math.round(probe.getBoundingClientRect().height);
+    const sabBottom = Math.round(probe.getBoundingClientRect().bottom);
+    probe.remove();
+    fetch(API + '/api/client-debug', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'peek-geo', ver: APP_VER, zoom: (typeof _zoomLevel !== 'undefined' ? _zoomLevel : '?'),
+        win: window.innerWidth + 'x' + window.innerHeight,
+        vvH: Math.round(vv.height || 0), vvTop: Math.round(vv.offsetTop || 0), vvScale: vv.scale || 1,
+        sab: sabH, fixedBottomAt: sabBottom,
+        ovTop: Math.round(o.top), ovBottom: Math.round(o.bottom),
+        ovPadB: getComputedStyle(ov).paddingBottom,
+        barBottom: Math.round(b.bottom), barPadB: getComputedStyle(bar).paddingBottom,
+        rowBottom: Math.round(r.bottom),
+        standalone: navigator.standalone ? 1 : 0, dpr: window.devicePixelRatio,
+      }),
+    }).catch(() => {});
+  } catch (e) {}
+}
 let _peekGeoHold = 0;   // while set, refreshPeek leaves the status line alone
 function _peekGeoDebug() {
   _peekGeoHold = performance.now() + 12000;
@@ -35956,7 +35998,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.8.7';
+const CACHE = 'amux-v0.8.8';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -37567,6 +37609,23 @@ class CCHandler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "key": key, "value": value})
 
         # ── Command history API (server-side) ──
+        # POST /api/client-debug — device-side layout/geometry self-reports so
+        # mobile-only rendering bugs can be diagnosed from real device numbers
+        # without asking the user to run anything. JSON lines, crude 1MB cap.
+        if method == "POST" and path == "/api/client-debug":
+            body = self._read_body()
+            try:
+                p = CC_LOGS / "client-debug.log"
+                if p.exists() and p.stat().st_size > 1_000_000:
+                    p.write_text("")
+                body["server_ts"] = int(time.time())
+                body["ip"] = self.client_address[0] if self.client_address else ""
+                with open(p, "a") as f:
+                    f.write(json.dumps(body)[:2000] + "\n")
+            except Exception:
+                pass
+            return self._json({"ok": True})
+
         if path == "/api/history" or path.startswith("/api/history/"):
             if method == "GET" and path == "/api/history":
                 limit = int(qs.get("limit", ["500"])[0])
