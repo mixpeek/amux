@@ -11967,6 +11967,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .peek-cmd-row.open { display: flex; min-width: 0; overflow: visible; position: relative; }
   .peek-cmd-row .send-input { font-size: 0.85rem; padding: 6px 10px; min-height: 30px; min-width: 0; }
   .peek-cmd-row .btn { min-height: 30px; padding: 5px 11px; font-size: 0.82rem; }
+  /* Mobile: 16px input font stops iOS Safari from zooming in on focus (both the
+     peek command input and the session-card inputs share .send-input). */
+  @media (max-width: 640px) {
+    .send-input,
+    .overlay.vv-compact .peek-cmd-row .send-input { font-size: 16px; }
+  }
   .send-split { display: flex; flex-shrink: 0; }
   .send-split-main { border-radius: 8px 0 0 8px; padding-right: 8px; }
   .send-split-arrow { border-radius: 0 8px 8px 0; padding: 6px 6px; border-left: 1px solid rgba(255,255,255,0.2); font-size: 0.55rem; min-width: 28px; min-height: 44px; }
@@ -15571,6 +15577,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <div id="peek-overlay" class="overlay">
   <div class="overlay-header" style="flex-direction:column;gap:4px;padding-bottom:6px;">
     <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+      <button class="btn" id="peek-close-btn" onclick="closePeek()" style="flex-shrink:0;padding:5px 12px;">&#x2715; Close</button>
       <h2 id="peek-title" style="margin:0;font-size:0.92rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">peek</h2>
       <span id="peek-session-status"></span>
       <span id="peek-model-badge" style="font-size:0.75rem;padding:2px 8px;border-radius:9999px;background:rgba(255,255,255,0.06);color:var(--dim);border:1px solid var(--border);white-space:nowrap;"></span>
@@ -15591,7 +15598,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       </div>
       <button class="btn peek-split-btn" id="peek-split-toggle" onclick="togglePeekSplit()" title="Split: file browser">&#x1F4C2;</button>
       <button class="btn" onclick="togglePeekFocus()" id="peek-focus-btn" title="Focus mode — hide controls">&#x25B4;</button>
-      <button class="btn" id="peek-close-btn" onclick="closePeek()">Close</button>
     </div>
   </div>
   <!-- Focus mode minimal bar (visible only in focus mode) -->
@@ -17748,8 +17754,8 @@ function render() {
         <div class="send-row" style="position:relative;">
           <div id="card-ac-${s.name}" class="ac-list slash-ac"></div>
           <textarea class="send-input" id="input-${s.name}" rows="1"
-            placeholder="Send to ${esc(s.name)}..." autocomplete="off" autocorrect="on"
-            autocapitalize="sentences" spellcheck="true" enterkeyhint="enter"
+            placeholder="Send to ${esc(s.name)}..." autocomplete="off" autocorrect="off"
+            autocapitalize="off" spellcheck="false" enterkeyhint="send"
             oninput="autoGrow(this);cardSlashAcUpdate('${s.name}');cmdHistoryReset()"
             onkeydown="cardSlashAcKeydown('${s.name}',event)"></textarea>
           <button class="btn primary" onclick="sendFromInput('${s.name}')">Send</button>
@@ -35576,7 +35582,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.7.2';
+const CACHE = 'amux-v0.7.3';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
