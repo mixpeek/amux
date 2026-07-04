@@ -11290,6 +11290,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     background: var(--bg);
     z-index: 100; flex-direction: column;
   }
+  /* Home-screen web apps (non-cover): the webview already sits BELOW the
+     status bar (innerHeight < screen.height) yet iOS still reports ~50px of
+     safe-area-inset-top — double-counting that held the peek 50px down
+     (device beacons: ovTop=50 with a 762px viewport on an 812pt screen).
+     When the viewport cannot extend under the status bar, the inset is
+     redundant: zero it. Toggled by _topInsetGuard(). */
+  body.no-top-inset .overlay { top: 0 !important; padding-top: 12px !important; }
   /* board-detail sits above peek when opened from within it */
   #board-detail-overlay { z-index: 150; }
   .overlay {
@@ -20772,7 +20779,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.2';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21226,6 +21233,16 @@ function _vvTick() {
     }
   } catch (e) {}
 })();
+// Zero the redundant top inset when the webview can't extend under the status
+// bar anyway (home-screen web app, non-cover viewport) — see .no-top-inset CSS.
+function _topInsetGuard() {
+  try {
+    const redundant = window.innerWidth <= 700 && window.innerHeight < (screen.height - 10);
+    document.body.classList.toggle('no-top-inset', redundant);
+  } catch (e) {}
+}
+window.addEventListener('resize', _topInsetGuard);
+if (document.body) _topInsetGuard(); else document.addEventListener('DOMContentLoaded', _topInsetGuard);
 (function() {
   if (!window.visualViewport) return;
   window.visualViewport.addEventListener('resize', () => _vvKick());
@@ -36110,7 +36127,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.1';
+const CACHE = 'amux-v0.9.2';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
