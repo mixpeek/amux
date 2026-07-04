@@ -11178,7 +11178,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .overlay-body .file-link:active { color: #79ead3; }
   .overlay-body .md-link { color: var(--yellow); text-decoration: none; border-bottom: 1px dashed var(--yellow); cursor: pointer; }
   .overlay-body .md-link:active { color: #e8c547; }
-  .overlay-status { color: var(--dim); font-size: 0.75rem; margin-top: 6px; flex-shrink: 0; text-align: center; }
+  .overlay-status { color: var(--dim); font-size: 0.68rem; margin-top: 2px; flex-shrink: 0; text-align: center; }
   .scroll-lock-badge {
     position: sticky; bottom: 0; left: 0; right: 0;
     text-align: center; padding: 6px 0;
@@ -11954,19 +11954,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .overlay.vv-compact .peek-attach-btn { min-height: 30px; }
 
   /* Peek command bar */
-  .peek-cmd-bar { flex-shrink: 0; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+  .peek-cmd-bar { flex-shrink: 0; padding-bottom: max(4px, env(safe-area-inset-bottom)); }
   .peek-cmd-toggle {
-    width: 100%; padding: 6px; border: none; background: transparent;
+    width: 100%; padding: 3px; border: none; background: transparent;
     color: var(--dim); font-size: 0.75rem; cursor: pointer; text-align: center;
     -webkit-tap-highlight-color: transparent;
   }
   .peek-cmd-toggle:active { color: var(--text); }
   .peek-cmd-row {
-    display: none; gap: 8px; padding-top: 6px;
+    display: none; gap: 8px; padding-top: 4px;
   }
   .peek-cmd-row.open { display: flex; min-width: 0; overflow: visible; position: relative; }
-  .peek-cmd-row .send-input { font-size: 0.85rem; padding: 8px 12px; min-height: 36px; min-width: 0; }
-  .peek-cmd-row .btn { min-height: 36px; padding: 6px 12px; font-size: 0.82rem; }
+  .peek-cmd-row .send-input { font-size: 0.85rem; padding: 6px 10px; min-height: 30px; min-width: 0; }
+  .peek-cmd-row .btn { min-height: 30px; padding: 5px 11px; font-size: 0.82rem; }
   .send-split { display: flex; flex-shrink: 0; }
   .send-split-main { border-radius: 8px 0 0 8px; padding-right: 8px; }
   .send-split-arrow { border-radius: 0 8px 8px 0; padding: 6px 6px; border-left: 1px solid rgba(255,255,255,0.2); font-size: 0.55rem; min-width: 28px; min-height: 44px; }
@@ -15569,17 +15569,17 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 
 <!-- Peek overlay -->
 <div id="peek-overlay" class="overlay">
-  <div class="overlay-header" style="flex-wrap:wrap;gap:6px 8px;align-items:center;padding-bottom:6px;">
-    <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 auto;">
+  <div class="overlay-header" style="flex-direction:column;gap:4px;padding-bottom:6px;">
+    <div style="display:flex;align-items:center;gap:8px;min-width:0;">
       <h2 id="peek-title" style="margin:0;font-size:0.92rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">peek</h2>
       <span id="peek-session-status"></span>
       <span id="peek-model-badge" style="font-size:0.75rem;padding:2px 8px;border-radius:9999px;background:rgba(255,255,255,0.06);color:var(--dim);border:1px solid var(--border);white-space:nowrap;"></span>
     </div>
-    <div id="peek-task-row" style="display:none;align-items:center;gap:6px;min-width:0;flex-basis:100%;order:5;">
+    <div id="peek-task-row" style="display:none;align-items:center;gap:6px;min-width:0;">
       <span style="font-size:0.72rem;color:var(--dim);flex-shrink:0;">Task:</span>
       <span id="peek-task-label" style="font-size:0.82rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;" onclick="editField(peekSession,'task',this.textContent.trim())" title="Click to edit task label"></span>
     </div>
-    <div style="display:flex;gap:6px;align-items:center;flex:0 0 auto;">
+    <div style="display:flex;gap:6px;align-items:center;">
       <div class="peek-find-wrap" id="peek-search-wrap">
         <input class="search-input" id="peek-search" type="text" placeholder="Find..." autocomplete="off" autocorrect="off"
           oninput="peekSearchQuery=this.value;document.getElementById('peek-search-wrap').classList.toggle('has-value',!!this.value);applyPeekSearch()"
@@ -35576,7 +35576,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.7.1';
+const CACHE = 'amux-v0.7.2';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
