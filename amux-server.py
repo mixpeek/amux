@@ -2518,6 +2518,23 @@ _SESSION_LIMIT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Per-model credit/usage limit — a DIFFERENT class than the weekly/session caps
+# above. Phrased "You've reached your Fable 5 limit. Run /usage-credits to
+# continue or switch models with /model." There is NO reset time: the fix is to
+# top up credits or switch models, so "continue" won't unblock it (and auto
+# resume must NOT fire on it). Anchor on the two strings unique to this banner
+# (/usage-credits, "switch models with /model") so normal content never matches;
+# like the other banners it's only tested against the LIVE tail.
+_MODEL_CREDIT_LIMIT_RE = re.compile(
+    r"/usage-credits\b|switch\s+models?\s+with\s+/model",
+    re.IGNORECASE,
+)
+# Pull the model name out for display ("Fable 5", "Opus", ...). Best-effort.
+_MODEL_CREDIT_NAME_RE = re.compile(
+    r"reached\s+your\s+([A-Za-z0-9][A-Za-z0-9.\s-]{0,19}?)\s+limit",
+    re.IGNORECASE,
+)
+
 # Permissive fallback: any bare HH:MM (optionally with AM/PM) in the
 # scrollback when none of the labeled patterns above match. Real-world
 # Claude Code rendering wraps lines and may push the "resets" label off
@@ -2803,11 +2820,14 @@ def _rate_limit_auto_respond():
             if _detect_claude_status(raw) == "active":
                 if existing and (existing.get("rate_limit_reset_at")
                                  or existing.get("rate_limit_weekly")
-                                 or existing.get("rate_limit_banner")):
+                                 or existing.get("rate_limit_banner")
+                                 or existing.get("rate_limit_credits")):
                     existing.pop("rate_limit_reset_at", None)
                     existing.pop("rate_limit_reset_at_fallback", None)
                     existing.pop("rate_limit_weekly", None)
                     existing.pop("rate_limit_banner", None)
+                    existing.pop("rate_limit_credits", None)
+                    existing.pop("rate_limit_model_name", None)
                     slog(f"[rate-limit] session={name} active — cleared stale rate-limit flag")
                 continue
             # The interactive /rate-limit-options menu is always rendered LIVE at
@@ -2837,25 +2857,51 @@ def _rate_limit_auto_respond():
             # Both weekly and session-limit banners are menu-less and keep their
             # banner on screen until reset — group them as "banner" limits.
             is_banner = is_weekly or is_session_banner
-            if matched_idx < 0 and not is_banner:
+            # Per-model credit limit: menu-less, no reset time, NOT auto-resumable.
+            is_credit = (matched_idx < 0 and not is_banner
+                         and bool(_MODEL_CREDIT_LIMIT_RE.search(tail)))
+            if matched_idx < 0 and not is_banner and not is_credit:
                 # No live rate-limit UI. A real banner cap keeps its banner on
                 # screen until reset, so a session flagged from a banner without a
                 # live banner was a false match — clear it. (5-hour menu flags park
                 # in a bannerless "waiting for reset" state, so leave those alone.)
                 if existing and (existing.get("rate_limit_weekly")
-                                 or existing.get("rate_limit_banner")):
+                                 or existing.get("rate_limit_banner")
+                                 or existing.get("rate_limit_credits")):
                     existing.pop("rate_limit_reset_at", None)
                     existing.pop("rate_limit_reset_at_fallback", None)
                     existing.pop("rate_limit_weekly", None)
                     existing.pop("rate_limit_banner", None)
+                    existing.pop("rate_limit_credits", None)
+                    existing.pop("rate_limit_model_name", None)
                     slog(f"[rate-limit] session={name} limit banner not on live "
                          f"screen — cleared stale flag")
                 continue
-            if is_banner:
+            if is_banner or is_credit:
                 _rate_limit_last_responded[name] = now  # cooldown; nothing to press
             actions = _session_auto_actions.setdefault(name, {})
             actions["rate_limit_weekly"] = is_weekly
             actions["rate_limit_banner"] = is_banner
+            actions["rate_limit_credits"] = is_credit
+            if is_credit:
+                # No reset time exists for a credit limit; auto-resume keys off
+                # rate_limit_reset_at, so leaving it unset keeps auto-resume from
+                # firing a useless "continue". Record the model name for the UI.
+                m = _MODEL_CREDIT_NAME_RE.search(tail)
+                actions["rate_limit_model_name"] = (m.group(1).strip() if m else "")
+                actions["rate_limit_last_event_ts"] = int(now)
+                actions.pop("rate_limit_reset_at", None)
+                actions.pop("rate_limit_reset_at_fallback", None)
+                slog(f"[rate-limit] session={name} model/credit limit "
+                     f"(model={actions['rate_limit_model_name']!r}) — no reset, "
+                     f"needs model switch or credit top-up")
+                _posthog_emit("rate_limit_model_credit", {
+                    "session": name,
+                    "model": actions["rate_limit_model_name"],
+                }, distinct_id=name)
+                continue
+            actions.pop("rate_limit_credits", None)
+            actions.pop("rate_limit_model_name", None)
             parsed_reset = _parse_rate_limit_reset(clean, now=now)
             actions["rate_limit_last_event_ts"] = int(now)
             if parsed_reset:
@@ -7238,6 +7284,11 @@ def list_sessions() -> list:
             # True for any menu-less usage-cap banner (weekly OR 5-hour session) —
             # these auto-resume at their reset time, no manual action needed.
             "rate_limit_banner": bool(_session_auto_actions.get(name, {}).get("rate_limit_banner")),
+            # Per-model credit/usage limit (e.g. "reached your Fable 5 limit").
+            # No reset time — needs a model switch or credit top-up, so it does
+            # NOT auto-resume; surfaced in bulk actions for a one-tap switch.
+            "credit_limited": bool(_session_auto_actions.get(name, {}).get("rate_limit_credits")),
+            "credit_limit_model": _session_auto_actions.get(name, {}).get("rate_limit_model_name", ""),
             "tags": [t.strip() for t in cfg.get("CC_TAGS", "").split(",") if t.strip()],
             "flags": cfg.get("CC_FLAGS", ""),
             "creator": cfg.get("CC_CREATOR", ""),
@@ -16720,9 +16771,15 @@ function _rlRow(s, accent) {
     ? `<span style="margin-left:auto;color:var(--dim);font-size:0.76rem;white-space:nowrap;">resets ${_fmtResetTime(s.rate_limited_until)}</span>` : '';
   return `<div style="display:flex;align-items:center;gap:8px;font-size:0.82rem;padding:4px 8px;border-radius:6px;background:rgba(255,255,255,0.04);"><span style="color:${accent};flex-shrink:0;">&#x25CF;</span> <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name)}</span>${reset}</div>`;
 }
+function _clRow(s) {
+  const model = s.credit_limit_model
+    ? `<span style="margin-left:auto;color:var(--dim);font-size:0.76rem;white-space:nowrap;">${esc(s.credit_limit_model)}</span>` : '';
+  return `<div style="display:flex;align-items:center;gap:8px;font-size:0.82rem;padding:4px 8px;border-radius:6px;background:rgba(255,255,255,0.04);"><span style="color:#e0555b;flex-shrink:0;">&#x25CF;</span> <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name)}</span>${model}</div>`;
+}
 function openBulkActions() {
   const now = Date.now() / 1000;
   const limited = sessions.filter(s => s.rate_limited_until && s.rate_limited_until > now);
+  const creditLimited = sessions.filter(s => s.credit_limited);
   // Group by behavior, not by the weekly/non-weekly flag: any usage-cap banner
   // (weekly OR 5-hour session limit) auto-resumes at its reset time, so it needs
   // no action. Everything else is a transient/API rate-limit where sending
@@ -16751,11 +16808,40 @@ function openBulkActions() {
     html += `<button class="btn" style="width:100%;" onclick="bulkSendContinue(true)">Send "continue" anyway to ${capped.length} session${capped.length>1?'s':''}</button>`;
     html += `</div>`;
   }
-  if (!limited.length) {
+  if (creditLimited.length) {
+    html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
+    html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">&#x26A0;&#xFE0F; Model usage limit reached</div>`;
+    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">${creditLimited.length} session${creditLimited.length>1?'s':''} hit a per-model credit limit. There's no reset time, so "continue" won't help: switch model to unblock now, or top up at /usage-credits.</div>`;
+    html += `<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-height:180px;overflow-y:auto;">`;
+    creditLimited.forEach(s => { html += _clRow(s); });
+    html += `</div>`;
+    html += `<div style="display:flex;gap:8px;">`;
+    html += `<button class="btn primary" style="flex:1;" onclick="bulkSwitchModel('sonnet')">Switch to Sonnet</button>`;
+    html += `<button class="btn" style="flex:1;" onclick="bulkSwitchModel('opus')">Switch to Opus</button>`;
+    html += `</div>`;
+    html += `</div>`;
+  }
+  if (!limited.length && !creditLimited.length) {
     html += `<div style="padding:20px 0;text-align:center;color:var(--dim);font-size:0.88rem;">No rate-limited sessions found.</div>`;
   }
   body.innerHTML = html;
   document.getElementById('bulk-actions-overlay').classList.add('open');
+}
+async function bulkSwitchModel(model) {
+  const matched = sessions.filter(s => s.credit_limited);
+  if (!matched.length) { closeBulkActions(); return; }
+  closeBulkActions();
+  let sent = 0;
+  for (const s of matched) {
+    try {
+      await fetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/send', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({text: '/model ' + model})
+      });
+      sent++;
+    } catch(e) {}
+  }
+  showToast(`Switched ${sent} session${sent>1?'s':''} to ${model}`);
 }
 function closeBulkActions() {
   document.getElementById('bulk-actions-overlay').classList.remove('open');
@@ -17706,11 +17792,12 @@ function render() {
           <div class="card-menu-item danger" onclick="event.stopPropagation();deleteSession('${s.name}')"><span class="mi">&#x2716;</span> Delete</div>
         </div>
         </div>
-        ${(s.status || s.tokens || s.last_activity || s.rate_limited_until || !online) ? `<div class="card-header-meta">
+        ${(s.status || s.tokens || s.last_activity || s.rate_limited_until || s.credit_limited || !online) ? `<div class="card-header-meta">
           ${s.status === 'active' ? '<span class="status-badge active">working</span>' : ''}
           ${s.status === 'waiting' ? '<span class="status-badge waiting">needs input</span>' : ''}
           ${s.status === 'idle' ? '<span class="status-badge idle">idle</span>' : ''}
           ${s.rate_limited_until ? `<span class="status-badge rate-limited" title="${s.rate_limit_weekly ? 'Weekly limit' : 'Rate-limited'} — auto-resume at ${_fmtResetTime(s.rate_limited_until)}">${s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until'} ${_fmtResetTime(s.rate_limited_until)}</span>` : ''}
+          ${s.credit_limited ? `<span class="status-badge rate-limited" title="${esc(s.credit_limit_model || 'Model')} usage limit — switch model or top up credits (Bulk actions)">${esc(s.credit_limit_model || 'model')} limit</span>` : ''}
           ${s.steering && s.steering.length ? `<span class="status-badge steering" title="${s.steering.length} steering message${s.steering.length>1?'s':''} queued">${s.steering.length} queued</span>` : ''}
           ${s.tokens ? `<span class="token-count">${fmtTokens(s.tokens)}</span>` : ''}
           ${s.last_activity ? `<span class="last-active">${timeAgo(s.last_activity)}</span>` : ''}
@@ -18562,21 +18649,29 @@ function updateRateLimitPill() {
   const txt = document.getElementById('rate-limit-pill-text');
   if (!pill || !txt) return;
   const blocked = sessions.filter(s => s.rate_limited_until);
-  if (!blocked.length) {
+  const credit = sessions.filter(s => s.credit_limited);
+  if (!blocked.length && !credit.length) {
     pill.classList.remove('show');
     return;
   }
-  // All sessions on one account share a reset time; show the earliest if
-  // they drift, and indicate "N of M" so the user sees the fleet picture.
-  const earliest = Math.min(...blocked.map(s => s.rate_limited_until));
-  const total = sessions.filter(s => !s.archived).length || blocked.length;
-  txt.textContent = blocked.length + ' of ' + total +
-    ' rate-limited, reset ' + _fmtClockTime(earliest);
-  pill.title = blocked.map(s => s.name).join(', ');
+  if (blocked.length) {
+    // All sessions on one account share a reset time; show the earliest if
+    // they drift, and indicate "N of M" so the user sees the fleet picture.
+    const earliest = Math.min(...blocked.map(s => s.rate_limited_until));
+    const total = sessions.filter(s => !s.archived).length || blocked.length;
+    txt.textContent = blocked.length + ' of ' + total +
+      ' rate-limited, reset ' + _fmtClockTime(earliest) +
+      (credit.length ? ' · ' + credit.length + ' model-limited' : '');
+  } else {
+    // Credit/model limits only — no reset time; the fix is a model switch.
+    txt.textContent = credit.length + ' session' + (credit.length>1?'s':'') +
+      ' hit a model limit — switch model (Bulk actions)';
+  }
+  pill.title = blocked.concat(credit).map(s => s.name).join(', ');
   pill.classList.add('show');
 }
 function _scrollToFirstRateLimited() {
-  const target = sessions.find(s => s.rate_limited_until);
+  const target = sessions.find(s => s.rate_limited_until) || sessions.find(s => s.credit_limited);
   if (!target) return;
   const sel = '[data-session="' + target.name.replace(/"/g, '\\"') + '"]';
   const card = document.querySelector(sel);
@@ -20517,7 +20612,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.7.9';   // bump together with the sw.js CACHE version
+const APP_VER = '0.8.0';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -35654,7 +35749,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.7.9';
+const CACHE = 'amux-v0.8.0';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
