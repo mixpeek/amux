@@ -20740,7 +20740,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.8.6';   // bump together with the sw.js CACHE version
+const APP_VER = '0.8.7';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -23037,6 +23037,13 @@ function openCmdHistoryModal() {
   if (s) { s.value = ''; setTimeout(() => s.focus(), 50); }
   _populateCmdHistorySessions();
   _renderCmdHistoryList();
+  // History is server-side, but this page only pulled it once at load — a
+  // long-lived tab/PWA would miss everything sent from other devices since.
+  // Re-pull on every open so phone and desktop always see the same history.
+  _loadCmdHistoryFromServer().then(() => {
+    _populateCmdHistorySessions();
+    _renderCmdHistoryList();
+  });
 }
 function _populateCmdHistorySessions() {
   const sel = document.getElementById('cmd-history-session-filter');
@@ -35949,7 +35956,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.8.6';
+const CACHE = 'amux-v0.8.7';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
