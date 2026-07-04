@@ -20614,7 +20614,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.8.1';   // bump together with the sw.js CACHE version
+const APP_VER = '0.8.2';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -20906,7 +20906,12 @@ function _syncPeekOverlayToVisualViewport() {
   const scaled = vv.scale > 1.02;
   // Keyboard height = how much shorter the visual viewport is than the layout
   // viewport (the keyboard does NOT change window.innerHeight on iOS Safari).
-  const kb = scaled ? 0 : Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+  let kb = scaled ? 0 : Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+  // Standalone-PWA quirk: vv.height sits ~50-90px short of innerHeight even
+  // with the keyboard DOWN (home indicator / safe areas live outside the
+  // visual viewport), which left a permanent dead strip under the cmd bar.
+  // A real keyboard is never under ~260px — ignore small deltas.
+  if (kb < 100) kb = 0;
   const sig = 'kb' + kb;
   if (ov._vvSig === sig) return;
   ov._vvSig = sig;
@@ -35771,7 +35776,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.8.1';
+const CACHE = 'amux-v0.8.2';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
