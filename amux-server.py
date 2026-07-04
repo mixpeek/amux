@@ -20763,7 +20763,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.2';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.3';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21218,14 +21218,20 @@ function _vvTick() {
   } catch (e) {}
 })();
 // Zero the redundant top inset when the webview can't extend under the status
-// bar anyway (home-screen web app, non-cover viewport) — see .no-top-inset CSS.
+// bar anyway — see .no-top-inset CSS. ONLY the installed home-screen app
+// (navigator.standalone) with a non-cover viewport has that redundancy; a
+// Safari tab is ALSO shorter than the screen (its own bottom bar) but DOES
+// bleed under the status bar, so zeroing there shoved the title under the
+// clock. Evaluated once at boot (keyboard closed) — resize-driven re-checks
+// flapped the class on every keyboard open/close.
 function _topInsetGuard() {
   try {
-    const redundant = window.innerWidth <= 700 && window.innerHeight < (screen.height - 10);
+    const redundant = navigator.standalone === true
+      && window.innerWidth <= 700
+      && window.innerHeight < (screen.height - 10);
     document.body.classList.toggle('no-top-inset', redundant);
   } catch (e) {}
 }
-window.addEventListener('resize', _topInsetGuard);
 if (document.body) _topInsetGuard(); else document.addEventListener('DOMContentLoaded', _topInsetGuard);
 (function() {
   if (!window.visualViewport) return;
@@ -36111,7 +36117,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.2';
+const CACHE = 'amux-v0.9.3';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
