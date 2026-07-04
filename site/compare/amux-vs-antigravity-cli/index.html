@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs Antigravity CLI (agy) — 2026 Comparison</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs Antigravity CLI (agy): how Google's AI coding agent compares to the open-source control plane that runs and manages fleets of agy, Claude Code, and Codex sessions in parallel.">
+  <meta name="keywords" content="amux vs Antigravity CLI, agy CLI, Antigravity CLI orchestration, run multiple agy agents, Antigravity CLI fleet management, agy amux, Antigravity CLI vs Claude Code, agy agent management">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-antigravity-cli/">
+  <meta property="og:title" content="amux vs Antigravity CLI (agy) — 2026 Comparison">
+  <meta property="og:description" content="Antigravity CLI (agy) is Google's AI coding agent. amux is the control plane that runs dozens of agy sessions in parallel with self-healing, kanban, and a mobile dashboard.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-antigravity-cli/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux vs Antigravity CLI (agy) — 2026 Comparison">
+  <meta name="twitter:description" content="Antigravity CLI is the coding agent. amux manages the fleet. How they fit together — and when you need both.">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Antigravity CLI","item":"https://amux.io/compare/amux-vs-antigravity-cli/"}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Antigravity CLI (agy) — 2026 Comparison","description":"Antigravity CLI (agy) is Google's AI coding agent for single sessions. amux is the open-source control plane that runs and manages fleets of agy, Claude Code, and Codex agents in parallel with self-healing, kanban, mobile dashboard, and CRM built in.","datePublished":"2026-07-03","dateModified":"2026-07-03","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/compare/amux-vs-antigravity-cli/"}}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Does amux support Antigravity CLI as a runtime?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux manages any terminal-based AI coding agent, including Antigravity CLI (agy). Set the session command to `agy` and amux handles launch, health monitoring, self-healing, and task coordination. You get the full amux dashboard — kanban, mobile app, scheduler — on top of your agy sessions."}},{"@type":"Question","name":"Is Antigravity CLI free to use?","acceptedAnswer":{"@type":"Answer","text":"No. Antigravity CLI requires a Google AI Pro subscription (approximately $20/month). Unlike its predecessor Gemini CLI, which offered 1,000 free requests per day under an Apache 2.0 license, Antigravity CLI is closed-source with no free tier."}},{"@type":"Question","name":"What happened to Gemini CLI?","acceptedAnswer":{"@type":"Answer","text":"Google sunsetted the Gemini CLI on June 18, 2026, replacing it with Antigravity CLI. The `gemini` command was retired; the new command is `agy`. If you were using Gemini CLI inside amux, update the session command from `gemini` to `agy` — everything else stays the same."}},{"@type":"Question","name":"Can I run Antigravity CLI and Claude Code sessions in the same amux instance?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux is runtime-agnostic — different sessions can use different CLI agents. One session can run Claude Code on a backend refactor while another runs Antigravity CLI on a data pipeline task. The kanban board, notes, and mobile dashboard cover all sessions regardless of runtime."}},{"@type":"Question","name":"Does amux work without Antigravity CLI?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux works with Claude Code, OpenAI Codex CLI, Antigravity CLI, or any headless subprocess. Antigravity CLI is one supported runtime among several — not a dependency."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb">
+      <a href="/">amux</a>
+      <span class="sep">›</span>
+      <a href="/compare/">Compare</a>
+      <span class="sep">›</span>
+      <span>amux vs Antigravity CLI</span>
+    </div>
+
+    <p style="font-family:var(--font-mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-mute);margin-bottom:.5rem;">Updated July 2026</p>
+    <h1>amux vs Antigravity CLI (agy)</h1>
+    <p class="subtitle">Different layers of the AI engineering stack — and why most teams use both.</p>
+
+    <p>
+      <strong>Antigravity CLI</strong> (<code>agy</code>) is Google's AI coding agent: a single interactive or headless session that writes and edits code using Gemini models.
+      <strong>amux</strong> is the control plane that runs and manages <em>many</em> such sessions at once — launching them, watching for stalls, auto-recovering failures, and surfacing the whole fleet through a browser dashboard and iOS app.
+      The two tools operate at different layers. You run <code>agy</code> inside amux, not instead of it.
+    </p>
+
+    <h2>What Is Antigravity CLI?</h2>
+
+    <p>
+      Antigravity CLI (<code>agy</code>) is Google's successor to the Gemini CLI, released June 18 2026. Where Gemini CLI was open-source (Apache 2.0) with 1,000 free requests per day,
+      Antigravity CLI is closed-source and requires a <strong>Google AI Pro subscription</strong>. It retains the 1M token context window, the Hooks and Agent Skills system
+      (Extensions were renamed to Plugins), and Subagent support. SWE-bench performance is competitive with Claude Code.
+    </p>
+    <p>
+      It is a capable, focused tool: one agent, one terminal, one task. For developers already deep in the Google ecosystem — Google Cloud, Vertex AI, Workspace — it integrates naturally.
+      The 1M context window is a genuine advantage for large-repo scans that would otherwise require chunking. The Plugin system enables repeatable, composable agent behaviors.
+    </p>
+    <p>
+      What Antigravity CLI does not provide is fleet management. It does not watch for a session going silent at 3am and restart it. It does not route tasks across ten parallel agents and surface progress on your phone. That is not its job. That is amux's job.
+    </p>
+
+    <h2>What Is amux?</h2>
+
+    <p>
+      amux is an <strong>open-source control plane for AI agent teams</strong> — run dozens of parallel coding agents from your phone or browser with self-healing, kanban, CRM, and email built in.
+      It is distributed as a single Python file with zero external dependencies, and installs in under a minute. MIT licensed.
+    </p>
+    <p>
+      At its core, amux wraps any terminal-based AI agent — Claude Code, Antigravity CLI, OpenAI Codex CLI, or any headless subprocess — in a named tmux session, then monitors that session for health.
+      If a session goes silent (context overflow, stuck tool call, network hiccup), amux compacts or restarts it automatically. The dashboard at <code>https://localhost:8822</code> shows every session's last output and status in real time, from any device.
+    </p>
+    <p>
+      Beyond session management: amux ships with a built-in kanban board for task routing across sessions, a notes system for shared context, a CRM for contacts, an email API, browser automation, and a scheduler for recurring agent tasks. It is designed to be the single place where a small team runs an AI engineering function.
+    </p>
+
+    <h2>amux vs Antigravity CLI: At a Glance</h2>
+
+    <div style="overflow-x:auto;margin:1.25rem 0;">
+      <table>
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th>amux</th>
+            <th>Antigravity CLI (agy)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Role</strong></td>
+            <td>Control plane — manages agent fleet</td>
+            <td>Coding agent — executes tasks</td>
+          </tr>
+          <tr>
+            <td><strong>Architecture</strong></td>
+            <td>Single Python server, tmux sessions, REST API</td>
+            <td>CLI process, single interactive session</td>
+          </tr>
+          <tr>
+            <td><strong>Parallel agents</strong></td>
+            <td>Dozens simultaneously, auto-managed</td>
+            <td>One session per terminal window</td>
+          </tr>
+          <tr>
+            <td><strong>Model</strong></td>
+            <td>Claude Opus / Sonnet / Haiku (via Claude Code)</td>
+            <td>Gemini 2.5 Pro / Flash</td>
+          </tr>
+          <tr>
+            <td><strong>Self-healing</strong></td>
+            <td>Auto-compact, restart, unstick — zero manual intervention</td>
+            <td>Manual restart required</td>
+          </tr>
+          <tr>
+            <td><strong>Mobile dashboard</strong></td>
+            <td>iOS app + mobile-responsive web UI</td>
+            <td>No mobile interface</td>
+          </tr>
+          <tr>
+            <td><strong>Cost</strong></td>
+            <td>Free to self-host; pay per API token only</td>
+            <td>Google AI Pro subscription (~$20/mo)</td>
+          </tr>
+          <tr>
+            <td><strong>Open source</strong></td>
+            <td>Yes — MIT License</td>
+            <td>No — closed-source</td>
+          </tr>
+          <tr>
+            <td><strong>Task coordination</strong></td>
+            <td>Built-in kanban, session tagging, inter-session messaging</td>
+            <td>Not included</td>
+          </tr>
+          <tr>
+            <td><strong>Multi-runtime support</strong></td>
+            <td>Claude Code, agy, Codex CLI, any headless subprocess</td>
+            <td>Gemini models only</td>
+          </tr>
+          <tr>
+            <td><strong>Context window</strong></td>
+            <td>Depends on runtime; auto-compacts when full</td>
+            <td>1M tokens (Gemini 2.5)</td>
+          </tr>
+          <tr>
+            <td><strong>Email / CRM / browser</strong></td>
+            <td>Built in</td>
+            <td>Not included</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>They Work Together, Not Against Each Other</h2>
+
+    <p>
+      The most effective configuration for teams using Antigravity CLI is to let amux manage the fleet. You register your project with amux, set the session runtime to <code>agy</code>, and spawn as many sessions as your workload requires.
+      Each session gets its own tmux window, its own task card on the kanban board, and amux watches for the process going silent. If it does, amux compacts the context or restarts the session — automatically.
+    </p>
+
+    <p>The division of responsibility is clean:</p>
+    <ul>
+      <li><strong>Antigravity CLI (agy)</strong> handles the coding: reading files, writing patches, running tests, calling tools via the Plugin system.</li>
+      <li><strong>amux</strong> handles the orchestration: spawning sessions, routing tasks, recovering failures, surfacing status, and giving you a single dashboard across the whole fleet.</li>
+    </ul>
+
+    <p>
+      You do not have to choose a model allegiance to use this stack. If one task benefits from Gemini's 1M context window and another fits Claude Code's reasoning profile,
+      amux can run both simultaneously — different sessions, same dashboard, same kanban board.
+    </p>
+
+    <h2>When to Use Antigravity CLI Alone</h2>
+
+    <p>
+      Running <code>agy</code> standalone makes sense when you are working on <strong>one task interactively</strong> and the session lifecycle is short enough that you will be watching it.
+      It is also the natural environment for exploring the Plugin system, testing Subagent behaviors before embedding them in a workflow, or doing a single large-context scan
+      where the 1M token window is the primary advantage you need.
+    </p>
+    <p>
+      If you are a solo developer on a focused task, already paying for Google AI Pro, and deeply integrated with Gemini tooling — running <code>agy</code> without amux is a reasonable call.
+      amux adds the most value when you need <em>parallel sessions</em> or <em>unattended operation</em>. Below that threshold, it is optional infrastructure.
+    </p>
+
+    <h2>When to Add amux for Antigravity CLI Fleet Management</h2>
+
+    <p>
+      The coordination threshold arrives quickly. At <strong>two or more concurrent <code>agy</code> sessions</strong>, the overhead of watching them manually — tracking which is on which task,
+      noticing when one has stalled, copying context between sessions — exceeds the cost of running amux.
+    </p>
+
+    <p>Add amux when:</p>
+    <ul>
+      <li>You are parallelizing across multiple features, repos, or experiments simultaneously.</li>
+      <li>Sessions need to run overnight or unattended — amux will restart a crashed session before you wake up.</li>
+      <li>You want to route tasks from a phone or browser without SSH-ing into your machine.</li>
+      <li>Multiple people on a team need visibility into what each agent session is working on.</li>
+      <li>You want a shared task board that your <code>agy</code> sessions can read from and write to.</li>
+      <li>You are mixing runtimes — some sessions running <code>agy</code>, others running <code>claude</code> or <code>codex</code>.</li>
+    </ul>
+
+    <p>
+      The install is a single command. amux has zero external dependencies beyond Python 3 and tmux, both of which are already present on any development machine running Antigravity CLI.
+      The marginal cost of adding it is effectively zero; the marginal benefit compounds with every additional session.
+    </p>
+
+    <p>See also: <a href="/guides/agentic-engineering/">Agentic Engineering guide</a> and <a href="/guides/getting-started/">Getting Started with amux</a>.</p>
+
+    <h2>Migrating from Gemini CLI to Antigravity CLI in amux</h2>
+
+    <p>
+      If you were running Gemini CLI sessions under amux, migrating is a one-line change. amux session configuration takes a <code>command</code> field specifying what CLI to invoke.
+      Change the value from <code>gemini</code> to <code>agy</code> — the session otherwise behaves identically. Same project directory, same task on the board, same health-check logic.
+    </p>
+
+    <pre><code><span class="comment"># Before (Gemini CLI)</span>
+amux register myproject --dir ~/Dev/myproject --cmd gemini
+
+<span class="comment"># After (Antigravity CLI)</span>
+amux register myproject --dir ~/Dev/myproject --cmd agy</code></pre>
+
+    <p>
+      The internal rename from Extensions to Plugins does not affect amux — amux only cares about the process lifecycle, not the agent's internal tool system.
+      Hook configurations carry over unchanged. If you relied on any Gemini-specific Plugin behaviors, review the
+      <a href="/blog/gemini-cli-to-antigravity-cli/">Gemini CLI to Antigravity CLI migration guide</a> for a full diff of the Plugin schema.
+    </p>
+
+    <p>
+      One practical note: Antigravity CLI requires an active Google AI Pro subscription, whereas the old Gemini CLI offered a free tier.
+      If you were running many parallel <code>gemini</code> sessions under the free quota, budget accordingly — or consider running those same slots with Claude Code sessions under amux, which has no per-session subscription overhead beyond API token costs.
+    </p>
+
+    <h2>Frequently Asked Questions</h2>
+
+    <details class="faq-item">
+      <summary>Does amux support Antigravity CLI as a runtime?</summary>
+      <p>
+        Yes. amux manages any terminal-based AI coding agent, including Antigravity CLI (<code>agy</code>). Point the session command at <code>agy</code> and amux handles launch, health monitoring, self-healing, and task coordination.
+        You get the full amux dashboard — kanban board, mobile app, scheduler — layered on top of your <code>agy</code> sessions.
+      </p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Is Antigravity CLI free to use?</summary>
+      <p>
+        No. Antigravity CLI requires a Google AI Pro subscription (approximately $20/month). Unlike its predecessor Gemini CLI — which was Apache 2.0, open-source, and offered 1,000 free requests per day — Antigravity CLI is closed-source with no free tier.
+        amux itself is MIT licensed and free to self-host; you only pay for whatever coding agent runtime you point it at.
+      </p>
+    </details>
+
+    <details class="faq-item">
+      <summary>What happened to Gemini CLI?</summary>
+      <p>
+        Google sunsetted the Gemini CLI on June 18, 2026, replacing it with Antigravity CLI. The <code>gemini</code> command was retired; the new command is <code>agy</code>.
+        If you were using Gemini CLI inside amux, updating the session command from <code>gemini</code> to <code>agy</code> is all that is required. See the full <a href="/blog/gemini-cli-to-antigravity-cli/">Gemini CLI to Antigravity CLI migration guide</a> for details.
+      </p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Can I run Antigravity CLI and Claude Code sessions in the same amux instance?</summary>
+      <p>
+        Yes. amux is runtime-agnostic — different sessions can invoke different CLI agents. One session can run <code>agy</code> on a data pipeline while another runs <code>claude</code> on a backend refactor.
+        The kanban board, notes, and mobile dashboard surface all sessions together regardless of which agent is running inside each.
+      </p>
+    </details>
+
+    <details class="faq-item">
+      <summary>Does amux work without Antigravity CLI?</summary>
+      <p>
+        Yes. amux works with Claude Code, OpenAI Codex CLI, Antigravity CLI, or any headless subprocess. Antigravity CLI is one supported runtime among several — not a dependency.
+        Many teams use amux exclusively with Claude Code or Codex and never touch <code>agy</code>.
+      </p>
+    </details>
+
+    <div class="cta-box">
+      <h3>Add amux to your Antigravity CLI workflow</h3>
+      <p>amux manages your <code>agy</code> fleet — self-healing, kanban, mobile dashboard, and more. MIT licensed, free to self-host.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">Get Started Free</a>
+    </div>
+
+    <p style="font-size:13px;color:var(--fg-mute);margin-top:2rem;">
+      See also:
+      <a href="/compare/">All comparisons</a> ·
+      <a href="/guides/agentic-engineering/">Agentic engineering guide</a> ·
+      <a href="/guides/getting-started/">Getting started with amux</a> ·
+      <a href="/blog/gemini-cli-to-antigravity-cli/">Gemini CLI → Antigravity CLI migration</a>
+    </p>
+  </main>
+
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-codex/">vs OpenAI Codex</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

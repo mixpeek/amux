@@ -97,7 +97,7 @@ Claude Code runs one agent per terminal. amux runs dozens — with live monitori
 - [Using MCP Servers](https://amux.io/guides/using-mcp-servers/): Connect Claude Code to external tools via MCP in amux sessions.
 - [Workspace Tiled Layout](https://amux.io/guides/workspace-tiled-layout/): Multi-pane tiled view for monitoring several sessions simultaneously.
 - [Cost Optimization](https://amux.io/guides/cost-optimization/): Reduce token spend across parallel agent sessions.
-- [Team Workflow Setup](https://amux.io/guides/team-workflow-setup/): Configure amux for shared team use.
+- [How to Run an AI Engineering Team (2026 Guide)](https://amux.io/guides/team-workflow-setup/): How to run an AI engineering team with amux — from solo developer with a fleet of agents to multi-developer shared server. Covers naming conventions, board coordination, remote access, mobile management, and the full team setup workflow. Includes comparison of per-developer vs shared-server deployment models.
 
 ## Use Cases
 
@@ -116,6 +116,10 @@ Claude Code runs one agent per terminal. amux runs dozens — with live monitori
 - [Research and Prototyping](https://amux.io/use-cases/research-and-prototyping/): Run parallel prototype branches, compare results.
 - [CI/CD Pipeline Creation](https://amux.io/use-cases/ci-cd-pipeline-creation/): Agents that build and validate CI/CD pipelines.
 - [Legacy Code Modernization](https://amux.io/use-cases/legacy-code-modernization/): Modernize legacy code across files in parallel.
+
+## For — Roles & Personas
+
+- [amux for Solopreneurs](https://amux.io/for/solopreneurs/): One person, one dashboard, a fleet of coding agents. amux lets solopreneurs run what amounts to a 10-person engineering team — with CRM, email, browser automation, and scheduler built in. Covers agent role breakdown (developer, reviewer, test, docs, bug triage), business operations beyond coding (CRM, Gmail integration, browser automation), managing the fleet from your phone, and the /concierge/ managed setup option.
 
 ## Comparisons
 
@@ -140,6 +144,7 @@ Claude Code runs one agent per terminal. amux runs dozens — with live monitori
 - [amux vs v0 (Vercel)](https://amux.io/compare/amux-vs-v0/)
 - [amux vs AutoGen](https://amux.io/compare/amux-vs-autogen/)
 - [amux vs Claude Desktop](https://amux.io/compare/amux-vs-claude-desktop/)
+- [amux vs Antigravity CLI (agy)](https://amux.io/compare/amux-vs-antigravity-cli/): Antigravity CLI replaced Gemini CLI on June 18, 2026. amux runs and manages multiple agy sessions in parallel — self-healing, kanban, and mobile monitoring built in.
 
 ## Source
 

@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux for Solopreneurs — Run an AI Engineering Team Solo (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Solopreneurs use amux to run a 5-10 agent engineering team from their phone — writing code, reviewing PRs, running tests, managing customers, and automating business operations, all in parallel.">
+  <meta name="keywords" content="solopreneur AI agents, run software company with AI, one-person startup AI, solo founder engineering team, AI agents for solopreneurs, build startup with AI agents, manage business AI coding agents">
+  <link rel="canonical" href="https://amux.io/for/solopreneurs/">
+  <meta property="og:title" content="amux for Solopreneurs — Run an AI Engineering Team Solo (2026)">
+  <meta property="og:description" content="Solopreneurs use amux to run a 5-10 agent engineering team from their phone — writing code, reviewing PRs, running tests, managing customers, and automating business operations, all in parallel.">
+  <meta property="og:url" content="https://amux.io/for/solopreneurs/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux for Solopreneurs — Run an AI Engineering Team Solo (2026)">
+  <meta name="twitter:description" content="Solopreneurs use amux to run a 5-10 agent engineering team from their phone — writing code, reviewing PRs, running tests, managing customers, and automating business operations, all in parallel.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "For Developers", "item": "https://amux.io/for/"},
+      {"@type": "ListItem", "position": 3, "name": "Solopreneurs", "item": "https://amux.io/for/solopreneurs/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux for Solopreneurs — Run an AI Engineering Team Solo",
+    "description": "Solopreneurs use amux to run a 5-10 agent engineering team from their phone — writing code, reviewing PRs, running tests, managing customers, and automating business operations, all in parallel.",
+    "url": "https://amux.io/for/solopreneurs/",
+    "datePublished": "2026-07-03",
+    "dateModified": "2026-07-03",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["solopreneur AI agents", "one-person software company", "solo founder engineering team", "AI automation for solopreneurs"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Can I really run a software company solo with AI agents?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. With amux, a single solopreneur can simultaneously run coding agents for feature development, a reviewer agent for PR quality checks, a test agent for coverage, a docs agent, and a bug-triage agent — all from one dashboard or their phone. The limiting factor shifts from team size to your ability to define tasks clearly and review outputs."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How much does amux cost for a solopreneur?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux itself is free and open-source (MIT license). You self-host it on your own machine or server. You pay only for the AI provider tokens your agents consume — Claude, Codex, or Gemini CLI. There are no per-seat fees, no SaaS subscriptions, and no vendor lock-in."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is amux only for coding, or can it handle business tasks too?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux handles far more than coding. Its built-in CRM tracks customer relationships, the Gmail API integration sends and reads email, the browser automation module pulls Stripe dashboards or checks third-party SaaS tools, and the scheduler runs recurring tasks overnight. A solopreneur can use amux as the operational backbone of their entire business, not just their codebase."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Do I need to be technical to use amux?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Basic comfort with a terminal helps for the initial setup (git clone + install.sh). Once running, most daily use happens through the browser dashboard or the iOS app. If you want a fully managed setup, amux offers a concierge service at amux.io/concierge/ where the team configures everything for you."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the amux Concierge service?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The amux Concierge is a managed onboarding service for teams and solopreneurs who want amux configured end-to-end — server setup, agent workflows, CRM import, email integration, and scheduler configuration. See amux.io/concierge/ for details."
+        }
+      }
+    ]
+  }
+  </script>
+
+  <style>
+    .answer-box {
+      background: var(--surface-2, #252b3b);
+      border-left: 3px solid var(--accent, #7c6af7);
+      border-radius: 6px;
+      padding: 1.25rem 1.5rem;
+      margin: 1.5rem 0 2rem;
+    }
+    .answer-box p { margin: 0; line-height: 1.7; font-size: 1.05rem; }
+
+    .agent-team-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1rem;
+      margin: 1.5rem 0 2rem;
+    }
+    .agent-card {
+      background: var(--surface-2, #252b3b);
+      border: 1px solid var(--border, #30384a);
+      border-radius: 8px;
+      padding: 1.25rem;
+    }
+    .agent-card .agent-role {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.78rem;
+      color: var(--accent, #7c6af7);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 0.4rem;
+    }
+    .agent-card h3 {
+      margin: 0 0 0.5rem;
+      font-size: 1rem;
+    }
+    .agent-card p { margin: 0; font-size: 0.9rem; color: var(--text-muted, #8892a4); line-height: 1.5; }
+
+    .compare-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.5rem 0 2rem;
+      font-size: 0.92rem;
+      overflow-x: auto;
+      display: block;
+    }
+    .compare-table th {
+      text-align: left;
+      padding: 0.75rem 1rem;
+      background: var(--surface-2, #252b3b);
+      border-bottom: 2px solid var(--border, #30384a);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .compare-table th:first-child { border-radius: 6px 0 0 0; }
+    .compare-table th:last-child { border-radius: 0 6px 0 0; }
+    .compare-table td {
+      padding: 0.7rem 1rem;
+      border-bottom: 1px solid var(--border, #30384a);
+      vertical-align: top;
+      line-height: 1.5;
+    }
+    .compare-table tr:last-child td { border-bottom: none; }
+    .compare-table .col-without { color: var(--text-muted, #8892a4); }
+    .compare-table .col-with { color: var(--success, #4ade80); }
+    .tag-outcome {
+      display: inline-block;
+      background: rgba(124,106,247,0.15);
+      color: var(--accent, #7c6af7);
+      border-radius: 4px;
+      padding: 0.15em 0.5em;
+      font-size: 0.8rem;
+      font-family: 'JetBrains Mono', monospace;
+      margin-left: 0.4em;
+    }
+
+    .biz-ops-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin: 1.5rem 0 2rem;
+    }
+    .biz-ops-card {
+      background: var(--surface-2, #252b3b);
+      border: 1px solid var(--border, #30384a);
+      border-radius: 8px;
+      padding: 1.1rem 1.25rem;
+    }
+    .biz-ops-card .biz-icon {
+      font-size: 1.4rem;
+      margin-bottom: 0.5rem;
+      display: block;
+    }
+    .biz-ops-card h3 { margin: 0 0 0.4rem; font-size: 0.95rem; }
+    .biz-ops-card p { margin: 0; font-size: 0.87rem; color: var(--text-muted, #8892a4); line-height: 1.5; }
+
+    .phone-mockup {
+      background: var(--surface-2, #252b3b);
+      border: 1px solid var(--border, #30384a);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin: 1.5rem 0 2rem;
+    }
+    .phone-mockup .scenario {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+      align-items: flex-start;
+    }
+    .phone-mockup .scenario:last-child { margin-bottom: 0; }
+    .phone-mockup .scenario-time {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--accent, #7c6af7);
+      white-space: nowrap;
+      padding-top: 0.1rem;
+      min-width: 4.5rem;
+    }
+    .phone-mockup .scenario-text { font-size: 0.9rem; line-height: 1.5; }
+
+    .steps-list {
+      counter-reset: step;
+      list-style: none;
+      padding: 0;
+      margin: 1.5rem 0 2rem;
+    }
+    .steps-list li {
+      counter-increment: step;
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1.1rem;
+      align-items: flex-start;
+    }
+    .steps-list li::before {
+      content: counter(step);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 2rem;
+      height: 2rem;
+      background: var(--accent, #7c6af7);
+      color: #fff;
+      border-radius: 50%;
+      font-weight: 700;
+      font-size: 0.85rem;
+      flex-shrink: 0;
+    }
+    .steps-list li .step-body { padding-top: 0.2rem; }
+    .steps-list li .step-body strong { display: block; margin-bottom: 0.2rem; }
+    .steps-list li .step-body span { font-size: 0.9rem; color: var(--text-muted, #8892a4); }
+
+    .faq-list { margin: 1.5rem 0 2rem; }
+    .faq-item {
+      border-bottom: 1px solid var(--border, #30384a);
+      padding: 1.1rem 0;
+    }
+    .faq-item:last-child { border-bottom: none; }
+    .faq-item h3 { margin: 0 0 0.5rem; font-size: 1rem; font-weight: 600; }
+    .faq-item p { margin: 0; font-size: 0.92rem; color: var(--text-muted, #8892a4); line-height: 1.6; }
+
+    @media (max-width: 600px) {
+      .agent-team-grid, .biz-ops-grid { grid-template-columns: 1fr; }
+      .phone-mockup .scenario { flex-direction: column; gap: 0.3rem; }
+      .compare-table th, .compare-table td { padding: 0.6rem 0.7rem; }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb">
+      <a href="/">amux</a> <span class="sep">›</span>
+      <a href="/for/">For Developers</a> <span class="sep">›</span>
+      <span>Solopreneurs</span>
+    </div>
+
+    <h1>Run a 10-Person AI Engineering Team by Yourself</h1>
+    <p class="subtitle">One person. A dozen agents. A full software business, running while you sleep.</p>
+
+    <div class="answer-box">
+      <p>With amux, a solopreneur can simultaneously deploy a developer agent writing new features, a reviewer agent checking every PR, a test agent ensuring coverage, a docs agent keeping documentation current, and a bug-triage agent clearing the backlog — all orchestrated from a single dashboard or their iPhone. The CRM, email, browser automation, and scheduler handle the business side: customer relationships, status updates, Stripe reports, and recurring overnight tasks. You become the architect and decision-maker; the agents handle execution at a pace no small human team can match.</p>
+    </div>
+
+    <!-- ============================================================ -->
+    <h2>What Can a Solopreneur Do with an AI Agent Fleet?</h2>
+
+    <p>The question most solo founders ask is not <em>can</em> AI write code — it's whether they can direct enough of it, fast enough, to ship a real product and run a real business. amux answers that by giving you a <strong>control plane</strong>: a single interface where you assign work to agents, monitor their progress, review outputs, and keep a live board of what every agent is doing and has done.</p>
+
+    <p>Running a software company solo used to mean choosing between building fast and building right. With a parallel agent fleet, you no longer have to choose. One agent implements the feature; a second reviews its own PR; a third writes the tests; a fourth updates the changelog. You review the diff over coffee and merge. Rinse, repeat — across as many workstreams as your hardware and provider limits allow.</p>
+
+    <p>Beyond code, amux surfaces the parts of running a business that solo founders typically patch together with browser tabs and sticky notes: customer emails, CRM, recurring automations, and SaaS dashboard checks. With amux, those are first-class, agent-driven operations on the same board.</p>
+
+    <p>See the full picture in the <a href="/guides/agentic-engineering/">agentic engineering guide</a> or read about <a href="/use-cases/ai-coding-while-you-sleep/">overnight AI coding runs</a> and <a href="/use-cases/automated-code-review/">automated code review</a>.</p>
+
+    <!-- ============================================================ -->
+    <h2>Your AI Engineering Team: Role by Role</h2>
+
+    <p>A solopreneur running amux typically structures their agent fleet around the same roles a seed-stage startup would hire for. The difference: you spin up a role in seconds, it works around the clock, and it costs a fraction of a salary.</p>
+
+    <div class="agent-team-grid">
+      <div class="agent-card">
+        <div class="agent-role">You</div>
+        <h3>Architect &amp; Decision-Maker</h3>
+        <p>You own the product roadmap, the architecture decisions, and the final review. Every agent works for you. You define the tasks; they execute. Your leverage multiplies with every agent you add.</p>
+      </div>
+      <div class="agent-card">
+        <div class="agent-role">Agent 1–3</div>
+        <h3>Developer Agents</h3>
+        <p>Parallel feature implementation. Each agent works a separate branch: one builds the API endpoint, one writes the frontend component, one refactors the data model. All at once, no merge conflicts until review.</p>
+      </div>
+      <div class="agent-card">
+        <div class="agent-role">Agent 4</div>
+        <h3>Reviewer Agent</h3>
+        <p>Reads every PR as it opens. Flags bugs, style violations, missing error handling, and security issues before you ever look at the diff. Keeps quality high without slowing you down. See <a href="/use-cases/automated-code-review/">automated code review</a>.</p>
+      </div>
+      <div class="agent-card">
+        <div class="agent-role">Agent 5</div>
+        <h3>Test Agent</h3>
+        <p>Writes unit and integration tests for every new module the developer agents produce. Runs them, reports failures, and either fixes them or flags them for your review. Coverage stays high automatically.</p>
+      </div>
+      <div class="agent-card">
+        <div class="agent-role">Agent 6</div>
+        <h3>Docs Agent</h3>
+        <p>Keeps your README, API docs, and changelog current with every merged PR. Solopreneurs routinely let docs rot — this agent makes it impossible to fall behind.</p>
+      </div>
+      <div class="agent-card">
+        <div class="agent-role">Agent 7</div>
+        <h3>Bug-Triage Agent</h3>
+        <p>Pulls in new issues from GitHub or your support inbox overnight. Reproduces, labels, and where possible patches straightforward bugs before you wake up. You start each day with a shorter backlog.</p>
+      </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <h2>Solo Developer Without amux vs. Solopreneur with amux</h2>
+
+    <table class="compare-table">
+      <thead>
+        <tr>
+          <th>Situation</th>
+          <th class="col-without">Solo developer without amux</th>
+          <th class="col-with">Solopreneur with amux</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Shipping a new feature</td>
+          <td class="col-without">Write code, switch context, write tests, review own work, write docs. Half a day per feature.</td>
+          <td class="col-with">Assign feature, tests, and docs to three agents in parallel. Review and merge in 30 minutes.</td>
+        </tr>
+        <tr>
+          <td>Code quality</td>
+          <td class="col-without">Self-review only. Easy to miss bugs when you're also the author.</td>
+          <td class="col-with">Dedicated reviewer agent catches issues before you look. Consistent quality gate on every PR.</td>
+        </tr>
+        <tr>
+          <td>Overnight progress</td>
+          <td class="col-without">Codebase sits idle. You restart where you left off in the morning.</td>
+          <td class="col-with">Bug-triage agent works the backlog. Refactor agent cleans tech debt. You wake up ahead. <a href="/use-cases/ai-coding-while-you-sleep/">Learn more.</a></td>
+        </tr>
+        <tr>
+          <td>Customer relationships</td>
+          <td class="col-without">Contacts scattered across email threads and browser bookmarks.</td>
+          <td class="col-with">Built-in CRM with interaction log. Every customer conversation tracked. Never lose context.</td>
+        </tr>
+        <tr>
+          <td>Business operations</td>
+          <td class="col-without">Manual: open Stripe, open analytics, check dashboards one by one.</td>
+          <td class="col-with">Browser automation agent pulls reports. Scheduler triggers recurring checks. Email integration replies to common inquiries.</td>
+        </tr>
+        <tr>
+          <td>Monitoring your agents</td>
+          <td class="col-without">N/A — no agents to monitor.</td>
+          <td class="col-with">Live kanban board, SSE-powered real-time updates, iOS app for on-the-go visibility. <a href="/guides/mobile-management-pwa/">Mobile management guide.</a></td>
+        </tr>
+        <tr>
+          <td>Cost</td>
+          <td class="col-without">Your time, valued however you value it.</td>
+          <td class="col-with">amux is free. Pay only for AI provider tokens. No per-seat SaaS. No vendor lock-in.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- ============================================================ -->
+    <h2>Beyond Code: Running Business Operations with amux</h2>
+
+    <p>The agents that write and review code get most of the attention. But for a solopreneur, the hours lost to business operations — responding to leads, pulling metrics, scheduling follow-ups — are just as damaging to output as slow feature development. amux addresses the full stack.</p>
+
+    <div class="biz-ops-grid">
+      <div class="biz-ops-card">
+        <span class="biz-icon">&#x1F9D1;&#x200D;&#x1F4BC;</span>
+        <h3>Built-in CRM</h3>
+        <p>Track every customer and prospect with interaction history, follow-up flags, and freeform notes. Agents can log interactions automatically when they process email or support tickets. No separate subscription needed.</p>
+      </div>
+      <div class="biz-ops-card">
+        <span class="biz-icon">&#x2709;&#xFE0F;</span>
+        <h3>Gmail Integration</h3>
+        <p>The email API connects to your Gmail account and your real signature. Agents can draft and send status updates, reply to support threads, or notify customers of releases — all without opening a browser tab.</p>
+      </div>
+      <div class="biz-ops-card">
+        <span class="biz-icon">&#x1F916;</span>
+        <h3>Browser Automation</h3>
+        <p>A browser automation agent can open Stripe, pull your MRR, check your analytics dashboard, export a CSV, or log into any SaaS tool you use — on a schedule or on demand. No more manual dashboard checking.</p>
+      </div>
+      <div class="biz-ops-card">
+        <span class="biz-icon">&#x23F0;</span>
+        <h3>Scheduler</h3>
+        <p>Any agent task can be scheduled: daily at 6am, every Monday, first of the month. Use it for overnight refactor runs, weekly digest emails, or automated backups. Set it once; it runs without you. No cron expertise required.</p>
+      </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <h2>Manage Your Entire Operation from Your Phone</h2>
+
+    <p>The point of running an agent fleet is that it works while you don't. The iOS app and mobile-responsive dashboard let you stay in control without being tethered to a desk. Here's what a typical day looks like for a solopreneur running amux:</p>
+
+    <div class="phone-mockup">
+      <div class="scenario">
+        <span class="scenario-time">7:05 AM</span>
+        <span class="scenario-text">Open the iOS app from bed. Check the board: overnight bug agent closed 4 issues, refactor agent finished 2 PRs. Review diffs on your phone, merge what's clean.</span>
+      </div>
+      <div class="scenario">
+        <span class="scenario-time">9:30 AM</span>
+        <span class="scenario-text">Between meetings, assign a new feature to two developer agents via the board. Add a note with acceptance criteria. The agents begin in parallel immediately.</span>
+      </div>
+      <div class="scenario">
+        <span class="scenario-time">11:00 AM</span>
+        <span class="scenario-text">Reviewer agent flags a security issue in one of the open PRs. You get an update on the board. Tap to view the diff annotation. Reject and re-assign with a comment.</span>
+      </div>
+      <div class="scenario">
+        <span class="scenario-time">2:15 PM</span>
+        <span class="scenario-text">Check CRM — a prospect emailed last week. Tap to view interaction history. Ask an agent to draft a follow-up in Gmail, review the draft, send with one tap.</span>
+      </div>
+      <div class="scenario">
+        <span class="scenario-time">6:30 PM</span>
+        <span class="scenario-text">Queue overnight tasks from your couch: refactor agent to clean up three modules, bug agent to triage the GitHub backlog, scheduler to pull the weekly Stripe report at 5am. Done.</span>
+      </div>
+    </div>
+
+    <p>See the full <a href="/guides/mobile-management-pwa/">mobile management PWA guide</a> for tips on setting up your iOS homescreen and notification preferences.</p>
+
+    <!-- ============================================================ -->
+    <h2>The Solopreneur's amux Setup: Getting Started</h2>
+
+    <ol class="steps-list">
+      <li>
+        <div class="step-body">
+          <strong>Install amux on your machine or a VPS</strong>
+          <span>Clone the repo and run <code>./install.sh</code>. amux is a single Python file with zero external dependencies. It auto-installs on restart. Works on Mac, Linux, or any VPS.</span>
+        </div>
+      </li>
+      <li>
+        <div class="step-body">
+          <strong>Register your project and set up your first agent session</strong>
+          <span>Run <code>amux register myproject --dir ~/Dev/myproject --yolo</code> then <code>amux start myproject</code>. You now have a live Claude Code agent ready for tasks.</span>
+        </div>
+      </li>
+      <li>
+        <div class="step-body">
+          <strong>Open the dashboard and create your kanban board</strong>
+          <span>Navigate to <code>https://localhost:8822</code>. The built-in kanban board is your command center. Create a column for each agent role: dev, review, test, docs, bug.</span>
+        </div>
+      </li>
+      <li>
+        <div class="step-body">
+          <strong>Connect your Gmail and CRM</strong>
+          <span>Authenticate your Gmail account via the API. Import existing contacts into the CRM. Now agents can act on email and customer data, not just code.</span>
+        </div>
+      </li>
+      <li>
+        <div class="step-body">
+          <strong>Set your first overnight schedule</strong>
+          <span>Create a scheduler entry: <em>"Every weekday at midnight, triage new GitHub issues and close any that are duplicates or already fixed."</em> Your backlog shrinks automatically.</span>
+        </div>
+      </li>
+      <li>
+        <div class="step-body">
+          <strong>Install the iOS app for on-the-go control</strong>
+          <span>Download <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux on the App Store</a>. Point it at your server. You now have your full agent fleet in your pocket — anywhere you have LTE.</span>
+        </div>
+      </li>
+    </ol>
+
+    <p>Prefer a fully configured setup without the DIY steps? The <a href="/concierge/">amux Concierge service</a> handles everything: server provisioning, agent workflow design, CRM import, email integration, and iOS app configuration. Ideal for solopreneurs who want to skip the setup and start delegating immediately.</p>
+
+    <!-- ============================================================ -->
+    <h2>5 Questions Solopreneurs Ask About amux</h2>
+
+    <div class="faq-list">
+      <div class="faq-item">
+        <h3>Can I really run a software company solo with AI agents?</h3>
+        <p>Yes. amux lets one person simultaneously run agents for feature development, PR review, test coverage, documentation, and bug triage. The constraint shifts from team bandwidth to your ability to write clear task descriptions and review agent output. Many amux users ship production features from their phones while handling other work. See <a href="/compare/">how amux compares</a> to hiring alternatives.</p>
+      </div>
+      <div class="faq-item">
+        <h3>How much does amux cost for a solopreneur?</h3>
+        <p>amux itself is free, open-source, and MIT licensed. You self-host it — on your laptop, a $6/month VPS, or your home server. The only cost is the AI provider tokens your agents consume (Claude, Codex, or Gemini CLI). There are no per-seat fees, no usage tiers, and no subscription. You own every byte of your data.</p>
+      </div>
+      <div class="faq-item">
+        <h3>Is amux only for coding, or can it handle business tasks too?</h3>
+        <p>amux handles far more than coding. The built-in CRM tracks customer relationships and interaction history. The Gmail API integration sends and receives email through your real account with your actual signature. The browser automation module can log into any SaaS tool, pull reports, or fill forms. The scheduler runs recurring business tasks overnight. It is a control plane for your entire one-person operation, not just your codebase.</p>
+      </div>
+      <div class="faq-item">
+        <h3>Do I need to be technical to use amux?</h3>
+        <p>You need to be comfortable running a terminal command for the initial install. After that, most daily use — assigning tasks, reviewing outputs, managing the board, checking email — happens through the browser dashboard or the iOS app. If you want zero setup friction, the <a href="/concierge/">Concierge service</a> configures everything for you.</p>
+      </div>
+      <div class="faq-item">
+        <h3>What is the amux Concierge service?</h3>
+        <p>The <a href="/concierge/">amux Concierge</a> is a managed onboarding service for solopreneurs and teams who want amux running end-to-end without the DIY overhead. The team handles server setup, agent workflow design, CRM data import, Gmail integration, browser automation configuration, and iOS app setup. You show up to a working system tuned to your business.</p>
+      </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <div class="cta-box">
+      <h3>Start your AI engineering team</h3>
+      <p>amux is free, open-source, and self-hosted. MIT licensed. Or let us set it up for you.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">Get Started Free</a>
+      <a class="btn" href="/concierge/">Managed Setup</a>
+    </div>
+
+  </main>
+
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    fetch('https://api.github.com/repos/mixpeek/amux')
+      .then(function(r){ return r.json() })
+      .then(function(d){
+        var el = document.getElementById('gh-stars');
+        if (el && d.stargazers_count) el.textContent = '★ ' + d.stargazers_count;
+      })
+      .catch(function(){});
+  </script>
+</body>
+</html>

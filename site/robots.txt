@@ -1,4 +1,27 @@
 User-agent: *
 Allow: /
+
+# AI crawlers — explicitly permitted
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: cohere-ai
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
 Sitemap: https://amux.io/sitemap.xml
 Sitemap: https://amux.io/video-sitemap.xml
