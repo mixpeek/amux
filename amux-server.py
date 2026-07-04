@@ -15577,7 +15577,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <div id="peek-overlay" class="overlay">
   <div class="overlay-header" style="flex-direction:column;gap:4px;padding-bottom:6px;">
     <div style="display:flex;align-items:center;gap:8px;min-width:0;">
-      <button class="btn" id="peek-close-btn" onclick="closePeek()" style="flex-shrink:0;padding:5px 12px;">&#x2715; Close</button>
       <h2 id="peek-title" style="margin:0;font-size:0.92rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">peek</h2>
       <span id="peek-session-status"></span>
       <span id="peek-model-badge" style="font-size:0.75rem;padding:2px 8px;border-radius:9999px;background:rgba(255,255,255,0.06);color:var(--dim);border:1px solid var(--border);white-space:nowrap;"></span>
@@ -15598,6 +15597,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       </div>
       <button class="btn peek-split-btn" id="peek-split-toggle" onclick="togglePeekSplit()" title="Split: file browser">&#x1F4C2;</button>
       <button class="btn" onclick="togglePeekFocus()" id="peek-focus-btn" title="Focus mode — hide controls">&#x25B4;</button>
+      <button class="btn" id="peek-close-btn" onclick="closePeek()">Close</button>
     </div>
   </div>
   <!-- Focus mode minimal bar (visible only in focus mode) -->
@@ -35582,7 +35582,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.7.3';
+const CACHE = 'amux-v0.7.4';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
