@@ -20880,7 +20880,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.18';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.19';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21252,9 +21252,13 @@ function _peekGeoBeacon() {
     const ov = document.getElementById('peek-overlay');
     const bar = document.querySelector('.peek-cmd-bar');
     const row = document.querySelector('.peek-cmd-row');
+    const hdr = ov.querySelector('.overlay-header');
+    const title = document.getElementById('peek-session-status');
     const vv = window.visualViewport || {};
     const o = ov.getBoundingClientRect(), b = bar.getBoundingClientRect();
     const r = row ? row.getBoundingClientRect() : { bottom: 0 };
+    const hdrTop = hdr ? Math.round(hdr.getBoundingClientRect().top) : -1;
+    const titleTop = title ? Math.round(title.getBoundingClientRect().top) : -1;
     const probe = document.createElement('div');
     probe.style.cssText = 'position:fixed;bottom:0;height:env(safe-area-inset-bottom,0px);width:1px;visibility:hidden;';
     document.body.appendChild(probe);
@@ -21269,7 +21273,10 @@ function _peekGeoBeacon() {
         vvH: Math.round(vv.height || 0), vvTop: Math.round(vv.offsetTop || 0), vvScale: vv.scale || 1,
         sab: sabH, fixedBottomAt: sabBottom,
         ovTop: Math.round(o.top), ovBottom: Math.round(o.bottom),
-        ovPadB: getComputedStyle(ov).paddingBottom,
+        ovPadT: getComputedStyle(ov).paddingTop, ovPadB: getComputedStyle(ov).paddingBottom,
+        hdrTop, titleTop,
+        bodyPadT: getComputedStyle(document.body).paddingTop,
+        noTopInset: document.body.classList.contains('no-top-inset') ? 1 : 0,
         barBottom: Math.round(b.bottom), barPadB: getComputedStyle(bar).paddingBottom,
         rowBottom: Math.round(r.bottom),
         standalone: navigator.standalone ? 1 : 0, dpr: window.devicePixelRatio,
@@ -36339,7 +36346,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.18';
+const CACHE = 'amux-v0.9.19';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
