@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agent Business Automations — Intent-Based, Not Brittle RPA (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="How amux runs AI business automations — intent-resolved every run, not brittle coordinate replay. Automate SaaS dashboards, reports, and recurring business tasks with browser AI agents that compose with your coding agents.">
+  <meta name="keywords" content="AI business automation, intent-based GUI automation, AI automation no-code, robot process automation AI agents, browser automation AI, automate SaaS tasks AI, amux automations, AI agent RPA alternative 2026">
+  <link rel="canonical" href="https://amux.io/guides/ai-agent-automations/">
+  <meta property="og:title" content="AI Agent Business Automations — Intent-Based, Not Brittle RPA">
+  <meta property="og:description" content="How amux runs AI business automations — intent-resolved every run, not brittle coordinate replay. Automate SaaS dashboards, reports, and recurring business tasks with browser AI agents.">
+  <meta property="og:url" content="https://amux.io/guides/ai-agent-automations/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/"},
+      {"@type": "ListItem", "position": 3, "name": "AI Agent Business Automations", "item": "https://amux.io/guides/ai-agent-automations/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "AI Agent Business Automations — Intent-Based, Not Brittle RPA",
+    "description": "How amux runs AI business automations — intent-resolved on every run, not brittle coordinate replay. Browser AI agents that compose with coding agents, scheduled, phone-monitored, self-healing.",
+    "url": "https://amux.io/guides/ai-agent-automations/",
+    "datePublished": "2026-07-05",
+    "dateModified": "2026-07-05",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["AI business automation", "intent-based GUI automation", "AI agent RPA", "browser automation AI agents", "amux automations 2026"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "How to Automate Business Tasks with AI Agents (amux)",
+    "description": "Set up a scheduled, AI-driven browser automation that runs a recurring business task — pulling a report, reconciling dashboards, filing a form — and can hand off results to a coding agent.",
+    "totalTime": "PT20M",
+    "supply": [
+      {"@type": "HowToSupply", "name": "amux (open source, MIT licensed)"},
+      {"@type": "HowToSupply", "name": "A saved browser auth profile for the target site"},
+      {"@type": "HowToSupply", "name": "Python 3 and tmux"}
+    ],
+    "step": [
+      {
+        "@type": "HowToStep",
+        "position": 1,
+        "name": "Save an auth profile for the target site",
+        "text": "Use amux's playwright-auth flow to log into the SaaS tool once and save the session. All future automation runs use the saved cookies — no re-login prompts."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 2,
+        "name": "Describe the task as a plain-English SOP",
+        "text": "Write the automation as a Markdown SOP: goal, steps, and a 'success when' condition. The agent reads the SOP and figures out the current page state on each run — no recorded coordinates."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 3,
+        "name": "Run it via the browser agent API",
+        "text": "POST to /api/browser/agent with your SOP as the task prompt and the saved auth profile. The agent drives the browser, resolving actions from the current DOM state, not a coordinate recording."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 4,
+        "name": "Schedule it with the amux scheduler",
+        "text": "Register the automation as a scheduled task — daily, weekly, or on a cron. The scheduler kicks the browser agent on your cadence, and results land in the amux board or a note."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 5,
+        "name": "Monitor runs from your phone",
+        "text": "The amux dashboard shows automation run status live. Check passes and failures from the iOS app without being at your computer."
+      }
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "How is AI agent automation different from traditional RPA tools like UiPath or Zapier?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Traditional RPA records mouse coordinates and replays them — it breaks on any layout change, A/B test, or slow-loading element. AI agent automation describes the intent (what to accomplish) instead of the path (which pixel to click). On each run the agent reads the current page state — DOM, accessibility tree, or screenshot — and decides actions fresh. This means it survives UI redesigns, dynamic content, and layout shifts that would brick a coordinate replay. The amux approach also composes automations with coding agents: a browser agent that extracts data can hand off directly to a Claude Code session that acts on the result."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What kinds of business tasks can amux automations handle?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Any repetitive SaaS or web task: pulling reports from analytics dashboards, reconciling data between two tools, filing insurance eligibility checks, exporting invoices, monitoring competitor pricing, checking form submission statuses, or posting daily summaries to your board or Slack. Tasks that require reading the current state of a live page — not just calling an API — are the sweet spot. If there's no public API but there is a browser UI, an AI browser agent can often handle it."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can automation results be fed into coding agents?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes — this is the key differentiator of amux automations. A browser automation can extract data and post it to the amux board or send it directly to a named coding agent session. For example: a nightly automation scrapes your error monitoring dashboard, extracts new crash signatures, and posts each one as a board task. A pool of Claude Code sessions wakes up, claims the tasks, and files PRs with suggested fixes. The automation and the coding fleet form a closed loop — no manual hand-off."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux use saved login credentials for browser automations?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux uses Playwright persistent browser contexts with saved auth profiles. You log into a site once through the playwright-auth flow; the session cookies are stored in ~/.amux/playwright-auth/. Every subsequent automation run opens that profile and is already authenticated. Credentials are never stored as plaintext — only the browser session cookies are persisted, the same way a normal browser works."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What happens if a browser automation encounters a 2FA prompt or CAPTCHA?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The automation stops and surfaces the issue rather than attempting to bypass it. amux's browser agent is designed to halt on 2FA prompts, captcha challenges, or any confirmation dialog that requires a human judgment call. It reports the stop condition to the dashboard (and the iOS app) so you can step in. This is a deliberate safety constraint — not a workaround to route around."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I run browser automations on a server without a screen?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux's browser automation uses Playwright in headless mode — there's no display requirement. It runs on any Linux or macOS server, including a GCP VM or a home server with no monitor attached. Desktop computer-use (driving actual mouse/keyboard) requires a physical screen, but the browser-tier automations run fully headless."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>AI Agent Business Automations</span></div>
+
+    <h1>AI Agent Business Automations</h1>
+    <p class="subtitle">Intent-based, not brittle coordinate replay — automate SaaS tasks with AI that reads the page, not records the pixels. Updated July 2026.</p>
+
+    <p>amux runs business automations as AI-driven browser tasks: pull a daily Stripe payout report, reconcile two dashboards, check insurance eligibility statuses, monitor competitor pricing. The critical difference from traditional RPA (robotic process automation): amux automations describe <em>what to accomplish</em>, not <em>which pixels to click</em>. Each run, the agent reads the current page state and decides actions fresh — it survives UI redesigns, A/B tests, and dynamic content that would break a coordinate-replay script. And because automations run inside the same platform as your coding agents, results hand off directly: a scraper finds bugs, a Claude Code session files PRs.</p>
+
+    <div style="background:var(--surface2,#252b3b);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
+      <strong>Key distinction:</strong> Traditional RPA tools record mouse coordinates and replay them — one layout change and they break. AI agent automations describe the intent. The agent reads the DOM and accessibility tree every run and re-resolves the path to the goal. It adapts; RPA doesn't.
+    </div>
+
+    <h2>Why traditional RPA fails and AI agent automation doesn't</h2>
+    <p>The brittle automation problem is old. You record a workflow — click dashboard, select date range, export CSV, rename file — and two weeks later a UI update moves a button 10 pixels and the whole script fails silently. Classic RPA tools from UiPath to Zapier and Selenium scripts share this fragility: they automate the <em>path</em>, not the <em>intent</em>.</p>
+
+    <p>AI agent automation flips the model. Instead of recording a path, you describe the goal:</p>
+
+    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>## Goal
+Grab yesterday's payout total from the Stripe dashboard.
+
+## Steps
+1. Go to https://dashboard.stripe.com/payouts
+2. Filter to yesterday's date range.
+3. Read the total payout amount.
+4. Post it to the amux board as an issue titled "Stripe payout &lt;date&gt;: &lt;amount&gt;".
+
+## Success when
+An issue exists on the board with yesterday's payout amount.</code></pre>
+
+    <p>Each run, the agent opens the browser in the authenticated profile, reads the current Stripe page — not a recording of it — and decides the action sequence needed to accomplish the stated goal. If Stripe redesigned their UI last week, the agent re-resolves the path. If the date filter moved, it finds it. The plan adapts; the goal stays fixed.</p>
+
+    <h2>The execution ladder: API-first, vision as a fallback</h2>
+    <p>Not every automation needs a browser. amux automations resolve down an execution ladder, preferring the fastest and most reliable approach that works for each step:</p>
+
+    <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border,#333)">
+          <th style="text-align:left;padding:0.6rem 0.75rem">Tier</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Mechanism</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">When used</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Reliability</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">1. API / CDP</td>
+          <td style="padding:0.6rem 0.75rem">Direct HTTP call, DevTools Protocol, DOM selector</td>
+          <td style="padding:0.6rem 0.75rem">Target exposes a stable API or selector</td>
+          <td style="padding:0.6rem 0.75rem">Deterministic, fast, cheap</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">2. Browser vision agent</td>
+          <td style="padding:0.6rem 0.75rem">Playwright + AI reads DOM/accessibility tree</td>
+          <td style="padding:0.6rem 0.75rem">Dynamic SaaS UI, no stable selector</td>
+          <td style="padding:0.6rem 0.75rem">High — re-resolves on layout changes</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem 0.75rem">3. Desktop computer-use</td>
+          <td style="padding:0.6rem 0.75rem">Vision loop → real mouse/keyboard actions</td>
+          <td style="padding:0.6rem 0.75rem">Native desktop app, no API, local only</td>
+          <td style="padding:0.6rem 0.75rem">Lower — screen-dependent, local only</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>An automation that can use a REST API does — no browser needed. One that can't falls through to the browser vision tier: AI reads the live DOM and accessibility tree, not pixel coordinates. Desktop computer-use is the last resort for native Mac apps with no browser or API alternative, and it requires a physical machine with a screen.</p>
+
+    <p>The automation engine caches the resolved plan while the UI is stable and replans on failure — getting the speed/cost of deterministic automation with the resilience of AI.</p>
+
+    <h2>Composing automations with coding agents — the amux difference</h2>
+    <p>Every other automation tool operates in a silo. Zapier runs your zap and stops. Make.com finishes the scenario and writes to a spreadsheet. The result is disconnected from your engineering workflow.</p>
+
+    <p>amux automations are first-class citizens in the same platform as your coding agents. That means:</p>
+
+    <ul>
+      <li>A browser automation that finds new crash reports posts them as <strong>board tasks</strong> — a Claude Code session picks them up and files a PR</li>
+      <li>An automation that reconciles billing data detects a discrepancy and <strong>sends it directly to a named Claude Code session</strong> to investigate and patch</li>
+      <li>An automation that scrapes competitor pricing emails a <strong>summary via amux's Gmail API integration</strong> and creates a board task for the product agent to draft a response strategy</li>
+    </ul>
+
+    <p>The automation and the coding fleet form a closed loop. No copy-paste, no manual hand-off, no separate tool context to switch into.</p>
+
+    <h2>What kinds of business tasks are good automation candidates?</h2>
+    <p>Any repetitive web task where the goal is stable but the exact UI path might shift. High-value examples:</p>
+
+    <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border,#333)">
+          <th style="text-align:left;padding:0.6rem 0.75rem">Category</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Example task</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Frequency</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Financial reporting</td>
+          <td style="padding:0.6rem 0.75rem">Pull daily Stripe payouts; export QuickBooks P&amp;L</td>
+          <td style="padding:0.6rem 0.75rem">Daily / weekly</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Healthcare admin</td>
+          <td style="padding:0.6rem 0.75rem">Submit eligibility checks to payer portals; check claim status</td>
+          <td style="padding:0.6rem 0.75rem">Daily</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Competitor monitoring</td>
+          <td style="padding:0.6rem 0.75rem">Check pricing pages; log feature changes; track job posts</td>
+          <td style="padding:0.6rem 0.75rem">Weekly</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Status reconciliation</td>
+          <td style="padding:0.6rem 0.75rem">Cross-check Jira vs Linear; verify deploy matches release notes</td>
+          <td style="padding:0.6rem 0.75rem">Daily</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Lead & CRM data</td>
+          <td style="padding:0.6rem 0.75rem">Scrape a form response portal; update CRM from event signups</td>
+          <td style="padding:0.6rem 0.75rem">Triggered / daily</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem 0.75rem">Monitoring & alerts</td>
+          <td style="padding:0.6rem 0.75rem">Check uptime dashboards; verify last night's batch job status</td>
+          <td style="padding:0.6rem 0.75rem">Hourly / daily</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>Tasks that are <strong>not good candidates</strong>: one-time actions (write the code instead), tasks that require a human judgment call at every step, or tasks where a direct API does the job — skip the browser agent, just call the API.</p>
+
+    <h2>How to set up a browser automation with amux</h2>
+
+    <h3>Step 1: Save an auth profile for the target site</h3>
+    <p>Use amux's playwright-auth flow to log into the site once and save the session. From the amux dashboard, navigate to Settings → Browser Profiles and create a named profile for each site you'll automate. After login, Playwright saves the cookies. Every future automation run opens that profile — already authenticated.</p>
+
+    <h3>Step 2: Write the automation as a plain-English SOP</h3>
+    <p>The SOP is the automation's source of truth. Write it like you'd explain the task to a capable assistant who can see the screen:</p>
+
+    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>## Goal
+Check for new denied insurance claims in the payer portal and log each one to the amux board.
+
+## Steps
+1. Go to https://provider.payerportal.com/claims
+2. Filter to "Denied" status, date range: today.
+3. For each denied claim in the results:
+   a. Read the claim ID, patient name, denial reason, and amount.
+   b. Create a board issue: "Denied claim [ID]: [reason] — [amount]"
+4. If no denied claims, create a board issue: "Claim check [today's date]: 0 denials ✓"
+
+## Success when
+At least one board issue exists for today's claim check.
+
+## Stop if
+A 2FA prompt, CAPTCHA, or login page appears — surface it and halt.</code></pre>
+
+    <h3>Step 3: Run it via the browser agent API</h3>
+    <p>Send the SOP to amux's browser agent endpoint:</p>
+
+    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"task":"[paste SOP here]","profile":"payer-portal"}' \
+  $AMUX_URL/api/browser/agent
+
+# Poll for completion
+curl -sk $AMUX_URL/api/browser/agent/status</code></pre>
+
+    <h3>Step 4: Schedule it with the amux scheduler</h3>
+    <p>Register the automation to run on your cadence:</p>
+
+    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Daily denied claims check",
+    "session": "automations",
+    "command": "Run the payer portal denied claims check SOP",
+    "schedule_expr": "daily at 8am"
+  }' \
+  $AMUX_URL/api/schedules</code></pre>
+
+    <h3>Step 5: Monitor from your phone</h3>
+    <p>The amux iOS app shows automation run status in real time. Passed runs show a green dot; failed ones show red with the step where it stopped. You get the visibility without being at your desk.</p>
+
+    <h2>amux automations vs. traditional automation tools</h2>
+
+    <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border,#333)">
+          <th style="text-align:left;padding:0.6rem 0.75rem">Capability</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">amux</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Zapier / Make</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">UiPath / Power Automate</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">n8n</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">UI automation model</td>
+          <td style="padding:0.6rem 0.75rem">Intent-based (re-resolved every run)</td>
+          <td style="padding:0.6rem 0.75rem">API/webhook only</td>
+          <td style="padding:0.6rem 0.75rem">Coordinate replay (brittle)</td>
+          <td style="padding:0.6rem 0.75rem">API/webhook only</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Survives UI redesigns</td>
+          <td style="padding:0.6rem 0.75rem">Yes (re-plans)</td>
+          <td style="padding:0.6rem 0.75rem">N/A</td>
+          <td style="padding:0.6rem 0.75rem">No (breaks on change)</td>
+          <td style="padding:0.6rem 0.75rem">N/A</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">No public API needed</td>
+          <td style="padding:0.6rem 0.75rem">Yes — drives browser</td>
+          <td style="padding:0.6rem 0.75rem">No — API required</td>
+          <td style="padding:0.6rem 0.75rem">Yes — coordinate replay</td>
+          <td style="padding:0.6rem 0.75rem">No — API required</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Composes with coding agents</td>
+          <td style="padding:0.6rem 0.75rem">Yes — native hand-off</td>
+          <td style="padding:0.6rem 0.75rem">No</td>
+          <td style="padding:0.6rem 0.75rem">No</td>
+          <td style="padding:0.6rem 0.75rem">Partial (webhook only)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Phone monitoring</td>
+          <td style="padding:0.6rem 0.75rem">Yes — iOS app + PWA</td>
+          <td style="padding:0.6rem 0.75rem">Dashboard only</td>
+          <td style="padding:0.6rem 0.75rem">Desktop-first</td>
+          <td style="padding:0.6rem 0.75rem">Web dashboard</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Saved auth (no re-login)</td>
+          <td style="padding:0.6rem 0.75rem">Yes — Playwright profiles</td>
+          <td style="padding:0.6rem 0.75rem">OAuth stored</td>
+          <td style="padding:0.6rem 0.75rem">Credential vault</td>
+          <td style="padding:0.6rem 0.75rem">Credential store</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Self-hosted / open source</td>
+          <td style="padding:0.6rem 0.75rem">Yes — MIT + Commons Clause</td>
+          <td style="padding:0.6rem 0.75rem">No (SaaS)</td>
+          <td style="padding:0.6rem 0.75rem">No (SaaS)</td>
+          <td style="padding:0.6rem 0.75rem">Yes (Apache 2.0)</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem 0.75rem">Pricing</td>
+          <td style="padding:0.6rem 0.75rem">Free + AI API costs</td>
+          <td style="padding:0.6rem 0.75rem">$20–$600+/mo</td>
+          <td style="padding:0.6rem 0.75rem">$15–$40+/user/mo</td>
+          <td style="padding:0.6rem 0.75rem">Free self-hosted</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Safety guardrails: what amux won't let automations do</h2>
+    <p>Automations with saved logins and scheduled triggers can cause real damage if they act without appropriate guardrails. amux enforces several non-negotiables:</p>
+
+    <ul>
+      <li><strong>Stop on 2FA / CAPTCHA:</strong> automations never attempt to bypass authentication challenges — they halt and surface the issue to the dashboard</li>
+      <li><strong>Confirm before irreversible actions:</strong> any step that submits, sends, deletes, or pays requires explicit <code>allow_irreversible: true</code> in the automation config, and high-stakes targets require per-run human confirmation</li>
+      <li><strong>Scoped auth:</strong> each automation is bound to one named browser profile — it can't reach sites outside its designated profile's scope</li>
+      <li><strong>Visible stop conditions:</strong> every automation declares a <code>## Success when</code> condition — the runner checks it and reports pass/fail clearly, not a silent "completed"</li>
+      <li><strong>Dry run:</strong> resolve the action plan and preview what the automation would do without executing side-effectful steps</li>
+    </ul>
+
+    <h2>The road ahead: dedicated Automations tab</h2>
+    <p>Today's amux automation stack — browser agent API + scheduler + saved profiles + board integration — enables all the patterns above. The next step, currently in design, is a dedicated <strong>Automations tab</strong> in the dashboard where you can:</p>
+    <ul>
+      <li>Create and edit automation SOPs in a Markdown editor (same editor as notes)</li>
+      <li>See a list of all automations with last-run status and next scheduled run</li>
+      <li>View a step-by-step run log with inline screenshots per step</li>
+      <li>Watch a recording of each run (screenshot sequence or MP4)</li>
+      <li>Trigger runs manually from the phone with one tap</li>
+    </ul>
+
+    <p>The underlying platform — browser, scheduler, profiles, board — is already live. The Automations tab surfaces it as a first-class product experience.</p>
+
+    <div class="cta-box">
+      <h3>Start automating business tasks with amux</h3>
+      <p>Open-source control plane for AI agent teams — coding agents and browser automations in one dashboard, managed from your phone. Single Python file, zero external dependencies.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+amux serve  # → https://localhost:8822</code></pre>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+        <a class="btn" href="/concierge/">Done-for-you setup (Concierge)</a>
+        <a class="btn" href="/for/solopreneurs/">amux for solopreneurs</a>
+      </div>
+    </div>
+
+    <h2>Related guides</h2>
+    <ul>
+      <li><a href="/guides/running-10-plus-agents/">Running 10+ agents in parallel</a></li>
+      <li><a href="/guides/ai-coding-agents-overnight/">AI coding agents overnight</a></li>
+      <li><a href="/guides/custom-automation-cron/">Custom automation with amux scheduler</a></li>
+      <li><a href="/guides/self-healing-configuration/">Self-healing agent configuration</a></li>
+      <li><a href="/guides/mobile-management-pwa/">Managing agents from your phone</a></li>
+      <li><a href="/concierge/">amux Concierge — managed automation setup</a></li>
+    </ul>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

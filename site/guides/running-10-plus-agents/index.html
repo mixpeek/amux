@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Running 10+ Agents in Parallel — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="How to effectively run 10 or more Claude Code agents simultaneously with amux.">
-  <meta name="keywords" content="run multiple AI agents, parallel claude code, 10 agents parallel, scale AI coding">
+  <title>Running 10+ AI Coding Agents in Parallel — amux Guide (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="How to run 10–50 parallel Claude Code, Codex, or Gemini CLI agents with amux. Fleet organization, task distribution, phone monitoring, and overnight self-healing operation.">
+  <meta name="keywords" content="run multiple Claude Code agents, parallel AI coding agents, scale AI engineering team, 10 agents parallel, Claude Code fleet, amux multi-agent, AI agent orchestration 2026">
   <link rel="canonical" href="https://amux.io/guides/running-10-plus-agents/">
-  <meta property="og:title" content="Running 10+ Agents in Parallel — amux">
-  <meta property="og:description" content="How to effectively run 10 or more Claude Code agents simultaneously with amux.">
+  <meta property="og:title" content="Running 10+ AI Coding Agents in Parallel — amux">
+  <meta property="og:description" content="How to run 10–50 parallel Claude Code, Codex, or Gemini CLI agents with amux. Fleet organization, task distribution, phone monitoring, and overnight self-healing operation.">
   <meta property="og:url" content="https://amux.io/guides/running-10-plus-agents/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -20,9 +20,146 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Running 10+ Agents in Parallel","item":"https://amux.io/guides/running-10-plus-agents/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Running 10+ Agents in Parallel","description":"How to effectively run 10 or more Claude Code agents simultaneously with amux.","url":"https://amux.io/guides/running-10-plus-agents/","datePublished":"2026-02-26","dateModified":"2026-02-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
-  </head>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/"},
+      {"@type": "ListItem", "position": 3, "name": "Running 10+ Agents in Parallel", "item": "https://amux.io/guides/running-10-plus-agents/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Running 10+ AI Coding Agents in Parallel",
+    "description": "How to run 10–50 parallel Claude Code, Codex, or Gemini CLI agents with amux. Fleet organization, task distribution, phone monitoring, and overnight self-healing operation.",
+    "url": "https://amux.io/guides/running-10-plus-agents/",
+    "datePublished": "2026-02-26",
+    "dateModified": "2026-07-05",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["run multiple Claude Code agents", "parallel AI coding agents", "AI engineering team", "Claude Code fleet management", "agent orchestration 2026"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "How to Run 10+ AI Coding Agents in Parallel with amux",
+    "description": "Step-by-step guide to scaling from a single Claude Code session to a full parallel AI engineering team using amux.",
+    "totalTime": "PT30M",
+    "supply": [
+      {"@type": "HowToSupply", "name": "Server with 8GB+ RAM"},
+      {"@type": "HowToSupply", "name": "Python 3.10+ and tmux"},
+      {"@type": "HowToSupply", "name": "Claude Code (or Codex / Gemini CLI)"},
+      {"@type": "HowToSupply", "name": "amux (open source, MIT)"}
+    ],
+    "step": [
+      {
+        "@type": "HowToStep",
+        "position": 1,
+        "name": "Install amux and register your project",
+        "text": "Clone amux and run the install script. Register your project directory with a name and --yolo flag to allow agents to act autonomously."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 2,
+        "name": "Design your task breakdown",
+        "text": "Decompose your work into independent tasks — by feature branch, by module, or by task type (implement, test, review). Add them to the amux kanban board before launching agents."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 3,
+        "name": "Launch your agent fleet",
+        "text": "Start amux with the target number of sessions. Each session is an isolated tmux window running Claude Code, Codex, or Gemini CLI against its own worktree."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 4,
+        "name": "Distribute tasks via the kanban board",
+        "text": "Agents claim tasks atomically from the board (POST /api/board/:id/claim). The kanban prevents two agents from taking the same task. You post tasks; agents pull and execute."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 5,
+        "name": "Monitor from your phone",
+        "text": "Install the amux PWA on your phone or use the iOS app. Check which agents are active, which need input, and which are idle — without sitting at your computer."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 6,
+        "name": "Enable self-healing for overnight operation",
+        "text": "Configure amux's watchdog: auto-compact on context overflow, auto-restart on crash with last-message replay. Now the fleet runs while you sleep."
+      }
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "How many AI coding agents can I run in parallel with amux?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux users regularly run 10–30 agents in parallel on a standard developer machine or cloud VM. The practical limit is RAM: each Claude Code session uses roughly 200–400 MB, so 16 GB of free RAM comfortably supports 20–40 parallel sessions. CPU is rarely the bottleneck since agents spend most of their time waiting on API responses. The amux server itself uses under 50 MB."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do multiple agents avoid working on the same task?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The amux kanban board supports atomic task claiming via POST /api/board/:id/claim. When an agent claims a task, it transitions to 'doing' and is locked to that session. Other agents see the lock and skip to the next available task. This prevents duplicated work even when 20+ agents are pulling from the same queue simultaneously."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I run different AI models in the same fleet?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux is model-agnostic at the session level — each tmux window just runs whatever CLI you point it at. You can run Claude Code sessions alongside Codex (OpenAI) and Gemini CLI sessions in the same fleet. The dashboard shows all sessions regardless of which model is running."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What happens if an agent crashes or hits a context limit?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux includes a self-healing watchdog. On context overflow, it auto-compacts the session and continues from where it left off. On crash, it auto-restarts and replays the last message so the agent resumes its task. This enables overnight and unattended operation without manual babysitting."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I prevent agents from creating git conflicts when working in the same repo?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The recommended approach is to assign each agent to its own feature branch. amux sessions can be registered against a specific directory, so agents stay isolated. For monorepos, assign agents to separate packages or modules. The amux kanban and CLAUDE.md skill system lets you specify branch-per-task as part of the task definition."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I manage a 10+ agent fleet from my phone?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. The amux dashboard is a phone-optimized PWA. The iOS app (App Store id6760410435) gives native push-style access. From your phone you can see all agent sessions in real time, send instructions to any agent, read their output via the peek view, move tasks on the board, and stop or restart sessions — the full fleet control surface fits in your pocket."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -38,24 +175,266 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Running 10+ Agents in Parallel</span></div>
-    <h1>Running 10+ Agents in Parallel</h1>
-<p class="subtitle">Practical tips for managing a fleet of Claude Code agents.</p>
-<h2>Machine requirements</h2>
-<p>Each Claude Code session uses ~200-400MB RAM. For 10+ agents, you'll want at least 8GB free. CPU usage is minimal since agents spend most time waiting for API responses.</p>
-<h2>Organization strategies</h2>
-<ul>
-<li><strong>By feature:</strong> one agent per feature branch</li>
-<li><strong>By module:</strong> one agent per package in a monorepo</li>
-<li><strong>By task type:</strong> reviewers, testers, documenters, implementers</li>
-</ul>
-<h2>Use the board for coordination</h2>
-<p>Post all tasks to the kanban board. Agents claim work atomically with <code>POST /api/board/:id/claim</code>. No duplicated effort.</p>
-<h2>Monitor from your phone</h2>
-<p>Install the PWA on your phone. Check in periodically — the dashboard shows which agents are working, which need input, and which are idle.</p>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+
+    <h1>Running 10+ AI Coding Agents in Parallel</h1>
+    <p class="subtitle">Updated July 2026 — how to scale from one Claude Code session to a full parallel AI engineering team</p>
+
+    <p>You can run 10, 20, even 50 parallel Claude Code, Codex, or Gemini CLI agents from a single amux dashboard — and manage the whole fleet from your phone. The practical output: tasks that would take one agent a week ship in a day, overnight, while you sleep. This guide covers everything from machine requirements to fleet organization, atomic task distribution, git conflict prevention, and self-healing overnight operation.</p>
+
+    <div style="background:var(--surface2,#252b3b);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
+      <strong>Quick answer:</strong> amux runs each agent as an isolated tmux session. The dashboard aggregates all sessions into one view. Agents pull tasks from a shared kanban board using atomic claims — no duplicated work. The self-healing watchdog auto-restarts crashed sessions and auto-compacts context-overflowed ones. Result: a fleet that runs unattended overnight.
+    </div>
+
+    <h2>What does "running 10+ agents in parallel" actually mean?</h2>
+    <p>Each agent is a separate <a href="/guides/claude-code-tutorial/">Claude Code</a> (or Codex / Gemini CLI) process running in its own tmux window. They're independent: each has its own context, its own task, its own branch. amux layers a control plane on top:</p>
+    <ul>
+      <li>A <strong>dashboard</strong> that shows all sessions in one view, live-streamed to your browser or phone</li>
+      <li>A <strong>kanban board</strong> where tasks queue up and agents pull work atomically</li>
+      <li>A <strong>peek/tail view</strong> that lets you read any agent's last N lines of output without attaching to its terminal</li>
+      <li>A <strong>steering queue</strong> that delivers instructions to agents between turns — no interruptions mid-task</li>
+      <li>A <strong>self-healing watchdog</strong> that auto-restarts crashed agents and replays their last message</li>
+    </ul>
+    <p>That's the foundation of an AI engineering team. Not one agent iterating; dozens of agents shipping in parallel, managed from one place.</p>
+
+    <h2>Machine requirements for 10–50 agents</h2>
+    <p>The good news: AI coding agents are CPU-idle (they spend most of their time waiting on API responses). The bottleneck is RAM.</p>
+
+    <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border,#333)">
+          <th style="text-align:left;padding:0.6rem 0.75rem">Fleet size</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">RAM needed</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">CPU</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Typical host</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">1–5 agents</td>
+          <td style="padding:0.6rem 0.75rem">4 GB free</td>
+          <td style="padding:0.6rem 0.75rem">2 cores</td>
+          <td style="padding:0.6rem 0.75rem">Laptop, small VM</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">5–15 agents</td>
+          <td style="padding:0.6rem 0.75rem">8 GB free</td>
+          <td style="padding:0.6rem 0.75rem">4 cores</td>
+          <td style="padding:0.6rem 0.75rem">MacBook Pro, e2-standard-4</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">15–30 agents</td>
+          <td style="padding:0.6rem 0.75rem">16 GB free</td>
+          <td style="padding:0.6rem 0.75rem">8 cores</td>
+          <td style="padding:0.6rem 0.75rem">Mac Studio, e2-standard-8</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem 0.75rem">30–50+ agents</td>
+          <td style="padding:0.6rem 0.75rem">32–64 GB free</td>
+          <td style="padding:0.6rem 0.75rem">16+ cores</td>
+          <td style="padding:0.6rem 0.75rem">High-memory VM, dedicated server</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>Each Claude Code session uses approximately 200–400 MB RAM. The amux server itself uses under 50 MB. Network is negligible — agents are sending text to an API, not streaming video.</p>
+
+    <p><strong>API cost note:</strong> 20 agents running full-tilt on Claude Sonnet costs roughly $5–20/hour depending on task complexity. For overnight runs, use <a href="/guides/ai-coding-finops/">FinOps strategies</a>: set per-session token budgets, use cheaper models for review/test tasks, and reserve the flagship model for implementation.</p>
+
+    <h2>How to organize a fleet of 10+ agents</h2>
+    <p>The right organization strategy depends on your work structure. Three patterns that work well:</p>
+
+    <h3>Pattern 1: By feature branch (most common)</h3>
+    <p>Each agent owns one feature branch end-to-end. The agent implements, tests, and opens a PR. No merge conflicts because agents never touch the same branch.</p>
+    <pre><code>Session: feature-auth      → branch: feat/oauth-refresh
+Session: feature-payments  → branch: feat/stripe-webhooks
+Session: feature-search    → branch: feat/semantic-search
+Session: feature-api-v2    → branch: feat/v2-pagination
+Session: bug-triage        → branch: fix/various</code></pre>
+
+    <h3>Pattern 2: By module (monorepo-friendly)</h3>
+    <p>Each agent owns one package or service. They can all work on the same base branch because their file paths don't overlap.</p>
+    <pre><code>Session: api-agent       → packages/api/**
+Session: web-agent       → packages/web/**
+Session: mobile-agent    → packages/mobile/**
+Session: infra-agent     → infra/**
+Session: docs-agent      → docs/**</code></pre>
+
+    <h3>Pattern 3: By task type (pipeline model)</h3>
+    <p>Specialized agents form a pipeline. Implementers write code; reviewers audit it; testers write tests; documenters write docs. Each role pulls from its own task queue on the board.</p>
+
+    <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border,#333)">
+          <th style="text-align:left;padding:0.6rem 0.75rem">Role</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Count</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Queue label</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Model recommendation</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Implementer</td>
+          <td style="padding:0.6rem 0.75rem">5–10</td>
+          <td style="padding:0.6rem 0.75rem">implement</td>
+          <td style="padding:0.6rem 0.75rem">Claude Sonnet / Codex</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Reviewer</td>
+          <td style="padding:0.6rem 0.75rem">2–3</td>
+          <td style="padding:0.6rem 0.75rem">review</td>
+          <td style="padding:0.6rem 0.75rem">Claude Opus (thoroughness)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Tester</td>
+          <td style="padding:0.6rem 0.75rem">2–3</td>
+          <td style="padding:0.6rem 0.75rem">test</td>
+          <td style="padding:0.6rem 0.75rem">Claude Haiku (fast/cheap)</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem 0.75rem">Documenter</td>
+          <td style="padding:0.6rem 0.75rem">1–2</td>
+          <td style="padding:0.6rem 0.75rem">docs</td>
+          <td style="padding:0.6rem 0.75rem">Claude Haiku</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Distributing tasks across the fleet: atomic board claims</h2>
+    <p>The biggest coordination problem with multiple agents is duplicated work. Two agents starting the same task is worse than one agent doing it wrong — it wastes tokens, creates merge conflicts, and wastes your time sorting out which output to keep.</p>
+
+    <p>amux solves this with <strong>atomic task claiming</strong>. The kanban board exposes a <code>POST /api/board/:id/claim</code> endpoint. When an agent calls it:</p>
+    <ol>
+      <li>The board atomically checks whether the task is still unclaimed</li>
+      <li>If unclaimed, it sets the task to <code>doing</code> and records the claiming session</li>
+      <li>If already claimed, it returns a 409 — and the agent moves to the next task</li>
+    </ol>
+
+    <p>To use this in your agents' CLAUDE.md:</p>
+    <pre><code># CLAUDE.md — add to each agent's project config
+## Task workflow
+1. Before starting any task, check the board: GET $AMUX_URL/api/board
+2. Find a task in status=todo that matches your role
+3. Claim it: POST $AMUX_URL/api/board/TASK_ID/claim
+   - If 409: skip to the next unclaimed task
+   - If 200: this task is yours — complete it
+4. When done: PATCH $AMUX_URL/api/board/TASK_ID {"status":"done","desc":"Result: ..."}</code></pre>
+
+    <p>With this pattern, you can add 20 tasks to the board and launch 20 agents — each will independently pull and lock exactly one task. The board shows you in real time who has what.</p>
+
+    <h2>Preventing git conflicts</h2>
+    <p>Agents writing to the same files is the most common failure mode when scaling past 5 agents. Three approaches:</p>
+
+    <p><strong>1. Worktree-per-session:</strong> Register each agent's session against a separate git worktree pointing to the same repo. Each worktree is an independent working directory — agents can't see each other's uncommitted changes. Only merge at PR time.</p>
+
+    <pre><code>git worktree add ../project-feature-auth feat/oauth-refresh
+git worktree add ../project-feature-payments feat/stripe-webhooks
+# Register with amux:
+amux register auth --dir ../project-feature-auth --yolo
+amux register payments --dir ../project-feature-payments --yolo</code></pre>
+
+    <p><strong>2. Module boundaries:</strong> Use your CLAUDE.md to constrain each agent to its module path. Claude Code's <code>allowed_paths</code> setting works too — set it per-session.</p>
+
+    <p><strong>3. Frequent small PRs:</strong> Instruct agents to open a draft PR immediately when they start and push commits every 30 minutes. Short-lived branches with frequent pushes mean conflicts surface and are resolved early, not at the end of a 4-hour overnight run.</p>
+
+    <h2>Monitoring 10+ agents from your phone</h2>
+    <p>The amux dashboard is designed to be the single pane of glass for your fleet — and it's built phone-first. You don't need to sit at your computer.</p>
+
+    <p>From the <strong>iOS app</strong> (or the PWA on Android):</p>
+    <ul>
+      <li><strong>Session list:</strong> color-coded status dots — green (active), yellow (waiting), red (error)</li>
+      <li><strong>Peek view:</strong> tap any session to see its last 100 lines of output, live-streaming</li>
+      <li><strong>Send instructions:</strong> type a message and deliver it to any agent via the steering queue — delivered at their next turn boundary, no interruption</li>
+      <li><strong>Board view:</strong> see all tasks and their claimed-by status at a glance</li>
+      <li><strong>Bulk actions:</strong> stop all idle agents, restart all errored agents — fleet-wide operations from one tap</li>
+    </ul>
+
+    <p>The dashboard uses Server-Sent Events to push live updates to every connected client simultaneously — your phone sees the same state as your desktop within ~2 seconds of any change.</p>
+
+    <h2>Self-healing overnight operation</h2>
+    <p>Running 10+ agents overnight without babysitting requires the fleet to recover from the inevitable failures: context overflow, network blips, API rate limits, agent stuck in a loop.</p>
+
+    <p>amux's watchdog handles each case:</p>
+
+    <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border,#333)">
+          <th style="text-align:left;padding:0.6rem 0.75rem">Failure mode</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">amux behavior</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Context window overflow</td>
+          <td style="padding:0.6rem 0.75rem">Auto-compact (triggers /compact), session continues</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Process crash</td>
+          <td style="padding:0.6rem 0.75rem">Watchdog detects exit, restarts session, replays last message</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">API rate limit (429)</td>
+          <td style="padding:0.6rem 0.75rem">Agent retries with backoff (Claude Code's built-in behavior)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Agent stuck / no output</td>
+          <td style="padding:0.6rem 0.75rem">Stale-session detector flags it on the dashboard</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem 0.75rem">amux server crash</td>
+          <td style="padding:0.6rem 0.75rem">Server auto-restarts (watches its own mtime + process supervisor)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>For a deep dive into overnight unattended operation, see <a href="/guides/ai-coding-agents-overnight/">AI coding agents overnight</a> and <a href="/guides/self-healing-configuration/">self-healing configuration</a>.</p>
+
+    <h2>Token spend management at scale</h2>
+    <p>20 agents generating tokens simultaneously can hit your API budget fast. Three practical controls:</p>
+
+    <p><strong>Per-session model selection:</strong> Not every agent needs your most expensive model. Assign Claude Opus to complex implementation tasks and Claude Haiku to fast test-writing or documentation. amux's bulk model-switch in the dashboard lets you change the model for multiple sessions at once.</p>
+
+    <p><strong>Task-level token budgets:</strong> Add a token limit to each task in your CLAUDE.md: <code>"Stop and report after $X tokens if you haven't shipped a working solution."</code> Agents stay accountable to a budget without needing external enforcement.</p>
+
+    <p><strong>Context compaction timing:</strong> Context compaction resets the running token cost of a session. Triggering it proactively at natural task boundaries (after a PR is opened, before starting a new subtask) keeps sessions lean and cheap.</p>
+
+    <p>For detailed cost tracking across a large fleet, see <a href="/guides/token-spend-tracking/">token spend tracking</a> and the <a href="/tools/ai-agent-cost-calculator/">AI agent cost calculator</a>.</p>
+
+    <h2>Step-by-step: scaling from 1 to 10+ agents</h2>
+    <ol>
+      <li><strong>Install amux:</strong> <code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh</code></li>
+      <li><strong>Register your project:</strong> <code>amux register myproject --dir ~/Dev/myproject --yolo</code></li>
+      <li><strong>Decompose your work:</strong> break the sprint into independent tasks, add them to the board: <code>amux board add "Implement OAuth refresh flow"</code></li>
+      <li><strong>Set up worktrees:</strong> one git worktree per agent, each on its own branch</li>
+      <li><strong>Write a shared CLAUDE.md:</strong> include the task-claiming workflow, module boundaries, and PR conventions</li>
+      <li><strong>Launch the fleet:</strong> <code>amux start myproject</code> and open the dashboard</li>
+      <li><strong>Install the mobile app:</strong> iOS App Store → amux, or add the PWA to your home screen</li>
+      <li><strong>Let it run overnight:</strong> the watchdog handles failures; check the board in the morning</li>
+    </ol>
+
+    <div class="cta-box">
+      <h3>Run your AI engineering team with amux</h3>
+      <p>Open-source control plane for parallel Claude Code, Codex, and Gemini CLI agents. Single Python file, zero external dependencies, MIT licensed.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8822</code></pre>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+        <a class="btn" href="/for/startup-founders/">amux for startup founders</a>
+        <a class="btn" href="/guides/team-workflow-setup/">Team workflow setup</a>
+      </div>
+    </div>
+
+    <h2>Related guides</h2>
+    <ul>
+      <li><a href="/guides/scaling-to-50-agents/">Scaling to 50 agents</a></li>
+      <li><a href="/guides/kanban-board-for-agents/">Kanban board for AI agents</a></li>
+      <li><a href="/guides/ai-coding-agents-overnight/">AI coding agents overnight</a></li>
+      <li><a href="/guides/self-healing-configuration/">Self-healing agent configuration</a></li>
+      <li><a href="/guides/git-conflict-avoidance/">Git conflict avoidance with parallel agents</a></li>
+      <li><a href="/guides/token-spend-tracking/">Token spend tracking</a></li>
+      <li><a href="/guides/mobile-management-pwa/">Managing agents from your phone</a></li>
+    </ul>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -103,6 +482,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
     </div>
   </footer>
 
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>
