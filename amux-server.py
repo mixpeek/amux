@@ -7835,23 +7835,58 @@ def _init_default_sessions():
             _write_env(helper_env, {"CC_DIR": str(repo_dir)})
 
 
+def _system_boot_id() -> str:
+    """Return a stable identifier for the current OS boot (epoch boot time)."""
+    try:
+        import psutil as _psutil
+        return str(int(_psutil.boot_time()))
+    except Exception:
+        pass
+    try:  # macOS fallback: { sec = 1751687000, usec = ... } ...
+        out = subprocess.check_output(["sysctl", "-n", "kern.boottime"], text=True, timeout=5)
+        m = re.search(r"sec = (\d+)", out)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    try:  # Linux fallback
+        for line in Path("/proc/stat").read_text().splitlines():
+            if line.startswith("btime "):
+                return line.split()[1]
+    except Exception:
+        pass
+    return "unknown"
+
+
+_RESUME_MARKER = CC_HOME / "last_resume_boot"
+
+
 def _auto_resume_sessions():
     """On startup, restart any session that was previously started.
 
     This makes machine restarts, container restarts, and crash recovery
     transparent — sessions come back automatically without user intervention.
-    Only runs when tmux has no amux sessions (fresh start, not os.execv reload).
+
+    Runs at most once per OS boot, tracked by a marker file written only
+    AFTER a full pass completes.  This makes resume convergent: if the server
+    restarts mid-resume (file-save reload, watchdog kickstart), the next
+    process picks up where the last left off — start_session() no-ops for
+    sessions that are already running.  os.execv reloads within the same boot
+    skip instantly via the marker.
     """
-    r = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"],
-                       capture_output=True, text=True)
-    if r.returncode == 0:
-        amux_sessions = [l for l in r.stdout.strip().splitlines() if l.startswith("amux-")]
-        if amux_sessions:
-            slog(f"[auto-resume] skipped — {len(amux_sessions)} amux tmux sessions already running (os.execv reload)")
-            return
+    boot_id = _system_boot_id()
+    try:
+        if _RESUME_MARKER.read_text().strip() == boot_id:
+            return  # already completed a full resume pass this boot
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
     if not CC_SESSIONS.exists():
         return
+    slog(f"[auto-resume] starting pass for boot {boot_id}")
     resumed = 0
+    already = 0
     skipped = 0
     for meta_file in sorted(CC_SESSIONS.glob("*.meta.json")):
         name = meta_file.name.removesuffix(".meta.json")
@@ -7866,6 +7901,9 @@ def _auto_resume_sessions():
                 if cfg.get("CC_ARCHIVED") == "1":
                     skipped += 1
                     continue
+                if is_running(name):
+                    already += 1
+                    continue
                 ok, msg = start_session(name)
                 if ok:
                     resumed += 1
@@ -7873,7 +7911,11 @@ def _auto_resume_sessions():
                     slog(f"[auto-resume] {name}: {msg}")
         except Exception as e:
             slog(f"[auto-resume] {name} failed: {e}")
-    slog(f"[auto-resume] complete — resumed {resumed}, skipped {skipped}")
+    try:
+        _RESUME_MARKER.write_text(boot_id)
+    except Exception as e:
+        slog(f"[auto-resume] failed to write marker: {e}")
+    slog(f"[auto-resume] complete — resumed {resumed}, already running {already}, skipped {skipped}")
 
 
 def _log_pipe_command(log_path: Path) -> str:
