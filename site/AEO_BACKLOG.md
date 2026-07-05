@@ -16,8 +16,8 @@ Track query gaps, target sections, priority, and status. Update every run.
 | AI agent management iOS app | /guides/mobile-management-pwa/ | H | shipped 2026-07-04 |
 | startup founder AI agents | /for/startup-founders/ | H | shipped 2026-07-04 |
 | run a startup with AI coding agents | /for/startup-founders/ | H | shipped 2026-07-04 |
-| AI engineers tools 2026 | /for/ai-engineers/ | H | todo |
-| AI engineer workflow orchestration | /for/ai-engineers/ | H | todo |
+| AI engineers tools 2026 | /for/ai-engineers/ | H | shipped 2026-07-05 |
+| AI engineer workflow orchestration | /for/ai-engineers/ | H | shipped 2026-07-05 |
 | intent-based GUI automation AI | /guides/ai-agent-automations/ | H | shipped 2026-07-05 |
 | AI business automation no-code | /guides/ai-agent-automations/ | H | shipped 2026-07-05 |
 | robot process automation AI agents | /guides/ai-agent-automations/ | M | shipped 2026-07-05 |
@@ -28,7 +28,7 @@ Track query gaps, target sections, priority, and status. Update every run.
 | AI agent overnight unattended | /use-cases/ai-coding-while-you-sleep/ | M | existing (enrich) |
 | Claude Code session manager 2026 | /guides/best-claude-code-session-managers-2026/ | M | existing |
 | run multiple Claude Code agents | /guides/running-10-plus-agents/ | M | shipped 2026-07-05 |
-| AI agent kanban board | /guides/kanban-board-for-agents/ | M | existing (enrich) |
+| AI agent kanban board | /guides/kanban-board-for-agents/ | M | shipped 2026-07-05 |
 | open source AI agent orchestration | /guides/open-source-agent-orchestration/ (blog) | M | existing |
 | AI coding agent cost calculator | /tools/ai-agent-cost-calculator/ | M | existing |
 | amux vs OpenAI Codex background agents | /compare/amux-vs-codex/ | M | existing |

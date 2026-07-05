@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Kanban Board for AI Agents — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Use amux's SQLite-backed kanban board to coordinate work across parallel AI agents.">
-  <meta name="keywords" content="AI agent kanban board, agent task board, coordinate AI agents, parallel task management">
+  <title>Kanban Board for AI Agents — Atomic Task Coordination (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="How amux's SQLite-backed kanban board coordinates parallel AI coding agents without duplicated work. Atomic task claiming, verified status lifecycle, iCal sync, phone management, and REST API reference.">
+  <meta name="keywords" content="AI agent kanban board, atomic task claiming AI agents, coordinate parallel Claude Code agents, AI task management board, amux board API, AI engineering team coordination 2026">
   <link rel="canonical" href="https://amux.io/guides/kanban-board-for-agents/">
-  <meta property="og:title" content="Kanban Board for AI Agents — amux">
-  <meta property="og:description" content="Use amux's SQLite-backed kanban board to coordinate work across parallel AI agents.">
+  <meta property="og:title" content="Kanban Board for AI Agents — Atomic Task Coordination">
+  <meta property="og:description" content="How amux's SQLite-backed kanban board coordinates parallel AI agents without duplicated work — atomic claiming, status lifecycle, iCal sync, and REST API reference.">
   <meta property="og:url" content="https://amux.io/guides/kanban-board-for-agents/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -20,9 +20,134 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Kanban Board for AI Agents","item":"https://amux.io/guides/kanban-board-for-agents/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Kanban Board for AI Agents","description":"Use amux's SQLite-backed kanban board to coordinate work across parallel AI agents.","url":"https://amux.io/guides/kanban-board-for-agents/","datePublished":"2026-02-26","dateModified":"2026-02-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
-  </head>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/"},
+      {"@type": "ListItem", "position": 3, "name": "Kanban Board for AI Agents", "item": "https://amux.io/guides/kanban-board-for-agents/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Kanban Board for AI Agents — Atomic Task Coordination",
+    "description": "How amux's SQLite-backed kanban board coordinates parallel AI coding agents without duplicated work. Atomic claiming, verified status lifecycle, iCal sync, phone management, REST API reference.",
+    "url": "https://amux.io/guides/kanban-board-for-agents/",
+    "datePublished": "2026-02-26",
+    "dateModified": "2026-07-05",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["AI agent kanban board", "atomic task claiming", "parallel AI agent coordination", "AI engineering team task management"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "How to Coordinate Parallel AI Agents with amux's Kanban Board",
+    "description": "Use amux's atomic kanban board to distribute tasks across a fleet of Claude Code, Codex, or Gemini CLI agents with no duplicated work.",
+    "totalTime": "PT15M",
+    "step": [
+      {
+        "@type": "HowToStep",
+        "position": 1,
+        "name": "Add tasks to the board",
+        "text": "Post tasks via the CLI or REST API before launching agents. Use amux board add 'Task title' or POST /api/board with title and status=todo."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 2,
+        "name": "Configure agents to claim work atomically",
+        "text": "Add the board claiming workflow to your CLAUDE.md: agents call POST /api/board/:id/claim. If the claim returns 200, the task is theirs. If 409, another agent already has it — skip to the next."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 3,
+        "name": "Agents work and post results",
+        "text": "Each agent marks its task doing while working, then patches it to done with a result description when complete. The board reflects the real state of every agent's work."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 4,
+        "name": "Monitor the board from your phone",
+        "text": "Open the amux iOS app or PWA. The board view shows every task's status and which session owns it, live-updated via SSE. Move tasks, add new ones, or stop sessions from your phone."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 5,
+        "name": "Verify completed work",
+        "text": "Mark done tasks as verified only after confirming the work in production or review. This distinguishes implemented from confirmed — the board's done→verified lifecycle prevents false-complete assumptions."
+      }
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "How does amux prevent two agents from claiming the same task?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The amux board uses an atomic SQLite compare-and-swap (CAS) operation on every claim request. POST /api/board/:id/claim checks whether the task is still in status=todo inside a single database transaction. If yes, it atomically sets the status to doing and records the claiming session. If the task was already claimed (status=doing or done), it returns HTTP 409. This works correctly even when 20+ agents race for the same queue simultaneously — no Redis or external coordination service needed."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What are the task statuses in the amux kanban board?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux uses four statuses: todo (queued, available to claim), doing (actively owned by a session), done (implementation complete but not yet confirmed in production), and verified (confirmed working end-to-end in production with evidence). The done vs verified distinction is intentional — done means implemented, not confirmed. Never mark verified unless the work passed CI and is live in production."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I use the kanban board across multiple amux sessions or machines?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. The board is a shared SQLite database served over amux's REST API. Any session — on the same machine or accessing the server remotely via Tailscale — can read, add, and claim tasks. Multiple developers or agents on different machines can all coordinate through the same board. The SSE-based dashboard updates all connected clients within ~2 seconds of any change."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I add tasks to the board in bulk before a sprint?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Use the CLI shorthand or REST API in a loop. The amux CLI provides amux board add 'Task title' which auto-tags the current session. For bulk creation, post multiple JSON requests: curl -sk -X POST -H 'Content-Type: application/json' -d '{\"title\":\"Implement OAuth refresh\",\"status\":\"todo\"}' $AMUX_URL/api/board. You can also add tasks from the dashboard's board view or the iOS app board tab."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I see due dates from the board in Google Calendar or Apple Calendar?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. Board items with due dates are exported as an iCal feed at GET /api/calendar.ics. Subscribe to this URL from Google Calendar or Apple Calendar. If you configure an S3 bucket in server.env, amux auto-uploads the feed to a public S3 URL on every board write — so external calendars can subscribe to a stable URL without needing to reach your server directly."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does the done vs verified status distinction work?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "done means the work is implemented — it does NOT mean it works in production. verified means you confirmed the change is deployed, CI passed (including e2e tests), and the behavior is correct in production. This distinction matters: an agent marking a task done after opening a PR is not the same as the PR being merged, deployed, and working. The board enforces this lifecycle so you always know the real state of your work."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -38,17 +163,268 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Kanban Board for AI Agents</span></div>
+
     <h1>Kanban Board for AI Agents</h1>
-<p class="subtitle">Post tasks. Agents claim them. No duplicated work.</p>
-<p>amux includes a SQLite-backed kanban board with auto-generated issue keys, custom columns, per-agent ownership, and iCal sync for due dates.</p>
-<h2>Atomic task claiming</h2>
-<p><code>POST /api/board/:id/claim</code> is a compare-and-swap operation. Even with 20 agents racing for the same queue, each task gets assigned exactly once.</p>
-<h2>iCal sync</h2>
-<p>Board items with due dates export as an iCal feed. Subscribe from Google Calendar or Apple Calendar to see agent deadlines.</p>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+    <p class="subtitle">Post tasks. Agents claim them atomically. The board is the single source of truth for your AI engineering team. Updated July 2026.</p>
+
+    <p>When you run 10 or 20 parallel AI coding agents, the hardest coordination problem isn't launching them — it's ensuring no two agents pick up the same task. amux solves this with a SQLite-backed kanban board and a single atomic endpoint: <code>POST /api/board/:id/claim</code>. You post tasks; agents claim them atomically; the board shows who has what in real time, on your phone or browser. This is the coordination layer that turns a fleet of independent agents into a functioning AI engineering team.</p>
+
+    <div style="background:var(--surface2,#252b3b);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
+      <strong>Core mechanism:</strong> The claim endpoint is an atomic SQLite compare-and-swap. Even with 20 agents racing for the same queue, each task is assigned exactly once. If a task is already claimed, the call returns 409 and the agent moves to the next available task. No Redis, no external coordination service.
+    </div>
+
+    <h2>Why a kanban board is essential for multi-agent coordination</h2>
+    <p>The naive alternative — hardcoding which agent gets which task — breaks at 5+ agents. You can't predict which agent will finish first, which will get stuck, or which task will expand in scope. A shared queue with atomic claiming lets agents self-organize around available work.</p>
+
+    <p>Without atomic claiming, you get the classic duplicate-work problem: two agents both see a task in the queue, both start it simultaneously, both make changes, and you end up with a merge conflict and 2× the token spend. With atomic claiming, the first agent to claim a task wins — every subsequent agent gets a 409 and moves on.</p>
+
+    <p>The amux board adds one more layer: the <strong>verified status</strong>. Most team tools conflate "done" with "working in production." amux makes the distinction explicit, so you always know the real state of your fleet's work.</p>
+
+    <h2>The task status lifecycle</h2>
+
+    <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border,#333)">
+          <th style="text-align:left;padding:0.6rem 0.75rem">Status</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Meaning</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Who sets it</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem"><code>todo</code></td>
+          <td style="padding:0.6rem 0.75rem">Queued, available to claim</td>
+          <td style="padding:0.6rem 0.75rem">You (or an orchestrator agent)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem"><code>doing</code></td>
+          <td style="padding:0.6rem 0.75rem">Actively owned by a session</td>
+          <td style="padding:0.6rem 0.75rem">Agent (via /claim or PATCH)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem"><code>done</code></td>
+          <td style="padding:0.6rem 0.75rem">Implementation complete — NOT confirmed in prod</td>
+          <td style="padding:0.6rem 0.75rem">Agent on task completion</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem 0.75rem"><code>verified</code></td>
+          <td style="padding:0.6rem 0.75rem">Confirmed working in production with evidence</td>
+          <td style="padding:0.6rem 0.75rem">Human reviewer or verification agent</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>The <strong>done vs verified distinction is critical</strong>. An agent that opens a PR marks the task <code>done</code>. The task should only reach <code>verified</code> after CI passes, the change is deployed, and production behavior is confirmed. Don't let agents mark tasks verified — that's a human judgment or a dedicated verification agent that checks actual prod behavior.</p>
+
+    <h2>Atomic task claiming — how it works</h2>
+    <p>The claim operation is a single SQLite transaction:</p>
+
+    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code># Claim a task atomically
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"session":"my-agent-session"}' \
+  $AMUX_URL/api/board/TASK-ID/claim
+
+# Response 200 → task is yours
+# Response 409 → already claimed, find another task</code></pre>
+
+    <p>Inside, this runs a SQL transaction that checks <code>WHERE id=? AND status='todo'</code> and updates to <code>status='doing', session=?</code> atomically. If the row was already updated by another agent between your check and your write, the transaction returns nothing matched → 409. No lost updates, no double claims, even under concurrent load.</p>
+
+    <h2>Wiring the board into your agents' CLAUDE.md</h2>
+    <p>Add this workflow to the CLAUDE.md for each agent (or a shared project CLAUDE.md):</p>
+
+    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>## Task workflow (MANDATORY — do not skip)
+
+### Before starting any task
+1. Check the board for available work:
+   curl -sk $AMUX_URL/api/board | python3 -c "
+   import json,sys
+   tasks = [t for t in json.load(sys.stdin) if t['status']=='todo']
+   [print(t['id'], t['title']) for t in tasks[:5]]
+   "
+
+2. Claim the first relevant task:
+   curl -sk -X POST -H 'Content-Type: application/json' \
+     -d '{"session":"$AMUX_SESSION"}' \
+     $AMUX_URL/api/board/TASK-ID/claim
+   # If 200: proceed. If 409: try the next task.
+
+### While working
+   curl -sk -X PATCH -H 'Content-Type: application/json' \
+     -d '{"status":"doing","desc":"Working on X..."}' \
+     $AMUX_URL/api/board/TASK-ID
+
+### When done
+   curl -sk -X PATCH -H 'Content-Type: application/json' \
+     -d '{"status":"done","desc":"Result: opened PR #123 — implemented OAuth refresh flow"}' \
+     $AMUX_URL/api/board/TASK-ID</code></pre>
+
+    <h2>Adding tasks to the board</h2>
+
+    <h3>Via CLI (quickest)</h3>
+    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>amux board add "Implement OAuth refresh flow"
+amux board add "Add Stripe webhook handler"
+amux board add "Write integration tests for payments module"
+# Each is auto-tagged to the current $AMUX_SESSION and set to todo</code></pre>
+
+    <h3>Via REST API (for scripts and orchestrators)</h3>
+    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code># Add a single task
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Implement OAuth refresh flow","status":"todo","desc":"See spec in docs/auth.md"}' \
+  $AMUX_URL/api/board
+
+# Bulk-add from a list
+for task in "Auth refresh" "Stripe webhooks" "Payment tests" "API docs"; do
+  curl -sk -X POST -H 'Content-Type: application/json' \
+    -d "{\"title\":\"$task\",\"status\":\"todo\"}" \
+    $AMUX_URL/api/board
+done</code></pre>
+
+    <h3>From the dashboard or iOS app</h3>
+    <p>The amux board view in the dashboard and iOS app lets you add, edit, and move tasks with taps. The mobile board view shows all tasks in their columns — scroll to see your fleet's real-time state from anywhere.</p>
+
+    <h2>Multi-agent coordination patterns</h2>
+
+    <h3>Pattern 1: Single shared queue (simplest)</h3>
+    <p>All agents pull from one <code>todo</code> queue. Each agent is a generalist — it claims whatever is available. Works well when tasks are similar in scope and any agent can handle any task.</p>
+
+    <h3>Pattern 2: Role-filtered queues (pipeline)</h3>
+    <p>Add a <code>role</code> field to each task (or prefix the title). Implementer agents look for <code>[implement]</code> tasks; reviewer agents look for <code>[review]</code> tasks. This creates a natural pipeline: implementers finish, retitle their task <code>[review] ...</code>, and reviewer agents pick it up.</p>
+
+    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code># Implementer agent's task query
+tasks=$(curl -sk $AMUX_URL/api/board | python3 -c "
+import json,sys
+[print(t['id'], t['title']) for t in json.load(sys.stdin)
+ if t['status']=='todo' and '[implement]' in t['title'].lower()]
+")
+
+# After completing, hand off to reviewer:
+curl -sk -X PATCH -H 'Content-Type: application/json' \
+  -d '{"title":"[review] Auth refresh — PR #123","status":"todo","desc":"PR opened"}' \
+  $AMUX_URL/api/board/TASK-ID</code></pre>
+
+    <h3>Pattern 3: Session-tagged tasks (dedicated assignments)</h3>
+    <p>Pre-assign tasks to specific sessions by setting the <code>session</code> field at creation time. Agents check for tasks tagged to their own <code>$AMUX_SESSION</code>. Use this when different agents have different specializations or access rights.</p>
+
+    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code># Create a task for a specific session
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Audit payments module for PCI issues","session":"security-agent","status":"todo"}' \
+  $AMUX_URL/api/board
+
+# The security-agent checks for its own tasks
+curl -sk $AMUX_URL/api/board | python3 -c "
+import json,sys,os
+s = os.getenv('AMUX_SESSION','')
+[print(t['id'], t['title']) for t in json.load(sys.stdin)
+ if t.get('session')==s and t['status']=='todo']
+"</code></pre>
+
+    <h2>Monitoring the board from your phone</h2>
+    <p>The amux board view is designed for one-handed phone use. From the iOS app (App Store: amux) or the PWA on Android:</p>
+    <ul>
+      <li>Swipe between columns (todo / doing / done / verified)</li>
+      <li>Tap any task to see the full description, session owner, and timestamps</li>
+      <li>Add new tasks with a single tap — the title field opens directly</li>
+      <li>Move tasks between statuses by tapping the status pill</li>
+      <li>The board updates live via Server-Sent Events — you see changes from all agents within ~2 seconds</li>
+    </ul>
+
+    <p>For teams using the board across multiple developers: everyone accessing the same amux server (via Tailscale or a shared cloud VM) sees the same live board state. One server, one board, many participants.</p>
+
+    <h2>iCal integration for due dates</h2>
+    <p>Board items support a <code>due</code> field (ISO date). Items with due dates are exported as an iCal feed:</p>
+
+    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code># Add a task with a due date
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Ship v2 API","status":"todo","due":"2026-07-15"}' \
+  $AMUX_URL/api/board
+
+# Subscribe to the iCal feed
+# Local: https://localhost:8822/api/calendar.ics
+# S3 (public, stable): configure AMUX_S3_BUCKET in ~/.amux/server.env</code></pre>
+
+    <p>Subscribe the iCal URL from Google Calendar, Apple Calendar, or any calendar app that supports iCal feeds. The feed auto-updates on every board write — when an agent marks a task done, the calendar event disappears within the next calendar sync.</p>
+
+    <h2>Complete board REST API reference</h2>
+
+    <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.85rem">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border,#333)">
+          <th style="text-align:left;padding:0.6rem 0.75rem">Method</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Endpoint</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Description</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem"><code>GET</code></td>
+          <td style="padding:0.6rem 0.75rem"><code>/api/board</code></td>
+          <td style="padding:0.6rem 0.75rem">List all tasks (all statuses)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem"><code>POST</code></td>
+          <td style="padding:0.6rem 0.75rem"><code>/api/board</code></td>
+          <td style="padding:0.6rem 0.75rem">Create a task — body: <code>{title, status?, desc?, session?, due?}</code></td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem"><code>PATCH</code></td>
+          <td style="padding:0.6rem 0.75rem"><code>/api/board/:id</code></td>
+          <td style="padding:0.6rem 0.75rem">Update any field — status, title, desc, session, due</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem"><code>DELETE</code></td>
+          <td style="padding:0.6rem 0.75rem"><code>/api/board/:id</code></td>
+          <td style="padding:0.6rem 0.75rem">Delete a task</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem"><code>POST</code></td>
+          <td style="padding:0.6rem 0.75rem"><code>/api/board/:id/claim</code></td>
+          <td style="padding:0.6rem 0.75rem">Atomic claim — 200 on success, 409 if already claimed</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem"><code>POST</code></td>
+          <td style="padding:0.6rem 0.75rem"><code>/api/board/clear-done</code></td>
+          <td style="padding:0.6rem 0.75rem">Archive all tasks in done or verified status</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem 0.75rem"><code>GET</code></td>
+          <td style="padding:0.6rem 0.75rem"><code>/api/calendar.ics</code></td>
+          <td style="padding:0.6rem 0.75rem">iCal feed for tasks with due dates</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>CLI shorthands</h2>
+    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>amux board add "Task title"      # create as todo, tag current session
+amux board doing TASK-ID         # mark in progress
+amux board done TASK-ID          # mark complete
+amux board todo TASK-ID          # move back to todo</code></pre>
+
+    <h2>The board as the team's shared source of truth</h2>
+    <p>When you run multiple agents across multiple developers on a shared amux server, the board is the one place everyone — human and agent — reads to understand what's being worked on, what's done, and what's next. Sessions declare their work before starting (<code>doing</code>), update when complete (<code>done</code>), and the board prevents duplication automatically.</p>
+
+    <p>This matters for multi-session orchestration: an orchestrator agent can scan the board, see what's claimed, and spawn new agents only for unclaimed work. A reviewer can look at the board in the morning and understand overnight output without reading any logs. The board tells the story of your AI engineering team's work.</p>
+
+    <div class="cta-box">
+      <h3>Coordinate your AI engineering team with amux</h3>
+      <p>Open-source control plane for parallel Claude Code, Codex, and Gemini CLI agents. SQLite-backed kanban, atomic claiming, iCal sync, phone management. Single Python file, zero external dependencies.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+amux serve  # → https://localhost:8822
+amux board add "First task"  # post work for your agents</code></pre>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+        <a class="btn" href="/guides/running-10-plus-agents/">Running 10+ agents</a>
+        <a class="btn" href="/guides/team-workflow-setup/">Team workflow setup</a>
+      </div>
+    </div>
+
+    <h2>Related guides</h2>
+    <ul>
+      <li><a href="/guides/running-10-plus-agents/">Running 10+ agents in parallel</a></li>
+      <li><a href="/guides/git-conflict-avoidance/">Git conflict avoidance with parallel agents</a></li>
+      <li><a href="/guides/agent-to-agent-orchestration/">Agent-to-agent orchestration</a></li>
+      <li><a href="/guides/team-workflow-setup/">AI engineering team workflow setup</a></li>
+      <li><a href="/guides/mobile-management-pwa/">Managing agents from your phone</a></li>
+    </ul>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -96,6 +472,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
     </div>
   </footer>
 
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>
