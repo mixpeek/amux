@@ -20880,7 +20880,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.20';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.21';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21396,18 +21396,21 @@ function _vvTick() {
     }
   } catch (e) {}
 })();
-// Standalone top inset (2026-07-05 device beacon, iPhone 14 mini home-screen app):
-// innerHeight is a status-bar SHORT of screen (762 of 812) => the webview is already
-// INSET below the status bar; it does NOT render full-bleed (a full-bleed webview would
-// report innerHeight == screen). iOS 26 still reports env(safe-area-inset-top)=50 anyway,
-// so the base CSS `top: max(chrome, env(top))` applies a REDUNDANT second inset that drops
-// the header to physical y=100 — the ~50px top gap. When the viewport is inset (standalone
-// + carve>=20), zero it via body.no-top-inset so content sits flush at the webview top.
-// This is what v0.9.4/0.9.6/0.9.11 did (ovTop 0, user-confirmed flush); the v0.9.13 "trust
-// env" retirement reintroduced the gap on the false premise that the webview is full-bleed.
-// Safari (non-standalone, genuinely bleeds under the status bar) is excluded and keeps env.
+// Standalone top inset (2026-07-05 device RULER, iPhone 14 mini home-screen app):
+// innerHeight is DYNAMIC. It boots a status-bar SHORT of screen (762 of 812) — an INSET
+// viewport whose content already clears the status bar, so the env(top)=50 the base CSS
+// applies is a REDUNDANT second inset (the ~50px top gap). Then it SETTLES full-bleed
+// (innerHeight == screen == 812) — content at top:0 now sits UNDER the clock (the "cut
+// off top"), and env(top)=50 becomes REQUIRED. Same env(top)=50 reported in both states,
+// so env alone can't decide. Verdict is carve-based: carve = screen - inner. carve>=20
+// (inset) => zero the redundant inset via body.no-top-inset (ovTop 0, flush; v0.9.4/0.6/0.11).
+// carve<20 (full-bleed) => keep env(top). Because inner flips at runtime the verdict must
+// be re-run on resize/visualViewport-resize, NOT decided once at boot (v0.9.18's boot-only
+// reading is why the settled full-bleed state showed content under the clock). Safari
+// (non-standalone, genuinely bleeds under the status bar) is excluded and keeps env.
 (function() {
   try {
+    let _lastTopApplied = -1;
     const decide = () => {
       // Ground truth: measure the real env(safe-area-inset-top) with a probe
       let envTop = -1;
@@ -21430,18 +21433,31 @@ function _vvTick() {
       // command bar ~50px off-screen ("now it's cut off"). The carve is the top status
       // bar only (envTop 50 confirms it), never a bottom dead strip.
       document.body.classList.remove('js-bottom-extend');
-      if (window.innerWidth <= 700 && navigator.standalone) {
+      // Beacon on first run and on every state FLIP so the 762<->812 transition is
+      // visible in the log (not spammed on every resize tick).
+      const nowApplied = standaloneInset ? 1 : 0;
+      if (window.innerWidth <= 700 && navigator.standalone && nowApplied !== _lastTopApplied) {
+        _lastTopApplied = nowApplied;
         try {
           fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ kind: 'boot-geo', ver: APP_VER, standalone: 1,
               innerH: window.innerHeight, innerW: window.innerWidth,
               screenH: screen.height, screenW: screen.width, screenY: window.screenY,
-              envTop, carve, applied: standaloneInset ? 1 : 0,
-              bottomExtend: 0 }) }).catch(() => {});
+              envTop, carve, applied: nowApplied, bottomExtend: 0 }) }).catch(() => {});
         } catch (e3) {}
       }
     };
     if (document.body) decide(); else document.addEventListener('DOMContentLoaded', decide);
+    // innerHeight is DYNAMIC in the iOS 26 home-screen app: it boots a status-bar
+    // short (inset, 762) then settles full-bleed (812). carve flips 50->0, so the
+    // "env(top) is redundant" verdict flips too — re-run on every viewport change so
+    // the inset tracks the live state instead of a stale boot reading (device ruler
+    // 2026-07-05: inner 762 => zero top; inner 812 => keep env(top)). Re-running also
+    // reflows the overlay so fixed bottom:0 re-resolves to the true bottom, clearing
+    // the ~50px "excess padding" left when the viewport grew but the overlay didn't.
+    window.addEventListener('resize', decide);
+    window.addEventListener('orientationchange', decide);
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', decide);
   } catch (e) {}
 })();
 (function() {
@@ -36401,7 +36417,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.20';
+const CACHE = 'amux-v0.9.21';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
