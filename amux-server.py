@@ -11383,6 +11383,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   body.js-top-inset .overlay { top: var(--js-top-inset, 0px) !important; padding-top: 10px !important; }
   body.js-top-inset { padding-top: calc(var(--js-top-inset, 0px) + 10px) !important; }
   body.js-top-inset .header-row { top: var(--js-top-inset, 0px); }
+  /* Standalone iOS: the window is full-screen but the LAYOUT viewport is a
+     status-bar short (sim: 812 of 874; phone: 762 of 812). Flowed content
+     paints past the layout viewport to the true bottom, but fixed bottom:0
+     clamps to it — leaving a dead strip under the peek command bar. Extend
+     fixed overlays down by the carve; the command bar's env(bottom) padding
+     still keeps content above the home indicator. */
+  body.js-bottom-extend .overlay { bottom: calc(-1 * var(--js-bottom-extend, 0px)) !important; }
   /* board-detail sits above peek when opened from within it */
   #board-detail-overlay { z-index: 150; }
   .overlay {
@@ -20873,7 +20880,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.13';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.15';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21348,18 +21355,25 @@ function _vvTick() {
         p.remove();
       } catch (e2) {}
       const carve = screen.height - window.innerHeight;   // status-bar height when the host under-reports
-      const fullBleedUnreported = navigator.standalone === true
+      const standaloneCarve = navigator.standalone === true
         && window.innerWidth <= 700
-        && envTop === 0 && carve >= 20 && carve <= 80;
+        && carve >= 20 && carve <= 80;
+      const fullBleedUnreported = standaloneCarve && envTop === 0;
       document.body.classList.toggle('js-top-inset', fullBleedUnreported);
       if (fullBleedUnreported) document.body.style.setProperty('--js-top-inset', carve + 'px');
+      // Fixed bottom:0 clamps to the layout viewport, which is a status-bar
+      // short of the full-screen window — extend fixed overlays by the carve
+      // in BOTH flavors (env-truthful phone, env-lying sim).
+      document.body.classList.toggle('js-bottom-extend', standaloneCarve);
+      if (standaloneCarve) document.body.style.setProperty('--js-bottom-extend', carve + 'px');
       if (window.innerWidth <= 700 && navigator.standalone) {
         try {
           fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ kind: 'boot-geo', ver: APP_VER, standalone: 1,
               innerH: window.innerHeight, innerW: window.innerWidth,
               screenH: screen.height, screenW: screen.width, screenY: window.screenY,
-              envTop, carve, applied: fullBleedUnreported ? 2 : 0 }) }).catch(() => {});
+              envTop, carve, applied: fullBleedUnreported ? 2 : 0,
+              bottomExtend: standaloneCarve ? carve : 0 }) }).catch(() => {});
         } catch (e3) {}
       }
     };
@@ -36323,7 +36337,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.13';
+const CACHE = 'amux-v0.9.15';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
