@@ -20868,7 +20868,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.9';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.10';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21328,11 +21328,31 @@ function _vvTick() {
 // cover PWAs are left alone. Evaluated once at boot (keyboard-closed geometry).
 (function() {
   try {
-    const redundantTop = navigator.standalone === true
-      && window.innerWidth <= 700
-      && window.innerHeight < (screen.height - 10);
-    const apply = () => document.body && document.body.classList.toggle('no-top-inset', redundantTop);
-    if (document.body) apply(); else document.addEventListener('DOMContentLoaded', apply);
+    const decide = () => {
+      // Ground truth: measure the real env(safe-area-inset-top) with a probe
+      let envTop = -1;
+      try {
+        const p = document.createElement('div');
+        p.style.cssText = 'position:fixed;top:0;height:env(safe-area-inset-top,0px);width:1px;visibility:hidden;';
+        document.body.appendChild(p);
+        envTop = p.getBoundingClientRect().height;
+        p.remove();
+      } catch (e2) {}
+      const redundantTop = navigator.standalone === true
+        && window.innerWidth <= 700
+        && window.innerHeight < (screen.height - 10);
+      document.body.classList.toggle('no-top-inset', redundantTop);
+      if (window.innerWidth <= 700 && navigator.standalone) {
+        try {
+          fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ kind: 'boot-geo', ver: APP_VER, standalone: 1,
+              innerH: window.innerHeight, innerW: window.innerWidth,
+              screenH: screen.height, screenW: screen.width,
+              envTop, applied: redundantTop ? 1 : 0 }) }).catch(() => {});
+        } catch (e3) {}
+      }
+    };
+    if (document.body) decide(); else document.addEventListener('DOMContentLoaded', decide);
   } catch (e) {}
 })();
 (function() {
@@ -36287,7 +36307,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.9';
+const CACHE = 'amux-v0.9.10';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
