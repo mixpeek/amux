@@ -17772,7 +17772,9 @@ async function fetchSessions() {
       _checkSessionTransitions(data);
       lastSessionsJSON = j;
       sessions = data;
-      localStorage.setItem('amux_sessions_cache', j);
+      // Quota-full store: drop the cache rather than let the throw break rendering
+      try { localStorage.setItem('amux_sessions_cache', j); }
+      catch (e2) { try { localStorage.removeItem('amux_sessions_cache'); } catch (e3) {} }
       render();
       if (!window._peekEmbed) _fetchGitBranches(sessions);
     }
@@ -20866,7 +20868,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.8';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.9';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -23315,7 +23317,22 @@ function cmdHistoryAdd(text, opts) {
   if (prev && (typeof prev === 'string' ? prev : prev.text) === text) { _cmdHistoryIdx = -1; return; }
   _cmdHistory.push(entry);
   if (_cmdHistory.length > 500) _cmdHistory = _cmdHistory.slice(-500);
-  localStorage.setItem('amux_cmd_history', JSON.stringify(_cmdHistory));
+  // localStorage is best-effort bookkeeping — it must NEVER kill the send.
+  // On a full store (iOS PWA quota), setItem throws QuotaExceededError; the
+  // in-memory entry then dedupes the retry which skipped the throw — that was
+  // the "press send twice" bug (device beacon 2026-07-05). Prune and retry;
+  // give up silently (server-side history is authoritative anyway).
+  try {
+    localStorage.setItem('amux_cmd_history', JSON.stringify(_cmdHistory));
+  } catch (e) {
+    try {
+      localStorage.removeItem('amux_sessions_cache');  // biggest transient cache
+      _cmdHistory = _cmdHistory.slice(-50);
+      localStorage.setItem('amux_cmd_history', JSON.stringify(_cmdHistory));
+    } catch (e2) {
+      try { localStorage.removeItem('amux_cmd_history'); } catch (e3) {}
+    }
+  }
   // Persist to server
   fetch(API + '/api/history', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -30242,7 +30259,9 @@ function connectSSE() {
           const firstLoad = !lastSessionsJSON;
           lastSessionsJSON = j;
           sessions = msg.payload;
-          localStorage.setItem('amux_sessions_cache', j);
+          // Quota-full store: drop the cache rather than let the throw break SSE handling
+          try { localStorage.setItem('amux_sessions_cache', j); }
+          catch (e2) { try { localStorage.removeItem('amux_sessions_cache'); } catch (e3) {} }
           render();
           // If workspace is open but no panes were restored yet (e.g. sessions
           // cache was empty on startup), retry restoration now that we have data.
@@ -36268,7 +36287,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.8';
+const CACHE = 'amux-v0.9.9';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
