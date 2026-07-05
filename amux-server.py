@@ -11373,22 +11373,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     background: var(--bg);
     z-index: 100; flex-direction: column;
   }
-  /* Standalone home-screen app on a non-cover viewport: iOS already carves the
-     status bar OUT of the webview (innerHeight = screen.height - statusbar), so
-     env(safe-area-inset-top) is a REDUNDANT second inset — it left ~50px of
-     dead space above the peek/list (device beacons: ovTop 50 with a 762px
-     viewport on an 812pt screen). _topInsetGuard sets body.no-top-inset in that
-     case; zero the top positioning and let a small visual pad show below the
-     status bar. Bottom inset stays (the webview DOES include the home
-     indicator). Cover PWAs / Safari tabs never get this class. */
-  body.no-top-inset .overlay { top: 0 !important; padding-top: 10px !important; }
-  /* Session-list page: same redundant top inset on the body container. */
-  body.no-top-inset { padding-top: 10px !important; }
-  /* iOS 26 web-app host: full-bleed webview but env(safe-area-inset-top)
-     lies as 0 — _topInsetGuard measures the real status-bar height
-     (screen.height - innerHeight) and injects it as --js-top-inset. */
+  /* iOS web-app top inset (2026-07-05 beacons, sim + phone): the standalone
+     webview always renders FULL-BLEED under the status bar. When env(top)
+     reports (phone: 50) the default CSS max(..., env()) rules handle it —
+     TRUST IT, never zero it (the retired no-top-inset zeroing is what jammed
+     the header under the clock). When the host LIES with env(top)=0 despite a
+     status-bar-sized carve (sim: carve 62), _topInsetGuard injects the carve
+     as --js-top-inset via body.js-top-inset. */
   body.js-top-inset .overlay { top: var(--js-top-inset, 0px) !important; padding-top: 10px !important; }
   body.js-top-inset { padding-top: calc(var(--js-top-inset, 0px) + 10px) !important; }
+  body.js-top-inset .header-row { top: var(--js-top-inset, 0px); }
   /* board-detail sits above peek when opened from within it */
   #board-detail-overlay { z-index: 150; }
   .overlay {
@@ -16507,10 +16501,16 @@ if (!ZOOM_STEPS.includes(_zoomLevel)) _zoomLevel = 100;
 function _applyZoom() {
   // CSS zoom on the root breaks position:fixed geometry in WebKit — a zoomed
   // page renders the peek overlay short of the physical screen bottom (dead
-  // strip under the command bar). Zoom is a desktop affordance; phones pinch.
-  // Force 100% on touch devices while keeping the stored preference for desktop.
-  const z = matchMedia('(pointer: coarse)').matches ? 100 : _zoomLevel;
-  document.documentElement.style.zoom = (z / 100);
+  // strip under the command bar). So on touch devices scale the root
+  // font-size instead: the UI is rem-based, so text tracks the zoom level,
+  // and font-size never disturbs fixed/safe-area geometry.
+  if (matchMedia('(pointer: coarse)').matches) {
+    document.documentElement.style.zoom = '';
+    document.documentElement.style.fontSize = _zoomLevel === 100 ? '' : (16 * _zoomLevel / 100) + 'px';
+  } else {
+    document.documentElement.style.fontSize = '';
+    document.documentElement.style.zoom = (_zoomLevel / 100);
+  }
   localStorage.setItem('amux_zoom', _zoomLevel);
   const el = document.getElementById('zoom-level-display');
   if (el) el.textContent = _zoomLevel + '%';
@@ -20873,7 +20873,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.12';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.13';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21327,10 +21327,14 @@ function _vvTick() {
     }
   } catch (e) {}
 })();
-// Standalone home-screen app whose webview already excludes the status bar
-// (innerHeight < screen.height): env(safe-area-inset-top) is a redundant second
-// inset — zero it via body.no-top-inset. Only this exact case; Safari tabs and
-// cover PWAs are left alone. Evaluated once at boot (keyboard-closed geometry).
+// Standalone top inset (2026-07-05 beacons, sim + phone): the webview always
+// renders FULL-BLEED under the status bar. When env(safe-area-inset-top)
+// reports (phone: 50) the CSS max(..., env()) rules already handle it — trust
+// it. When the iOS 26 host LIES with env=0 despite a status-bar-sized carve
+// (sim: carve 62, bottom inset fine), inject the carve via --js-top-inset.
+// The old "zero the redundant inset" heuristic is retired: identical beacon
+// numbers occur with a truthful env, and zeroing jammed the header under the
+// clock (the very bug it once fixed, inverted).
 (function() {
   try {
     const decide = () => {
@@ -21343,22 +21347,10 @@ function _vvTick() {
         envTop = p.getBoundingClientRect().height;
         p.remove();
       } catch (e2) {}
-      const carve = screen.height - window.innerHeight;   // status-bar-sized when iOS "carves"
-      // iOS 26 web-app host renders FULL-BLEED under the status bar while
-      // env(safe-area-inset-top) lies as 0 (the BOTTOM inset still reports —
-      // sim beacon: envTop=0, sab=34, carve=62). There is no CSS inset to zero
-      // or rely on — compute the real one from the carve and inject via JS.
+      const carve = screen.height - window.innerHeight;   // status-bar height when the host under-reports
       const fullBleedUnreported = navigator.standalone === true
         && window.innerWidth <= 700
         && envTop === 0 && carve >= 20 && carve <= 80;
-      // Legacy quirk (older iOS): webview genuinely starts below the status bar
-      // but env(top) STILL reports ~50 — a redundant second inset to zero. Only
-      // applies when env actually reports one; with env=0 there is nothing to zero.
-      const redundantTop = navigator.standalone === true
-        && window.innerWidth <= 700
-        && envTop > 0
-        && window.innerHeight < (screen.height - 10);
-      document.body.classList.toggle('no-top-inset', redundantTop);
       document.body.classList.toggle('js-top-inset', fullBleedUnreported);
       if (fullBleedUnreported) document.body.style.setProperty('--js-top-inset', carve + 'px');
       if (window.innerWidth <= 700 && navigator.standalone) {
@@ -21367,7 +21359,7 @@ function _vvTick() {
             body: JSON.stringify({ kind: 'boot-geo', ver: APP_VER, standalone: 1,
               innerH: window.innerHeight, innerW: window.innerWidth,
               screenH: screen.height, screenW: screen.width, screenY: window.screenY,
-              envTop, carve, applied: redundantTop ? 1 : (fullBleedUnreported ? 2 : 0) }) }).catch(() => {});
+              envTop, carve, applied: fullBleedUnreported ? 2 : 0 }) }).catch(() => {});
         } catch (e3) {}
       }
     };
@@ -36331,7 +36323,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.12';
+const CACHE = 'amux-v0.9.13';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
