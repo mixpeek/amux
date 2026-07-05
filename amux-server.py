@@ -11373,18 +11373,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     background: var(--bg);
     z-index: 100; flex-direction: column;
   }
-  /* iOS home-screen web app top inset (2026-07-05 device beacon): innerHeight is a
-     status-bar SHORT of screen (762 of 812) => the webview is already INSET below the
-     status bar; it does NOT render full-bleed. iOS 26 still reports env(top)=50 anyway —
-     a REDUNDANT second inset that drops the header to physical y=100, opening a ~50px top
-     gap (user: "still"). When the viewport is inset (standalone + carve>=20), zero the top
-     so the overlay/header/list sit flush at the webview top (physical y just below the
-     status bar). Safari (non-standalone, bleeds under the status bar) is excluded and keeps
-     env(top) to clear the clock. Flush at ovTop 0 in v0.9.4/0.9.6/0.9.11; the v0.9.13
-     "trust env" retirement is what reintroduced the gap. */
-  body.no-top-inset .overlay { top: 0 !important; padding-top: 10px !important; }
-  body.no-top-inset { padding-top: 10px !important; }
-  body.no-top-inset .header-row { top: 0 !important; }
+  /* iOS home-screen top inset — the overlay/header/list use env(safe-area-inset-top)
+     via `top/padding-top: max(chrome, env(top))`. That's the ONLY stable choice:
+     innerHeight oscillates 762<->812 in this host and is coupled to our layout, so any
+     JS heuristic that zeroes or extends based on carve thrashes (v0.9.18/0.9.21). env(top)
+     is constant (50) and keeps content clear of the clock. Do NOT reintroduce a
+     body.no-top-inset / js-bottom-extend toggle — both were retired 2026-07-05. */
   /* board-detail sits above peek when opened from within it */
   #board-detail-overlay { z-index: 150; }
   .overlay {
@@ -20880,7 +20874,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.21';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.22';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21396,18 +21390,17 @@ function _vvTick() {
     }
   } catch (e) {}
 })();
-// Standalone top inset (2026-07-05 device RULER, iPhone 14 mini home-screen app):
-// innerHeight is DYNAMIC. It boots a status-bar SHORT of screen (762 of 812) — an INSET
-// viewport whose content already clears the status bar, so the env(top)=50 the base CSS
-// applies is a REDUNDANT second inset (the ~50px top gap). Then it SETTLES full-bleed
-// (innerHeight == screen == 812) — content at top:0 now sits UNDER the clock (the "cut
-// off top"), and env(top)=50 becomes REQUIRED. Same env(top)=50 reported in both states,
-// so env alone can't decide. Verdict is carve-based: carve = screen - inner. carve>=20
-// (inset) => zero the redundant inset via body.no-top-inset (ovTop 0, flush; v0.9.4/0.6/0.11).
-// carve<20 (full-bleed) => keep env(top). Because inner flips at runtime the verdict must
-// be re-run on resize/visualViewport-resize, NOT decided once at boot (v0.9.18's boot-only
-// reading is why the settled full-bleed state showed content under the clock). Safari
-// (non-standalone, genuinely bleeds under the status bar) is excluded and keeps env.
+// Standalone top inset — FINAL (2026-07-05 device ruler + oscillation beacons):
+// DO NOT gate layout on innerHeight. In the iOS 26 home-screen webview innerHeight
+// OSCILLATES 762<->812 every ~2s and is COUPLED to our own layout: any JS inset that
+// shifts content relative to the status bar makes iOS add/drop the bar from innerHeight,
+// which flips carve, which re-toggles the inset — a thrash loop (v0.9.21). The only
+// stable signal is env(safe-area-inset-top) (constant 50), so trust the base CSS
+// `top: max(chrome, env(top))` and NEVER toggle a JS top inset. Both prior heuristics —
+// no-top-inset (zero the "redundant" inset) and js-bottom-extend — are retired for good;
+// they each mistook one phase of the oscillation for the truth. env(top) keeps content
+// clear of the clock in the full-bleed phase; in the (transient) inset phase it is at
+// worst a small gap, never a cut-off. Bottom: plain bottom:0 + cmd-bar env(bottom).
 (function() {
   try {
     let _lastTopApplied = -1;
@@ -21421,43 +21414,30 @@ function _vvTick() {
         envTop = p.getBoundingClientRect().height;
         p.remove();
       } catch (e2) {}
-      const carve = screen.height - window.innerHeight;   // >0 means the viewport is inset (status bar excluded)
-      const standaloneInset = navigator.standalone === true
-        && window.innerWidth <= 700
-        && carve >= 20 && carve <= 80;
-      document.body.classList.toggle('no-top-inset', standaloneInset);
-      // NO bottom extend. In a toolbar-less standalone webview window.innerHeight is
-      // the full visible height and fixed bottom:0 reaches the true screen bottom
-      // (device beacon 2026-07-05: ovBottom 762 == innerHeight). The retired
-      // js-bottom-extend added the TOP status-bar carve at the bottom too, shoving the
-      // command bar ~50px off-screen ("now it's cut off"). The carve is the top status
-      // bar only (envTop 50 confirms it), never a bottom dead strip.
+      const carve = screen.height - window.innerHeight;
+      // NEVER gate layout on innerHeight. In the iOS 26 home-screen app it OSCILLATES
+      // 762<->812 every ~2s (device beacons 2026-07-05), and toggling the top inset in
+      // response fed straight back into the layout: zero-inset shifts content under the
+      // status bar -> iOS drops the bar from innerHeight (812) -> re-add inset -> content
+      // clears the bar -> iOS restores it (762) -> ... a thrash loop. The stable signal
+      // is env(safe-area-inset-top) (constant 50), so we trust the base CSS
+      // `top: max(chrome, env(top))` and never toggle a JS inset. no-top-inset and
+      // js-bottom-extend are BOTH retired for good.
+      document.body.classList.remove('no-top-inset');
       document.body.classList.remove('js-bottom-extend');
-      // Beacon on first run and on every state FLIP so the 762<->812 transition is
-      // visible in the log (not spammed on every resize tick).
-      const nowApplied = standaloneInset ? 1 : 0;
-      if (window.innerWidth <= 700 && navigator.standalone && nowApplied !== _lastTopApplied) {
-        _lastTopApplied = nowApplied;
+      // Diagnostic beacon once per load (applied is always 0 now).
+      if (window.innerWidth <= 700 && navigator.standalone && _lastTopApplied !== 0) {
+        _lastTopApplied = 0;
         try {
           fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ kind: 'boot-geo', ver: APP_VER, standalone: 1,
               innerH: window.innerHeight, innerW: window.innerWidth,
               screenH: screen.height, screenW: screen.width, screenY: window.screenY,
-              envTop, carve, applied: nowApplied, bottomExtend: 0 }) }).catch(() => {});
+              envTop, carve, applied: 0, bottomExtend: 0 }) }).catch(() => {});
         } catch (e3) {}
       }
     };
     if (document.body) decide(); else document.addEventListener('DOMContentLoaded', decide);
-    // innerHeight is DYNAMIC in the iOS 26 home-screen app: it boots a status-bar
-    // short (inset, 762) then settles full-bleed (812). carve flips 50->0, so the
-    // "env(top) is redundant" verdict flips too — re-run on every viewport change so
-    // the inset tracks the live state instead of a stale boot reading (device ruler
-    // 2026-07-05: inner 762 => zero top; inner 812 => keep env(top)). Re-running also
-    // reflows the overlay so fixed bottom:0 re-resolves to the true bottom, clearing
-    // the ~50px "excess padding" left when the viewport grew but the overlay didn't.
-    window.addEventListener('resize', decide);
-    window.addEventListener('orientationchange', decide);
-    if (window.visualViewport) window.visualViewport.addEventListener('resize', decide);
   } catch (e) {}
 })();
 (function() {
@@ -36417,7 +36397,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.21';
+const CACHE = 'amux-v0.9.22';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
