@@ -2192,6 +2192,14 @@ def _md_to_ansi_inner(text: str) -> str:
     return "\n".join(out)
 
 
+def _USER_ECHO_ANSI(txt: str) -> str:
+    """User-message echo in Claude Code's exact style: fg-239 '❯ ' and fg-231
+    text on a bg-237 highlight block, continuations indented 2 (captured from
+    a live Claude Code pane — keep byte-identical for visual parity)."""
+    return ("\x1b[38;5;239m\x1b[48;5;237m❯ \x1b[38;5;231m"
+            + txt.replace("\n", "\n  ") + "\x1b[39m\x1b[49m")
+
+
 def _render_session_transcript(name: str, max_chars: int = 40000) -> str:
     """Render a session's JSONL conversation as clean ANSI-colored text for the
     peek Transcript tab — the gap-free, never-torn alternative to the alt-screen
@@ -2234,7 +2242,32 @@ def _render_session_transcript(name: str, max_chars: int = 40000) -> str:
                 if not txt:
                     continue
                 if role == "user":
-                    out.append("\x1b[1m\x1b[38;5;220m❯ " + txt.replace("\n", "\n  ") + "\x1b[0m")
+                    # Harness-injected reminders are invisible in Claude Code — hide them here too
+                    if "<system-reminder>" in txt:
+                        txt = re.sub(r"<system-reminder>.*?</system-reminder>", "", txt, flags=re.S).strip()
+                        if not txt:
+                            continue
+                    # Local slash-command turns are stored with meta tags; Claude Code
+                    # shows the bare command + dim ⎿ output, never the raw tags
+                    m_cmd = re.search(r"<command-name>(.*?)</command-name>", txt, re.S)
+                    m_arg = re.search(r"<command-args>(.*?)</command-args>", txt, re.S)
+                    m_out = re.search(r"<local-command-stdout>(.*?)</local-command-stdout>", txt, re.S)
+                    if m_cmd or m_out:
+                        if m_cmd and m_cmd.group(1).strip():
+                            cmd_line = m_cmd.group(1).strip()
+                            if m_arg and m_arg.group(1).strip():
+                                cmd_line += " " + m_arg.group(1).strip()
+                            out.append(_USER_ECHO_ANSI(cmd_line))
+                        body = m_out.group(1).strip() if m_out else ""
+                        if body:
+                            for k, ln in enumerate(body.split("\n")[:6]):
+                                prefix = "  ⎿  " if k == 0 else "     "
+                                out.append("\x1b[38;5;246m" + prefix + ln.rstrip() + "\x1b[0m")
+                        out.append("")
+                        continue
+                    # Match Claude Code's real echo: dim-gray ❯ on a subtle bg-237
+                    # highlight block, near-white text — captured from a live pane
+                    out.append(_USER_ECHO_ANSI(txt))
                 else:
                     # Claude Code prefixes each assistant message with a white
                     # ⏺ bullet and renders prose in the default fg (not dim);
