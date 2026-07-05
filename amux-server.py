@@ -20880,7 +20880,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.19';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.20';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21284,6 +21284,61 @@ function _peekGeoBeacon() {
     }).catch(() => {});
   } catch (e) {}
 }
+// ── Geo ruler: on-device visual diagnostic ────────────────────────────────
+// FOUR taps anywhere in the top 120px toggle a full-screen measurement overlay,
+// so ONE screenshot from the real device shows exactly how the viewport maps to
+// the physical screen: where `fixed top:0` (blue) and `fixed bottom:0` (orange)
+// actually land vs the status-bar clock and the home indicator, plus the env()
+// safe-area bands (red=top, green=bottom) and a 50px labelled grid. This removes
+// the screenshot-guessing that made the top/bottom inset flip-flop.
+function _measureEnv(side) {
+  const p = document.createElement('div');
+  p.style.cssText = 'position:fixed;' + side + ':0;height:env(safe-area-inset-' + side + ',0px);width:1px;visibility:hidden;';
+  document.body.appendChild(p);
+  const h = Math.round(p.getBoundingClientRect().height);
+  p.remove();
+  return h;
+}
+function _geoRuler() {
+  let el = document.getElementById('geo-ruler');
+  if (el) { el.remove(); return; }
+  el = document.createElement('div');
+  el.id = 'geo-ruler';
+  el.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;font:12px/1.35 ui-monospace,monospace;';
+  const envTop = _measureEnv('top'), envBot = _measureEnv('bottom');
+  const vv = window.visualViewport || {};
+  let h = '';
+  h += '<div style="position:fixed;top:0;left:0;right:0;height:' + envTop + 'px;background:rgba(248,81,73,0.30);border-bottom:2px solid #f85149;"></div>';
+  h += '<div style="position:fixed;bottom:0;left:0;right:0;height:' + envBot + 'px;background:rgba(63,185,80,0.30);border-top:2px solid #3fb950;"></div>';
+  h += '<div style="position:fixed;top:0;left:0;right:0;height:3px;background:#58a6ff;"></div>';
+  h += '<div style="position:fixed;bottom:0;left:0;right:0;height:3px;background:#d29922;"></div>';
+  for (let y = 0; y <= window.innerHeight; y += 50) {
+    h += '<div style="position:fixed;top:' + y + 'px;left:0;right:0;height:1px;background:rgba(255,255,255,0.22);"></div>';
+    h += '<div style="position:fixed;top:' + y + 'px;left:2px;color:#fff;background:rgba(0,0,0,0.65);padding:0 3px;">' + y + '</div>';
+  }
+  h += '<div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.88);color:#fff;padding:12px 14px;border-radius:8px;border:1px solid #fff;text-align:left;">'
+     + 'screen ' + screen.width + 'x' + screen.height + '<br>'
+     + 'inner ' + window.innerWidth + 'x' + window.innerHeight + '<br>'
+     + 'vv.offsetTop ' + Math.round(vv.offsetTop || 0) + ' &nbsp; vv.h ' + Math.round(vv.height || 0) + '<br>'
+     + 'env(top) ' + envTop + ' &nbsp; env(bottom) ' + envBot + '<br>'
+     + 'standalone ' + navigator.standalone + ' &nbsp; dpr ' + window.devicePixelRatio + '<br>'
+     + '<span style="color:#58a6ff">blue=fixed top:0</span> &nbsp; <span style="color:#d29922">orange=fixed bottom:0</span><br>'
+     + '<span style="color:#f85149">red=env-top</span> &nbsp; <span style="color:#3fb950">green=env-bottom</span>'
+     + '</div>';
+  el.innerHTML = h;
+  document.body.appendChild(el);
+}
+(function() {
+  let taps = [];
+  document.addEventListener('touchend', function(e) {
+    const t = e.changedTouches && e.changedTouches[0];
+    if (!t || t.clientY > 120) return;   // only the top strip
+    const now = performance.now();
+    taps = taps.filter(function(x) { return now - x < 1400; });
+    taps.push(now);
+    if (taps.length >= 4) { taps = []; _geoRuler(); }
+  }, { passive: true });
+})();
 let _peekGeoHold = 0;   // while set, refreshPeek leaves the status line alone
 function _peekGeoDebug() {
   _peekGeoHold = performance.now() + 12000;
@@ -36346,7 +36401,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.19';
+const CACHE = 'amux-v0.9.20';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
