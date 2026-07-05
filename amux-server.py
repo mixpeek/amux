@@ -11274,6 +11274,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     background: var(--bg);
     z-index: 100; flex-direction: column;
   }
+  /* Standalone home-screen app on a non-cover viewport: iOS already carves the
+     status bar OUT of the webview (innerHeight = screen.height - statusbar), so
+     env(safe-area-inset-top) is a REDUNDANT second inset — it left ~50px of
+     dead space above the peek/list (device beacons: ovTop 50 with a 762px
+     viewport on an 812pt screen). _topInsetGuard sets body.no-top-inset in that
+     case; zero the top positioning and let a small visual pad show below the
+     status bar. Bottom inset stays (the webview DOES include the home
+     indicator). Cover PWAs / Safari tabs never get this class. */
+  body.no-top-inset .overlay { top: 0 !important; padding-top: 10px !important; }
+  /* Session-list page: same redundant top inset on the body container. */
+  body.no-top-inset { padding-top: 10px !important; }
   /* board-detail sits above peek when opened from within it */
   #board-detail-overlay { z-index: 150; }
   .overlay {
@@ -20756,7 +20767,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.5';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.6';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21208,6 +21219,19 @@ function _vvTick() {
       const apply = () => document.body && document.body.classList.add('safari-tab');
       if (document.body) apply(); else document.addEventListener('DOMContentLoaded', apply);
     }
+  } catch (e) {}
+})();
+// Standalone home-screen app whose webview already excludes the status bar
+// (innerHeight < screen.height): env(safe-area-inset-top) is a redundant second
+// inset — zero it via body.no-top-inset. Only this exact case; Safari tabs and
+// cover PWAs are left alone. Evaluated once at boot (keyboard-closed geometry).
+(function() {
+  try {
+    const redundantTop = navigator.standalone === true
+      && window.innerWidth <= 700
+      && window.innerHeight < (screen.height - 10);
+    const apply = () => document.body && document.body.classList.toggle('no-top-inset', redundantTop);
+    if (document.body) apply(); else document.addEventListener('DOMContentLoaded', apply);
   } catch (e) {}
 })();
 (function() {
@@ -23043,6 +23067,21 @@ function _btnFire(e, fn) {
   if (t._fireTs && now - t._fireTs < 350) { _tapTraceEv('DEDUP'); return; }   // click echo of the same tap
   t._fireTs = now;
   _tapTraceEv('FIRE');
+  // Mobile diagnostic: no dead-tap beacon means events DO reach the button, so
+  // a "two presses" report must be the send no-oping. Report the pre-send state
+  // (input length, mode, session) on each fire so the device shows what differs
+  // between the two taps.
+  if (window.innerWidth <= 700) {
+    try {
+      const inp = document.getElementById('peek-cmd-input');
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'send-fire', ver: APP_VER,
+          seq: _tapTrace.slice(-7).map(x => x.e).join(','),
+          inputLen: inp ? inp.value.trim().length : -1,
+          sendMode: (typeof _sendMode !== 'undefined' ? _sendMode : '?'),
+          session: (typeof peekSession !== 'undefined' ? peekSession : null) }) }).catch(() => {});
+    } catch (e2) {}
+  }
   fn();
 }
 // iOS cancels the synthesized click (and pointer events) when a tap races a
@@ -23061,7 +23100,7 @@ function _btnTouchEnd(e, fn) {
   _tapTraceEv('touchend');
   const t = e.changedTouches && e.changedTouches[0];
   if (!t) return;
-  if (Math.abs(t.clientX - _btnTouchX) > 15 || Math.abs(t.clientY - _btnTouchY) > 15) return;   // swipe, not a tap
+  if (Math.abs(t.clientX - _btnTouchX) > 24 || Math.abs(t.clientY - _btnTouchY) > 24) return;   // swipe, not a tap (loosened for thumbs)
   e.preventDefault();   // we own the tap; suppress the synthetic mouse/click
   _btnFire(e, fn);
 }
@@ -36105,7 +36144,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.5';
+const CACHE = 'amux-v0.9.6';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
