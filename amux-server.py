@@ -20866,7 +20866,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.7';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.8';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -23217,7 +23217,21 @@ function cardSlashAcBeforeInput(name, e) { _sendBeforeInput(e, () => sendFromInp
 
 function slashAcKeydown(e) {
   _lastKeyShiftEnter = (e.key === 'Enter' && e.shiftKey);
-  if (e.isComposing || e.keyCode === 229) return; // ignore IME composition Enter
+  if (e.isComposing || e.keyCode === 229) {
+    // A composed Enter is swallowed here by design (beforeinput catches the
+    // committed line break) — but "press enter twice" reports persist, so
+    // beacon every swallowed Enter at ALL widths to pin down the guard's role.
+    if (e.key === 'Enter') {
+      try {
+        const _inp = document.getElementById('peek-cmd-input');
+        fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind: 'enter-ime-swallowed', ver: APP_VER, composing: !!e.isComposing,
+            keyCode: e.keyCode, inputLen: _inp ? _inp.value.trim().length : -1,
+            width: window.innerWidth, session: (typeof peekSession !== 'undefined' ? peekSession : null) }) }).catch(() => {});
+      } catch (e2) {}
+    }
+    return; // ignore IME composition Enter
+  }
   const inp = document.getElementById('peek-cmd-input');
   const el = document.getElementById('slash-ac-list');
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendPeekCmd(); return; }
@@ -36252,7 +36266,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.7';
+const CACHE = 'amux-v0.9.8';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
