@@ -11384,6 +11384,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   body.no-top-inset .overlay { top: 0 !important; padding-top: 10px !important; }
   /* Session-list page: same redundant top inset on the body container. */
   body.no-top-inset { padding-top: 10px !important; }
+  /* iOS 26 web-app host: full-bleed webview but env(safe-area-inset-top)
+     lies as 0 — _topInsetGuard measures the real status-bar height
+     (screen.height - innerHeight) and injects it as --js-top-inset. */
+  body.js-top-inset .overlay { top: var(--js-top-inset, 0px) !important; padding-top: 10px !important; }
+  body.js-top-inset { padding-top: calc(var(--js-top-inset, 0px) + 10px) !important; }
   /* board-detail sits above peek when opened from within it */
   #board-detail-overlay { z-index: 150; }
   .overlay {
@@ -20868,7 +20873,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.10';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.11';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21338,17 +21343,31 @@ function _vvTick() {
         envTop = p.getBoundingClientRect().height;
         p.remove();
       } catch (e2) {}
+      const carve = screen.height - window.innerHeight;   // status-bar-sized when iOS "carves"
+      // iOS 26 web-app host renders FULL-BLEED under the status bar while
+      // env(safe-area-inset-top) lies as 0 (the BOTTOM inset still reports —
+      // sim beacon: envTop=0, sab=34, carve=62). There is no CSS inset to zero
+      // or rely on — compute the real one from the carve and inject via JS.
+      const fullBleedUnreported = navigator.standalone === true
+        && window.innerWidth <= 700
+        && envTop === 0 && carve >= 20 && carve <= 80;
+      // Legacy quirk (older iOS): webview genuinely starts below the status bar
+      // but env(top) STILL reports ~50 — a redundant second inset to zero. Only
+      // applies when env actually reports one; with env=0 there is nothing to zero.
       const redundantTop = navigator.standalone === true
         && window.innerWidth <= 700
+        && envTop > 0
         && window.innerHeight < (screen.height - 10);
       document.body.classList.toggle('no-top-inset', redundantTop);
+      document.body.classList.toggle('js-top-inset', fullBleedUnreported);
+      if (fullBleedUnreported) document.body.style.setProperty('--js-top-inset', carve + 'px');
       if (window.innerWidth <= 700 && navigator.standalone) {
         try {
           fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ kind: 'boot-geo', ver: APP_VER, standalone: 1,
               innerH: window.innerHeight, innerW: window.innerWidth,
-              screenH: screen.height, screenW: screen.width,
-              envTop, applied: redundantTop ? 1 : 0 }) }).catch(() => {});
+              screenH: screen.height, screenW: screen.width, screenY: window.screenY,
+              envTop, carve, applied: redundantTop ? 1 : (fullBleedUnreported ? 2 : 0) }) }).catch(() => {});
         } catch (e3) {}
       }
     };
@@ -36307,7 +36326,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.10';
+const CACHE = 'amux-v0.9.11';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
