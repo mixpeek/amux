@@ -20767,7 +20767,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.6';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.7';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -23061,6 +23061,13 @@ function _sendBeforeInput(e, send) {
 // so onclick alone never fires on the tap ("press send twice"). Fire on
 // pointerup (never suppressed) and keep click as the fallback for non-pointer
 // environments, deduped per-button so one tap can't double-fire.
+function _btnDbg(obj) {
+  if (window.innerWidth > 700) return;
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ ver: APP_VER }, obj)) }).catch(() => {});
+  } catch (e) {}
+}
 function _btnFire(e, fn) {
   const t = e.currentTarget;
   const now = performance.now();
@@ -23068,21 +23075,23 @@ function _btnFire(e, fn) {
   t._fireTs = now;
   _tapTraceEv('FIRE');
   // Mobile diagnostic: no dead-tap beacon means events DO reach the button, so
-  // a "two presses" report must be the send no-oping. Report the pre-send state
-  // (input length, mode, session) on each fire so the device shows what differs
-  // between the two taps.
-  if (window.innerWidth <= 700) {
-    try {
-      const inp = document.getElementById('peek-cmd-input');
-      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: 'send-fire', ver: APP_VER,
-          seq: _tapTrace.slice(-7).map(x => x.e).join(','),
-          inputLen: inp ? inp.value.trim().length : -1,
-          sendMode: (typeof _sendMode !== 'undefined' ? _sendMode : '?'),
-          session: (typeof peekSession !== 'undefined' ? peekSession : null) }) }).catch(() => {});
-    } catch (e2) {}
-  }
-  fn();
+  // "two presses" is the send no-oping. Capture pre/post input length AND any
+  // sync throw or async rejection so the device pins down the exact cause.
+  const inp = document.getElementById('peek-cmd-input');
+  const before = inp ? inp.value.trim().length : -1;
+  const mode = (typeof _sendMode !== 'undefined' ? _sendMode : '?');
+  const sess = (typeof peekSession !== 'undefined' ? peekSession : null);
+  const seq = _tapTrace.slice(-7).map(x => x.e).join(',');
+  let syncErr = '';
+  try {
+    const r = fn();
+    if (r && typeof r.then === 'function') {
+      r.then(() => _btnDbg({ kind: 'send-fire', phase: 'resolved', before, after: inp ? inp.value.trim().length : -1, mode, session: sess, seq }))
+       .catch(er => _btnDbg({ kind: 'send-fire', phase: 'async-throw', err: String(er).slice(0, 200), before, mode, session: sess, seq }));
+    }
+  } catch (er) { syncErr = String(er).slice(0, 200); }
+  _btnDbg({ kind: 'send-fire', phase: syncErr ? 'sync-throw' : 'called', err: syncErr,
+    before, after: inp ? inp.value.trim().length : -1, mode, session: sess, seq });
 }
 // iOS cancels the synthesized click (and pointer events) when a tap races a
 // scroll or a re-render — and the peek re-renders every 1.2s while a session
@@ -36144,7 +36153,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.6';
+const CACHE = 'amux-v0.9.7';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
