@@ -32087,9 +32087,11 @@ async function pullFromRemote(btn) {
     _wtShow();
   };
 
-  // Auto-launch on first visit after short delay
+  // Auto-launch on first visit after short delay — but not when arriving on a
+  // deeplink (#peek=…): the visitor came for a specific session, not a tour.
   setTimeout(function() {
     try { if (localStorage.getItem(WT_KEY)) return; } catch(e) {}
+    if (location.hash && location.hash.indexOf('=') !== -1) return;
     _wtShow();
   }, 1500);
 
