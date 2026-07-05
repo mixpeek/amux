@@ -11383,13 +11383,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   body.js-top-inset .overlay { top: var(--js-top-inset, 0px) !important; padding-top: 10px !important; }
   body.js-top-inset { padding-top: calc(var(--js-top-inset, 0px) + 10px) !important; }
   body.js-top-inset .header-row { top: var(--js-top-inset, 0px); }
-  /* Standalone iOS: the window is full-screen but the LAYOUT viewport is a
-     status-bar short (sim: 812 of 874; phone: 762 of 812). Flowed content
-     paints past the layout viewport to the true bottom, but fixed bottom:0
-     clamps to it — leaving a dead strip under the peek command bar. Extend
-     fixed overlays down by the carve; the command bar's env(bottom) padding
-     still keeps content above the home indicator. */
-  body.js-bottom-extend .overlay { bottom: calc(-1 * var(--js-bottom-extend, 0px)) !important; }
   /* board-detail sits above peek when opened from within it */
   #board-detail-overlay { z-index: 150; }
   .overlay {
@@ -12190,12 +12183,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
      should render what tmux renders, not restyle it (user feedback). */
   .peek-prompt { display: block; }
 
-  /* Peek overlay — flush to bottom, cmd bar handles its own safe-area padding.
-     In standalone (js-bottom-extend) "flush" means the TRUE screen bottom,
-     which sits a carve below the short layout viewport — same specificity
-     tier (ID) so it can win over the bottom:0 pin below. */
+  /* Peek overlay — flush to the true screen bottom. In a toolbar-less standalone
+     webview window.innerHeight IS the full visible height, so fixed bottom:0 already
+     reaches the physical bottom (device beacon: ovBottom 762 == innerHeight); the
+     cmd bar's own env(bottom) padding clears the home indicator. The retired
+     js-bottom-extend mistook the TOP status-bar carve for a bottom dead strip and
+     pushed the input 50px off-screen ("now it's cut off"). */
   #peek-overlay { padding-bottom: 0 !important; bottom: 0 !important; }
-  body.js-bottom-extend #peek-overlay { bottom: calc(-1 * var(--js-bottom-extend, 0px)) !important; }
 
   /* Peek focus mode — collapse everything above terminal on mobile */
   #peek-overlay.peek-focus .overlay-header,
@@ -20884,7 +20878,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.16';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.17';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21365,11 +21359,13 @@ function _vvTick() {
       const fullBleedUnreported = standaloneCarve && envTop === 0;
       document.body.classList.toggle('js-top-inset', fullBleedUnreported);
       if (fullBleedUnreported) document.body.style.setProperty('--js-top-inset', carve + 'px');
-      // Fixed bottom:0 clamps to the layout viewport, which is a status-bar
-      // short of the full-screen window — extend fixed overlays by the carve
-      // in BOTH flavors (env-truthful phone, env-lying sim).
-      document.body.classList.toggle('js-bottom-extend', standaloneCarve);
-      if (standaloneCarve) document.body.style.setProperty('--js-bottom-extend', carve + 'px');
+      // NO bottom extend. In a toolbar-less standalone webview window.innerHeight is
+      // the full visible height and fixed bottom:0 reaches the true screen bottom
+      // (device beacon 2026-07-05: ovBottom 762 == innerHeight). The retired
+      // js-bottom-extend added the TOP status-bar carve at the bottom too, shoving the
+      // command bar ~50px off-screen ("now it's cut off"). The carve is the top status
+      // bar only (envTop 50 confirms it), never a bottom dead strip.
+      document.body.classList.remove('js-bottom-extend');
       if (window.innerWidth <= 700 && navigator.standalone) {
         try {
           fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -21377,7 +21373,7 @@ function _vvTick() {
               innerH: window.innerHeight, innerW: window.innerWidth,
               screenH: screen.height, screenW: screen.width, screenY: window.screenY,
               envTop, carve, applied: fullBleedUnreported ? 2 : 0,
-              bottomExtend: standaloneCarve ? carve : 0 }) }).catch(() => {});
+              bottomExtend: 0 }) }).catch(() => {});
         } catch (e3) {}
       }
     };
@@ -36341,7 +36337,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.16';
+const CACHE = 'amux-v0.9.17';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
