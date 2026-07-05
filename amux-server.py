@@ -352,6 +352,8 @@ def _log_resource_snapshot(label="snapshot"):
     info = psutil_process_info()
     slog(f"[{label}] pid={os.getpid()} cpu={info.get('cpu_percent','?')}% mem={info.get('memory_mb','?')}MB fds={info.get('fd_count','?')} threads={threading.active_count()} sessions={info.get('session_count','?')} requests={_server_request_count}")
 
+_active_servers: list = []  # populated in main(); used by signal handler for clean shutdown
+
 def _install_signal_handlers():
     """Install signal handlers that log before exit."""
     import signal
@@ -359,8 +361,20 @@ def _install_signal_handlers():
         sig_name = signal.Signals(signum).name
         slog(f"[SIGNAL] received {sig_name} ({signum}) — logging diagnostics before exit")
         _log_resource_snapshot("crash-dump")
+        # Close listening sockets so the port is freed immediately for the next
+        # process (launchd KeepAlive respawn).  Without this, the socket lingers
+        # in TIME_WAIT and the replacement process can't bind.
+        for _s in _active_servers:
+            try:
+                _s.socket.close()
+            except Exception:
+                pass
+        try:
+            _db_conn().close()
+        except Exception:
+            pass
         slog(f"[SIGNAL] exiting due to {sig_name}")
-        sys.exit(128 + signum)
+        os._exit(128 + signum)
     for sig in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, _sig_handler)
 
@@ -7824,32 +7838,42 @@ def _init_default_sessions():
 def _auto_resume_sessions():
     """On startup, restart any session that was previously started.
 
-    This makes container restarts (reaper, deploy, crash) transparent —
-    sessions come back automatically without user intervention.
-    Only runs when tmux has no sessions (fresh container start, not os.execv reload).
+    This makes machine restarts, container restarts, and crash recovery
+    transparent — sessions come back automatically without user intervention.
+    Only runs when tmux has no amux sessions (fresh start, not os.execv reload).
     """
-    r = subprocess.run(["tmux", "list-sessions"], capture_output=True, text=True)
+    r = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"],
+                       capture_output=True, text=True)
     if r.returncode == 0:
-        return  # tmux already has sessions — this is an os.execv reload, not a fresh start
+        amux_sessions = [l for l in r.stdout.strip().splitlines() if l.startswith("amux-")]
+        if amux_sessions:
+            slog(f"[auto-resume] skipped — {len(amux_sessions)} amux tmux sessions already running (os.execv reload)")
+            return
     if not CC_SESSIONS.exists():
         return
+    resumed = 0
+    skipped = 0
     for meta_file in sorted(CC_SESSIONS.glob("*.meta.json")):
         name = meta_file.name.removesuffix(".meta.json")
         try:
             if _is_session_blocked(name):
-                print(f"[auto-resume] {name}: skipped blocked session")
+                skipped += 1
                 continue
             meta = json.loads(meta_file.read_text())
             env_file = CC_SESSIONS / f"{name}.env"
             if meta.get("start_count", 0) > 0 and env_file.exists():
                 cfg = parse_env_file(env_file)
                 if cfg.get("CC_ARCHIVED") == "1":
-                    print(f"[auto-resume] {name}: skipped archived session")
+                    skipped += 1
                     continue
                 ok, msg = start_session(name)
-                print(f"[auto-resume] {name}: {msg}")
+                if ok:
+                    resumed += 1
+                else:
+                    slog(f"[auto-resume] {name}: {msg}")
         except Exception as e:
-            print(f"[auto-resume] {name} failed: {e}")
+            slog(f"[auto-resume] {name} failed: {e}")
+    slog(f"[auto-resume] complete — resumed {resumed}, skipped {skipped}")
 
 
 def _log_pipe_command(log_path: Path) -> str:
@@ -43335,7 +43359,6 @@ def main():
     _init_db()
     _migrate_flat_to_sqlite()
     _init_default_sessions()
-    _auto_resume_sessions()
     _attach_log_streaming()  # re-attach pipe-pane for sessions surviving os.execv
 
     # Pre-configure ~/.claude.json to skip interactive setup wizard
@@ -43355,6 +43378,7 @@ def main():
                 else:
                     raise
     server = servers[0]  # primary: used by file watcher & graceful shutdown
+    _active_servers.extend(servers)  # expose to SIGTERM handler for clean socket teardown
 
     scheme = "http"
     ts_hostname = ""
@@ -43489,6 +43513,14 @@ def main():
     threading.Thread(target=_watch_notes_dir, daemon=True).start()
     # Install the commit-stamping hook into all existing session repos
     threading.Thread(target=_install_hooks_all_sessions, daemon=True).start()
+
+    # Resume sessions that were running before a reboot/crash — runs in
+    # background so the server is already accepting requests while sessions spin up.
+    def _deferred_auto_resume():
+        time.sleep(2)  # let server settle
+        _auto_resume_sessions()
+        _attach_log_streaming()  # attach pipe-pane for newly-resumed sessions
+    threading.Thread(target=_deferred_auto_resume, daemon=True).start()
 
     # Initial snapshot immediately, then unified scheduler takes over
     threading.Thread(target=_snapshot_all_sessions, daemon=True).start()
