@@ -11373,16 +11373,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     background: var(--bg);
     z-index: 100; flex-direction: column;
   }
-  /* iOS web-app top inset (2026-07-05 beacons, sim + phone): the standalone
-     webview always renders FULL-BLEED under the status bar. When env(top)
-     reports (phone: 50) the default CSS max(..., env()) rules handle it —
-     TRUST IT, never zero it (the retired no-top-inset zeroing is what jammed
-     the header under the clock). When the host LIES with env(top)=0 despite a
-     status-bar-sized carve (sim: carve 62), _topInsetGuard injects the carve
-     as --js-top-inset via body.js-top-inset. */
-  body.js-top-inset .overlay { top: var(--js-top-inset, 0px) !important; padding-top: 10px !important; }
-  body.js-top-inset { padding-top: calc(var(--js-top-inset, 0px) + 10px) !important; }
-  body.js-top-inset .header-row { top: var(--js-top-inset, 0px); }
+  /* iOS home-screen web app top inset (2026-07-05 device beacon): innerHeight is a
+     status-bar SHORT of screen (762 of 812) => the webview is already INSET below the
+     status bar; it does NOT render full-bleed. iOS 26 still reports env(top)=50 anyway —
+     a REDUNDANT second inset that drops the header to physical y=100, opening a ~50px top
+     gap (user: "still"). When the viewport is inset (standalone + carve>=20), zero the top
+     so the overlay/header/list sit flush at the webview top (physical y just below the
+     status bar). Safari (non-standalone, bleeds under the status bar) is excluded and keeps
+     env(top) to clear the clock. Flush at ovTop 0 in v0.9.4/0.9.6/0.9.11; the v0.9.13
+     "trust env" retirement is what reintroduced the gap. */
+  body.no-top-inset .overlay { top: 0 !important; padding-top: 10px !important; }
+  body.no-top-inset { padding-top: 10px !important; }
+  body.no-top-inset .header-row { top: 0 !important; }
   /* board-detail sits above peek when opened from within it */
   #board-detail-overlay { z-index: 150; }
   .overlay {
@@ -20878,7 +20880,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.17';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.18';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21332,14 +21334,16 @@ function _vvTick() {
     }
   } catch (e) {}
 })();
-// Standalone top inset (2026-07-05 beacons, sim + phone): the webview always
-// renders FULL-BLEED under the status bar. When env(safe-area-inset-top)
-// reports (phone: 50) the CSS max(..., env()) rules already handle it — trust
-// it. When the iOS 26 host LIES with env=0 despite a status-bar-sized carve
-// (sim: carve 62, bottom inset fine), inject the carve via --js-top-inset.
-// The old "zero the redundant inset" heuristic is retired: identical beacon
-// numbers occur with a truthful env, and zeroing jammed the header under the
-// clock (the very bug it once fixed, inverted).
+// Standalone top inset (2026-07-05 device beacon, iPhone 14 mini home-screen app):
+// innerHeight is a status-bar SHORT of screen (762 of 812) => the webview is already
+// INSET below the status bar; it does NOT render full-bleed (a full-bleed webview would
+// report innerHeight == screen). iOS 26 still reports env(safe-area-inset-top)=50 anyway,
+// so the base CSS `top: max(chrome, env(top))` applies a REDUNDANT second inset that drops
+// the header to physical y=100 — the ~50px top gap. When the viewport is inset (standalone
+// + carve>=20), zero it via body.no-top-inset so content sits flush at the webview top.
+// This is what v0.9.4/0.9.6/0.9.11 did (ovTop 0, user-confirmed flush); the v0.9.13 "trust
+// env" retirement reintroduced the gap on the false premise that the webview is full-bleed.
+// Safari (non-standalone, genuinely bleeds under the status bar) is excluded and keeps env.
 (function() {
   try {
     const decide = () => {
@@ -21352,13 +21356,11 @@ function _vvTick() {
         envTop = p.getBoundingClientRect().height;
         p.remove();
       } catch (e2) {}
-      const carve = screen.height - window.innerHeight;   // status-bar height when the host under-reports
-      const standaloneCarve = navigator.standalone === true
+      const carve = screen.height - window.innerHeight;   // >0 means the viewport is inset (status bar excluded)
+      const standaloneInset = navigator.standalone === true
         && window.innerWidth <= 700
         && carve >= 20 && carve <= 80;
-      const fullBleedUnreported = standaloneCarve && envTop === 0;
-      document.body.classList.toggle('js-top-inset', fullBleedUnreported);
-      if (fullBleedUnreported) document.body.style.setProperty('--js-top-inset', carve + 'px');
+      document.body.classList.toggle('no-top-inset', standaloneInset);
       // NO bottom extend. In a toolbar-less standalone webview window.innerHeight is
       // the full visible height and fixed bottom:0 reaches the true screen bottom
       // (device beacon 2026-07-05: ovBottom 762 == innerHeight). The retired
@@ -21372,7 +21374,7 @@ function _vvTick() {
             body: JSON.stringify({ kind: 'boot-geo', ver: APP_VER, standalone: 1,
               innerH: window.innerHeight, innerW: window.innerWidth,
               screenH: screen.height, screenW: screen.width, screenY: window.screenY,
-              envTop, carve, applied: fullBleedUnreported ? 2 : 0,
+              envTop, carve, applied: standaloneInset ? 1 : 0,
               bottomExtend: 0 }) }).catch(() => {});
         } catch (e3) {}
       }
@@ -36337,7 +36339,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.17';
+const CACHE = 'amux-v0.9.18';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
