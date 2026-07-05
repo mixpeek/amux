@@ -16171,7 +16171,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <h3 id="about-brand-name" style="margin:0 0 4px;">amux</h3>
       <div id="about-brand-tagline" style="color:var(--dim);font-size:0.8rem;">Claude Code Multiplexer</div>
       <div style="color:var(--dim);font-size:0.7rem;font-family:monospace;margin-top:2px;"><script>document.write(location.host)</script></div>
-      <div style="margin:8px 0 4px;font-size:0.95rem;font-weight:600;cursor:pointer;" onclick="forceUpdate()" title="Tap to force update">v0.6.0 &#x21BB;</div>
+      <div id="about-version" style="margin:8px 0 4px;font-size:0.95rem;font-weight:600;cursor:pointer;" onclick="forceUpdate()" title="Tap to force update">&#x21BB;</div>
       <div id="update-status" style="color:var(--dim);font-size:0.75rem;min-height:1.2em;"></div>
       <button id="pull-btn" class="btn" onclick="pullFromRemote(this)" style="margin-top:6px;font-size:0.72rem;padding:4px 12px;">&#x2B07; Pull from remote</button>
       <div id="pull-status" style="color:var(--dim);font-size:0.7rem;font-family:monospace;margin-top:4px;min-height:1.2em;white-space:pre-wrap;max-height:60px;overflow-y:auto;"></div>
@@ -20873,7 +20873,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.11';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.12';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -30857,6 +30857,11 @@ async function deleteSkill() {
 }
 
 function openAbout() {
+  // Live version — the modal markup renders before APP_VER is defined, so fill it here
+  try {
+    const v = document.getElementById('about-version');
+    if (v) v.innerHTML = 'v' + APP_VER + ' &#x21BB;';
+  } catch (e) {}
   document.getElementById('about-overlay').classList.add('active');
   document.getElementById('add-server-form').style.display = 'none';
   renderServerList();
@@ -36326,7 +36331,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.11';
+const CACHE = 'amux-v0.9.12';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
