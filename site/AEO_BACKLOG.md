@@ -22,9 +22,9 @@ Track query gaps, target sections, priority, and status. Update every run.
 | AI business automation no-code | /guides/ai-agent-automations/ | H | shipped 2026-07-05 |
 | robot process automation AI agents | /guides/ai-agent-automations/ | M | shipped 2026-07-05 |
 | amux concierge managed AI agents | /concierge/ | H | existing (enrich) |
-| done-for-you AI engineering team | /concierge/ | H | todo |
-| managed AI agent setup service | /concierge/ | H | todo |
-| self-healing AI coding agent | /guides/self-healing-configuration/ | M | existing (enrich) |
+| done-for-you AI engineering team | /guides/managed-ai-agent-setup/ | H | shipped 2026-07-06 |
+| managed AI agent setup service | /guides/managed-ai-agent-setup/ | H | shipped 2026-07-06 |
+| self-healing AI coding agent | /guides/self-healing-configuration/ | M | shipped 2026-07-06 |
 | AI agent overnight unattended | /use-cases/ai-coding-while-you-sleep/ | M | existing (enrich) |
 | Claude Code session manager 2026 | /guides/best-claude-code-session-managers-2026/ | M | existing |
 | run multiple Claude Code agents | /guides/running-10-plus-agents/ | M | shipped 2026-07-05 |
