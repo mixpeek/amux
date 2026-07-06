@@ -11467,6 +11467,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .file-video-meta { width:100%;box-sizing:border-box;padding:6px 14px;display:flex;align-items:center;gap:12px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:0.72rem;color:var(--dim);flex-shrink:0;background:rgba(0,0,0,0.7); }
   .file-overlay-body.file-pdf { padding:0;background:var(--bg);white-space:normal; }
   .file-overlay-body.file-csv { white-space:normal;overflow:hidden;display:flex;flex-direction:column;padding:0; }
+  /* HTML preview: the iframe fills this box and scrolls its OWN content. Don't
+     size the iframe to content height — a content-height iframe has no internal
+     scroll, so wheel/touch over it scrolls nothing and never reaches the parent
+     (the "locked, can't scroll" bug). */
+  .file-overlay-body.file-html-preview { white-space:normal;padding:0;overflow:hidden;display:flex;flex-direction:column; }
   .csv-toolbar { display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0;flex-wrap:wrap; }
   .csv-meta { font-size:0.75rem;color:var(--dim);flex:1;min-width:0; }
   .csv-search { flex:0 0 auto;padding:3px 8px;background:var(--input,var(--card));border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.78rem;width:160px;outline:none; }
@@ -20876,7 +20881,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.24';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.25';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -23990,13 +23995,13 @@ function _renderFileBody(data, mode) {
     body.className = 'file-overlay-body file-html-preview';
     const iframe = document.createElement('iframe');
     iframe.sandbox = 'allow-same-origin';
-    iframe.style.cssText = 'width:100%;border:none;flex:1;min-height:400px;background:#fff;border-radius:6px;';
+    // Fill the preview box and let the iframe scroll its own content (see CSS note).
+    iframe.setAttribute('scrolling', 'yes');
+    iframe.style.cssText = 'width:100%;flex:1;min-height:0;border:none;background:#fff;';
     body.innerHTML = '';
     body.appendChild(iframe);
     iframe.srcdoc = data.content;
     iframe.onload = function() {
-      // Auto-size to content
-      try { iframe.style.height = (iframe.contentDocument.body.scrollHeight + 20) + 'px'; } catch(e) {}
       // Bind anchor links inside iframe to scroll within it
       try {
         iframe.contentDocument.addEventListener('click', function(e) {
@@ -36421,7 +36426,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.24';
+const CACHE = 'amux-v0.9.25';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
