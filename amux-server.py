@@ -16847,6 +16847,9 @@ async function apikeySetupSave() {
     if (!r.ok) throw new Error('save failed');
     const m = document.getElementById('apikey-setup-modal');
     if (m) m.style.display = 'none';
+    const banner = document.getElementById('no-apikey-banner');
+    if (banner) banner.style.display = 'none';
+    showToast('API key saved — sessions are ready to use.');
   } catch(e) {
     if (err) err.textContent = 'Failed to save — try again';
     if (btn) btn.textContent = 'Save API key';
