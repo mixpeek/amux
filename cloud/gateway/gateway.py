@@ -1244,9 +1244,9 @@ class Handler(BaseHTTPRequestHandler):
     def _serve_login(self, post_login_redirect="/"):
         from urllib.parse import urlparse, urlencode
         req_path = urlparse(self.path).path
-        # With Clerk path routing, the sign-in component only renders at /sign-in.
-        # Redirect non-/sign-in paths so Clerk mounts properly.
-        if not req_path.startswith("/sign-in"):
+        # Clerk path routing: sign-in/sign-up render on their respective paths.
+        # Redirect anything else so Clerk mounts properly.
+        if not req_path.startswith("/sign-in") and not req_path.startswith("/sign-up"):
             redir = "/sign-in"
             if post_login_redirect and post_login_redirect != "/":
                 redir += "?redirect=" + post_login_redirect
