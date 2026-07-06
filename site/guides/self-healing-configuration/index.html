@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Self-Healing Configuration — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Configure amux's self-healing watchdog for auto-compaction, restart, and prompt recovery.">
-  <meta name="keywords" content="self-healing AI agent, auto recovery claude code, context compaction, amux watchdog">
+  <title>Self-Healing AI Agent Configuration — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Configure amux's self-healing watchdog to automatically recover crashed AI agents, compact context, replay stuck sessions, and run unattended overnight.">
+  <meta name="keywords" content="self-healing AI agent, auto recovery claude code, context compaction, amux watchdog, unattended AI coding, AI agent crash recovery">
   <link rel="canonical" href="https://amux.io/guides/self-healing-configuration/">
-  <meta property="og:title" content="Self-Healing Configuration — amux">
-  <meta property="og:description" content="Configure amux's self-healing watchdog for auto-compaction, restart, and prompt recovery.">
+  <meta property="og:title" content="Self-Healing AI Agent Configuration — amux">
+  <meta property="og:description" content="Configure amux's self-healing watchdog to automatically recover crashed AI agents, compact context, replay stuck sessions, and run unattended overnight.">
   <meta property="og:url" content="https://amux.io/guides/self-healing-configuration/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -20,9 +20,15 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Self-Healing Configuration","item":"https://amux.io/guides/self-healing-configuration/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Self-Healing Configuration","description":"Configure amux's self-healing watchdog for auto-compaction, restart, and prompt recovery.","url":"https://amux.io/guides/self-healing-configuration/","datePublished":"2026-02-26","dateModified":"2026-02-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
-  </head>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Self-Healing AI Agent Configuration","item":"https://amux.io/guides/self-healing-configuration/"}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Self-Healing AI Agent Configuration","description":"Configure amux's self-healing watchdog to automatically recover crashed AI agents, compact context, replay stuck sessions, and run unattended overnight.","url":"https://amux.io/guides/self-healing-configuration/","datePublished":"2026-02-26","dateModified":"2026-07-06","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Configure a Self-Healing AI Agent with amux","description":"Step-by-step guide to setting up automatic crash recovery, context compaction, and unattended operation for Claude Code sessions using amux.","step":[{"@type":"HowToStep","position":1,"name":"Install amux","text":"Clone the repo and run install.sh. Python 3 and tmux are the only dependencies."},{"@type":"HowToStep","position":2,"name":"Register a session with --yolo","text":"Run: amux register myproject --dir ~/Dev/app --yolo. The --yolo flag enables automatic tool-approval responses so agents never block waiting for human input."},{"@type":"HowToStep","position":3,"name":"Configure the watchdog thresholds","text":"Edit ~/.amux/server.env to set WATCHDOG_CONTEXT_THRESHOLD (default 20%) and WATCHDOG_IDLE_TIMEOUT (default 120s). Restart by touching amux-server.py."},{"@type":"HowToStep","position":4,"name":"Enable the monitor agent (optional)","text":"Register a dedicated monitor session whose only job is to peek at other sessions and send continue signals. Set it to run indefinitely with amux start monitor."},{"@type":"HowToStep","position":5,"name":"Verify with a test run","text":"Start a session with a long-running task. Manually send a /compact command from the dashboard and confirm the watchdog detects the compaction and continues automatically."}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is a self-healing AI coding agent?","acceptedAnswer":{"@type":"Answer","text":"A self-healing AI coding agent is one that can automatically recover from crashes, context window exhaustion, tool-approval blocks, and silent hangs without human intervention. Instead of waking up to a dead session, you wake up to completed work. amux implements this via a watchdog process that monitors every registered tmux session and applies recovery actions based on detected failure modes."}},{"@type":"Question","name":"Why do Claude Code sessions crash or get stuck?","acceptedAnswer":{"@type":"Answer","text":"Claude Code sessions fail in four main ways: (1) context window exhaustion — after 80,000–200,000 tokens the context fills and the session errors; (2) thinking-block corruption — extended thinking mode occasionally produces malformed output that breaks the session loop; (3) tool-approval blocking — sessions stop and wait for a human to press Enter to approve a shell command or file write; (4) silent hangs — the agent finishes a subtask and stops, waiting for a signal that never comes. Each requires a different recovery action."}},{"@type":"Question","name":"How does amux detect and recover from context window exhaustion?","acceptedAnswer":{"@type":"Answer","text":"amux monitors the output of each tmux pane for context-percentage markers that Claude Code writes to the terminal. When context falls below the configured threshold (default: 20%), the watchdog sends a /compact command to the session and sets a 5-minute cooldown to prevent compaction loops. After compaction completes, the agent continues from where it left off."}},{"@type":"Question","name":"What is YOLO mode in amux?","acceptedAnswer":{"@type":"Answer","text":"YOLO mode (enabled with --yolo when registering a session) tells the amux watchdog to automatically respond to tool-approval prompts. Claude Code displays a specific 'Esc to cancel' marker when it is waiting for tool approval — this marker does not appear anywhere else in Claude Code output. The watchdog detects this marker and sends the appropriate keypress to continue, so agents never block on a permission prompt during unattended runs."}},{"@type":"Question","name":"How do I configure the watchdog idle timeout?","acceptedAnswer":{"@type":"Answer","text":"Set WATCHDOG_IDLE_TIMEOUT in ~/.amux/server.env (default is 120 seconds). If a session produces no new output for that duration and has pending work on the board, the watchdog sends a continue signal. Touch amux-server.py after editing server.env to trigger an auto-restart."}},{"@type":"Question","name":"Can amux run AI coding agents completely unattended overnight?","acceptedAnswer":{"@type":"Answer","text":"Yes. With self-healing configuration, amux handles all four failure modes automatically: context compaction, crash-and-restart with last-message replay, YOLO mode for tool approval, and idle detection. You queue tasks on the board, register sessions with --yolo, and start them before bed. The watchdog runs as part of the amux server process. In the morning, open the dashboard (mobile PWA works) to see what completed and review any pending PRs."}},{"@type":"Question","name":"What happens when a thinking-block corruption crash occurs?","acceptedAnswer":{"@type":"Answer","text":"Thinking-block corruption produces a distinctive error pattern in Claude Code output. amux's watchdog matches this pattern, terminates the stuck process, starts a fresh Claude Code session in the same tmux pane, and replays the last message that was in flight when the crash occurred. From the agent's perspective, the interruption is invisible — it resumes the task."}},{"@type":"Question","name":"Does self-healing work with multiple parallel agents?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux runs one watchdog loop that monitors all registered sessions concurrently. Each session is tracked independently — recovery actions on one session do not affect others. You can run 10 or 50 parallel agents and the watchdog handles each one's failures independently. The amux board (shared kanban) ensures agents do not pick up duplicate tasks even after restart."}}]}</script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -37,26 +43,220 @@
     </nav>
   </header>
   <main>
-    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Self-Healing Configuration</span></div>
-    <h1>Self-Healing Configuration</h1>
-<p class="subtitle">How amux keeps your agents running through crashes, hangs, and context exhaustion.</p>
-<h2>What the watchdog does</h2>
-<table>
-<thead><tr><th>Condition</th><th>Action</th></tr></thead>
-<tbody>
-<tr><td>Context below 20%</td><td>Sends <code>/compact</code> (5-min cooldown)</td></tr>
-<tr><td>Thinking-block corruption</td><td>Restarts + replays last message</td></tr>
-<tr><td>Stuck on tool-approval prompt</td><td>Auto-responds in YOLO mode</td></tr>
-<tr><td>Idle too long with pending work</td><td>Sends continue signal</td></tr>
-</tbody>
-</table>
-<h2>YOLO mode</h2>
-<p>Register sessions with <code>--yolo</code> to enable automatic tool-approval responses. The watchdog detects the "Esc to cancel" marker (which only appears on tool-approval prompts, never on open-ended questions) and auto-answers.</p>
-<pre><code>amux register myproject --dir ~/Dev/app --yolo</code></pre>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Self-Healing AI Agent Configuration</span></div>
+
+    <h1>Self-Healing AI Agent Configuration</h1>
+    <p class="subtitle">How to configure amux so your Claude Code agents automatically recover from crashes, context exhaustion, and stuck tool-approval prompts — and run unattended overnight.</p>
+
+    <p>The premise of running AI coding agents while you sleep is simple. The execution is not. Claude Code sessions fail in ways that are subtle, frequent, and varied: context windows fill, thinking blocks corrupt, agents hang waiting for tool approval that never comes. Without a recovery layer, every overnight run is a gamble.</p>
+
+    <p>amux's self-healing watchdog is that recovery layer. It monitors every registered session, detects each failure mode by its specific signature, and applies the appropriate fix — automatically, without waking you up.</p>
+
+    <h2>Why AI agents crash and get stuck</h2>
+
+    <p>Before configuring recovery, it helps to understand what you're recovering from. Claude Code sessions fail in four distinct ways, each requiring a different response:</p>
+
+    <h3>1. Context window exhaustion</h3>
+    <p>Every Claude Code session has a finite context window. As the conversation grows — messages, tool outputs, file reads — the window fills. When it hits ~95%, Claude Code either errors out or produces degraded output. The fix is compaction: Claude Code's built-in <code>/compact</code> command summarizes the conversation and clears space. But compaction only works if something sends the command, and there's nobody at the keyboard at 3am.</p>
+
+    <h3>2. Thinking-block corruption</h3>
+    <p>Claude's extended thinking mode writes internal reasoning to a structured block before responding. Occasionally — more often with very long reasoning chains — this block is malformed. The Claude Code loop detects the malformed output and throws an error, terminating the session process. The agent had work to do. Now it's dead and the work is sitting in its queue.</p>
+
+    <h3>3. Tool-approval blocking</h3>
+    <p>By default, Claude Code pauses before executing certain tools — shell commands, file writes — and waits for the user to press Enter to approve. This is sensible for interactive development. For unattended overnight runs, it means the agent stops and sits idle indefinitely, blocking all downstream work. The fix is automatic approval — but only if the watchdog can reliably distinguish a tool-approval prompt from every other kind of Claude Code output.</p>
+
+    <h3>4. Silent idle hangs</h3>
+    <p>Sometimes an agent completes a subtask and then stops. Not an error — just done, waiting for another message. If the task was structured as "do this one thing," that's fine. But if there's more work on the board, the agent should pick it up. Without a nudge, it just sits there. The work sits there. And nothing happens until morning.</p>
+
+    <h2>How the amux watchdog handles each failure mode</h2>
+
+    <p>The watchdog runs inside the amux server process. It polls each registered session on a configurable interval, reads the tmux pane output, and applies pattern-matched recovery actions:</p>
+
+    <table>
+      <thead><tr><th>Failure mode</th><th>Detection signal</th><th>Watchdog action</th></tr></thead>
+      <tbody>
+        <tr><td>Context near full (≤20%)</td><td>Context % marker in pane output</td><td>Send <code>/compact</code> · 5-min cooldown to prevent loops</td></tr>
+        <tr><td>Thinking-block corruption</td><td>Specific error pattern in stderr</td><td>Kill process · restart fresh session · replay last message</td></tr>
+        <tr><td>Tool-approval waiting</td><td><code>Esc to cancel</code> marker (unique to this state)</td><td>Send Enter (YOLO mode only)</td></tr>
+        <tr><td>Idle with pending work</td><td>No output for N seconds · board shows pending tasks</td><td>Send continue signal to wake the agent</td></tr>
+      </tbody>
+    </table>
+
+    <p>The key insight behind YOLO mode is specificity: the <code>Esc to cancel</code> string appears in Claude Code output <em>only</em> when waiting for tool approval, never in normal agent output or open-ended questions. That specificity makes automatic approval safe — the watchdog isn't blindly pressing Enter on everything, it's responding to a known, unambiguous state.</p>
+
+    <h2>Configuration reference</h2>
+
+    <h3>Step 1 — Install amux</h3>
+    <pre><code>git clone https://github.com/mixpeek/amux
+cd amux
+./install.sh   # requires Python 3.8+ and tmux</code></pre>
+
+    <h3>Step 2 — Register a session with self-healing enabled</h3>
+    <pre><code># Basic registration (self-healing on, tool-approval prompts will block)
+amux register myproject --dir ~/Dev/myproject
+
+# With YOLO mode (unattended-safe — auto-approves tool prompts)
+amux register myproject --dir ~/Dev/myproject --yolo
+
+# Start the session and the amux server
+amux start myproject
+amux serve  # dashboard at https://localhost:8822</code></pre>
+
+    <p>The <code>--yolo</code> flag is per-session. You can run some sessions with it and others without, depending on how much you trust the project's CLAUDE.md constraints.</p>
+
+    <h3>Step 3 — Configure watchdog thresholds (optional)</h3>
+    <p>Thresholds are set in <code>~/.amux/server.env</code>. This file is loaded at startup and survives auto-restarts:</p>
+
+    <pre><code># ~/.amux/server.env
+
+# Context threshold for triggering /compact (default: 20)
+WATCHDOG_CONTEXT_THRESHOLD=20
+
+# Seconds of idle output before sending a continue signal (default: 120)
+WATCHDOG_IDLE_TIMEOUT=120
+
+# Watchdog polling interval in seconds (default: 10)
+WATCHDOG_POLL_INTERVAL=10</code></pre>
+
+    <p>After editing <code>server.env</code>, touch <code>amux-server.py</code> to trigger an auto-restart:</p>
+    <pre><code>touch /path/to/amux/amux-server.py</code></pre>
+
+    <h3>Step 4 — Verify the watchdog is running</h3>
+    <p>The amux dashboard shows watchdog status in the session detail view. You can also confirm via the API:</p>
+    <pre><code>curl -sk https://localhost:8822/api/sessions | python3 -c "
+import json, sys
+sessions = json.load(sys.stdin)
+for s in sessions:
+    print(s['name'], '|', 'yolo:', s.get('yolo', False), '|', 'status:', s.get('status'))
+"</code></pre>
+
+    <h2>Recovery patterns in practice</h2>
+
+    <h3>Pattern 1 — Simple overnight run</h3>
+    <p>Queue tasks on the board before bed. Register one session per major workstream. Enable YOLO. Start everything. The watchdog handles all four failure modes. In the morning, open the dashboard from your phone:</p>
+
+    <pre><code># Before bed
+amux register feature-auth --dir ~/Dev/app --yolo
+amux register feature-payments --dir ~/Dev/app --yolo
+amux register fix-bugs --dir ~/Dev/app --yolo
+
+# Queue tasks via dashboard or API
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Implement OAuth flow","session":"feature-auth","status":"doing"}' \
+  https://localhost:8822/api/board
+
+# Start all sessions
+amux start feature-auth
+amux start feature-payments
+amux start fix-bugs
+amux serve</code></pre>
+
+    <h3>Pattern 2 — Monitor agent watching a fleet</h3>
+    <p>For larger fleets, register a dedicated monitor session whose sole job is to check on other agents. The monitor can do things the watchdog alone can't — like reading an agent's actual output and deciding whether to send a corrective message or re-queue a task that looks stuck:</p>
+
+    <pre><code># Monitor CLAUDE.md prompt
+You are a fleet monitor. Every 5 minutes:
+1. Peek at all sessions via the amux API
+2. If any session's output ends with an error, re-queue its current board task
+3. If any session has been idle for 10+ minutes with tasks in doing, send it a "continue" message
+4. Log observations to the amux board with session=monitor
+
+Never stop. Never wait for input. Repeat.</code></pre>
+
+    <h3>Pattern 3 — Self-healing with git safety</h3>
+    <p>A crashed or replayed session might re-attempt work that was partially completed — including git commits. Protect against duplicate commits by having each agent check for its task ID in the recent commit log before starting work:</p>
+
+    <pre><code># In each agent's CLAUDE.md
+Before starting any board task:
+1. Read the task ID from the board
+2. Run: git log --oneline -20 | grep "TASK-{id}"
+3. If found, mark the task done and move to the next one
+4. If not found, proceed with the work</code></pre>
+
+    <h2>Diagnosing self-healing failures</h2>
+
+    <p>Self-healing is not foolproof. Knowing when it fails is as important as configuring it:</p>
+
+    <table>
+      <thead><tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr></thead>
+      <tbody>
+        <tr><td>Session keeps compacting in a loop</td><td>Cooldown not respected, or task itself generates huge output</td><td>Increase <code>WATCHDOG_CONTEXT_THRESHOLD</code> or break task into smaller chunks</td></tr>
+        <tr><td>Agent stuck after crash restart</td><td>Last message replay leads to same crash</td><td>Check CLAUDE.md for a task that exceeds the context limit on its own</td></tr>
+        <tr><td>YOLO mode not firing</td><td>Session registered without <code>--yolo</code></td><td>Re-register: <code>amux register name --dir ... --yolo</code></td></tr>
+        <tr><td>Agent idle but watchdog not sending continue</td><td>Board shows no pending tasks (agent correctly stopped)</td><td>Queue more tasks or check if all tasks are marked done</td></tr>
+        <tr><td>Watchdog not running at all</td><td>amux server crashed</td><td>Run <code>amux serve</code> again; consider a system-level launchd/systemd service</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Running amux serve as a persistent service</h2>
+
+    <p>The watchdog only runs while <code>amux serve</code> is running. For true unattended operation, run it as a persistent background service. On macOS with launchd:</p>
+
+    <pre><code"># ~/Library/LaunchAgents/io.amux.server.plist
+&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
+&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+  &lt;key&gt;Label&lt;/key&gt;       &lt;string&gt;io.amux.server&lt;/string&gt;
+  &lt;key&gt;ProgramArguments&lt;/key&gt;
+  &lt;array&gt;
+    &lt;string&gt;/usr/local/bin/amux&lt;/string&gt;
+    &lt;string&gt;serve&lt;/string&gt;
+  &lt;/array&gt;
+  &lt;key&gt;RunAtLoad&lt;/key&gt;   &lt;true/&gt;
+  &lt;key&gt;KeepAlive&lt;/key&gt;  &lt;true/&gt;
+  &lt;key&gt;StandardOutPath&lt;/key&gt; &lt;string&gt;/tmp/amux.log&lt;/string&gt;
+  &lt;key&gt;StandardErrorPath&lt;/key&gt; &lt;string&gt;/tmp/amux.log&lt;/string&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;</code></pre>
+
+    <pre><code>launchctl load ~/Library/LaunchAgents/io.amux.server.plist</code></pre>
+
+    <p>On Linux with systemd:</p>
+
+    <pre><code>[Unit]
+Description=amux agent orchestration server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/amux serve
+Restart=always
+RestartSec=5
+User=%i
+EnvironmentFile=/home/%i/.amux/server.env
+
+[Install]
+WantedBy=multi-user.target</code></pre>
+
+    <h2>What self-healing does NOT handle</h2>
+
+    <p>Being precise about the limits helps you design around them:</p>
+
+    <ul>
+      <li><strong>Logic errors</strong> — if an agent makes a wrong architectural decision, the watchdog won't notice. It only detects process-level failures and specific output patterns, not semantic correctness.</li>
+      <li><strong>Rate limits</strong> — if your Claude API key hits a rate limit, sessions will error. The watchdog will restart them, but they'll hit the same limit. Use backoff-aware task design.</li>
+      <li><strong>Infinite loops in agent logic</strong> — if an agent is making steady progress (producing output, not erroring) but doing the wrong thing, the watchdog sees it as healthy. Use the monitor agent pattern to add semantic monitoring on top of process monitoring.</li>
+      <li><strong>Git merge conflicts</strong> — if two agents edit the same file and both push, the second will fail. This is a coordination problem, not a crash recovery problem. Use the <a href="/guides/running-10-plus-agents/">worktree isolation pattern</a> to prevent it.</li>
+    </ul>
+
+    <h2>Self-healing + the amux board</h2>
+
+    <p>The watchdog and the board are designed to work together. When a session crashes and restarts, it can re-read the board to find its task — which is still marked <code>doing</code> — and resume. When the session completes the task, it marks it <code>done</code>. When a monitor agent detects a zombie session, it can move its task back to <code>todo</code> for another session to pick up.</p>
+
+    <p>The board is the single source of truth for what work exists and who owns it. The watchdog is what keeps the workers alive. Together, they give you the same guarantees a managed job queue provides: tasks run to completion, failures are retried, and nothing falls through the cracks.</p>
+
+    <p>See also: <a href="/guides/kanban-board-for-agents/">Kanban board for AI agents</a> · <a href="/guides/running-10-plus-agents/">Running 10+ agents in parallel</a> · <a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep</a></p>
+
+    <div class="cta-box">
+      <h3>Get started with amux</h3>
+      <p>Self-healing watchdog, shared kanban board, mobile dashboard. Python 3 + tmux. Open source.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+    </div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -104,6 +304,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
     </div>
   </footer>
 
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>
