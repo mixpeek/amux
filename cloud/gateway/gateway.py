@@ -350,7 +350,7 @@ _LOGIN_HTML = """<!DOCTYPE html>
     s.onload = async () => {
       try {
         if (!window.Clerk) { showError('Auth library failed to initialize.'); return; }
-        await window.Clerk.load();
+        await window.Clerk.load({ signInUrl: '/sign-in', signUpUrl: '/sign-up' });
         hideRetry();
         setStatus('');
         // If redirected from logout, sign out of Clerk too
