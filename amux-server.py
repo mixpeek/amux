@@ -5010,12 +5010,25 @@ def _init_db():
         "ALTER TABLE issues ADD COLUMN pos REAL NOT NULL DEFAULT 0",
         "ALTER TABLE issues ADD COLUMN notified INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE schedules ADD COLUMN kind TEXT NOT NULL DEFAULT 'tmux'",
+        "ALTER TABLE statuses ADD COLUMN gate TEXT",
+        "ALTER TABLE issues ADD COLUMN gate TEXT",
     ]:
         try:
             db.execute(migration)
             db.commit()
         except Exception:
             pass  # column already exists
+    for _sid, _items in {
+        "doing":    ["Scope & acceptance criteria are clear", "No blocking dependency", "Has an owner"],
+        "review":   ["Implemented and self-tested", "Diff / PR is up", "Ready for another set of eyes"],
+        "done":     ["Implemented and merged", "Tests / lint pass"],
+        "verified": ["CI/CD green (incl. e2e)", "Deployed to prod", "Confirmed working in prod", "Zero regressions"],
+    }.items():
+        try:
+            db.execute("UPDATE statuses SET gate=? WHERE id=? AND (gate IS NULL OR gate='')", (json.dumps(_items), _sid))
+        except Exception:
+            pass
+    db.commit()
     _load_steering_from_db()
     # One-time migration: import existing flat skill files into SQLite
     skills_dir = CC_HOME / "skills"
@@ -5668,6 +5681,7 @@ def _load_board(done_limit: int = 100) -> list:
                i.due, i.due_time, i.created, i.updated, i.owner_type,
                COALESCE(i.pinned, 0) AS pinned,
                COALESCE(i.pos, 0) AS pos,
+               i.gate,
                GROUP_CONCAT(t.tag) AS tags_csv"""
     if done_limit > 0:
         # Active items (unlimited), plus the most recent terminal items. `verified`
@@ -5714,6 +5728,11 @@ def _load_board(done_limit: int = 100) -> list:
         item = dict(row)
         tags_csv = item.pop("tags_csv") or ""
         item["tags"] = [t for t in tags_csv.split(",") if t]
+        g = item.get("gate")
+        try:
+            item["gate"] = json.loads(g) if g else []
+        except Exception:
+            item["gate"] = []
         result.append(item)
     result.sort(key=lambda x: (-x.get("pinned", 0),
                                 0 if x.get("pos", 0) == 0 else -1,
@@ -5723,10 +5742,20 @@ def _load_board(done_limit: int = 100) -> list:
 
 
 def _load_board_statuses() -> list:
-    """Load kanban statuses from SQLite."""
+    """Load kanban statuses from SQLite (with parsed gate checklists)."""
     db = get_db()
-    rows = db.execute("SELECT id, label FROM statuses ORDER BY position").fetchall()
-    return [dict(r) for r in rows] if rows else list(_DEFAULT_STATUSES)
+    rows = db.execute("SELECT id, label, gate FROM statuses ORDER BY position").fetchall()
+    if not rows:
+        return list(_DEFAULT_STATUSES)
+    out = []
+    for r in rows:
+        d = {"id": r["id"], "label": r["label"]}
+        try:
+            d["gate"] = json.loads(r["gate"]) if r["gate"] else []
+        except Exception:
+            d["gate"] = []
+        out.append(d)
+    return out
 
 
 def _item_by_id(bid: str) -> dict | None:
@@ -5737,6 +5766,7 @@ def _item_by_id(bid: str) -> dict | None:
                   i.due, i.due_time, i.created, i.updated, i.owner_type,
                   COALESCE(i.pinned, 0) AS pinned,
                   COALESCE(i.pos, 0) AS pos,
+                  i.gate,
                   GROUP_CONCAT(t.tag) AS tags_csv
            FROM issues i
            LEFT JOIN issue_tags t ON t.issue_id = i.id
@@ -5749,6 +5779,11 @@ def _item_by_id(bid: str) -> dict | None:
     item = dict(row)
     tags_csv = item.pop("tags_csv") or ""
     item["tags"] = [t for t in tags_csv.split(",") if t]
+    g = item.get("gate")
+    try:
+        item["gate"] = json.loads(g) if g else []
+    except Exception:
+        item["gate"] = []
     return item
 
 
@@ -15715,6 +15750,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <input id="be-due-time" type="time" style="width:110px;" title="Time (optional — leave blank for all-day)">
       </div>
     </div>
+    <div class="field-group">
+      <label class="field-label">Gate override <span class="field-optional">(optional)</span></label>
+      <textarea id="be-gate" rows="3" placeholder="One criterion per line. Leave blank to use the status's default gate." style="resize:vertical;"></textarea>
+    </div>
     <div class="board-edit-actions">
       <button class="be-cancel" onclick="closeBoardEdit()">Cancel</button>
       <button class="be-save" onclick="saveBoardEdit()">Save</button>
@@ -15753,6 +15792,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             onkeydown="_beTagKeydown(event,'bd')">
         </div>
         <div id="bd-tag-suggestions" class="be-tag-suggestions"></div>
+      </div>
+    </div>
+    <div class="board-detail-row" style="align-items:flex-start;">
+      <span style="font-size:0.78rem;color:var(--dim);padding-top:7px;">Gate:</span>
+      <div style="flex:1;">
+        <textarea id="bd-gate" class="board-detail-desc-input" style="min-height:56px;resize:vertical;" placeholder="Gate override — one criterion per line. Leave blank to use the status's default gate."></textarea>
       </div>
     </div>
     <div class="board-detail-tabs">
@@ -20420,7 +20465,16 @@ function _renderPeekIssuesKanban(items, list) {
         else if (nextPos != null) newPos = nextPos - 1024;
         else newPos = Date.now() / 1000;
         const item = boardItems.find(i => i.id === id);
-        if (item && (item.status !== newStatus || item.pos !== newPos)) moveBoardItem(id, newStatus, newPos);
+        if (item && item.status !== newStatus) {
+          // Gate: confirm the status change; on cancel, revert the visual move.
+          _gateConfirm(item, newStatus).then(ok => {
+            if (!ok) { renderPeekIssues(); return; }
+            moveBoardItem(id, newStatus, newPos);
+            renderPeekIssues();
+          });
+          return;
+        }
+        if (item && item.pos !== newPos) moveBoardItem(id, newStatus, newPos);
         renderPeekIssues();
       }
     }));
@@ -20924,7 +20978,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.29';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.30';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -28282,8 +28336,11 @@ function boardColDrop(e, col) {
   e.preventDefault();
   e.currentTarget.classList.remove('drag-over');
   if (_boardDragId) {
-    const item = boardItems.find(i => i.id === _boardDragId);
-    if (item && item.status !== col) moveBoardItem(_boardDragId, col);
+    const dragId = _boardDragId;
+    const item = boardItems.find(i => i.id === dragId);
+    if (item && item.status !== col) {
+      _gateConfirm(item, col).then(ok => { if (ok) moveBoardItem(dragId, col); else renderBoard(); });
+    }
     _boardDragId = null;
   }
 }
@@ -28497,6 +28554,8 @@ function renderBoard() {
     html += '</span>';
     html += '<span style="display:flex;align-items:center;gap:6px;">';
     html += '<span class="col-count" data-col="' + st + '">' + stCol.length + '</span>';
+    const _hasGate = Array.isArray(stObj.gate) && stObj.gate.length;
+    html += '<button class="col-del-btn" onclick="event.stopPropagation();editStatusGate(\'' + st + '\')" title="Edit gate checklist"' + (_hasGate ? ' style="color:var(--accent);opacity:0.9;"' : '') + '>&#10003;</button>';
     if (!isBuiltIn) {
       html += '<button class="col-del-btn" onclick="event.stopPropagation();deleteBoardStatus(\'' + st + '\')" title="Delete column">&#x2715;</button>';
     }
@@ -28607,9 +28666,20 @@ function renderBoard() {
           const item = boardItems.find(i => i.id === id);
           const statusChanged = item && item.status !== newStatus;
           const posChanged = !item || item.pos !== newPos;
-          if (statusChanged || posChanged) moveBoardItem(id, newStatus, newPos);
+          const _flush = () => { if (_boardRenderPending) { _boardRenderPending = false; renderBoard(); } };
+          if (statusChanged) {
+            // Gate: confirm before committing a status change; on cancel, revert the
+            // visual move by re-rendering from the (unchanged) boardItems.
+            _gateConfirm(item || {}, newStatus).then(ok => {
+              if (!ok) { renderBoard(); return; }
+              moveBoardItem(id, newStatus, newPos);
+              _flush();
+            });
+            return;
+          }
+          if (posChanged) moveBoardItem(id, newStatus, newPos);
           // Flush any renderBoard() calls that were deferred during the drag
-          if (_boardRenderPending) { _boardRenderPending = false; renderBoard(); }
+          _flush();
         }
       }));
     });
@@ -28917,6 +28987,8 @@ function openBoardAdd(statusOrDate, prefillDate) {
   boardEditStatus = status;
   document.getElementById('be-title').value = '';
   document.getElementById('be-desc').value = '';
+  const beGateEl = document.getElementById('be-gate');
+  if (beGateEl) beGateEl.value = '';
   const dueEl = document.getElementById('be-due');
   if (dueEl) dueEl.value = dueDate;
   const dueTimeEl2 = document.getElementById('be-due-time');
@@ -28949,9 +29021,17 @@ async function saveBoardEdit() {
   const due = dueEl ? dueEl.value : '';
   const dueTimeEl = document.getElementById('be-due-time');
   const dueTime = dueTimeEl ? dueTimeEl.value : '';
+  const gateEl = document.getElementById('be-gate');
+  const gate = gateEl ? gateEl.value.split('\n').map(s => s.trim()).filter(Boolean) : [];
+  // Gate: if creating directly into a status different from the one the modal opened
+  // at, and that status has an effective gate, confirm before saving.
+  if (status !== boardEditStatus) {
+    const ok = await _gateConfirm({ gate }, status);
+    if (!ok) return;  // abort — leave the modal open
+  }
   closeBoardEdit();
   const ownerType = session ? 'agent' : 'human';
-  await addBoardItem(title, desc, status, session, tags, due, ownerType, dueTime);
+  await addBoardItem(title, desc, status, session, tags, due, ownerType, dueTime, gate);
   if (_peekTab === 'issues') renderPeekIssues();
 }
 
@@ -28980,6 +29060,8 @@ function openBoardDetail(id) {
   if (dueEl) dueEl.value = draft ? (draft.due || '') : (item.due || '');
   const dueTimeEl = document.getElementById('bd-due-time');
   if (dueTimeEl) dueTimeEl.value = draft ? (draft.due_time || '') : (item.due_time || '');
+  const gateEl = document.getElementById('bd-gate');
+  if (gateEl) gateEl.value = (Array.isArray(item.gate) ? item.gate : []).join('\n');
   boardDetailTab('edit');
   _tagState['bd'] = [...(item.tags || [])];
   _beTagRenderChips('bd');
@@ -29097,10 +29179,19 @@ async function boardDetailSave() {
   const desc = document.getElementById('bd-desc').value.trim();
   const sel = document.getElementById('bd-session');
   const session = sel ? sel.value : undefined;
+  const gateEl = document.getElementById('bd-gate');
+  const gate = gateEl ? gateEl.value.split('\n').map(s => s.trim()).filter(Boolean) : [];
+  const _cur = boardItems.find(i => i.id === boardDetailId);
+  // Gate: if the status changed to a different status with an effective gate
+  // (using the possibly-just-edited override), confirm before saving.
+  if (_cur && boardDetailStatus !== (_cur.status || 'todo')) {
+    const ok = await _gateConfirm({ ..._cur, gate }, boardDetailStatus);
+    if (!ok) { const el = document.getElementById('bd-save-status'); if (el) el.textContent = ''; return; }
+  }
   document.getElementById('bd-save-status').textContent = 'Saving...';
   const dueInput = document.getElementById('bd-due');
   const dueTimeInput = document.getElementById('bd-due-time');
-  const changes = { title, desc, status: boardDetailStatus, due: dueInput ? dueInput.value : '', due_time: dueTimeInput ? dueTimeInput.value : '', tags: [..._tagState['bd']] };
+  const changes = { title, desc, status: boardDetailStatus, due: dueInput ? dueInput.value : '', due_time: dueTimeInput ? dueTimeInput.value : '', tags: [..._tagState['bd']], gate };
   if (session !== undefined) changes.session = session;
   await updateBoardItem(boardDetailId, changes);
   delete _boardDrafts[boardDetailId];
@@ -29132,17 +29223,18 @@ function saveBoardCache() {
   localStorage.setItem('amux_board_cache', lastBoardJSON);
 }
 
-async function addBoardItem(title, desc, status, session, tags, due, ownerType, dueTime) {
+async function addBoardItem(title, desc, status, session, tags, due, ownerType, dueTime, gate) {
   ownerType = ownerType || (session ? 'agent' : 'human');
+  gate = gate || [];
   const tempId = Math.random().toString(16).slice(2, 8);
   const now = Math.floor(Date.now() / 1000);
-  const tempItem = { id: tempId, title, desc, status, session: session || '', tags: tags || [], due: due || '', due_time: dueTime || '', creator: _getDeviceName(), owner_type: ownerType, created: now, updated: now, _pending: true };
+  const tempItem = { id: tempId, title, desc, status, session: session || '', tags: tags || [], due: due || '', due_time: dueTime || '', gate: gate, creator: _getDeviceName(), owner_type: ownerType, created: now, updated: now, _pending: true };
   boardItems.push(tempItem);
   saveBoardCache();
   renderBoard();
   const r = await apiCall(API + '/api/board', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ title, desc, status, session: session || '', tags: tags || [], due: due || '', due_time: dueTime || '', creator: _getDeviceName(), owner_type: ownerType })
+    body: JSON.stringify({ title, desc, status, session: session || '', tags: tags || [], due: due || '', due_time: dueTime || '', gate: gate, creator: _getDeviceName(), owner_type: ownerType })
   });
   if (r) {
     const item = await r.json();
@@ -29176,6 +29268,81 @@ async function deleteBoardItem(id) {
   saveBoardCache();
   renderBoard();
   await apiCall(API + '/api/board/' + id, { method: 'DELETE' });
+}
+
+// ── Board status GATES (confirm-on-move checklists) ──
+function _statusGateDefault(statusId) {
+  const s = (typeof boardStatuses !== 'undefined' ? boardStatuses : []).find(x => x.id === statusId);
+  return (s && Array.isArray(s.gate)) ? s.gate : [];
+}
+function _effectiveGate(item, statusId) {
+  if (item && Array.isArray(item.gate) && item.gate.length) return item.gate;
+  return _statusGateDefault(statusId);
+}
+// Returns a Promise<boolean>: true = confirmed move, false = cancelled.
+function _gateConfirm(item, targetStatusId) {
+  const gate = _effectiveGate(item, targetStatusId);
+  if (!gate.length) return Promise.resolve(true);
+  return new Promise(resolve => {
+    const label = ((typeof boardStatuses !== 'undefined' ? boardStatuses : []).find(x => x.id === targetStatusId) || {}).label || targetStatusId;
+    const bg = document.createElement('div');
+    bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const rows = gate.map((g,i) => '<label style="display:flex;gap:9px;align-items:flex-start;padding:7px 4px;cursor:pointer;font-size:0.9rem;color:var(--text);"><input type="checkbox" class="_gate-chk" data-i="'+i+'" style="width:auto;margin-top:2px;accent-color:var(--accent);"><span>'+esc(g)+'</span></label>').join('');
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;max-width:440px;width:100%;box-shadow:0 12px 40px rgba(0,0,0,0.45);max-height:88vh;overflow:auto;';
+    box.innerHTML = '<div style="font-weight:600;margin-bottom:4px;">Move to '+esc(label)+'</div>'
+      + '<div style="font-size:0.8rem;color:var(--dim);margin-bottom:10px;">Confirm this card meets the gate for '+esc(label)+':</div>'
+      + '<div id="_gate-list" style="margin-bottom:14px;">'+rows+'</div>'
+      + '<div style="display:flex;gap:8px;justify-content:space-between;align-items:center;">'
+      + '<span id="_gate-count" style="font-size:0.75rem;color:var(--dim);"></span>'
+      + '<div style="display:flex;gap:8px;"><button class="btn" id="_gate-cancel">Cancel</button><button class="btn primary" id="_gate-ok">Move</button></div></div>';
+    bg.appendChild(box); document.body.appendChild(bg);
+    const chks = box.querySelectorAll('._gate-chk');
+    const upd = () => { const n = [...chks].filter(c=>c.checked).length; box.querySelector('#_gate-count').textContent = n+' / '+gate.length+' checked'; };
+    chks.forEach(c => c.addEventListener('change', upd)); upd();
+    const done = v => { bg.remove(); resolve(v); };
+    box.querySelector('#_gate-cancel').onclick = () => done(false);
+    box.querySelector('#_gate-ok').onclick = () => done(true);
+    bg.onclick = e => { if (e.target === bg) done(false); };
+  });
+}
+// Per-status default gate editor (opened from a board column header).
+function editStatusGate(statusId) {
+  const s = (typeof boardStatuses !== 'undefined' ? boardStatuses : []).find(x => x.id === statusId);
+  const label = (s && s.label) || statusId;
+  const cur = (s && Array.isArray(s.gate)) ? s.gate : [];
+  const esc = t => String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const bg = document.createElement('div');
+  bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;max-width:460px;width:100%;box-shadow:0 12px 40px rgba(0,0,0,0.45);max-height:88vh;overflow:auto;';
+  box.innerHTML = '<div style="font-weight:600;margin-bottom:4px;">Gate checklist — '+esc(label)+'</div>'
+    + '<div style="font-size:0.8rem;color:var(--dim);margin-bottom:10px;">One criterion per line. Shown as a confirm checklist when a card is moved into '+esc(label)+'. Individual cards can override this default.</div>'
+    + '<textarea id="_gate-edit-ta" style="width:100%;min-height:150px;box-sizing:border-box;font-family:inherit;font-size:0.9rem;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);resize:vertical;"></textarea>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;"><button class="btn" id="_gate-edit-cancel">Cancel</button><button class="btn primary" id="_gate-edit-save">Save</button></div>';
+  bg.appendChild(box); document.body.appendChild(bg);
+  const ta = box.querySelector('#_gate-edit-ta');
+  ta.value = cur.join('\n');
+  ta.focus();
+  const close = () => bg.remove();
+  box.querySelector('#_gate-edit-cancel').onclick = close;
+  bg.onclick = e => { if (e.target === bg) close(); };
+  box.querySelector('#_gate-edit-save').onclick = async () => {
+    const items = ta.value.split('\n').map(x => x.trim()).filter(Boolean);
+    await apiCall(API + '/api/board/statuses/' + statusId, {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ gate: items })
+    });
+    try {
+      const rs = await fetch(API + '/api/board/statuses');
+      const data = await rs.json();
+      boardStatuses = data;
+      lastStatusesJSON = JSON.stringify(data);
+      if (typeof activeView === 'undefined' || activeView === 'board') renderBoard();
+    } catch(e) {}
+    close();
+  };
 }
 
 function moveBoardItem(id, newStatus, newPos) {
@@ -30378,7 +30545,7 @@ const _idb = (() => {
 _idb.getAll('statuses').then(items => {
   if (items && items.length) {
     items.sort((a, b) => (a._pos || 0) - (b._pos || 0));
-    boardStatuses = items.map(s => ({ id: s.id, label: s.label }));
+    boardStatuses = items.map(s => ({ id: s.id, label: s.label, gate: Array.isArray(s.gate) ? s.gate : [] }));
     lastStatusesJSON = JSON.stringify(boardStatuses);
     if (activeView === 'board') renderBoard();
   }
@@ -36502,7 +36669,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.29';
+const CACHE = 'amux-v0.9.30';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -39011,6 +39178,9 @@ class CCHandler(BaseHTTPRequestHandler):
                 owner_type = body.get("owner_type", "agent" if session else "human")
                 if owner_type not in ("human", "agent"):
                     owner_type = "human"
+                _g = body.get("gate")
+                _gate_items = [str(x).strip() for x in _g if str(x).strip()] if isinstance(_g, list) else []
+                gate_json = json.dumps(_gate_items) if _gate_items else None
                 # Place new card at top of its column: pos = (min existing pos) - 1
                 min_pos_row = db.execute(
                     "SELECT COALESCE(MIN(NULLIF(pos, 0)), 0) AS m FROM issues WHERE status = ? AND deleted IS NULL",
@@ -39018,9 +39188,9 @@ class CCHandler(BaseHTTPRequestHandler):
                 ).fetchone()
                 new_pos = (min_pos_row["m"] if min_pos_row else 0) - 1024.0
                 db.execute(
-                    """INSERT INTO issues (id, title, desc, status, session, creator, due, due_time, created, updated, owner_type, pos)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (item_id, title, desc, status, session or None, creator, due, due_time, now, now, owner_type, new_pos),
+                    """INSERT INTO issues (id, title, desc, status, session, creator, due, due_time, created, updated, owner_type, pos, gate)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (item_id, title, desc, status, session or None, creator, due, due_time, now, now, owner_type, new_pos, gate_json),
                 )
                 for tag in tags:
                     db.execute(
@@ -39121,7 +39291,12 @@ class CCHandler(BaseHTTPRequestHandler):
                     label = body.get("label", "").strip()
                     if label:
                         db.execute("UPDATE statuses SET label = ? WHERE id = ?", (label, sid))
-                        db.commit()
+                    if "gate" in body:
+                        g = body.get("gate")
+                        items = [str(x).strip() for x in g if str(x).strip()] if isinstance(g, list) else []
+                        db.execute("UPDATE statuses SET gate = ? WHERE id = ?", (json.dumps(items) if items else None, sid))
+                    db.commit()
+                    _board_changed()
                     return self._json({"ok": True})
 
             # GET /api/board/tag-completion?tag=X — check if all tasks with a tag are done
@@ -39219,6 +39394,11 @@ class CCHandler(BaseHTTPRequestHandler):
                             set_clauses.append(f"{k} = ?")
                             v = body[k]
                             params.append(None if v == "" and k in ("session", "due", "due_time") else v)
+                    if "gate" in body:
+                        g = body.get("gate")
+                        items = [str(x).strip() for x in g if str(x).strip()] if isinstance(g, list) else []
+                        set_clauses.append("gate = ?")
+                        params.append(json.dumps(items) if items else None)
                     if "creator" in body:
                         set_clauses.append("creator = ?")
                         params.append(body["creator"])
@@ -39582,6 +39762,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 """SELECT i.id, i.title, i.desc, i.status, i.session, i.creator,
                           i.due, i.due_time, i.created, i.updated, i.deleted,
                           COALESCE(i.pinned, 0) AS pinned,
+                          i.gate,
                           GROUP_CONCAT(t.tag) AS tags_csv
                    FROM issues i
                    LEFT JOIN issue_tags t ON t.issue_id = i.id
@@ -39594,11 +39775,20 @@ class CCHandler(BaseHTTPRequestHandler):
                 item = dict(row)
                 tags_csv = item.pop("tags_csv") or ""
                 item["tags"] = [t for t in tags_csv.split(",") if t]
+                g = item.get("gate")
+                try:
+                    item["gate"] = json.loads(g) if g else []
+                except Exception:
+                    item["gate"] = []
                 issues.append(item)
-            statuses = [
-                dict(r)
-                for r in db.execute("SELECT id, label, position FROM statuses ORDER BY position").fetchall()
-            ]
+            statuses = []
+            for r in db.execute("SELECT id, label, position, gate FROM statuses ORDER BY position").fetchall():
+                sd = {"id": r["id"], "label": r["label"], "position": r["position"]}
+                try:
+                    sd["gate"] = json.loads(r["gate"]) if r["gate"] else []
+                except Exception:
+                    sd["gate"] = []
+                statuses.append(sd)
             return self._json({
                 "ts": int(time.time()),
                 "issues": issues,
