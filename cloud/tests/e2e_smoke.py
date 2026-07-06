@@ -239,12 +239,15 @@ def test_api_keys(cookie):
     step("BYO API key flow — save and verify")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     openai_key = os.environ.get("OPENAI_API_KEY", "")
+    google_key = os.environ.get("GOOGLE_API_KEY", "")
 
     keys_to_set = {}
     if anthropic_key:
         keys_to_set["ANTHROPIC_API_KEY"] = anthropic_key
     if openai_key:
         keys_to_set["OPENAI_API_KEY"] = openai_key
+    if google_key:
+        keys_to_set["GOOGLE_API_KEY"] = google_key
 
     if not keys_to_set:
         warn("No API keys available to test BYO flow")

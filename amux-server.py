@@ -41370,7 +41370,7 @@ return "not_found"
                 return self._json({"ok": True, "enabled": enabled})
 
         if path == "/api/settings/env":
-            _allowed_env_keys = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}
+            _allowed_env_keys = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"}
             if method == "GET":
                 result = {}
                 for k in _allowed_env_keys:
