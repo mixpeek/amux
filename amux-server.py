@@ -2242,9 +2242,15 @@ def _render_session_transcript(name: str, max_chars: int = 40000) -> str:
                 if not txt:
                     continue
                 if role == "user":
-                    # Harness-injected reminders are invisible in Claude Code — hide them here too
-                    if "<system-reminder>" in txt:
-                        txt = re.sub(r"<system-reminder>.*?</system-reminder>", "", txt, flags=re.S).strip()
+                    # Harness-injected wrappers are invisible in Claude Code's own UI
+                    # (reminders, background-task completions, local-command caveats) —
+                    # hide them here too instead of dumping the raw XML into the peek.
+                    if ("<system-reminder>" in txt or "<task-notification>" in txt
+                            or "<local-command-caveat>" in txt):
+                        txt = re.sub(r"<system-reminder>.*?</system-reminder>", "", txt, flags=re.S)
+                        txt = re.sub(r"<task-notification>.*?</task-notification>", "", txt, flags=re.S)
+                        txt = re.sub(r"<local-command-caveat>.*?</local-command-caveat>", "", txt, flags=re.S)
+                        txt = txt.strip()
                         if not txt:
                             continue
                     # Local slash-command turns are stored with meta tags; Claude Code
