@@ -12270,6 +12270,32 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     color: var(--dim); cursor: pointer; padding: 0 8px; font-size: 1.1rem; min-height: 36px;
     display: flex; align-items: center; flex-shrink: 0; }
   .peek-attach-btn:hover { color: var(--text); border-color: var(--accent); }
+  /* Combined attach + history "more" menu (frees width for the input) */
+  .peek-more-wrap { position: relative; flex-shrink: 0; }
+  .peek-more-menu { display: none; position: absolute; bottom: calc(100% + 6px); right: 0;
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35); padding: 4px; z-index: 60; min-width: 168px; }
+  .peek-more-menu.open { display: block; }
+  .peek-more-menu button { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+    background: none; border: none; color: var(--text); font-size: 0.85rem; padding: 9px 10px;
+    border-radius: 6px; cursor: pointer; white-space: nowrap; -webkit-tap-highlight-color: transparent; }
+  .peek-more-menu button:hover { background: var(--bg); }
+  /* Expand-to-fullscreen affordance inside the input's top-right corner */
+  #peek-cmd-input { padding-right: 30px; }
+  .peek-input-expand { position: absolute; top: 5px; right: 5px; z-index: 3; line-height: 1;
+    background: rgba(127,127,127,0.16); border: none; color: var(--dim); font-size: 0.82rem;
+    padding: 3px 5px; border-radius: 5px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .peek-input-expand:hover { color: var(--text); background: rgba(127,127,127,0.3); }
+  /* Fullscreen compose overlay */
+  .peek-input-fs { display: none; position: fixed; inset: 0; z-index: 600; background: var(--bg);
+    flex-direction: column; gap: 8px; padding: 10px;
+    padding-top: max(10px, env(safe-area-inset-top)); padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  .peek-input-fs.open { display: flex; }
+  .peek-input-fs-bar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .peek-input-fs-ta { flex: 1; width: 100%; resize: none; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: inherit;
+    font-size: 1rem; line-height: 1.5; outline: none; }
+  .peek-input-fs-ta:focus { border-color: var(--accent); }
   .peek-mic-btn { background: none; border: 1px solid var(--border); border-radius: 6px;
     color: var(--dim); cursor: pointer; padding: 0 8px; font-size: 1.1rem; min-height: 36px;
     display: flex; align-items: center; flex-shrink: 0; transition: all 0.2s; }
@@ -15927,16 +15953,33 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             oninput="autoGrow(this);slashAcUpdate();cmdHistoryReset()" onkeydown="slashAcKeydown(event)"
             onbeforeinput="slashAcBeforeInput(event)"
             onpaste="handlePeekPaste(event)"></textarea>
+          <button type="button" class="peek-input-expand" id="peek-input-expand" title="Expand to full screen" onclick="_expandPeekInput()">&#x26F6;</button>
           <div id="slash-ac-list" class="ac-list slash-ac"></div>
         </div>
         <input type="file" id="peek-file-input" multiple
           style="position:absolute;width:0;height:0;opacity:0;overflow:hidden;pointer-events:none;" onchange="handlePeekFileInput(event)">
-        <button class="peek-attach-btn" title="Attach file" onclick="document.getElementById('peek-file-input').click()">&#128206;</button>
-        <button class="peek-attach-btn" id="peek-hist-btn" onclick="openCmdHistoryModal()" title="Message history">&#x1F551;</button>
+        <div class="peek-more-wrap">
+          <button class="peek-attach-btn" id="peek-more-btn" title="Attach / history" onclick="_togglePeekMore(event)">&#x22EF;</button>
+          <div class="peek-more-menu" id="peek-more-menu">
+            <button type="button" onclick="_peekMoreClose();document.getElementById('peek-file-input').click()">&#128206; Attach file</button>
+            <button type="button" onclick="_peekMoreClose();openCmdHistoryModal()">&#x1F551; Message history</button>
+          </div>
+        </div>
         <div class="send-split"><button class="btn primary send-split-main" onpointerdown="event.preventDefault();_tapTraceEv('pointerdown')" onpointerup="_tapTraceEv('pointerup');_btnFire(event, sendPeekCmd)" onpointercancel="_tapTraceEv('pointercancel')" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, sendPeekCmd)" onclick="_tapTraceEv('click');_btnFire(event, sendPeekCmd)">Send</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
       </div>
       <!-- Drag-over hint (shown by CSS when drag-over class is on peek-overlay) -->
       <div class="peek-drag-hint" style="display:none;">&#128206; Drop to attach</div>
+      <!-- Fullscreen compose overlay (expand button in the input's corner) -->
+      <div id="peek-input-fs" class="peek-input-fs">
+        <div class="peek-input-fs-bar">
+          <button class="btn" onclick="_collapsePeekInput()" title="Collapse">&#x2921; Collapse</button>
+          <span style="flex:1;"></span>
+          <button class="btn primary" onclick="_fsSend()">Send</button>
+        </div>
+        <textarea id="peek-input-fs-ta" class="peek-input-fs-ta" placeholder="Type a message&#8230;"
+          autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true"
+          onkeydown="if((event.metaKey||event.ctrlKey)&&event.key==='Enter'){event.preventDefault();_fsSend();}"></textarea>
+      </div>
     </div>
   </div>
   <!-- Split files panel -->
@@ -20881,7 +20924,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.27';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.28';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -20992,6 +21035,16 @@ function copyPeekContent() {
 function closePeek() {
   // Reset peek notes
   _peekNotesReset();
+  // Fold the fullscreen composer (if open) back into the input, and close menus,
+  // so the draft below captures whatever was being typed.
+  const _fs = document.getElementById('peek-input-fs');
+  if (_fs && _fs.classList.contains('open')) {
+    const _inp0 = document.getElementById('peek-cmd-input');
+    const _fsTa = document.getElementById('peek-input-fs-ta');
+    if (_inp0 && _fsTa) _inp0.value = _fsTa.value;
+    _fs.classList.remove('open');
+  }
+  if (typeof _peekMoreClose === 'function') _peekMoreClose();
   // Save command draft for this session
   if (peekSession) {
     const inp = document.getElementById('peek-cmd-input');
@@ -21861,6 +21914,45 @@ function togglePeekCmd() {
   row.classList.toggle('open', peekCmdOpen);
   toggle.innerHTML = peekCmdOpen ? '&#x25BC; Send command' : '&#x25B2; Send command';
   if (peekCmdOpen) setTimeout(() => document.getElementById('peek-cmd-input').focus({ preventScroll: true }), 50);
+}
+// ── Input row: "more" menu (attach + history) and fullscreen compose ──
+function _togglePeekMore(e) {
+  if (e) e.stopPropagation();
+  const m = document.getElementById('peek-more-menu');
+  if (!m) return;
+  const willOpen = !m.classList.contains('open');
+  m.classList.toggle('open', willOpen);
+  // Close on the next outside click/tap (deferred so THIS tap doesn't close it).
+  if (willOpen) setTimeout(() => document.addEventListener('click', _peekMoreClose, { once: true }), 0);
+}
+function _peekMoreClose() {
+  const m = document.getElementById('peek-more-menu');
+  if (m) m.classList.remove('open');
+}
+function _expandPeekInput() {
+  const inp = document.getElementById('peek-cmd-input');
+  const fs = document.getElementById('peek-input-fs');
+  const ta = document.getElementById('peek-input-fs-ta');
+  if (!inp || !fs || !ta) return;
+  ta.value = inp.value;
+  fs.classList.add('open');
+  setTimeout(() => { ta.focus(); try { ta.selectionStart = ta.selectionEnd = ta.value.length; } catch (e) {} }, 50);
+}
+function _collapsePeekInput() {
+  const inp = document.getElementById('peek-cmd-input');
+  const fs = document.getElementById('peek-input-fs');
+  const ta = document.getElementById('peek-input-fs-ta');
+  if (inp && ta) { inp.value = ta.value; if (typeof autoGrow === 'function') autoGrow(inp); }
+  if (fs) fs.classList.remove('open');
+  if (inp) setTimeout(() => inp.focus({ preventScroll: true }), 30);
+}
+function _fsSend() {
+  const inp = document.getElementById('peek-cmd-input');
+  const ta = document.getElementById('peek-input-fs-ta');
+  const fs = document.getElementById('peek-input-fs');
+  if (inp && ta) { inp.value = ta.value; if (typeof autoGrow === 'function') autoGrow(inp); }
+  if (fs) fs.classList.remove('open');
+  sendPeekCmd();
 }
 // ── File attachments ──
 let peekFiles = []; // [{name, path, url, isImage, previewUrl}]
@@ -36410,7 +36502,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.27';
+const CACHE = 'amux-v0.9.28';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
