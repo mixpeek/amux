@@ -15923,7 +15923,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <div class="ac-wrap" style="flex:1;min-width:0;position:relative;">
           <textarea class="send-input" id="peek-cmd-input" rows="1" placeholder="Type a message or drop a file..."
             autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true"
-            enterkeyhint="send" style="width:100%;"
+            enterkeyhint="enter" style="width:100%;"
             oninput="autoGrow(this);slashAcUpdate();cmdHistoryReset()" onkeydown="slashAcKeydown(event)"
             onbeforeinput="slashAcBeforeInput(event)"
             onpaste="handlePeekPaste(event)"></textarea>
@@ -18098,7 +18098,7 @@ function render() {
           <div id="card-ac-${s.name}" class="ac-list slash-ac"></div>
           <textarea class="send-input" id="input-${s.name}" rows="1"
             placeholder="Send to ${esc(s.name)}..." autocomplete="off" autocorrect="on"
-            autocapitalize="sentences" spellcheck="true" enterkeyhint="send"
+            autocapitalize="sentences" spellcheck="true" enterkeyhint="enter"
             oninput="autoGrow(this);cardSlashAcUpdate('${s.name}');cmdHistoryReset()"
             onkeydown="cardSlashAcKeydown('${s.name}',event)"
             onbeforeinput="cardSlashAcBeforeInput('${s.name}',event)"></textarea>
@@ -20881,7 +20881,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.25';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.26';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -23263,10 +23263,8 @@ function slashAcPick(i) {
 // so it still inserts a newline.
 let _lastKeyShiftEnter = false;
 function _sendBeforeInput(e, send) {
-  if (e.inputType !== 'insertLineBreak') return;
-  if (_lastKeyShiftEnter) return;   // Shift+Enter = newline
-  e.preventDefault();
-  send();
+  // Enter inserts a newline now (standard textarea) — never send from a line break.
+  // Kept as a no-op so the existing onbeforeinput bindings don't error.
 }
 // Send-button firing: onpointerdown preventDefault keeps the input focused
 // (no keyboard collapse mid-tap) — but on real iOS Safari, canceling
@@ -23331,29 +23329,13 @@ function cardSlashAcBeforeInput(name, e) { _sendBeforeInput(e, () => sendFromInp
 
 function slashAcKeydown(e) {
   _lastKeyShiftEnter = (e.key === 'Enter' && e.shiftKey);
-  if (e.isComposing || e.keyCode === 229) {
-    // A composed Enter is swallowed here by design (beforeinput catches the
-    // committed line break) — but "press enter twice" reports persist, so
-    // beacon every swallowed Enter at ALL widths to pin down the guard's role.
-    if (e.key === 'Enter') {
-      try {
-        const _inp = document.getElementById('peek-cmd-input');
-        fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ kind: 'enter-ime-swallowed', ver: APP_VER, composing: !!e.isComposing,
-            keyCode: e.keyCode, inputLen: _inp ? _inp.value.trim().length : -1,
-            width: window.innerWidth, session: (typeof peekSession !== 'undefined' ? peekSession : null) }) }).catch(() => {});
-      } catch (e2) {}
-    }
-    return; // ignore IME composition Enter
-  }
+  if (e.isComposing || e.keyCode === 229) return; // let IME composition finish
   const inp = document.getElementById('peek-cmd-input');
   const el = document.getElementById('slash-ac-list');
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendPeekCmd(); return; }
   if (!el.classList.contains('open')) {
-    // Enter always sends (the mobile keyboard key is labeled "send" via enterkeyhint);
-    // Shift+Enter inserts a newline. The old touch-device carve-out made the send key
-    // insert newlines on phones, which read as "Enter does nothing / send twice".
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPeekCmd(); return; }
+    // Enter inserts a newline (standard textarea) — do NOT send. Send is the Send
+    // button or Cmd/Ctrl+Enter (handled just above). Arrows still browse history.
     if (e.key === 'ArrowUp' && inp.selectionStart === 0) { e.preventDefault(); cmdHistoryUp(inp); return; }
     if (e.key === 'ArrowDown' && _cmdHistoryIdx !== -1) { e.preventDefault(); cmdHistoryDown(inp); return; }
     return;
@@ -23371,12 +23353,10 @@ function slashAcKeydown(e) {
     setSel(getSel() >= itemLen - 1 ? 0 : getSel() + 1);
     slashAcHighlight();
   } else if (e.key === 'Enter') {
-    e.preventDefault();
-    // Only accept an autocomplete suggestion if the user explicitly navigated to
-    // one with the arrow keys. Otherwise Enter always sends — no more double-enter
-    // when the @-mention or slash dropdown just happens to be open.
-    if (getSel() >= 0) slashAcPick(getSel());
-    else { el.classList.remove('open'); el._atItems = null; el._atSel = -1; sendPeekCmd(); }
+    // Accept a navigated-to suggestion; otherwise just close the dropdown and let
+    // Enter insert a newline (no preventDefault) — never send on Enter.
+    if (getSel() >= 0) { e.preventDefault(); slashAcPick(getSel()); }
+    else { el.classList.remove('open'); el._atItems = null; el._atSel = -1; }
   } else if (e.key === 'Tab') {
     e.preventDefault();
     slashAcPick(getSel() >= 0 ? getSel() : 0);
@@ -23637,8 +23617,8 @@ function cardSlashAcKeydown(name, e) {
   const el = document.getElementById('card-ac-' + name);
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendFromInput(name); return; }
   if (!el || !el.classList.contains('open')) {
-    // Enter always sends (keyboard key is labeled "send"); Shift+Enter = newline.
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendFromInput(name); return; }
+    // Enter inserts a newline (standard textarea) — do NOT send. Send is the Send
+    // button or Cmd/Ctrl+Enter (handled just above). Arrows still browse history.
     if (e.key === 'ArrowUp' && inp && inp.selectionStart === 0) { e.preventDefault(); cmdHistoryUp(inp); return; }
     if (e.key === 'ArrowDown' && _cmdHistoryIdx !== -1) { e.preventDefault(); if (inp) cmdHistoryDown(inp); return; }
     return;
@@ -23656,10 +23636,10 @@ function cardSlashAcKeydown(name, e) {
     setSel(getSel() >= itemLen - 1 ? 0 : getSel() + 1);
     cardSlashAcHighlight(name);
   } else if (e.key === 'Enter') {
-    e.preventDefault();
-    // Enter always sends unless the user explicitly arrow-selected a suggestion.
-    if (getSel() >= 0) cardSlashAcPick(name, getSel());
-    else { el.classList.remove('open'); el._atItems = null; el._atSel = -1; sendFromInput(name); }
+    // Accept a navigated-to suggestion; otherwise close the dropdown and let Enter
+    // insert a newline (no preventDefault) — never send on Enter.
+    if (getSel() >= 0) { e.preventDefault(); cardSlashAcPick(name, getSel()); }
+    else { el.classList.remove('open'); el._atItems = null; el._atSel = -1; }
   } else if (e.key === 'Tab') {
     e.preventDefault();
     cardSlashAcPick(name, getSel() >= 0 ? getSel() : 0);
@@ -36426,7 +36406,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.25';
+const CACHE = 'amux-v0.9.26';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
