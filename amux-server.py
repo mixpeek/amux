@@ -4295,6 +4295,12 @@ INSERT OR IGNORE INTO statuses (id, label, position, is_builtin) VALUES
 UPDATE statuses SET position = 4 WHERE id = 'done'      AND position <> 4;
 -- 'verified' inserted at position 5 above shifts 'discarded' to 6.
 UPDATE statuses SET position = 6 WHERE id = 'discarded' AND position <> 6;
+CREATE TABLE IF NOT EXISTS session_gates (
+    session TEXT NOT NULL,
+    status  TEXT NOT NULL,
+    gate    TEXT,
+    PRIMARY KEY (session, status)
+);
 CREATE TABLE IF NOT EXISTS issues (
     id          TEXT PRIMARY KEY,
     title       TEXT NOT NULL,
@@ -5755,6 +5761,29 @@ def _load_board_statuses() -> list:
         except Exception:
             d["gate"] = []
         out.append(d)
+    return out
+
+
+def _load_session_gates() -> dict:
+    """Load per-session gate overrides as {session: {status: [items]}}.
+
+    Only non-empty gates are included; a missing (session,status) means that
+    session inherits the global status default for that status.
+    """
+    db = get_db()
+    out: dict = {}
+    try:
+        rows = db.execute("SELECT session, status, gate FROM session_gates").fetchall()
+    except Exception:
+        return out
+    for r in rows:
+        try:
+            items = json.loads(r["gate"]) if r["gate"] else []
+        except Exception:
+            items = []
+        if not items:
+            continue
+        out.setdefault(r["session"], {})[r["status"]] = items
     return out
 
 
@@ -20418,7 +20447,17 @@ function _renderPeekIssuesKanban(items, list) {
     html += '<div class="board-col" data-col="' + st + '">';
     html += '<div class="board-col-header" style="cursor:default;">';
     html += '<span style="color:' + sty.color + '">' + esc(stObj.label) + '</span>';
+    html += '<span style="display:flex;align-items:center;gap:6px;">';
     html += '<span class="col-count">' + stCol.length + '</span>';
+    // Per-session gate editor — only when the board is scoped to a single session
+    // (in all-sessions scope there is no single session to attach the override to).
+    const _sgScoped = !(typeof _peekIssuesAllSessions !== 'undefined' && _peekIssuesAllSessions) && peekSession;
+    if (_sgScoped) {
+      const _sgHas = sessionGates[peekSession] && Array.isArray(sessionGates[peekSession][st]) && sessionGates[peekSession][st].length;
+      const _sgSessJs = String(peekSession).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      html += '<button class="col-gate-btn' + (_sgHas ? ' has-gate' : '') + '" onclick="event.stopPropagation();editSessionGate(\'' + _sgSessJs + '\',\'' + st + '\')" title="Edit this session&#39;s gate for ' + esc(stObj.label) + '">&#9745;&#xFE0E; Gate</button>';
+    }
+    html += '</span>';
     html += '</div>';
     if (stCol.length === 0) html += '<div class="board-empty">Nothing here</div>';
     stCol.sort((a, b) => {
@@ -20987,7 +21026,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.31';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.32';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -26557,6 +26596,9 @@ function _fmtRelTime(ts) {
 let activeView = 'sessions';
 let boardItems = [];
 let boardStatuses = [{id:'backlog',label:'Backlog'},{id:'todo',label:'To Do'},{id:'doing',label:'In Progress'},{id:'review',label:'In Review'},{id:'done',label:'Done'},{id:'verified',label:'Verified'},{id:'discarded',label:'Discarded'}];
+// Per-session gate overrides: { session: { status: [items] } }. Layer between the
+// global status default and the per-card override.
+let sessionGates = {};
 let _boardSortables = [];
 let _boardColSortable = null;
 let boardTimer = null;
@@ -28128,12 +28170,14 @@ async function toggleSchedEnabled(id, enabled) {
 
 async function fetchBoard() {
   try {
-    const [r, rs] = await Promise.all([
+    const [r, rs, rsg] = await Promise.all([
       fetch(API + '/api/board'),
       fetch(API + '/api/board/statuses'),
+      fetch(API + '/api/board/session-gates'),
     ]);
     const data = await r.json();
     const statusData = await rs.json();
+    try { const sgData = await rsg.json(); if (sgData && typeof sgData === 'object') sessionGates = sgData; } catch(e) {}
     consecutiveFailures = 0;
     if (!online) setOnline(true);
     const sj = JSON.stringify(statusData);
@@ -29286,6 +29330,9 @@ function _statusGateDefault(statusId) {
 }
 function _effectiveGate(item, statusId) {
   if (item && Array.isArray(item.gate) && item.gate.length) return item.gate;
+  const sess = item && item.session;
+  if (sess && sessionGates[sess] && Array.isArray(sessionGates[sess][statusId]) && sessionGates[sess][statusId].length)
+    return sessionGates[sess][statusId];
   return _statusGateDefault(statusId);
 }
 // Returns a Promise<boolean>: true = confirmed move, false = cancelled.
@@ -29352,6 +29399,50 @@ function editStatusGate(statusId) {
     } catch(e) {}
     close();
   };
+}
+// Per-session gate editor (opened from a session's peek board column header).
+// Scoped to one (session, status): overrides the global default for that session only.
+function editSessionGate(session, statusId) {
+  const st = (typeof boardStatuses !== 'undefined' ? boardStatuses : []).find(x => x.id === statusId);
+  const label = (st && st.label) || statusId;
+  const hasOverride = sessionGates[session] && Array.isArray(sessionGates[session][statusId]) && sessionGates[session][statusId].length;
+  // Prefill from the session override if set, else from the global default as a starting point.
+  const cur = hasOverride ? sessionGates[session][statusId] : _statusGateDefault(statusId);
+  const esc = t => String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const bg = document.createElement('div');
+  bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;max-width:460px;width:100%;box-shadow:0 12px 40px rgba(0,0,0,0.45);max-height:88vh;overflow:auto;';
+  box.innerHTML = '<div style="font-weight:600;margin-bottom:4px;">Session gate — '+esc(label)+'</div>'
+    + '<div style="font-size:0.8rem;color:var(--dim);margin-bottom:4px;">For session <b>'+esc(session)+'</b> only. Overrides the global default gate for '+esc(label)+' on this session\'s cards.</div>'
+    + '<div style="font-size:0.75rem;color:var(--dim);margin-bottom:10px;">One criterion per line. '+(hasOverride ? 'This session has a custom gate.' : 'Currently inheriting the global default (shown below to tweak).')+'</div>'
+    + '<textarea id="_sgate-edit-ta" style="width:100%;min-height:150px;box-sizing:border-box;font-family:inherit;font-size:0.9rem;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);resize:vertical;"></textarea>'
+    + '<div style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:14px;">'
+    + '<button class="btn" id="_sgate-edit-reset" title="Delete this session override and inherit the global default"'+(hasOverride ? '' : ' style="visibility:hidden;"')+'>Reset to default</button>'
+    + '<div style="display:flex;gap:8px;"><button class="btn" id="_sgate-edit-cancel">Cancel</button><button class="btn primary" id="_sgate-edit-save">Save</button></div></div>';
+  bg.appendChild(box); document.body.appendChild(bg);
+  const ta = box.querySelector('#_sgate-edit-ta');
+  ta.value = (cur || []).join('\n');
+  ta.focus();
+  const close = () => bg.remove();
+  const persist = async (items) => {
+    await apiCall(API + '/api/board/session-gates', {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ session: session, status: statusId, gate: items })
+    });
+    try {
+      const rsg = await fetch(API + '/api/board/session-gates');
+      const data = await rsg.json();
+      if (data && typeof data === 'object') sessionGates = data;
+    } catch(e) {}
+    if (typeof renderPeekIssues === 'function' && typeof _peekTab !== 'undefined' && _peekTab === 'issues') renderPeekIssues();
+    if (typeof activeView === 'undefined' || activeView === 'board') renderBoard();
+    close();
+  };
+  box.querySelector('#_sgate-edit-cancel').onclick = close;
+  bg.onclick = e => { if (e.target === bg) close(); };
+  box.querySelector('#_sgate-edit-reset').onclick = () => persist([]);
+  box.querySelector('#_sgate-edit-save').onclick = () => persist(ta.value.split('\n').map(x => x.trim()).filter(Boolean));
 }
 
 function moveBoardItem(id, newStatus, newPos) {
@@ -30601,6 +30692,9 @@ async function _runDeltaSync() {
       boardStatuses = data.statuses;
       lastStatusesJSON = JSON.stringify(data.statuses);
       _idb.putStatuses(data.statuses);
+    }
+    if (data.session_gates && typeof data.session_gates === 'object') {
+      sessionGates = data.session_gates;
     }
     if (data.ts) _idb.set('last_sync_ts', data.ts);
     if (activeView === 'board') renderBoard();
@@ -36678,7 +36772,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.31';
+const CACHE = 'amux-v0.9.32';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -39252,6 +39346,32 @@ class CCHandler(BaseHTTPRequestHandler):
                 db.commit()
                 return self._json({"ok": True})
 
+            # GET/PATCH /api/board/session-gates — per-session gate overrides
+            # (layer between the global status default and the per-card override).
+            if path == "/api/board/session-gates":
+                if method == "GET":
+                    return self._json(_load_session_gates())
+                if method == "PATCH":
+                    body = self._read_body()
+                    sess = (body.get("session") or "").strip()
+                    st = (body.get("status") or "").strip()
+                    if not sess or not st:
+                        return self._json({"error": "missing session or status"}, 400)
+                    g = body.get("gate")
+                    items = [str(x).strip() for x in g if str(x).strip()] if isinstance(g, list) else []
+                    if items:
+                        db.execute(
+                            "INSERT INTO session_gates (session, status, gate) VALUES (?, ?, ?) "
+                            "ON CONFLICT(session, status) DO UPDATE SET gate = excluded.gate",
+                            (sess, st, json.dumps(items)),
+                        )
+                    else:
+                        # Empty -> revert this session to the global default for that status.
+                        db.execute("DELETE FROM session_gates WHERE session = ? AND status = ?", (sess, st))
+                    db.commit()
+                    _board_changed()
+                    return self._json({"ok": True})
+
             # GET /api/board/statuses
             if path == "/api/board/statuses":
                 if method == "GET":
@@ -39802,6 +39922,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 "ts": int(time.time()),
                 "issues": issues,
                 "statuses": statuses,
+                "session_gates": _load_session_gates(),
             })
 
         # GET /api/tmux-sessions (unregistered tmux sessions)
