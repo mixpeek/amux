@@ -13315,6 +13315,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     -webkit-tap-highlight-color: transparent;
   }
   .col-del-btn:hover, .col-del-btn:active { opacity: 1; color: var(--red); }
+  /* Gate-edit button — its own style (NOT the red delete style) so it reads as an
+     editable checklist, and a bigger tap target for mobile discoverability. */
+  .col-gate-btn { background: none; border: 1px solid transparent; border-radius: 5px;
+    color: var(--dim); cursor: pointer; font-size: 0.82rem; padding: 2px 5px; line-height: 1;
+    opacity: 0.75; transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+    -webkit-tap-highlight-color: transparent; }
+  .col-gate-btn:hover, .col-gate-btn:active { opacity: 1; color: var(--accent); border-color: var(--border); }
+  .col-gate-btn.has-gate { color: var(--accent); opacity: 0.95; }
+  @media (max-width: 600px) { .col-gate-btn { font-size: 0.9rem; padding: 5px 8px; } }
   .board-add-col-btn {
     flex-shrink: 0; align-self: flex-start; min-width: 120px; padding: 10px 14px;
     font-size: 0.8rem; font-weight: 500; border: 1px dashed rgba(255,255,255,0.1);
@@ -20978,7 +20987,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.30';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.31';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -28555,7 +28564,7 @@ function renderBoard() {
     html += '<span style="display:flex;align-items:center;gap:6px;">';
     html += '<span class="col-count" data-col="' + st + '">' + stCol.length + '</span>';
     const _hasGate = Array.isArray(stObj.gate) && stObj.gate.length;
-    html += '<button class="col-del-btn" onclick="event.stopPropagation();editStatusGate(\'' + st + '\')" title="Edit gate checklist"' + (_hasGate ? ' style="color:var(--accent);opacity:0.9;"' : '') + '>&#10003;</button>';
+    html += '<button class="col-gate-btn' + (_hasGate ? ' has-gate' : '') + '" onclick="event.stopPropagation();editStatusGate(\'' + st + '\')" title="Edit gate checklist for this column">&#9745;&#xFE0E; Gate</button>';
     if (!isBuiltIn) {
       html += '<button class="col-del-btn" onclick="event.stopPropagation();deleteBoardStatus(\'' + st + '\')" title="Delete column">&#x2715;</button>';
     }
@@ -36669,7 +36678,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.30';
+const CACHE = 'amux-v0.9.31';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
