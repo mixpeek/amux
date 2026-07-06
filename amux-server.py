@@ -4468,6 +4468,15 @@ CREATE TABLE IF NOT EXISTS skills (
     content    TEXT NOT NULL DEFAULT '',
     updated    INTEGER NOT NULL DEFAULT 0
 );
+-- Canned messages the user saves to trigger/send later (survives restarts,
+-- shared across every device that hits this server since it's server-side).
+CREATE TABLE IF NOT EXISTS saved_messages (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    label    TEXT NOT NULL DEFAULT '',
+    text     TEXT NOT NULL,
+    created  INTEGER NOT NULL DEFAULT 0,
+    pos      REAL NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS crm_contacts (
     id       TEXT PRIMARY KEY,
     name     TEXT NOT NULL,
@@ -16051,6 +16060,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           <div class="peek-more-menu" id="peek-more-menu">
             <button type="button" onclick="_peekMoreClose();document.getElementById('peek-file-input').click()">&#128206; Attach file</button>
             <button type="button" onclick="_peekMoreClose();openCmdHistoryModal()">&#x1F551; Message history</button>
+            <button type="button" onclick="_peekMoreClose();_openSavedMessages()">&#128190; Saved messages</button>
           </div>
         </div>
         <div class="send-split"><button class="btn primary send-split-main" onpointerdown="event.preventDefault();_tapTraceEv('pointerdown')" onpointerup="_tapTraceEv('pointerup');_btnFire(event, sendPeekCmd)" onpointercancel="_tapTraceEv('pointercancel')" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, sendPeekCmd)" onclick="_tapTraceEv('click');_btnFire(event, sendPeekCmd)">Send</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
@@ -21034,7 +21044,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.32';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.33';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -22063,6 +22073,75 @@ function _fsSend() {
   if (inp && ta) { inp.value = ta.value; if (typeof autoGrow === 'function') autoGrow(inp); }
   if (fs) fs.classList.remove('open');
   sendPeekCmd();
+}
+// ── Saved messages (canned messages, server-side so they survive restarts and
+// are the same on every device that hits this server) ──
+async function _openSavedMessages() {
+  const bg = document.createElement('div');
+  bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:flex-end;justify-content:center;';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:14px 14px 0 0;width:100%;max-width:560px;max-height:82vh;display:flex;flex-direction:column;box-shadow:0 -8px 40px rgba(0,0,0,0.45);padding-bottom:env(safe-area-inset-bottom);';
+  box.innerHTML =
+    '<div style="display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--border);">'
+    + '<span style="font-weight:600;flex:1;">&#128190; Saved messages</span>'
+    + '<button class="btn" id="_sm-close">Close</button></div>'
+    + '<div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:stretch;">'
+    + '<textarea id="_sm-new" rows="2" placeholder="Save a message to send later…" style="flex:1;resize:none;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:0.9rem;outline:none;"></textarea>'
+    + '<button class="btn primary" id="_sm-save">Save</button></div>'
+    + '<div style="padding:6px 16px 0;font-size:0.72rem;color:var(--dim);">Tap a message to load it into the input, ready to send.</div>'
+    + '<div id="_sm-list" style="flex:1;overflow-y:auto;padding:8px 10px 12px;"></div>';
+  bg.appendChild(box); document.body.appendChild(bg);
+  const close = () => bg.remove();
+  bg.onclick = e => { if (e.target === bg) close(); };
+  box.querySelector('#_sm-close').onclick = close;
+  const newTa = box.querySelector('#_sm-new');
+  const curInp = document.getElementById('peek-cmd-input');
+  if (curInp && curInp.value.trim()) newTa.value = curInp.value;   // "save this draft" flow
+  const listEl = box.querySelector('#_sm-list');
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  async function refresh() {
+    listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px;">Loading…</div>';
+    let items = [];
+    try { const r = await fetch(API + '/api/saved-messages'); items = await r.json(); } catch(e) {}
+    if (!Array.isArray(items) || !items.length) {
+      listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:18px 12px;text-align:center;">No saved messages yet.<br>Type above and tap Save.</div>';
+      return;
+    }
+    listEl.innerHTML = items.map(m => {
+      const preview = (m.label && m.label.trim()) ? m.label : m.text;
+      return '<div class="_sm-item" data-id="'+m.id+'" style="display:flex;gap:8px;align-items:flex-start;padding:10px;border-radius:8px;cursor:pointer;border:1px solid transparent;">'
+        + '<span style="flex:1;min-width:0;font-size:0.88rem;color:var(--text);white-space:pre-wrap;word-break:break-word;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;">'+esc(preview)+'</span>'
+        + '<button class="btn" data-act="del" title="Delete" style="flex-shrink:0;font-size:0.72rem;padding:3px 8px;color:var(--red);">&#x2715;</button>'
+        + '</div>';
+    }).join('');
+    listEl.querySelectorAll('._sm-item').forEach(el => {
+      const id = el.getAttribute('data-id');
+      const m = items.find(x => String(x.id) === id) || {};
+      el.querySelector('[data-act=del]').onclick = async (e) => {
+        e.stopPropagation();
+        await fetch(API + '/api/saved-messages/' + id, { method: 'DELETE' }).catch(()=>{});
+        refresh();
+      };
+      el.onclick = () => {
+        const inp = document.getElementById('peek-cmd-input');
+        if (inp) { inp.value = m.text || ''; if (typeof autoGrow === 'function') autoGrow(inp); }
+        close();
+        if (inp) setTimeout(() => inp.focus({ preventScroll: true }), 40);
+      };
+      el.onmouseenter = () => { el.style.background = 'var(--bg)'; };
+      el.onmouseleave = () => { el.style.background = ''; };
+    });
+  }
+  box.querySelector('#_sm-save').onclick = async () => {
+    const text = newTa.value.trim();
+    if (!text) { newTa.focus(); return; }
+    await fetch(API + '/api/saved-messages', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text })
+    }).catch(()=>{});
+    newTa.value = '';
+    refresh();
+  };
+  refresh();
 }
 // ── File attachments ──
 let peekFiles = []; // [{name, path, url, isImage, previewUrl}]
@@ -36780,7 +36859,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.32';
+const CACHE = 'amux-v0.9.33';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -38460,6 +38539,50 @@ class CCHandler(BaseHTTPRequestHandler):
                 db.execute("DELETE FROM cmd_history")
                 db.commit()
                 return self._json({"ok": True})
+
+        # ── Saved messages (canned messages to trigger/send later) ──
+        if path == "/api/saved-messages" or path.startswith("/api/saved-messages/"):
+            db = get_db()
+            if method == "GET" and path == "/api/saved-messages":
+                rows = db.execute(
+                    "SELECT id, label, text, created FROM saved_messages ORDER BY pos, id").fetchall()
+                return self._json([dict(r) for r in rows])
+            if method == "POST" and path == "/api/saved-messages":
+                body = self._read_body()
+                text = (body.get("text") or "").strip()
+                if not text:
+                    return self._json({"error": "text required"}, 400)
+                label = (body.get("label") or "").strip()
+                now = int(time.time())
+                cur = db.execute(
+                    "INSERT INTO saved_messages (label, text, created, pos) VALUES (?, ?, ?, ?)",
+                    (label, text, now, now))
+                db.commit()
+                return self._json({"ok": True, "id": cur.lastrowid, "label": label,
+                                   "text": text, "created": now}, 201)
+            sm_m = re.match(r"^/api/saved-messages/(\d+)$", path)
+            if sm_m:
+                sid = int(sm_m.group(1))
+                if method == "DELETE":
+                    db.execute("DELETE FROM saved_messages WHERE id=?", (sid,))
+                    db.commit()
+                    return self._json({"ok": True})
+                if method == "PATCH":
+                    body = self._read_body()
+                    sets, vals = [], []
+                    if "text" in body:
+                        t = (body.get("text") or "").strip()
+                        if not t:
+                            return self._json({"error": "text required"}, 400)
+                        sets.append("text=?"); vals.append(t)
+                    if "label" in body:
+                        sets.append("label=?"); vals.append((body.get("label") or "").strip())
+                    if sets:
+                        vals.append(sid)
+                        db.execute(f"UPDATE saved_messages SET {','.join(sets)} WHERE id=?", vals)
+                        db.commit()
+                    return self._json({"ok": True})
+            return self._json({"error": "not found"}, 404)
 
         # ── Branding / white-label API ──
         if path == "/api/branding":
