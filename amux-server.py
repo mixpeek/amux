@@ -15959,7 +15959,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <input type="file" id="peek-file-input" multiple
           style="position:absolute;width:0;height:0;opacity:0;overflow:hidden;pointer-events:none;" onchange="handlePeekFileInput(event)">
         <div class="peek-more-wrap">
-          <button class="peek-attach-btn" id="peek-more-btn" title="Attach / history" onclick="_togglePeekMore(event)">&#x22EF;</button>
+          <button class="peek-attach-btn" id="peek-more-btn" title="Attach / history" onclick="_togglePeekMore(event)">&#x22EE;</button>
           <div class="peek-more-menu" id="peek-more-menu">
             <button type="button" onclick="_peekMoreClose();document.getElementById('peek-file-input').click()">&#128206; Attach file</button>
             <button type="button" onclick="_peekMoreClose();openCmdHistoryModal()">&#x1F551; Message history</button>
@@ -20924,7 +20924,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.28';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.29';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -36502,7 +36502,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.28';
+const CACHE = 'amux-v0.9.29';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
