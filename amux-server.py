@@ -4470,8 +4470,10 @@ CREATE TABLE IF NOT EXISTS skills (
 );
 -- Canned messages the user saves to trigger/send later (survives restarts,
 -- shared across every device that hits this server since it's server-side).
+-- Scoped per session — each session carries its own saved messages.
 CREATE TABLE IF NOT EXISTS saved_messages (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    session  TEXT NOT NULL DEFAULT '',
     label    TEXT NOT NULL DEFAULT '',
     text     TEXT NOT NULL,
     created  INTEGER NOT NULL DEFAULT 0,
@@ -5030,6 +5032,7 @@ def _init_db():
         "ALTER TABLE issues ADD COLUMN pos REAL NOT NULL DEFAULT 0",
         "ALTER TABLE issues ADD COLUMN notified INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE schedules ADD COLUMN kind TEXT NOT NULL DEFAULT 'tmux'",
+        "ALTER TABLE saved_messages ADD COLUMN session TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE statuses ADD COLUMN gate TEXT",
         "ALTER TABLE issues ADD COLUMN gate TEXT",
     ]:
@@ -16454,7 +16457,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <div id="saved-messages-modal" class="overlay" style="z-index:210;" onclick="if(event.target===this)_closeSavedMessages()">
   <div style="display:flex;flex-direction:column;height:100%;max-width:680px;margin:0 auto;width:100%;">
     <div class="overlay-header">
-      <h2>&#128190; Saved messages</h2>
+      <h2 id="sm-title">&#128190; Saved messages</h2>
       <button class="btn" onclick="_closeSavedMessages()">&#x2715;</button>
     </div>
     <div style="display:flex;gap:8px;margin-bottom:8px;align-items:stretch;">
@@ -21061,7 +21064,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.34';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.35';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -22098,6 +22101,8 @@ function _openSavedMessages() {
   const m = document.getElementById('saved-messages-modal');
   if (!m) return;
   m.classList.add('active');
+  const title = document.getElementById('sm-title');
+  if (title) title.innerHTML = '&#128190; Saved messages' + (peekSession ? ' &middot; <span style="color:var(--dim);font-weight:400;">' + peekSession.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>' : '');
   const nt = document.getElementById('sm-new');
   const curInp = document.getElementById('peek-cmd-input');
   if (nt) nt.value = (curInp && curInp.value.trim()) ? curInp.value : '';   // "save this draft" flow
@@ -22112,9 +22117,9 @@ async function _smRefresh() {
   if (!listEl) return;
   listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px;">Loading…</div>';
   let items = [];
-  try { const r = await fetch(API + '/api/saved-messages'); items = await r.json(); } catch(e) {}
+  try { const r = await fetch(API + '/api/saved-messages?session=' + encodeURIComponent(peekSession || '')); items = await r.json(); } catch(e) {}
   if (!Array.isArray(items) || !items.length) {
-    listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px 12px;text-align:center;">No saved messages yet.<br>Type above and tap Save.</div>';
+    listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px 12px;text-align:center;">No saved messages for this session yet.<br>Type above and tap Save.</div>';
     return;
   }
   const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -22146,7 +22151,8 @@ async function _smSave() {
   const text = nt ? nt.value.trim() : '';
   if (!text) { if (nt) nt.focus(); return; }
   await fetch(API + '/api/saved-messages', {
-    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text })
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ text, session: peekSession || '' })
   }).catch(()=>{});
   if (nt) nt.value = '';
   _smRefresh();
@@ -36867,7 +36873,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.34';
+const CACHE = 'amux-v0.9.35';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -38552,8 +38558,16 @@ class CCHandler(BaseHTTPRequestHandler):
         if path == "/api/saved-messages" or path.startswith("/api/saved-messages/"):
             db = get_db()
             if method == "GET" and path == "/api/saved-messages":
-                rows = db.execute(
-                    "SELECT id, label, text, created FROM saved_messages ORDER BY pos, id").fetchall()
+                # Per-session: each session carries its own saved messages. A
+                # ?session= filter scopes to that session; omitting it returns all.
+                session = qs.get("session", [None])[0]
+                if session is not None:
+                    rows = db.execute(
+                        "SELECT id, session, label, text, created FROM saved_messages WHERE session=? ORDER BY pos, id",
+                        (session,)).fetchall()
+                else:
+                    rows = db.execute(
+                        "SELECT id, session, label, text, created FROM saved_messages ORDER BY pos, id").fetchall()
                 return self._json([dict(r) for r in rows])
             if method == "POST" and path == "/api/saved-messages":
                 body = self._read_body()
@@ -38561,13 +38575,14 @@ class CCHandler(BaseHTTPRequestHandler):
                 if not text:
                     return self._json({"error": "text required"}, 400)
                 label = (body.get("label") or "").strip()
+                session = (body.get("session") or "").strip()
                 now = int(time.time())
                 cur = db.execute(
-                    "INSERT INTO saved_messages (label, text, created, pos) VALUES (?, ?, ?, ?)",
-                    (label, text, now, now))
+                    "INSERT INTO saved_messages (session, label, text, created, pos) VALUES (?, ?, ?, ?, ?)",
+                    (session, label, text, now, now))
                 db.commit()
-                return self._json({"ok": True, "id": cur.lastrowid, "label": label,
-                                   "text": text, "created": now}, 201)
+                return self._json({"ok": True, "id": cur.lastrowid, "session": session,
+                                   "label": label, "text": text, "created": now}, 201)
             sm_m = re.match(r"^/api/saved-messages/(\d+)$", path)
             if sm_m:
                 sid = int(sm_m.group(1))
