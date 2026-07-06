@@ -20881,7 +20881,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.26';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.27';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21533,7 +21533,11 @@ function ansiToHtml(text) {
     .replace(/\x1b[()][A-Z0-9]/g,'')                          // charset selection
     .replace(/\x1b[\x20-\x2f]*[\x40-\x5a\x5c-\x7e]/g,'')     // other C1 (excl [ = 0x5b)
     .replace(/\x1b\[[0-9;?]*[A-Za-ln-z]/g,'')                 // CSI non-SGR (not m)
-    .replace(/^─{10,}\n?/gm,'');
+    .replace(/^─{10,}\n?/gm,'')                                // drop bare full-line rules
+    // Cap long box-drawing rules (Claude's 220-col input-box borders are ANSI-colored,
+    // so they dodge the rule above) to a compact divider — otherwise each one wraps into
+    // ~6 empty lines on the narrow mobile peek and eats the screen.
+    .replace(/[─━═]{24,}/g, s => s[0].repeat(24));
   let bold=false,dim=false,italic=false,uline=false,fg=null,bg=null,spanOpen=false;
   const closeSpan=()=>{ if(!spanOpen)return ''; spanOpen=false; return '</span>'; };
   const openSpan=()=>{
@@ -36406,7 +36410,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.26';
+const CACHE = 'amux-v0.9.27';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
