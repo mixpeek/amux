@@ -1203,9 +1203,18 @@ def proxy(handler, port, path, qs, user_email="", user_id=None):
             pass
     except urllib.error.URLError as e:
         try:
-            handler.send_response(502)
-            handler.end_headers()
-            handler.wfile.write(f"Bad Gateway: {e.reason}".encode())
+            accept = handler.headers.get("Accept", "")
+            if "text/html" in accept or not path.startswith("/api/"):
+                handler.send_response(200)
+                handler.send_header("Content-Type", "text/html; charset=utf-8")
+                body = _STARTING_HTML.encode()
+                handler.send_header("Content-Length", str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+            else:
+                handler.send_response(502)
+                handler.end_headers()
+                handler.wfile.write(f"Bad Gateway: {e.reason}".encode())
         except (BrokenPipeError, ConnectionResetError):
             pass
 
@@ -1242,18 +1251,30 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _serve_login(self, post_login_redirect="/"):
-        from urllib.parse import urlparse, urlencode
+        from urllib.parse import urlparse, urlencode, quote
         req_path = urlparse(self.path).path
+        # Sanitize redirect: must be a relative path, no protocol/external URLs
+        if post_login_redirect:
+            parsed_redir = urlparse(post_login_redirect)
+            if parsed_redir.scheme or parsed_redir.netloc:
+                post_login_redirect = "/"
+            else:
+                post_login_redirect = parsed_redir.path + ("?" + parsed_redir.query if parsed_redir.query else "")
         # Clerk path routing: sign-in/sign-up render on their respective paths.
         # Redirect anything else so Clerk mounts properly.
         if not req_path.startswith("/sign-in") and not req_path.startswith("/sign-up"):
             redir = "/sign-in"
             if post_login_redirect and post_login_redirect != "/":
-                redir += "?redirect=" + post_login_redirect
+                redir += "?redirect=" + quote(post_login_redirect, safe="")
             return self._redirect(redir)
+        # Escape for JS string context to prevent XSS
+        safe_redirect = (post_login_redirect
+            .replace("\\", "\\\\").replace("'", "\\'")
+            .replace('"', '\\"').replace("<", "\\x3c")
+            .replace(">", "\\x3e").replace("\n", "").replace("\r", ""))
         html = (_LOGIN_HTML
                 .replace("__CLERK_PK__", CLERK_PUBLISHABLE_KEY)
-                .replace("__POST_LOGIN_REDIRECT__", post_login_redirect))
+                .replace("__POST_LOGIN_REDIRECT__", safe_redirect))
         self._html(html)
 
     def _serve_invite_accept(self, token, owner_email):
