@@ -16450,6 +16450,23 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 
+<!-- Saved messages modal (same overlay style as message history) -->
+<div id="saved-messages-modal" class="overlay" style="z-index:210;" onclick="if(event.target===this)_closeSavedMessages()">
+  <div style="display:flex;flex-direction:column;height:100%;max-width:680px;margin:0 auto;width:100%;">
+    <div class="overlay-header">
+      <h2>&#128190; Saved messages</h2>
+      <button class="btn" onclick="_closeSavedMessages()">&#x2715;</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:stretch;">
+      <textarea id="sm-new" rows="2" placeholder="Save a message to send later&#8230;"
+        style="flex:1;min-width:0;box-sizing:border-box;resize:none;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.9rem;outline:none;font-family:inherit;"></textarea>
+      <button class="btn primary" onclick="_smSave()" style="flex-shrink:0;">Save</button>
+    </div>
+    <div style="font-size:0.72rem;color:var(--dim);margin-bottom:10px;">Tap a saved message to load it into the input, ready to send.</div>
+    <div id="sm-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;"></div>
+  </div>
+</div>
+
 <!-- Channel drawer (session-to-session DM) -->
 <div id="channel-drawer" class="channel-drawer" onmousedown="this.dataset.bdMousedown=event.target===this?'1':''" onclick="if(event.target===this&&this.dataset.bdMousedown==='1'&&!this.dataset.justOpened)channelClose();this.dataset.bdMousedown=''">
   <div class="channel-panel" role="dialog" aria-label="Session channel">
@@ -21044,7 +21061,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.33';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.34';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -22075,73 +22092,64 @@ function _fsSend() {
   sendPeekCmd();
 }
 // ── Saved messages (canned messages, server-side so they survive restarts and
-// are the same on every device that hits this server) ──
-async function _openSavedMessages() {
-  const bg = document.createElement('div');
-  bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:flex-end;justify-content:center;';
-  const box = document.createElement('div');
-  box.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:14px 14px 0 0;width:100%;max-width:560px;max-height:82vh;display:flex;flex-direction:column;box-shadow:0 -8px 40px rgba(0,0,0,0.45);padding-bottom:env(safe-area-inset-bottom);';
-  box.innerHTML =
-    '<div style="display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--border);">'
-    + '<span style="font-weight:600;flex:1;">&#128190; Saved messages</span>'
-    + '<button class="btn" id="_sm-close">Close</button></div>'
-    + '<div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:stretch;">'
-    + '<textarea id="_sm-new" rows="2" placeholder="Save a message to send later…" style="flex:1;resize:none;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:0.9rem;outline:none;"></textarea>'
-    + '<button class="btn primary" id="_sm-save">Save</button></div>'
-    + '<div style="padding:6px 16px 0;font-size:0.72rem;color:var(--dim);">Tap a message to load it into the input, ready to send.</div>'
-    + '<div id="_sm-list" style="flex:1;overflow-y:auto;padding:8px 10px 12px;"></div>';
-  bg.appendChild(box); document.body.appendChild(bg);
-  const close = () => bg.remove();
-  bg.onclick = e => { if (e.target === bg) close(); };
-  box.querySelector('#_sm-close').onclick = close;
-  const newTa = box.querySelector('#_sm-new');
+// are the same on every device that hits this server) — same overlay modal as
+// message history. ──
+function _openSavedMessages() {
+  const m = document.getElementById('saved-messages-modal');
+  if (!m) return;
+  m.classList.add('active');
+  const nt = document.getElementById('sm-new');
   const curInp = document.getElementById('peek-cmd-input');
-  if (curInp && curInp.value.trim()) newTa.value = curInp.value;   // "save this draft" flow
-  const listEl = box.querySelector('#_sm-list');
-  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  async function refresh() {
-    listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px;">Loading…</div>';
-    let items = [];
-    try { const r = await fetch(API + '/api/saved-messages'); items = await r.json(); } catch(e) {}
-    if (!Array.isArray(items) || !items.length) {
-      listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:18px 12px;text-align:center;">No saved messages yet.<br>Type above and tap Save.</div>';
-      return;
-    }
-    listEl.innerHTML = items.map(m => {
-      const preview = (m.label && m.label.trim()) ? m.label : m.text;
-      return '<div class="_sm-item" data-id="'+m.id+'" style="display:flex;gap:8px;align-items:flex-start;padding:10px;border-radius:8px;cursor:pointer;border:1px solid transparent;">'
-        + '<span style="flex:1;min-width:0;font-size:0.88rem;color:var(--text);white-space:pre-wrap;word-break:break-word;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;">'+esc(preview)+'</span>'
-        + '<button class="btn" data-act="del" title="Delete" style="flex-shrink:0;font-size:0.72rem;padding:3px 8px;color:var(--red);">&#x2715;</button>'
-        + '</div>';
-    }).join('');
-    listEl.querySelectorAll('._sm-item').forEach(el => {
-      const id = el.getAttribute('data-id');
-      const m = items.find(x => String(x.id) === id) || {};
-      el.querySelector('[data-act=del]').onclick = async (e) => {
-        e.stopPropagation();
-        await fetch(API + '/api/saved-messages/' + id, { method: 'DELETE' }).catch(()=>{});
-        refresh();
-      };
-      el.onclick = () => {
-        const inp = document.getElementById('peek-cmd-input');
-        if (inp) { inp.value = m.text || ''; if (typeof autoGrow === 'function') autoGrow(inp); }
-        close();
-        if (inp) setTimeout(() => inp.focus({ preventScroll: true }), 40);
-      };
-      el.onmouseenter = () => { el.style.background = 'var(--bg)'; };
-      el.onmouseleave = () => { el.style.background = ''; };
-    });
+  if (nt) nt.value = (curInp && curInp.value.trim()) ? curInp.value : '';   // "save this draft" flow
+  _smRefresh();
+}
+function _closeSavedMessages() {
+  const m = document.getElementById('saved-messages-modal');
+  if (m) m.classList.remove('active');
+}
+async function _smRefresh() {
+  const listEl = document.getElementById('sm-list');
+  if (!listEl) return;
+  listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px;">Loading…</div>';
+  let items = [];
+  try { const r = await fetch(API + '/api/saved-messages'); items = await r.json(); } catch(e) {}
+  if (!Array.isArray(items) || !items.length) {
+    listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px 12px;text-align:center;">No saved messages yet.<br>Type above and tap Save.</div>';
+    return;
   }
-  box.querySelector('#_sm-save').onclick = async () => {
-    const text = newTa.value.trim();
-    if (!text) { newTa.focus(); return; }
-    await fetch(API + '/api/saved-messages', {
-      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text })
-    }).catch(()=>{});
-    newTa.value = '';
-    refresh();
-  };
-  refresh();
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  listEl.innerHTML = items.map(it => {
+    const preview = (it.label && it.label.trim()) ? it.label : it.text;
+    return '<div class="sm-item" data-id="'+it.id+'" style="display:flex;gap:8px;align-items:flex-start;padding:10px 12px;border-radius:8px;cursor:pointer;border:1px solid var(--border);background:var(--card);">'
+      + '<span style="flex:1;min-width:0;font-size:0.88rem;color:var(--text);white-space:pre-wrap;word-break:break-word;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;">'+esc(preview)+'</span>'
+      + '<button class="btn" data-act="del" title="Delete" style="flex-shrink:0;font-size:0.72rem;padding:3px 8px;color:var(--red);">&#x2715;</button>'
+      + '</div>';
+  }).join('');
+  listEl.querySelectorAll('.sm-item').forEach(el => {
+    const id = el.getAttribute('data-id');
+    const it = items.find(x => String(x.id) === id) || {};
+    el.querySelector('[data-act=del]').onclick = async (e) => {
+      e.stopPropagation();
+      await fetch(API + '/api/saved-messages/' + id, { method: 'DELETE' }).catch(()=>{});
+      _smRefresh();
+    };
+    el.onclick = () => {
+      const inp = document.getElementById('peek-cmd-input');
+      if (inp) { inp.value = it.text || ''; if (typeof autoGrow === 'function') autoGrow(inp); }
+      _closeSavedMessages();
+      if (inp) setTimeout(() => inp.focus({ preventScroll: true }), 40);
+    };
+  });
+}
+async function _smSave() {
+  const nt = document.getElementById('sm-new');
+  const text = nt ? nt.value.trim() : '';
+  if (!text) { if (nt) nt.focus(); return; }
+  await fetch(API + '/api/saved-messages', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text })
+  }).catch(()=>{});
+  if (nt) nt.value = '';
+  _smRefresh();
 }
 // ── File attachments ──
 let peekFiles = []; // [{name, path, url, isImage, previewUrl}]
@@ -36859,7 +36867,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.33';
+const CACHE = 'amux-v0.9.34';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
