@@ -379,6 +379,15 @@
   @keyframes paApproved{0%,58%{opacity:0} 64%,95%{opacity:1} 100%{opacity:0}}
   @keyframes paDone{0%,68%{opacity:0;transform:translateY(6px)} 74%,95%{opacity:1;transform:none} 100%{opacity:0}}
   @media (prefers-reduced-motion: reduce){ .pa-anim-card,.pa-anim-prep,.pa-anim-fill,.pa-anim-approve,.pa-anim-approved,.pa-anim-done{animation:none} .pa-anim-approve{opacity:0} .pa-anim-approved{opacity:1} .pa-fill{width:100%} }
+
+  /* ── COMMAND EXAMPLES ── */
+  .cmd-grid{display:flex;flex-direction:column;gap:14px;margin-top:32px;max-width:740px;margin-left:auto;margin-right:auto}
+  .cmd-card{border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);border:1px solid var(--line)}
+  .cmd-you{background:var(--dark-2);padding:15px 20px;font-family:var(--mono);font-size:14px;color:#d8cfba;line-height:1.55;display:grid;grid-template-columns:auto 1fr;gap:0 12px;align-items:baseline}
+  .cmd-you .who{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);padding-top:2px;white-space:nowrap}
+  .cmd-result{background:#fff;padding:15px 20px;font-size:15px;color:var(--ink-2);line-height:1.55;display:grid;grid-template-columns:auto 1fr;gap:0 12px;align-items:baseline}
+  .cmd-result .arr{font-family:var(--mono);color:var(--ok);font-weight:700;font-size:15px;white-space:nowrap}
+  @media(max-width:600px){.cmd-you,.cmd-result{font-size:13px;padding:12px 15px}.cmd-grid{margin-left:0;margin-right:0}}
 </style>
 </head>
 <body>
@@ -389,7 +398,7 @@
     <nav>
       <a class="txt" href="#how">How it works</a>
       <a class="txt" href="#pricing">Pricing</a>
-      <a class="btn btn-primary js-schedule" href="#schedule">Schedule a meeting</a>
+      <a class="btn btn-primary js-schedule" href="#schedule">Apply →</a>
     </nav>
   </div>
 </header>
@@ -399,20 +408,20 @@
   <div class="wrap">
     <div class="hero-grid">
       <div class="hero-text">
-        <span class="eyebrow">amux Concierge · done-for-you automation</span>
-        <h1>Run, build, and grow your business, <span class="grad">all from your phone.</span></h1>
+        <span class="eyebrow">amux Concierge · accepted by application only</span>
+        <h1>The most productive operators you know got there somehow. <span class="grad">Here's how.</span></h1>
         <p class="lead">
-          We build your first workflow with you, teach your team to build more, and wire it into
-          the tools you already use. Done for you to start, yours to grow.
+          Every software tool you buy requires learning — and then constrains you to what it was built for. amux works the other way: we teach it your business, your systems, your exact workflows. After that, you describe what you want in plain English and it handles the rest from your phone. We work with a small number of business owners who are genuinely ready to lead with AI — not buy software, but build capability.
         </p>
         <div class="cta-row">
-          <a class="btn btn-primary btn-lg js-schedule" href="#schedule">Schedule a meeting →</a>
-          <a class="btn btn-ghost btn-lg" href="#adventure">Show me my industry</a>
+          <a class="btn btn-primary btn-lg js-schedule" href="#schedule">Apply for a meeting →</a>
+          <a class="btn btn-ghost btn-lg" href="#plain-english">See it in action</a>
         </div>
         <div class="trust">
           <span><i class="dot"></i> Runs on your own machine</span>
           <span><i class="dot"></i> Your logins, your data</span>
           <span><i class="dot"></i> HIPAA-compliant &amp; BAA-backed</span>
+          <span><i class="dot" style="background:var(--accent)"></i> Limited availability</span>
         </div>
       </div>
       <div class="hero-art">
@@ -496,6 +505,32 @@
         <p>When a new AI capability arrives, it becomes a feature you can use. We fold it in, and your team can build with it too. <strong>Set up once, get better forever.</strong></p>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- PLAIN ENGLISH / HOW YOU INTERACT -->
+<section id="plain-english">
+  <div class="wrap">
+    <span class="eyebrow">How you interact with it</span>
+    <h2 class="sec" style="max-width:none">You describe it. It handles it.</h2>
+    <p class="sec-sub">No configuration screens. No templates. No re-learning when your workflow changes. You tell amux what you need in plain English — it connects to your systems and makes it happen. The onboarding is where we teach it your business; after that, you're in command.</p>
+
+    <div class="cmd-grid">
+      <div class="cmd-card">
+        <div class="cmd-you"><span class="who">You</span><span>Automate my accounts receivable — connect to QuickBooks and the billing portal, flag anything 30+ days overdue, and draft follow-up emails for my review</span></div>
+        <div class="cmd-result"><span class="arr">✓</span><span>Running every morning. Drafted 43 follow-ups last month. $18,400 collected without a single phone call from your front desk.</span></div>
+      </div>
+      <div class="cmd-card">
+        <div class="cmd-you"><span class="who">You</span><span>Check today's denied claims — tell me which ones to appeal, which to write off, and why</span></div>
+        <div class="cmd-result"><span class="arr">✓</span><span>3 denials found. 2 are worth appealing — payer error on D4341 and missing narrative on D7210. 1 to write off. Draft appeals ready for your sign-off.</span></div>
+      </div>
+      <div class="cmd-card">
+        <div class="cmd-you"><span class="who">You</span><span>Send me a Monday morning summary — last week's revenue, new patients, and any missed appointments worth following up on</span></div>
+        <div class="cmd-result"><span class="arr">✓</span><span>In your inbox every Monday at 7am. Last week: $47,200 collected, 14 new patients, 6 no-shows flagged for outreach.</span></div>
+      </div>
+    </div>
+
+    <p style="text-align:center;margin-top:26px;font-size:15px;color:var(--mute);max-width:62ch;margin-left:auto;margin-right:auto">The onboarding is where we teach amux your systems — your EHR, your billing portal, your practice management software. After that, you just tell it what you want.</p>
   </div>
 </section>
 
