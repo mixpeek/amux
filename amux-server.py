@@ -14631,7 +14631,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   No Anthropic API key set — Claude sessions won't work. <a href="#" onclick="event.preventDefault();document.getElementById('no-apikey-banner').style.display='none';toggleSettings()" style="color:#fde68a;font-weight:600;text-decoration:underline;">Add key in Settings</a>
 </div>
 <!-- API key setup modal — shown on cloud when no user key is configured (dismissible) -->
-<div id="apikey-setup-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:none;align-items:center;justify-content:center;">
+<div id="apikey-setup-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;align-items:center;justify-content:center;">
   <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:32px;max-width:440px;width:90%;box-shadow:0 24px 64px rgba(0,0,0,0.6);position:relative;color:#e8e8e8;">
     <button onclick="document.getElementById('apikey-setup-modal').style.display='none'" style="position:absolute;top:12px;right:14px;background:none;border:none;color:#ccc;font-size:1.2rem;cursor:pointer;padding:4px;" title="Close">&#x2715;</button>
     <div style="font-size:1.4rem;font-weight:700;margin-bottom:8px;color:#fff;">Get started</div>
@@ -16734,7 +16734,7 @@ async function _initIdentity() {
       if (d.is_cloud) {
         // Blocking modal for cloud users — must set key before using the app
         const m = document.getElementById('apikey-setup-modal');
-        if (m) { m.style.display = 'flex'; m.style.removeProperty('display'); m.style.display = 'flex'; }
+        if (m) m.style.display = 'flex';
         setTimeout(() => document.getElementById('apikey-setup-input')?.focus(), 100);
       } else {
         const banner = document.getElementById('no-apikey-banner');
@@ -16849,7 +16849,7 @@ async function apikeySetupSave() {
     if (m) m.style.display = 'none';
   } catch(e) {
     if (err) err.textContent = 'Failed to save — try again';
-    if (btn) btn.textContent = 'Save & continue';
+    if (btn) btn.textContent = 'Save API key';
   }
 }
 

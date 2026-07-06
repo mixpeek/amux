@@ -39,6 +39,52 @@ COOKIE_MAX_AGE = 86400 * 7  # 7 days
 ADMIN_EMAILS    = set(e.strip() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip())
 GATEWAY_LOG     = "/var/log/amux-gateway.log"
 
+# ── Starting HTML (shown while container boots) ──────────────────────────────
+_STARTING_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Starting — amux cloud</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0a; color: #e5e5e5;
+      min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 24px; }
+    .logo { font-size: 1.4rem; font-weight: 700; color: #fff; }
+    .logo span { color: #555; font-weight: 400; }
+    .spinner { width: 32px; height: 32px; border: 3px solid #333; border-top-color: #888;
+      border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .msg { color: #888; font-size: 0.92rem; }
+    .sub { color: #555; font-size: 0.78rem; }
+  </style>
+</head>
+<body>
+  <div class="logo">amux <span>cloud</span></div>
+  <div class="spinner"></div>
+  <div class="msg">Starting your workspace…</div>
+  <div class="sub">This usually takes 10–20 seconds</div>
+  <script>
+    let checks = 0;
+    (function poll() {
+      checks++;
+      if (checks > 60) {
+        document.querySelector('.msg').textContent = 'Taking longer than expected…';
+        document.querySelector('.sub').innerHTML = '<a href="/" style="color:#a78bfa;">Retry</a>';
+        return;
+      }
+      setTimeout(() => {
+        fetch('/api/sessions', { credentials: 'same-origin' })
+          .then(r => { if (r.ok) location.reload(); else poll(); })
+          .catch(() => poll());
+      }, 3000);
+    })();
+  </script>
+</body>
+</html>"""
+
 # ── Login HTML ─────────────────────────────────────────────────────────────────
 _LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -265,8 +311,33 @@ _LOGIN_HTML = """<!DOCTYPE html>
       }
     })();
 
+    const _clerkAppearance = {
+      variables: {
+        colorBackground: '#1a1a2e',
+        colorText: '#e5e5e5',
+        colorTextSecondary: '#aaa',
+        colorPrimary: '#7c6fcd',
+        colorInputBackground: '#111',
+        colorInputText: '#e5e5e5',
+        borderRadius: '8px',
+      },
+    };
+
     function mountSignIn() {
-      window.Clerk.mountSignIn(document.getElementById('clerk-root'), { routing: 'path', path: '/sign-in' });
+      const isSignUp = location.pathname.startsWith('/sign-up');
+      if (isSignUp) {
+        window.Clerk.mountSignUp(document.getElementById('clerk-root'), {
+          routing: 'path', path: '/sign-up',
+          signInUrl: '/sign-in',
+          appearance: _clerkAppearance,
+        });
+      } else {
+        window.Clerk.mountSignIn(document.getElementById('clerk-root'), {
+          routing: 'path', path: '/sign-in',
+          signUpUrl: '/sign-up',
+          appearance: _clerkAppearance,
+        });
+      }
       window.Clerk.addListener(({ user }) => {
         if (user && !exchanging) exchangeAndRedirect();
       });
@@ -819,6 +890,25 @@ def _resolve_api_key(db, user_id):
         LIMIT 1
     """, (user_id,)).fetchone()
     return row["api_key"] if row else None
+
+_starting_containers = set()
+_starting_lock = threading.Lock()
+
+def _ensure_container_starting(user_id, port):
+    """Kick off container startup in a background thread (idempotent)."""
+    with _starting_lock:
+        if user_id in _starting_containers:
+            return
+        _starting_containers.add(user_id)
+    def _run():
+        try:
+            start_container(user_id, port)
+        except Exception as e:
+            print(f"[docker] background start failed for {user_id}: {e}", flush=True)
+        finally:
+            with _starting_lock:
+                _starting_containers.discard(user_id)
+    threading.Thread(target=_run, daemon=True).start()
 
 def start_container(user_id, port):
     _write_compose(user_id, port)
@@ -1377,7 +1467,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/cloud-logout" and self.command in ("GET", "POST"):
             sec = self._secure_cookie_flags()
             self.send_response(302)
-            self.send_header("Location", "/?logout")
+            self.send_header("Location", "/sign-in?logout")
             self.send_header("Set-Cookie",
                 f"amux_session=; HttpOnly{sec}; SameSite=Lax; Max-Age=0; Path=/")
             self.send_header("Content-Length", "0")
@@ -2155,10 +2245,11 @@ class Handler(BaseHTTPRequestHandler):
 
         # Wake target container if needed
         if not container_healthy(target_org_id):
-            try:
-                start_container(target_org_id, target_port)
-            except Exception as e:
-                return self._json({"error": f"failed to start instance: {e}"}, 503)
+            _ensure_container_starting(target_org_id, target_port)
+            accept = self.headers.get("Accept", "")
+            if "text/html" in accept or not path.startswith("/api/"):
+                return self._html(_STARTING_HTML)
+            return self._json({"error": "starting", "retry_after": 3}, 503)
 
         proxy(self, target_port, path, qs, user_email=user_email, user_id=target_org_id)
 
