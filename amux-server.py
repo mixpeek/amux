@@ -665,6 +665,11 @@ def _bu_open(url: str, session: str = "amux", explicit_profile: str = "",
         res = dict(res)
         res["profile"] = profile
         res["auto_profile"] = auto
+        # Re-install the console/network capture shim on every navigation (page
+        # globals reset on load) so /api/browser/inspect can troubleshoot the page.
+        if not res.get("error"):
+            try: _bu_inject_capture(session)
+            except Exception: pass
     return res
 
 def _bu_parse_elements(raw_text: str, limit: int = 120) -> dict:
@@ -729,6 +734,116 @@ def _bu_screenshot(session: str = "amux", path: str = "", retries: int = 3) -> d
             continue
         return result
     return result
+
+# ── Browser troubleshooting: console / network / error capture ────────────────
+# browser-use is subprocess-per-action, so we can't hold a live CDP listener.
+# Instead we inject an idempotent capture shim into the page (re-injected on every
+# navigation by _bu_open) that mirrors console.*, fetch, and XHR into page-global
+# ring buffers, plus window error/unhandledrejection. Network is additionally
+# back-filled from the Resource Timing API (performance.getEntriesByType), which
+# retroactively lists EVERY request — even ones that fired before injection.
+_BROWSER_CAPTURE_JS = r"""
+(function(){
+  if (window.__amux && window.__amux.__installed) return 'already';
+  var CAP = 500;
+  var S = window.__amux = window.__amux || {};
+  S.console = S.console || []; S.net = S.net || []; S.errors = S.errors || [];
+  S.__installed = true;
+  var now = function(){ return Date.now(); };
+  function push(a, x){ a.push(x); if (a.length > CAP) a.shift(); }
+  function fmt(a){
+    try {
+      if (a instanceof Error) return a.stack || (a.name + ': ' + a.message);
+      if (typeof a === 'object' && a !== null) { try { return JSON.stringify(a); } catch(e){ return String(a); } }
+      return String(a);
+    } catch(e){ return '[unserializable]'; }
+  }
+  ['log','info','warn','error','debug'].forEach(function(level){
+    var orig = console[level]; if (!orig) return;
+    console[level] = function(){
+      try { push(S.console, { level: level, text: [].map.call(arguments, fmt).join(' '), ts: now() }); } catch(e){}
+      return orig.apply(console, arguments);
+    };
+  });
+  window.addEventListener('error', function(e){
+    push(S.errors, { text: (e.message || 'error') + (e.filename ? (' @ ' + e.filename + ':' + e.lineno + ':' + e.colno) : ''),
+                     stack: (e.error && e.error.stack) || '', ts: now() });
+  });
+  window.addEventListener('unhandledrejection', function(e){
+    var r = e.reason; push(S.errors, { text: 'unhandledrejection: ' + ((r && r.message) || fmt(r)), stack: (r && r.stack) || '', ts: now() });
+  });
+  if (window.fetch) {
+    var of = window.fetch;
+    window.fetch = function(input, init){
+      var url = (typeof input === 'string') ? input : (input && input.url) || '';
+      var method = (init && init.method) || (input && input.method) || 'GET';
+      var t0 = now();
+      return of.apply(this, arguments).then(function(res){
+        push(S.net, { type:'fetch', method:method, url:url, status:res.status, ok:res.ok, ms: now()-t0, ts: t0 }); return res;
+      }, function(err){
+        push(S.net, { type:'fetch', method:method, url:url, status:0, ok:false, error:String(err), ms: now()-t0, ts: t0 }); throw err;
+      });
+    };
+  }
+  var OX = window.XMLHttpRequest;
+  if (OX) {
+    var NX = function(){
+      var xhr = new OX();
+      var rec = { type:'xhr', method:'GET', url:'', status:0, ok:false, ms:0, ts: now() };
+      var open = xhr.open;
+      xhr.open = function(m, u){ rec.method = m; rec.url = u; return open.apply(xhr, arguments); };
+      var send = xhr.send;
+      xhr.send = function(){ var t0 = now();
+        xhr.addEventListener('loadend', function(){ rec.status = xhr.status; rec.ok = (xhr.status >= 200 && xhr.status < 400); rec.ms = now()-t0; push(S.net, rec); });
+        return send.apply(xhr, arguments); };
+      return xhr;
+    };
+    NX.prototype = OX.prototype; window.XMLHttpRequest = NX;
+  }
+  return 'installed';
+})()
+"""
+
+_BROWSER_INSPECT_JS = r"""
+(function(){
+  var S = window.__amux || {};
+  var L = __LIMIT__;
+  function tail(a){ a = a || []; return a.slice(Math.max(0, a.length - L)); }
+  var res = [];
+  try {
+    res = performance.getEntriesByType('resource').slice(-L).map(function(e){
+      return { url:e.name, type:e.initiatorType, ms:Math.round(e.duration), size:e.transferSize||0, start:Math.round(e.startTime) };
+    });
+  } catch(e){}
+  var out = { url: location.href, title: document.title, installed: !!S.__installed,
+    console: tail(S.console), network: tail(S.net), errors: tail(S.errors), resources: res,
+    counts: { console:(S.console||[]).length, network:(S.net||[]).length, errors:(S.errors||[]).length, resources:res.length } };
+  if (__CLEAR__) { if (S.console) S.console.length = 0; if (S.net) S.net.length = 0; if (S.errors) S.errors.length = 0; }
+  return out;
+})()
+"""
+
+def _bu_inject_capture(session: str = "amux") -> dict:
+    """Inject the console/network/error capture shim (idempotent per page)."""
+    return _bu_call(["eval", _BROWSER_CAPTURE_JS], session=session, timeout_s=15)
+
+def _bu_inspect(session: str = "amux", clear: bool = False, limit: int = 200) -> dict:
+    """Read captured console/network/errors (+ Resource Timing) from the page."""
+    js = (_BROWSER_INSPECT_JS
+          .replace("__LIMIT__", str(int(limit)))
+          .replace("__CLEAR__", "true" if clear else "false"))
+    res = _bu_call(["eval", js], session=session, timeout_s=15)
+    if not isinstance(res, dict) or res.get("error"):
+        return res if isinstance(res, dict) else {"error": "inspect failed"}
+    data = (res.get("data") or {}).get("result")
+    if isinstance(data, str):
+        try: data = json.loads(data)
+        except Exception: pass
+    if isinstance(data, dict):
+        # If the shim isn't installed (e.g. page navigated), still return Resource Timing.
+        return data
+    return {"error": "no capture data", "raw": data}
+
 
 def _resolve_claude_bin() -> str:
     """Locate the claude CLI binary (PATH first, then common install locations)."""
@@ -42944,6 +43059,32 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 except Exception:
                     pass
                 return self._json(res)
+
+            # GET /api/browser/inspect?session=amux&clear=0&limit=200&type=all
+            # Full browser troubleshooting surface: captured console logs, network
+            # (fetch/XHR with status codes), JS errors, and the Resource Timing
+            # waterfall. `clear=1` empties the buffers after reading; `type` filters
+            # to console|network|errors|resources.
+            if method == "GET" and path == "/api/browser/inspect":
+                def _q(k, d=""):
+                    v = qs.get(k, [d])
+                    return (v[0] if isinstance(v, list) else v) or d
+                session = _q("session", "amux")
+                clear = _q("clear", "0") in ("1", "true", "yes")
+                try: limit = max(1, min(500, int(_q("limit", "200"))))
+                except Exception: limit = 200
+                data = _bu_inspect(session=session, clear=clear, limit=limit)
+                tfilter = _q("type", "all")
+                if isinstance(data, dict) and tfilter in ("console", "network", "errors", "resources"):
+                    data = {"url": data.get("url"), "installed": data.get("installed"),
+                            tfilter: data.get(tfilter, []), "counts": data.get("counts")}
+                return self._json(data)
+
+            # POST /api/browser/inspect/clear?session=amux — reset capture buffers
+            if method == "POST" and path == "/api/browser/inspect/clear":
+                body = self._read_body()
+                session = body.get("session", "amux")
+                return self._json(_bu_inspect(session=session, clear=True, limit=1))
 
             # POST /api/browser/action  {"action":"click|type|key|scroll|eval","session":"...","..."}
             if method == "POST" and path == "/api/browser/action":
