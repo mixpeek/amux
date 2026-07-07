@@ -21485,7 +21485,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.39';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.40';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -22366,8 +22366,11 @@ async function refreshPeek() {
     const data = await r.json();
     if (peekSession !== name) return;
     const output = data.output || '(no output)';
-    // Skip re-render when output is identical — saves ansiToHtml work on every poll tick
-    if (output === _lastPeekRaw && lastPeekHTML && !peekSearchQuery.trim()) {
+    // Skip re-render when output is identical — saves ansiToHtml work on every poll tick.
+    // This also applies with an active search: the highlights are already in the DOM,
+    // so re-running applyPeekSearch would needlessly scroll the view back to the current
+    // match every tick (the "force-scroll back to result" bug on idle sessions).
+    if (output === _lastPeekRaw && lastPeekHTML) {
       if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
       return;
     }
@@ -22381,8 +22384,16 @@ async function refreshPeek() {
     const hasSearch = peekSearchQuery.trim().length > 0;
     // When user has scrolled up, skip DOM update to avoid fidgeting the view.
     // Buffer in lastPeekHTML and flush when they resume.
-    if (!_peekScrollLocked || hasSearch) {
-      applyPeekSearch(hasSearch);
+    if (hasSearch) {
+      // Output changed while a search is active: re-highlight matches in the new
+      // DOM but DON'T scroll to the current match — preserve wherever the user
+      // scrolled. Auto-scroll only happens on explicit search actions (typing /
+      // next / prev). Restoring scrollTop keeps position across the innerHTML swap.
+      const savedTop = body.scrollTop;
+      applyPeekSearch(true, false);
+      body.scrollTop = savedTop;
+    } else if (!_peekScrollLocked) {
+      applyPeekSearch(false);
     }
     if (!_peekScrollLocked && atBottom && !hasSearch) {
       body.scrollTop = body.scrollHeight;
@@ -22390,7 +22401,7 @@ async function refreshPeek() {
     } else if (_peekScrollLocked) {
       _showScrollLockBadge(body, () => {
         _peekScrollLocked = false;
-        applyPeekSearch(false);
+        applyPeekSearch(false, false);
         body.scrollTop = body.scrollHeight;
         _hideScrollLockBadge(body);
       });
@@ -22416,7 +22427,7 @@ async function refreshPeek() {
   }
 }
 
-function applyPeekSearch(keepIndex) {
+function applyPeekSearch(keepIndex, doScroll) {
   const body = document.getElementById('peek-body');
   const countEl = document.getElementById('peek-search-count');
   if (!body) return;
@@ -22439,13 +22450,13 @@ function applyPeekSearch(keepIndex) {
   }).join('');
   _peekMatches = Array.from(body.querySelectorAll('.peek-highlight'));
   if (!keepIndex || peekSearchIndex >= _peekMatches.length) peekSearchIndex = 0;
-  _peekScrollTo(peekSearchIndex);
+  _peekScrollTo(peekSearchIndex, doScroll);
   if (countEl) countEl.textContent = _peekMatches.length > 0 ? (peekSearchIndex + 1) + '/' + _peekMatches.length : 'no matches';
 }
-function _peekScrollTo(i) {
+function _peekScrollTo(i, doScroll) {
   _peekMatches.forEach((m, j) => m.classList.toggle('current', j === i));
   const cur = _peekMatches[i];
-  if (cur) cur.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  if (cur && doScroll !== false) cur.scrollIntoView({ block: 'center', behavior: 'smooth' });
   const countEl = document.getElementById('peek-search-count');
   if (countEl && _peekMatches.length) countEl.textContent = (i + 1) + '/' + _peekMatches.length;
 }
@@ -37512,7 +37523,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.39';
+const CACHE = 'amux-v0.9.40';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
