@@ -15952,6 +15952,17 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     #bw-elements-panel .bw-el:hover { background:var(--surface); }
     #bw-elements-panel .bw-el .idx { color:var(--accent);font-family:monospace;font-weight:600;min-width:34px; }
     #bw-elements-panel .bw-el .tag { color:var(--dim);font-family:monospace; }
+    #browser-view .bw-itab.active { background:var(--accent);color:#fff;border-color:var(--accent); }
+    #bw-inspect-list .il { padding:3px 8px;border-bottom:1px solid var(--border);white-space:pre-wrap;word-break:break-word;display:flex;gap:6px;align-items:baseline; }
+    #bw-inspect-list .il .lv { flex-shrink:0;font-weight:600;min-width:46px;text-transform:uppercase;font-size:0.62rem;padding-top:1px; }
+    #bw-inspect-list .il.error, #bw-inspect-list .il .lv.error { color:#ff6b6b; }
+    #bw-inspect-list .il.warn .lv, #bw-inspect-list .il .lv.warn { color:#e0af68; }
+    #bw-inspect-list .il .lv.log, #bw-inspect-list .il .lv.info, #bw-inspect-list .il .lv.debug { color:var(--dim); }
+    #bw-inspect-list .il .st { flex-shrink:0;font-weight:600;min-width:30px; }
+    #bw-inspect-list .il .st.ok { color:#4ec9b0; } #bw-inspect-list .il .st.bad { color:#ff6b6b; }
+    #bw-inspect-list .il .mth { flex-shrink:0;color:var(--accent);min-width:34px; }
+    #bw-inspect-list .il .ms { flex-shrink:0;color:var(--dim);margin-left:auto; }
+    #bw-inspect-list .il-empty { padding:16px;color:var(--dim);text-align:center;font-family:inherit; }
     @media (max-width:600px){ #browser-view .bw-btn{ min-height:44px;min-width:44px; } #browser-view .bw-in{ min-height:40px; } }
   </style>
   <!-- Nav row -->
@@ -15981,6 +15992,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="bw-btn" onclick="_bwScroll(-1)" title="Scroll up">&#9650;</button>
     <button class="bw-btn" onclick="_bwScroll(1)" title="Scroll down">&#9660;</button>
     <button id="bw-el-btn" class="bw-btn" onclick="_bwToggleElements()" title="Show clickable elements">&#9776; Elements</button>
+    <button id="bw-inspect-btn" class="bw-btn" onclick="_bwToggleInspect()" title="Console, network &amp; JS errors">&#128269; Inspect</button>
   </div>
   <!-- Agent task row -->
   <div class="bw-row">
@@ -16003,6 +16015,17 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button class="bw-btn" style="padding:2px 6px;" onclick="_bwLoadElements()">&#x21bb;</button>
       </div>
       <div id="bw-elements-list"></div>
+    </div>
+    <div id="bw-inspect-panel" style="display:none;width:340px;flex-shrink:0;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--bg);flex-direction:column;">
+      <div style="padding:6px 8px;border-bottom:1px solid var(--border);display:flex;gap:4px;align-items:center;">
+        <button class="bw-btn bw-itab active" data-itab="console" onclick="_bwInspTab('console')" style="padding:3px 8px;">Console <span id="bw-ic-console" style="opacity:0.6;"></span></button>
+        <button class="bw-btn bw-itab" data-itab="network" onclick="_bwInspTab('network')" style="padding:3px 8px;">Network <span id="bw-ic-network" style="opacity:0.6;"></span></button>
+        <button class="bw-btn bw-itab" data-itab="errors" onclick="_bwInspTab('errors')" style="padding:3px 8px;">Errors <span id="bw-ic-errors" style="opacity:0.6;"></span></button>
+        <span style="flex:1;"></span>
+        <button class="bw-btn" style="padding:2px 6px;" onclick="_bwLoadInspect()" title="Refresh">&#x21bb;</button>
+        <button class="bw-btn" style="padding:2px 6px;" onclick="_bwClearInspect()" title="Clear buffers">&#128465;</button>
+      </div>
+      <div id="bw-inspect-list" style="flex:1;overflow:auto;font-family:monospace;font-size:0.72rem;line-height:1.4;"></div>
     </div>
   </div>
 </div>
@@ -21600,7 +21623,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.40';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.41';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -36993,6 +37016,66 @@ async function _bwClickIndex(index) {
   } catch(e) { _bwStatus('Error: ' + e.message); }
 }
 
+// ── Inspect panel: console / network / errors (full browser troubleshooting) ──
+let _bwInspData = { console: [], network: [], errors: [] };
+let _bwInspActiveTab = 'console';
+async function _bwToggleInspect() {
+  const panel = document.getElementById('bw-inspect-panel');
+  const btn = document.getElementById('bw-inspect-btn');
+  const open = panel.style.display === 'none' || !panel.style.display;
+  panel.style.display = open ? 'flex' : 'none';
+  if (btn) btn.classList.toggle('active', open);
+  if (open) await _bwLoadInspect();
+}
+function _bwInspTab(t) {
+  _bwInspActiveTab = t;
+  document.querySelectorAll('#browser-view .bw-itab').forEach(b => b.classList.toggle('active', b.dataset.itab === t));
+  _bwRenderInspect();
+}
+async function _bwLoadInspect() {
+  const list = document.getElementById('bw-inspect-list');
+  if (list && !list.children.length) list.innerHTML = '<div class="il-empty">Loading…</div>';
+  try {
+    const r = await fetch('/api/browser/inspect?session=' + _bwSession + '&limit=300');
+    const d = await r.json();
+    if (d.error) { list.innerHTML = '<div class="il-empty">' + esc(d.error) + '</div>'; return; }
+    _bwInspData = { console: d.console || [], network: d.network || [], errors: d.errors || [] };
+    const c = d.counts || {};
+    document.getElementById('bw-ic-console').textContent = c.console ? '(' + c.console + ')' : '';
+    document.getElementById('bw-ic-network').textContent = c.network ? '(' + c.network + ')' : '';
+    document.getElementById('bw-ic-errors').textContent = c.errors ? '(' + c.errors + ')' : '';
+    _bwRenderInspect();
+  } catch(e) {
+    list.innerHTML = '<div class="il-empty">Error: ' + esc(e.message) + '</div>';
+  }
+}
+function _bwRenderInspect() {
+  const list = document.getElementById('bw-inspect-list');
+  const rows = _bwInspData[_bwInspActiveTab] || [];
+  if (!rows.length) { list.innerHTML = '<div class="il-empty">No ' + _bwInspActiveTab + ' entries. Interact with the page, then refresh.</div>'; return; }
+  let html = '';
+  if (_bwInspActiveTab === 'console') {
+    html = rows.map(e => '<div class="il ' + esc(e.level) + '"><span class="lv ' + esc(e.level) + '">' + esc(e.level) + '</span><span>' + esc(e.text || '') + '</span></div>').join('');
+  } else if (_bwInspActiveTab === 'network') {
+    html = rows.map(n => {
+      const ok = n.ok && n.status >= 200 && n.status < 400;
+      return '<div class="il"><span class="st ' + (ok ? 'ok' : 'bad') + '">' + esc(String(n.status || '—')) + '</span>' +
+             '<span class="mth">' + esc(n.method || '') + '</span>' +
+             '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;">' + esc(n.url || '') + '</span>' +
+             '<span class="ms">' + (n.ms != null ? n.ms + 'ms' : '') + '</span></div>';
+    }).join('');
+  } else {
+    html = rows.map(e => '<div class="il error"><span class="lv error">err</span><span>' + esc(e.text || '') + (e.stack ? '\n' + esc(e.stack) : '') + '</span></div>').join('');
+  }
+  list.innerHTML = html;
+}
+async function _bwClearInspect() {
+  try { await fetch('/api/browser/inspect/clear', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ session: _bwSession }) }); } catch(e) {}
+  _bwInspData = { console: [], network: [], errors: [] };
+  ['console','network','errors'].forEach(k => { const el = document.getElementById('bw-ic-' + k); if (el) el.textContent = ''; });
+  _bwRenderInspect();
+}
+
 // ── Save profile: register current site to a profile (deliverable #1 UI) ──
 async function _bwSaveProfile() {
   const suggested = _bwActiveProfile || '';
@@ -37638,7 +37721,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.40';
+const CACHE = 'amux-v0.9.41';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
