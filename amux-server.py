@@ -2367,8 +2367,24 @@ def _session_jsonl_path_uncached(name: str):
                 continue
             if rec.get("customTitle") == name or rec.get("sessionName") == name:
                 return jf
-        # No titled match (older Claude, or title not written yet) — best effort.
-        return files[0]
+        # No titled match. Do NOT fall back to the newest file — in a shared
+        # workdir that's a SIBLING session's transcript bleeding into this one
+        # (e.g. a freshly-created session that has no conversation of its own
+        # yet). Exclude conversations already claimed by other amux sessions
+        # (their meta records cc_conversation_id); only return a file if exactly
+        # one plausibly-ours candidate remains, else show live-only (None).
+        owned = set()
+        try:
+            for oenv in CC_SESSIONS.glob("*.env"):
+                if oenv.stem == name:
+                    continue
+                ocid = (_load_meta(oenv.stem).get("cc_conversation_id") or "").strip()
+                if ocid:
+                    owned.add(ocid)
+        except Exception:
+            pass
+        unclaimed = [jf for jf in files if jf.stem not in owned]
+        return unclaimed[0] if len(unclaimed) == 1 else None
     except Exception:
         return None
 
