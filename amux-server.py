@@ -18239,7 +18239,7 @@ function render() {
         ).join('') + (hits.length > 2 ? `<div class="card-log-hit" style="color:var(--dim);font-style:italic;" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}'})">+${hits.length - 2} more matches</div>` : '');
       })() : ''}
       ${(isYolo || model || s.tags.length || provider) ? `<div class="badges">
-        <span class="badge provider ${provider}" onclick="event.stopPropagation();editField('${s.name}','provider','${esc(provider)}')" title="Change provider">${pLabel}</span>
+        ${provider && provider !== 'claude' ? `<span class="badge provider ${provider}" onclick="event.stopPropagation();editField('${s.name}','provider','${esc(provider)}')" title="Change provider">${pLabel}</span>` : ''}
         ${isYolo ? '<span class="badge yolo">YOLO</span>' : ''}
         ${model ? `<span class="badge model" onclick="event.stopPropagation();editField('${s.name}','model','${esc(model)}','${esc(provider)}')" title="Change model">${esc(model)}</span>` : ''}
         ${effort ? `<span class="badge effort" onclick="event.stopPropagation();editField('${s.name}','model','${esc(model)}','${esc(provider)}')" title="Reasoning effort — click to change">${esc(effort)}</span>` : ''}
@@ -21064,7 +21064,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.35';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.36';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -36873,7 +36873,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.35';
+const CACHE = 'amux-v0.9.36';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -40280,10 +40280,17 @@ class CCHandler(BaseHTTPRequestHandler):
             creator = body.get("creator", "").strip()
             if creator:
                 cfg["CC_CREATOR"] = creator
-            cfg["CC_FLAGS"] = ""
             provider = body.get("provider", "").strip().lower()
             if provider and provider in _SESSION_PROVIDERS:
                 cfg["CC_PROVIDER"] = provider
+            # Yolo (bypass-permissions) is the DEFAULT for new sessions — pass
+            # {"yolo": false} to create one that keeps the approval prompts. The
+            # per-provider flag is stripped for root (cloud) in start_session, where
+            # settings.json grants the same permissions instead.
+            if body.get("yolo", True):
+                cfg["CC_FLAGS"] = _provider_yolo_flag(provider or "claude")
+            else:
+                cfg["CC_FLAGS"] = ""
             if provider == "iterm2":
                 iterm2_sid = body.get("iterm2_session_id", "").strip()
                 if not iterm2_sid:
