@@ -408,9 +408,9 @@
   [data-theme="dark"] .pa-card { background: #f4efe4; color: #1b1813; }
   [data-theme="dark"] .pa-ct b { color: #1b1813; }
   [data-theme="dark"] .pa-ct small { color: #6b6558; }
-  /* CTA button: use original terracotta (4.2:1 with white) not lightened accent */
-  [data-theme="dark"] .btn { background: #c85a28; border-color: #c85a28; }
-  [data-theme="dark"] .btn:hover { background: #b84e20; }
+  /* CTA primary buttons: use darker terracotta (5.6:1 with white) */
+  [data-theme="dark"] .btn-primary { background: #a84a24; border-color: #a84a24; color: #fff; }
+  [data-theme="dark"] .btn-primary:hover { background: #923818; }
   /* Toggle icon: must be readable on parchment in light mode */
   .theme-toggle { color: var(--ink-2); }
   [data-theme="light"] .theme-toggle { color: var(--ink); }
@@ -437,7 +437,9 @@
   /* Industry tabs */
   [data-theme="dark"] .tab { background: var(--bg-soft); border-color: var(--line-2); color: var(--cream-dim); }
   [data-theme="dark"] .tab:hover { border-color: var(--accent); color: var(--accent); }
-  [data-theme="dark"] .tab[aria-selected="true"] { background: var(--accent-2); border-color: var(--accent-2); color: var(--cream); }
+  [data-theme="dark"] .tab[aria-selected="true"] { background: #a84a24; border-color: #a84a24; color: #fff; }
+  /* Eyebrow: use brighter accent in dark mode for contrast on --bg-soft */
+  [data-theme="dark"] .eyebrow { color: var(--accent); }
   /* Panel / feature / step / setup cards */
   [data-theme="dark"] .panel-card { background: var(--bg-soft); border-color: var(--line); }
   [data-theme="dark"] .panel-top { background: var(--bg-soft2); border-color: var(--line); }
