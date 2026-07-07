@@ -1,5 +1,13 @@
 <img src="site/github-header.svg" alt="amux — The Agent Control Plane" width="1280"/>
 
+<p align="center">
+  <a href="https://github.com/mixpeek/amux/stargazers"><img src="https://img.shields.io/github/stars/mixpeek/amux?style=flat-square&color=f5c518" alt="GitHub stars"/></a>
+  <a href="https://github.com/mixpeek/amux/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2B%20Commons%20Clause-blue?style=flat-square" alt="License"/></a>
+  <a href="https://amux.io"><img src="https://img.shields.io/badge/site-amux.io-orange?style=flat-square" alt="Website"/></a>
+  <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435"><img src="https://img.shields.io/badge/iOS-App%20Store-black?style=flat-square&logo=apple" alt="iOS App"/></a>
+  <a href="https://amux.io/changelog/"><img src="https://img.shields.io/badge/changelog-amux.io%2Fchangelog-green?style=flat-square" alt="Changelog"/></a>
+</p>
+
 <h3 align="center">💼 Want it done for you? → <a href="https://amux.io/concierge/">amux.io/concierge</a></h3>
 
 <p align="center">
@@ -23,7 +31,19 @@ amux start myproject
 amux serve   # → https://localhost:8822
 ```
 
+**Requirements:** Python 3.10+, tmux 3.2+, and at least one of: Claude Code, Codex CLI, or Gemini CLI.
+
 > **License:** [MIT + Commons Clause](LICENSE) — free to use, modify, and self-host. Commercial resale requires a separate license.
+
+---
+
+## What's New
+
+- **[YOLO mode on by default](https://amux.io/changelog/)** — new sessions auto-approve tool prompts so agents never block during overnight runs. Opt out per-session if you need interactive review.
+- **[Board status gates](https://amux.io/changelog/)** — configurable checklists gate cards from moving to `done`/`verified`, preventing the failure mode of marking work done before it's confirmed in production.
+- **[Saved messages](https://amux.io/changelog/)** — store canned prompts in the DB and trigger them from the ⋮ menu in any session — one tap, no copy-pasting from notes.
+
+[Full changelog →](https://amux.io/changelog/)
 
 ---
 
@@ -273,22 +293,20 @@ Then open `http://<your-ip>:8888` on your phone (use your Tailscale IP if on Tai
 
 ---
 
-## Compare
+## How amux compares
 
-See how amux compares to other AI coding tools:
-
-- [amux vs Claude Managed Agents](https://amux.io/compare/amux-vs-claude-managed-agents/) — self-hosted alternative at $0/session-hour
-- [amux vs Claude Code Agent Teams](https://amux.io/compare/amux-vs-claude-code-agent-teams/) — built-in sub-agents vs. independent session fleet
-- [amux vs Cursor](https://amux.io/compare/amux-vs-cursor/) — AI IDE vs. headless agent orchestrator
-- [amux vs Aider](https://amux.io/compare/amux-vs-aider/) — single-session pair programming vs. parallel agents
-- [amux vs Devin](https://amux.io/compare/amux-vs-devin/) — proprietary autonomous engineer vs. open-source fleet
-- [amux vs GitHub Copilot](https://amux.io/compare/amux-vs-github-copilot/) — inline completions vs. autonomous agent fleet
-- [amux vs OpenHands](https://amux.io/compare/amux-vs-openhands/) — sandboxed agent vs. tmux-native fleet
-- [amux vs Windsurf](https://amux.io/compare/amux-vs-windsurf/) — AI IDE vs. parallel agents
-- [amux vs Bolt.new](https://amux.io/compare/amux-vs-bolt-new/) — browser-based generation vs. local agent fleet
-- [amux vs AutoGen](https://amux.io/compare/amux-vs-autogen/) — Microsoft framework vs. Claude-native orchestrator
-- [amux vs DIY tmux scripts](https://amux.io/compare/amux-vs-diy-tmux/) — what you're missing with manual management
-- [All comparisons →](https://amux.io/compare/)
+| Tool | What it is | amux angle |
+|------|-----------|-----------|
+| [Cursor](https://amux.io/compare/amux-vs-cursor/) | AI-powered IDE | IDE completion vs. unattended agent fleet |
+| [GitHub Copilot](https://amux.io/compare/amux-vs-github-copilot/) | Code suggestions in your IDE | Inline hints vs. autonomous overnight runs |
+| [Devin](https://amux.io/compare/amux-vs-devin/) | Managed cloud autonomous engineer | $500+/mo cloud vs. free self-hosted fleet |
+| [Claude Managed Agents](https://amux.io/compare/amux-vs-claude-managed-agents/) | Anthropic hosted agent sessions | $0.08/session-hour cloud vs. $0 self-hosted |
+| [OpenAI Symphony](https://amux.io/compare/amux-vs-openai-symphony/) | Ticket-driven Codex orchestrator | Autonomous pipeline vs. developer-controlled dashboard |
+| [Aider](https://amux.io/compare/amux-vs-aider/) | Open-source AI pair programmer | Single interactive session vs. parallel fleet |
+| [OpenHands](https://amux.io/compare/amux-vs-openhands/) | Sandboxed autonomous agent | Container isolation vs. tmux-native zero-overhead |
+| [AutoGen](https://amux.io/compare/amux-vs-autogen/) | Microsoft multi-agent framework | Python framework vs. zero-code dashboard orchestration |
+| [DIY tmux scripts](https://amux.io/compare/amux-vs-diy-tmux/) | Rolling your own agent manager | What you're missing without amux |
+| [All comparisons →](https://amux.io/compare/) | | |
 
 ## Use Cases
 
@@ -369,3 +387,13 @@ sudo netfilter-persistent save   # survive reboot (Debian/Ubuntu)
 ```
 
 Validate the lockdown from outside the host: `curl -k --connect-timeout 4 https://<public-ip>:8822/` should time out.
+
+---
+
+## Star History
+
+If amux saves you time, a ⭐ helps others find it — GitHub's trending algorithm is star-velocity driven, so every star matters.
+
+[![Star History Chart](https://api.star-history.com/svg?repos=mixpeek/amux&type=Date)](https://star-history.com/#mixpeek/amux&Date)
+
+[View on GitHub →](https://github.com/mixpeek/amux)
