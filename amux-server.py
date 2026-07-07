@@ -15199,7 +15199,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
   <div style="display:flex;gap:8px;align-items:center;">
     <div id="org-switcher-wrap" style="display:none;"></div>
-    <button class="btn-rate-limit" id="rate-limit-pill" title="" onclick="event.stopPropagation();_scrollToFirstRateLimited()">
+    <button class="btn-rate-limit" id="rate-limit-pill" title="" onclick="event.stopPropagation();openBulkActions()">
       <span id="rate-limit-pill-text">0 rate-limited</span>
     </button>
     <div class="active-wrap">
@@ -21626,7 +21626,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.42';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.43';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -37732,7 +37732,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.42';
+const CACHE = 'amux-v0.9.43';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
