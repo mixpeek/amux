@@ -136,15 +136,20 @@ _LOGIN_HTML = """<!DOCTYPE html>
     .promo-msg.ok { color: #34d399; }
     .promo-msg.err { color: #f87171; }
     /* Clerk contrast overrides */
-    .cl-socialButtonsBlockButton { color: #e0e0e0 !important; border-color: #444 !important; }
-    .cl-socialButtonsBlockButtonText { color: #e0e0e0 !important; }
-    .cl-headerSubtitle { color: #ccc !important; }
-    .cl-dividerText { color: #bbb !important; }
-    .cl-dividerLine { border-color: #444 !important; }
-    .cl-footerActionText { color: #ccc !important; }
-    .cl-footerActionLink { color: #a99cf0 !important; }
-    .cl-card { border: 1px solid #333 !important; }
-    .cl-formFieldLabel { color: #e0e0e0 !important; }
+    .cl-card { border: 1px solid #666 !important; background: #1e1e38 !important; box-shadow: 0 0 40px rgba(100,90,180,0.08) !important; }
+    .cl-socialButtonsBlockButton { color: #fff !important; border-color: #666 !important; }
+    .cl-socialButtonsBlockButtonText { color: #fff !important; }
+    .cl-socialButtonsBlockButtonArrow { color: #fff !important; }
+    .cl-headerTitle { color: #fff !important; }
+    .cl-headerSubtitle { color: #ddd !important; }
+    .cl-dividerText { color: #ccc !important; }
+    .cl-dividerLine { border-color: #555 !important; }
+    .cl-formFieldLabel { color: #f0f0f0 !important; }
+    .cl-formFieldHintText { color: #bbb !important; }
+    .cl-formFieldInput { background: #141430 !important; color: #f0f0f0 !important; border-color: #555 !important; }
+    .cl-formFieldInput::placeholder { color: #999 !important; }
+    .cl-footerActionText { color: #ddd !important; }
+    .cl-footerActionLink { color: #b5a8f5 !important; }
     .cl-footerPages { color: #ccc !important; }
     .cl-footerPagesLink { color: #ccc !important; }
   </style>
