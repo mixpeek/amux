@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux for Indie Hackers — Run an AI Engineering Team Solo (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Indie hackers use amux to run a 5-10 agent engineering team from their phone — shipping features overnight, automating customer support, running revenue experiments, and building products that compound while they sleep.">
+  <meta name="keywords" content="indie hacker AI agents, indie hacker AI tools 2026, build indie saas with AI, solo developer AI team, AI agents for indie hackers, ship products with ai agents, indie maker ai coding, run a product with ai agents">
+  <link rel="canonical" href="https://amux.io/for/indie-hackers/">
+  <meta property="og:title" content="amux for Indie Hackers — Run an AI Engineering Team Solo (2026)">
+  <meta property="og:description" content="Indie hackers use amux to run a 5-10 agent engineering team from their phone — shipping features overnight, automating support, and building products that compound while they sleep.">
+  <meta property="og:url" content="https://amux.io/for/indie-hackers/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux for Indie Hackers — Run an AI Engineering Team Solo (2026)">
+  <meta name="twitter:description" content="Run a 5-10 agent engineering team from your phone. Ship features overnight. Automate the boring parts. Build products that compound while you sleep.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "For Developers", "item": "https://amux.io/for/"},
+      {"@type": "ListItem", "position": 3, "name": "Indie Hackers", "item": "https://amux.io/for/indie-hackers/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux for Indie Hackers — Run an AI Engineering Team Solo",
+    "description": "Indie hackers use amux to run a 5-10 agent engineering team from their phone — shipping features overnight, automating support, and building products that compound while they sleep.",
+    "url": "https://amux.io/for/indie-hackers/",
+    "datePublished": "2026-07-07",
+    "dateModified": "2026-07-07",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["indie hacker AI agents", "solo developer AI team", "build products with AI", "indie SaaS AI coding"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Can I really build and run a product solo with AI coding agents?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. With amux, a solo indie hacker can simultaneously run agents for feature development, bug fixes, test writing, documentation, and customer-issue triage — all in parallel, all overnight. The limiting factor shifts from your coding speed to your ability to write clear task descriptions and review agent output. Many indie hackers are now shipping weekly feature releases that would previously have taken a month."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How much does amux cost for an indie hacker?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux itself is completely free and open-source (MIT license). You self-host it on your laptop or a $6/month VPS. You pay only for AI model tokens — the most cost-effective setup is Claude Max ($200/month) for unlimited Claude Code usage, or API pricing (~$5-20/night for a 10-agent overnight run on Sonnet). No per-seat fees, no SaaS subscription to amux itself."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux work for non-coding tasks like customer support and marketing?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux includes built-in Gmail API (send/reply/search with your real signature), browser automation (log into any site, fill forms, pull reports), CRM contacts, notes, and a scheduler. An indie hacker can run a coding agent building features while another agent monitors support emails and drafts responses — all from the same dashboard."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is amux only for experienced developers?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux is designed for developers who understand the command line. If you can clone a repo and run a Python script, you can use amux. The managed Concierge offering (amux.io/concierge) handles setup for you if you'd rather skip the configuration. The iOS app and dashboard are designed for quick checks from anywhere — no terminal required once the agents are running."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What does a typical indie hacker setup look like with amux?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "A typical setup: 2-3 Claude Code agents for active feature development (one per module or branch), 1 agent for writing tests on completed features, 1 agent for documentation, 1 agent for customer issue triage (reading GitHub issues and drafting responses). The scheduler runs a daily sync every morning. The iOS app is the daily driver — check overnight PRs, review agent output, send messages from anywhere."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For Developers</a> <span class="sep">›</span> <span>Indie Hackers</span></div>
+
+    <h1>amux for Indie Hackers</h1>
+    <p class="subtitle">Run a 5-10 agent engineering team from your phone. Ship features overnight, automate the boring parts, and build products that compound while you sleep. <em>Updated July 2026.</em></p>
+
+    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of Claude Code, Codex, or Gemini CLI sessions simultaneously. Built-in kanban board, notes, CRM, Gmail API, browser automation, and scheduler — everything an indie hacker needs to run a product without a team.</p>
+
+    <h2>The Indie Hacker Advantage</h2>
+    <p>The traditional indie hacker bottleneck is output velocity. You have a full backlog, a product that needs constant improvement, customers asking for features, support tickets piling up — and only one of you. Hiring feels premature when MRR is $500 and you're still finding product-market fit.</p>
+    <p>AI coding agents change the math. With 5-10 agents running overnight, you can ship a week's worth of feature work before you wake up. The agents don't sleep, don't ask for raises, and don't need onboarding. The cost to run them (typically $5-30/night on API pricing) is far less than a single engineering hour.</p>
+    <p>What amux adds is the infrastructure to make this reliable: a self-healing watchdog that restarts crashed agents, atomic task claiming so agents don't do duplicate work, a shared kanban board for tracking progress, and an iOS app for checking in from anywhere without opening a laptop.</p>
+
+    <h2>A Typical Indie Hacker Week with amux</h2>
+
+    <h3>Sunday night setup (15 minutes)</h3>
+    <p>Queue your week's feature backlog in the amux board. Write task cards — one per feature, bug, or improvement. Add context in the description. Assign priority. Set 5-8 agents running with YOLO mode enabled.</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Queue tasks for the week
+amux board add "Add CSV export to the analytics dashboard" --priority high
+amux board add "Fix mobile layout bug on the pricing page" --priority high
+amux board add "Write unit tests for the billing module" --priority medium
+amux board add "Update onboarding email sequence with new features" --priority medium
+
+# Start 5 agents (stagger starts to avoid rate limit spikes)
+for i in 1 2 3 4 5; do
+  amux start "agent-$i" &amp;
+  sleep 8
+done</code></pre>
+
+    <h3>Monday morning review (20 minutes)</h3>
+    <p>Open the iOS app. Check which tasks moved to "done." Read the output of each agent in the peek panel. Review PRs that were opened overnight. Merge what's clean, leave feedback on what needs iteration. Move remaining tasks back to "doing" for day 2.</p>
+    <p>A realistic outcome for a well-prepared overnight run of 5 agents across 8 hours: 3-5 tasks completed, 1-2 needing review, 1-2 still in progress. You wake up to material progress on a full sprint's worth of work.</p>
+
+    <h3>During the day (as needed)</h3>
+    <p>Keep 2-3 agents running on lower-priority tasks during working hours. Check the board from your phone during lunch. Send task updates to specific sessions with a tap. The iOS app shows live output from each agent — you can follow along or ignore it entirely.</p>
+
+    <h2>Beyond Coding: Running Your Business</h2>
+    <p>Most indie hackers are not just building software — they're handling support, marketing, partnerships, and finances. amux's built-in tools cover more than coding:</p>
+
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Task</th>
+            <th style="padding:10px 16px;text-align:left;">amux tool</th>
+            <th style="padding:10px 16px;text-align:left;">How it works</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Customer support</td>
+            <td style="padding:10px 16px;">Gmail API</td>
+            <td style="padding:10px 16px;">Agent reads inbox, drafts replies with your real signature, sends on approval (or auto-sends for common queries)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Market research</td>
+            <td style="padding:10px 16px;">Browser automation</td>
+            <td style="padding:10px 16px;">Agent visits competitor pages, pulls pricing, screenshots, summarizes changes to your board</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">User tracking</td>
+            <td style="padding:10px 16px;">CRM</td>
+            <td style="padding:10px 16px;">Log calls, notes, and follow-ups per contact; agents can read and update CRM records</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Daily ops</td>
+            <td style="padding:10px 16px;">Scheduler</td>
+            <td style="padding:10px 16px;">Schedule recurring tasks: daily metrics pull, weekly summary post, monthly invoicing check</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">Content / docs</td>
+            <td style="padding:10px 16px;">Notes + coding agents</td>
+            <td style="padding:10px 16px;">Agent writes changelog, docs, and blog posts from recent commits and your product notes</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Overnight Agent Workflow for Indie Hackers</h2>
+    <p>The highest-leverage use of amux for indie hackers is the overnight run. Here's a proven setup:</p>
+
+    <ol>
+      <li><strong>Write atomic tasks.</strong> Each task should be completable in 2-4 hours with clear acceptance criteria. "Add CSV export" is better than "improve the analytics page." The more specific the task, the higher the overnight success rate.</li>
+      <li><strong>Use separate git branches per agent.</strong> Register each session with a different working directory or branch to avoid conflicts. Each agent opens a PR from its branch — you review and merge in the morning.</li>
+      <li><strong>Enable YOLO mode.</strong> With <code>--yolo</code>, agents never block on tool-approval prompts. Essential for unattended runs.</li>
+      <li><strong>Set a CLAUDE.md with your project context.</strong> Agents work better with a project README, coding conventions, and "gotchas" document in the project root. One good CLAUDE.md means less back-and-forth clarification.</li>
+      <li><strong>Check in on the iOS app.</strong> The amux iOS app shows live agent output and board status from anywhere. You can send a quick correction message if an agent goes in the wrong direction — without opening a laptop.</li>
+    </ol>
+
+    <h2>The Cost Math for Indie Hackers</h2>
+    <p>Common question: is AI agent coding cost-effective at indie scale?</p>
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Setup</th>
+            <th style="padding:10px 16px;text-align:left;">Cost</th>
+            <th style="padding:10px 16px;text-align:left;">Output</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">5 Claude Sonnet agents, 8h (API pricing)</td>
+            <td style="padding:10px 16px;">~$15-40/night</td>
+            <td style="padding:10px 16px;">3-6 PRs completed</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">5 Claude agents, Claude Max plan</td>
+            <td style="padding:10px 16px;">$200/month flat</td>
+            <td style="padding:10px 16px;">Unlimited runs included</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">5 Gemini Flash agents (docs/tests)</td>
+            <td style="padding:10px 16px;">~$1-5/night</td>
+            <td style="padding:10px 16px;">High-volume mechanical tasks</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">1 human freelancer, 8h</td>
+            <td style="padding:10px 16px;">$400-800</td>
+            <td style="padding:10px 16px;">1-3 tasks (with coordination overhead)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>At $30/night for 5 agents, you're spending $900/month on AI engineering capacity that would cost $15,000-30,000/month in freelancer time. The quality difference is real — agents need more review and correction than senior engineers — but for an indie hacker willing to review output and iterate, the leverage is extraordinary.</p>
+
+    <h2>Common Indie Hacker amux Setups</h2>
+
+    <h3>The Weekend Shipper</h3>
+    <p>Queue 15-20 tasks on Friday night. Run 5-8 agents all weekend. Come back Monday to 8-12 completed PRs. Review and merge Monday morning, then spend the week on product decisions, marketing, and customer calls — not coding.</p>
+
+    <h3>The Daily Autopilot</h3>
+    <p>2-3 agents running 24/7 on the feature backlog. The scheduler posts a daily board summary every morning. Support emails are handled by an agent with Gmail API access. The founder checks in twice a day via iOS app, reviews PRs in the evening.</p>
+
+    <h3>The Sprint Machine</h3>
+    <p>For launching a new product or major feature: spin up 10+ agents for an intensive 48-hour sprint. Modularize the work, assign different modules to different agents, and parallelize everything that can be parallelized. The <a href="/blog/sprint-in-48-hours/">48-hour sprint guide</a> covers this in detail.</p>
+
+    <h2>Getting Started</h2>
+    <p>If you've never run AI coding agents before, the fastest path is:</p>
+    <ol>
+      <li>Clone amux and run <code>./install.sh</code> (5 minutes)</li>
+      <li>Register your project: <code>amux register myapp --dir ~/Dev/myapp --yolo</code></li>
+      <li>Start one agent and watch it work on a single task</li>
+      <li>Scale to 5 agents once you understand the output quality and task description requirements</li>
+    </ol>
+    <p>Or skip the setup entirely: the <a href="/concierge/">Concierge</a> does the configuration for you and sets up your fleet from scratch in a managed onboarding session.</p>
+
+    <div class="cta-box">
+      <h3>Start running your AI engineering team</h3>
+      <p>amux is free, open-source, and runs on your existing hardware. No SaaS subscription, no per-seat fees — just AI agents working while you sleep.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myapp --dir ~/Dev/myapp --yolo
+amux start myapp
+amux serve  # → https://localhost:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <a class="btn" href="/concierge/" style="margin-left:0.75rem;">Concierge setup →</a>
+    </div>
+
+    <p style="margin-top:2rem;"><strong>Related resources:</strong>
+      <a href="/for/solopreneurs/">amux for Solopreneurs</a> ·
+      <a href="/for/startup-founders/">amux for Startup Founders</a> ·
+      <a href="/guides/ai-coding-agents-overnight/">Overnight Agent Guide</a> ·
+      <a href="/blog/overnight-saas-mvp/">Overnight SaaS MVP</a> ·
+      <a href="/guides/self-healing-configuration/">Self-Healing Configuration</a>
+    </p>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">For</div>
+          <ul>
+            <li><a href="/for/solopreneurs/">Solopreneurs</a></li>
+            <li><a href="/for/startup-founders/">Startup Founders</a></li>
+            <li><a href="/for/ai-engineers/">AI Engineers</a></li>
+            <li><a href="/for/">All personas</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/concierge/">Concierge</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
