@@ -1,8 +1,11 @@
 (function () {
   // Synchronous theme boot — runs before paint to prevent flash
   var stored = localStorage.getItem('amux-theme');
+  var pageDefault = document.documentElement.getAttribute('data-theme') || null;
   var theme = stored
     ? stored
+    : pageDefault
+    ? pageDefault
     : window.matchMedia('(prefers-color-scheme: light)').matches
     ? 'light'
     : 'dark';
