@@ -12055,6 +12055,25 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
      (browsers render them ~2.1ch, which otherwise detaches the right border). */
   .overlay-body .peek-box .pemoji { display: inline-block; width: 2ch; text-align: center; overflow: hidden; }
   .overlay-status { color: var(--dim); font-size: 0.68rem; margin-top: 2px; flex-shrink: 0; text-align: center; }
+  /* Peek 'Plan' strip — read-only view of the agent's Claude Code task list. */
+  .peek-plan { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 6px; background: var(--card); overflow: hidden; flex-shrink: 0; }
+  .peek-plan-hdr { width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: transparent; border: none; color: var(--text); cursor: pointer; font-size: 0.8rem; text-align: left; font-family: inherit; }
+  .peek-plan-hdr:hover { background: rgba(255,255,255,0.03); }
+  .peek-plan-hdr .pp-caret { color: var(--dim); transition: transform 0.15s; display: inline-block; }
+  .peek-plan.open .pp-caret { transform: rotate(90deg); }
+  .peek-plan .pp-title { font-weight: 600; flex-shrink: 0; }
+  .peek-plan .pp-count { color: var(--dim); font-size: 0.74rem; flex-shrink: 0; }
+  .peek-plan .pp-active { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .peek-plan-list { max-height: 40vh; overflow-y: auto; border-top: 1px solid var(--border); padding: 4px 0; }
+  .peek-plan-item { display: flex; gap: 8px; align-items: baseline; padding: 3px 12px; font-size: 0.76rem; line-height: 1.4; }
+  .peek-plan-item .pp-ico { flex-shrink: 0; width: 14px; text-align: center; color: var(--dim); }
+  .peek-plan-item .pp-txt { flex: 1; min-width: 0; word-break: break-word; }
+  .peek-plan-item.completed { color: var(--dim); }
+  .peek-plan-item.completed .pp-ico { color: #4ec9b0; }
+  .peek-plan-item.in_progress .pp-ico { color: var(--accent); }
+  .peek-plan-item.in_progress .pp-txt { color: var(--text); font-weight: 600; }
+  .peek-plan-item .pp-blocked { color: #e0af68; font-size: 0.66rem; flex-shrink: 0; white-space: nowrap; }
+  @media (max-width: 600px) { .peek-plan-hdr { min-height: 40px; } }
   .scroll-lock-badge {
     position: sticky; bottom: 0; left: 0; right: 0;
     text-align: center; padding: 6px 0;
@@ -16649,6 +16668,15 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div id="peek-split-wrap" class="peek-split-wrap">
   <!-- Terminal panel -->
   <div id="peek-terminal-panel" class="peek-terminal-panel">
+    <div id="peek-plan" class="peek-plan" style="display:none;">
+      <button class="peek-plan-hdr" id="peek-plan-hdr" onclick="_peekTogglePlan()">
+        <span class="pp-caret" id="peek-plan-caret">&#9656;</span>
+        <span class="pp-title">Plan</span>
+        <span class="pp-count" id="peek-plan-count"></span>
+        <span class="pp-active" id="peek-plan-active"></span>
+      </button>
+      <div class="peek-plan-list" id="peek-plan-list" style="display:none;"></div>
+    </div>
     <div style="position:relative;flex:1;min-height:0;">
       <div id="peek-body" class="overlay-body" style="position:absolute;inset:0;"></div>
       <button class="peek-copy-btn" id="peek-copy-btn" onclick="copyPeekContent()" title="Copy all">&#x2398; Copy</button>
@@ -21680,7 +21708,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.43';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.44';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21690,6 +21718,9 @@ function openPeek(name, opts) {
   clearPeekFiles();  // clear any stale attachments from previous peek
   peekSession = name;
   _peekScrollLocked = false;
+  // Reset the Plan strip so it reloads for the new session (no stale flash).
+  _peekPlanLast = 0;
+  const _pp = document.getElementById('peek-plan'); if (_pp) _pp.style.display = 'none';
   peekSessionDir = (sessions.find(s => s.name === name) || {}).dir || '';
   // Reset to terminal tab
   _peekGitData = null;
@@ -22556,9 +22587,48 @@ function _hideScrollLockBadge(scrollEl) {
   if (badge) badge.style.display = 'none';
 }
 
+// ── Peek 'Plan' strip: read-only view of the session's Claude Code task list ──
+let _peekPlanOpen = false;
+let _peekPlanLast = 0;
+async function _peekLoadPlan() {
+  const name = peekSession;
+  if (!name) return;
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/tasks');
+    if (peekSession !== name) return;
+    _peekRenderPlan(await r.json());
+  } catch(e) {}
+}
+function _peekRenderPlan(d) {
+  const wrap = document.getElementById('peek-plan');
+  if (!wrap) return;
+  const tasks = (d && d.tasks) || [];
+  if (!tasks.length) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+  const c = (d && d.counts) || {};
+  document.getElementById('peek-plan-count').textContent = (c.completed || 0) + '/' + d.total;
+  const active = d.active;
+  document.getElementById('peek-plan-active').textContent = active ? (active.subject || active.activeForm || '') : '';
+  const ICO = { pending: '○', in_progress: '◆', completed: '✓' };
+  document.getElementById('peek-plan-list').innerHTML = tasks.map(t => {
+    const st = t.status || 'pending';
+    const blk = (t.blockedBy && t.blockedBy.length && st !== 'completed')
+      ? '<span class="pp-blocked">blocked by #' + t.blockedBy.map(esc).join(', #') + '</span>' : '';
+    return '<div class="peek-plan-item ' + esc(st) + '"><span class="pp-ico">' + (ICO[st] || '○') +
+           '</span><span class="pp-txt">' + esc(t.subject || t.activeForm || '') + '</span>' + blk + '</div>';
+  }).join('');
+}
+function _peekTogglePlan() {
+  _peekPlanOpen = !_peekPlanOpen;
+  document.getElementById('peek-plan').classList.toggle('open', _peekPlanOpen);
+  document.getElementById('peek-plan-list').style.display = _peekPlanOpen ? '' : 'none';
+}
+
 async function refreshPeek() {
   const name = peekSession;
   if (!name) return;
+  // Refresh the Plan strip (throttled — task files change slowly).
+  if (performance.now() - _peekPlanLast > 8000) { _peekPlanLast = performance.now(); _peekLoadPlan(); }
   if (peekSelecting) return;
   const sel = window.getSelection();
   if (sel && sel.toString().length > 0) return;
@@ -37786,7 +37856,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.43';
+const CACHE = 'amux-v0.9.44';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
