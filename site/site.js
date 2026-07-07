@@ -28,7 +28,7 @@
   });
 
   document.addEventListener('DOMContentLoaded', function () {
-    var nav = document.querySelector('.site-header nav');
+    var nav = document.querySelector('.site-header nav') || document.querySelector('header.site nav') || document.querySelector('header nav');
     if (!nav) return;
     var btn = document.createElement('button');
     btn.id = 'theme-toggle-btn';

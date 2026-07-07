@@ -807,7 +807,56 @@
     .foot-col a { padding: 8px 0; min-height: 44px; display: flex; align-items: center; }
     .foot-bottom { flex-direction: column; align-items: flex-start; gap: 8px; }
   }
+
+  /* ── Light mode ── */
+  [data-theme="light"] {
+    --bg:        oklch(0.97 0.005 80);
+    --bg-2:      oklch(0.93 0.006 80);
+    --bg-3:      oklch(0.88 0.007 80);
+    --line:      oklch(0.80 0.008 80);
+    --line-2:    oklch(0.72 0.010 80);
+    --fg:        oklch(0.18 0.008 70);
+    --fg-2:      oklch(0.38 0.010 70);
+    --fg-3:      oklch(0.52 0.010 70);
+    --accent:    oklch(0.42 0.18 65);
+    --accent-2:  oklch(0.40 0.18 145);
+    --accent-3:  oklch(0.40 0.17 250);
+    --danger:    oklch(0.44 0.20 25);
+    --shadow:    0 1px 0 oklch(0 0 0 / 0.06) inset, 0 30px 60px -30px oklch(0 0 0 / 0.12);
+  }
+  [data-theme="light"] body {
+    background-image:
+      radial-gradient(1200px 600px at 50% -200px, oklch(0.42 0.18 65 / 0.06), transparent 60%),
+      linear-gradient(to bottom, var(--bg), var(--bg) 70%, oklch(0.90 0.006 80));
+  }
+  [data-theme="light"] .site-header {
+    background: oklch(0.97 0.005 80 / 0.90);
+  }
+  [data-theme="light"] .btn-ghost {
+    --bg-btn: var(--bg-3);
+    --fg-btn: var(--fg);
+    --bd-btn: var(--line-2);
+  }
+  .theme-toggle {
+    background: var(--bg-2);
+    border: 1px solid var(--line-2);
+    border-radius: 4px;
+    color: var(--fg-2);
+    cursor: pointer;
+    font-size: 13px;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    padding: 5px 9px;
+    line-height: 1;
+    min-width: 34px;
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.12s, border-color 0.12s;
+  }
+  .theme-toggle:hover { color: var(--fg); border-color: var(--accent); }
 </style>
+<script src="/site.js"></script>
 </head>
 <body>
 

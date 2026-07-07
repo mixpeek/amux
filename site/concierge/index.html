@@ -379,7 +379,40 @@
   @keyframes paApproved{0%,58%{opacity:0} 64%,95%{opacity:1} 100%{opacity:0}}
   @keyframes paDone{0%,68%{opacity:0;transform:translateY(6px)} 74%,95%{opacity:1;transform:none} 100%{opacity:0}}
   @media (prefers-reduced-motion: reduce){ .pa-anim-card,.pa-anim-prep,.pa-anim-fill,.pa-anim-approve,.pa-anim-approved,.pa-anim-done{animation:none} .pa-anim-approve{opacity:0} .pa-anim-approved{opacity:1} .pa-fill{width:100%} }
+
+  /* ── Dark mode ── */
+  [data-theme="dark"] {
+    --bg:#1c1814; --bg-soft:#231f18; --bg-soft2:#2a2519;
+    --ink:#f0ece4; --ink-2:#b8b0a0; --ink-3:#8a8070; --mute:#6a6055;
+    --line:#3a342a; --line-2:#4a4035;
+    --brand:#e07040;
+    --accent:#e07040; --accent-2:#c85a28; --accent-soft:rgba(224,112,64,.15);
+    --ok:#7ab05a; --ok-soft:rgba(122,176,90,.15);
+    --dark:#1c1814; --dark-2:#231f18; --dark-3:#2a2519;
+    --cream:#2a2519; --cream-dim:#4a4035;
+    --shadow:0 1px 2px rgba(0,0,0,.2), 0 12px 32px -16px rgba(0,0,0,.5);
+  }
+  [data-theme="dark"] body { background: var(--bg); color: var(--ink); }
+  [data-theme="dark"] header.site { background: oklch(0.14 0.010 60 / 0.90); border-color: var(--line); }
+  .theme-toggle {
+    background: var(--bg-soft);
+    border: 1px solid var(--line-2);
+    border-radius: 6px;
+    color: var(--ink-2);
+    cursor: pointer;
+    font-size: 13px;
+    font-family: var(--mono);
+    padding: 5px 9px;
+    min-width: 34px;
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.12s, border-color 0.12s;
+  }
+  .theme-toggle:hover { color: var(--ink); border-color: var(--accent); }
 </style>
+<script src="/site.js"></script>
 </head>
 <body>
 
