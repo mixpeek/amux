@@ -4,38 +4,106 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Changelog — amux</title>
+  <title>Changelog — What's New in amux (AI Agent Orchestration)</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="What's new in amux — release notes and recent changes.">
-  <meta property="og:title" content="Changelog — amux">
-  <meta property="og:description" content="What's new in amux — release notes and recent changes.">
+  <meta name="description" content="Latest amux releases: YOLO mode as default, board status gates, saved messages, Gmail API email routing, reasoning effort controls, Skills tab, event-triggered schedules, Codex provider, Web Push notifications, and more.">
+  <meta name="keywords" content="amux changelog, amux release notes, amux updates, AI agent orchestration updates, Claude Code manager updates, amux new features">
+  <link rel="canonical" href="https://amux.io/changelog/">
+  <meta property="og:title" content="Changelog — What's New in amux">
+  <meta property="og:description" content="Latest amux releases: YOLO mode as default, board status gates, Gmail API routing, reasoning effort controls, Codex provider, Web Push, and more.">
   <meta property="og:url" content="https://amux.io/changelog/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Changelog" href="https://amux.io/blog/rss.xml">
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Changelog","item":"https://amux.io/changelog/"}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"amux","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","description":"Open-source control plane for running an AI engineering team — launch, monitor, and self-heal dozens of parallel Claude Code, Codex, or Gemini CLI agents from one dashboard or your phone. Built-in kanban board, CRM, Gmail, browser automation, scheduler, and skills. MIT licensed, single Python file, zero external dependencies.","url":"https://amux.io/","downloadUrl":"https://github.com/mixpeek/amux","softwareVersion":"0.9.x","releaseNotes":"https://amux.io/changelog/","license":"https://github.com/mixpeek/amux/blob/main/LICENSE","author":{"@type":"Organization","name":"Mixpeek","url":"https://mixpeek.com"},"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","name":"amux Recent Releases","description":"Recent feature releases and improvements to amux, the open-source AI agent orchestration platform.","url":"https://amux.io/changelog/","itemListElement":[{"@type":"ListItem","position":1,"name":"YOLO mode is now the default for new sessions","description":"New sessions register with automatic tool-approval responses enabled — agents never block on a permission prompt during unattended runs.","url":"https://github.com/mixpeek/amux/commit/d8a1d72"},{"@type":"ListItem","position":2,"name":"Board status gates with confirm-on-move checklists","description":"Moving a card to done or verified shows a configurable checklist. Gates can be set globally, per-session, or per-card.","url":"https://github.com/mixpeek/amux/commit/061fa79"},{"@type":"ListItem","position":3,"name":"Saved messages — canned prompts stored in DB, triggered from menu","description":"Save frequently-used prompts and recall them from the session peek panel in one tap. Per-session, persists across devices.","url":"https://github.com/mixpeek/amux/commit/0fc61bc"},{"@type":"ListItem","position":4,"name":"Gmail API routing for email with real signatures and threading","description":"Email send and reply routes through the Gmail API for connected accounts — proper threading, account signature auto-appended, audit logged.","url":"https://github.com/mixpeek/amux/commit/48461e25"},{"@type":"ListItem","position":5,"name":"Event-triggered schedules for closed-loop agent orchestration","description":"Schedules can fire when another session completes or emits a pattern — no polling required. Enables fully autonomous agent pipelines.","url":"https://github.com/mixpeek/amux/commit/4d9b0e9b"}]}</script>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  </head>
+  <style>
+    .changelog-hero{max-width:800px;margin:0 auto 48px;text-align:center}
+    .changelog-hero h1{font-size:clamp(1.8rem,4vw,2.6rem);font-weight:700;margin-bottom:12px;line-height:1.15}
+    .changelog-hero p{color:var(--muted);font-size:1.05rem;max-width:520px;margin:0 auto 24px;line-height:1.6}
+    .hero-meta{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;font-size:.85rem;color:var(--muted)}
+    .hero-meta a{color:var(--accent);text-decoration:none}
+    .hero-meta a:hover{text-decoration:underline}
+    .filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:32px;justify-content:center}
+    .filter-pill{background:var(--card);border:1px solid var(--border);color:var(--muted);border-radius:20px;padding:6px 16px;font-size:.82rem;cursor:pointer;transition:background .15s,color .15s,border-color .15s;font-family:inherit}
+    .filter-pill:hover{border-color:var(--accent);color:var(--accent)}
+    .filter-pill.active{background:var(--accent);border-color:var(--accent);color:#fff}
+    .entry{display:grid;grid-template-columns:120px 1fr;gap:0 24px;padding:20px 0;border-bottom:1px solid var(--border)}
+    .entry:last-child{border-bottom:none}
+    .entry-date-col{text-align:right;padding-top:2px}
+    .entry-date{font-size:.78rem;color:var(--muted);white-space:nowrap;margin-bottom:4px}
+    .entry-hash{font-family:'JetBrains Mono',monospace;font-size:.72rem;color:var(--muted);text-decoration:none;opacity:.6;display:block}
+    .entry-hash:hover{opacity:1;color:var(--accent)}
+    .entry-header{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px;flex-wrap:wrap}
+    .entry-title{font-weight:600;font-size:.96rem;line-height:1.35}
+    .entry-desc{color:var(--muted);font-size:.875rem;line-height:1.6;margin:0 0 8px}
+    .entry-tags{display:flex;gap:6px;flex-wrap:wrap}
+    .tag{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:2px 8px;font-size:.72rem;color:var(--muted)}
+    .type-badge{border-radius:4px;padding:2px 7px;font-size:.72rem;font-weight:600;white-space:nowrap;flex-shrink:0}
+    .type-feat{background:rgba(34,197,94,.12);color:#22c55e}
+    .type-fix{background:rgba(251,191,36,.1);color:#d4a017}
+    .type-perf{background:rgba(99,102,241,.1);color:#818cf8}
+    .type-docs{background:rgba(148,163,184,.1);color:#94a3b8}
+    .type-chore{background:rgba(148,163,184,.08);color:var(--muted)}
+    #loading{text-align:center;padding:40px;color:var(--muted)}
+    #error{padding:16px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:8px;color:#f87171;margin:16px 0}
+    #empty{text-align:center;padding:40px;color:var(--muted)}
+    .github-cta{text-align:center;margin:48px 0 0;padding:28px;background:var(--card);border:1px solid var(--border);border-radius:12px}
+    .github-cta h3{margin:0 0 8px;font-size:1.1rem}
+    .github-cta p{color:var(--muted);font-size:.9rem;margin:0 0 16px}
+    @media(max-width:600px){
+      .entry{grid-template-columns:1fr;gap:6px}
+      .entry-date-col{text-align:left;display:flex;gap:12px;align-items:center}
+      .changelog-hero p{font-size:.95rem}
+    }
+  </style>
+</head>
 <body>
 <header class="site-header">
-    <a class="logo" href="/">amux</a>
-    <nav>
-      <a href="/docs/" class="hide-mobile">docs</a>
-      <a href="/guides/" class="hide-mobile">guides</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
-      <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/blog/" class="hide-mobile">blog</a>
-      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
-    </nav>
-  </header>
+  <a class="logo" href="/">amux</a>
+  <nav>
+    <a href="/docs/" class="hide-mobile">docs</a>
+    <a href="/guides/" class="hide-mobile">guides</a>
+    <a href="/compare/" class="hide-mobile">compare</a>
+    <a href="/demos/" class="hide-mobile">demos</a>
+    <a href="/blog/" class="hide-mobile">blog</a>
+    <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+    <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+  </nav>
+</header>
+
 <main>
-  <h1 class="page-title">Changelog</h1>
-  <p class="page-sub">Recent changes, automatically updated from <a href="https://github.com/mixpeek/amux/commits/main" target="_blank" rel="noopener">GitHub commits</a>.</p>
+  <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <span>Changelog</span></div>
+
+  <div class="changelog-hero">
+    <h1>What's new in amux</h1>
+    <p>amux ships continuously. Every feature, fix, and improvement — linked to the commit that shipped it. Updated automatically from <a href="https://github.com/mixpeek/amux/commits/main" target="_blank" rel="noopener">GitHub</a>.</p>
+    <div class="hero-meta">
+      <span>Open source · MIT License</span>
+      <span>·</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>
+      <span>·</span>
+      <a href="https://github.com/mixpeek/amux/releases" target="_blank" rel="noopener">Releases</a>
+      <span>·</span>
+      <a href="https://github.com/mixpeek/amux/issues" target="_blank" rel="noopener">Report an issue</a>
+    </div>
+  </div>
 
   <div class="filters" id="filters">
     <button class="filter-pill active" data-filter="all" onclick="setFilter('all',this)">All</button>
     <button class="filter-pill" data-filter="feat" onclick="setFilter('feat',this)">Features</button>
     <button class="filter-pill" data-filter="fix" onclick="setFilter('fix',this)">Bug fixes</button>
+    <button class="filter-pill" data-filter="perf" onclick="setFilter('perf',this)">Performance</button>
     <button class="filter-pill" data-filter="docs" onclick="setFilter('docs',this)">Docs</button>
   </div>
 
@@ -43,17 +111,18 @@
   <div id="error" style="display:none;"></div>
   <div id="empty" style="display:none;">No entries match this filter.</div>
   <div id="entries"></div>
+
+  <div class="github-cta">
+    <h3>amux is open source</h3>
+    <p>MIT licensed. Single Python file. Zero external dependencies beyond Python 3 and tmux.</p>
+    <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Star on GitHub</a>
+  </div>
 </main>
 
 <script>
   var allEntries = [];
   var activeFilter = 'all';
 
-  function toggleTheme() {
-    var cur = document.documentElement.getAttribute('data-theme');
-    document.documentElement.setAttribute('data-theme', cur === 'light' ? 'dark' : 'light');
-    localStorage.setItem('theme', document.documentElement.getAttribute('data-theme'));
-  }
   (function() {
     var t = localStorage.getItem('theme') ||
       (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
@@ -69,7 +138,12 @@
 
   function typeBadge(type) {
     var t = (type || 'chore').toLowerCase();
-    return '<span class="type-badge type-' + t + '">' + t + '</span>';
+    var labels = {feat:'feature', fix:'fix', perf:'perf', docs:'docs', chore:'chore', refactor:'refactor'};
+    return '<span class="type-badge type-' + t + '">' + (labels[t] || t) + '</span>';
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
   function renderEntries() {
@@ -79,17 +153,17 @@
     if (!filtered.length) { container.innerHTML = ''; emptyEl.style.display = ''; return; }
     emptyEl.style.display = 'none';
     container.innerHTML = filtered.map(function(e) {
-      var tags = (e.tags || []).map(function(t) { return '<span class="tag">' + t + '</span>'; }).join('');
-      var desc = e.description ? '<p class="entry-desc">' + e.description + '</p>' : '';
+      var tags = (e.tags || []).map(function(t) { return '<span class="tag">' + escHtml(t) + '</span>'; }).join('');
+      var desc = e.description ? '<p class="entry-desc">' + escHtml(e.description) + '</p>' : '';
       var tagsHtml = tags ? '<div class="entry-tags">' + tags + '</div>' : '';
       var ghUrl = 'https://github.com/mixpeek/amux/commit/' + e.hash;
-      return '<div class="entry" data-type="' + (e.type||'') + '">' +
+      return '<div class="entry" data-type="' + escHtml(e.type||'') + '">' +
         '<div class="entry-date-col">' +
-          '<div class="entry-date">' + (e.date || '') + '</div>' +
-          '<a href="' + ghUrl + '" target="_blank" rel="noopener" class="entry-hash" title="View commit">' + (e.short || '') + '</a>' +
+          '<div class="entry-date">' + escHtml(e.date || '') + '</div>' +
+          '<a href="' + escHtml(ghUrl) + '" target="_blank" rel="noopener" class="entry-hash" title="View commit on GitHub">' + escHtml(e.short || '') + '</a>' +
         '</div>' +
         '<div class="entry-body">' +
-          '<div class="entry-header">' + typeBadge(e.type) + '<span class="entry-title">' + e.title + '</span></div>' +
+          '<div class="entry-header">' + typeBadge(e.type) + '<span class="entry-title">' + escHtml(e.title) + '</span></div>' +
           desc + tagsHtml +
         '</div>' +
       '</div>';
@@ -110,52 +184,54 @@
       el.textContent = 'Failed to load changelog: ' + err.message;
     });
 </script>
-<footer>
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
-          <p>Open-source agent multiplexer for Claude Code.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
+
+<footer class="sub-footer">
+  <div class="footer-inner">
+    <div class="footer-top">
+      <div class="footer-brand-col">
+        <a href="/" class="footer-logo">amux</a>
+        <p>Open-source control plane for AI agents.</p>
       </div>
-      <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="https://github.com/mixpeek/amux/issues">Issues</a>
-        </div>
+      <div class="footer-col">
+        <div class="footer-col-label">Resources</div>
+        <ul>
+          <li><a href="/guides/">Guides</a></li>
+          <li><a href="/blog/">Blog</a></li>
+          <li><a href="/demos/">Demos</a></li>
+          <li><a href="/glossary/">Glossary</a></li>
+          <li><a href="/faq/">FAQ</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <div class="footer-col-label">Compare</div>
+        <ul>
+          <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+          <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+          <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+          <li><a href="/compare/">All comparisons</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <div class="footer-col-label">More</div>
+        <ul>
+          <li><a href="/use-cases/">Use Cases</a></li>
+          <li><a href="/solutions/">Solutions</a></li>
+          <li><a href="/for/">For your stack</a></li>
+          <li><a href="/changelog/">Changelog</a></li>
+        </ul>
       </div>
     </div>
-  </footer>
+    <div class="footer-bottom">
+      <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+      <div class="footer-bottom-links">
+        <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/mixpeek/amux/issues">Issues</a>
+      </div>
+    </div>
+  </div>
+</footer>
 
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

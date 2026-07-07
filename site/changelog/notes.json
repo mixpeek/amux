@@ -1,178 +1,326 @@
 [
   {
+    "hash": "d8a1d72",
+    "short": "d8a1d72",
+    "title": "YOLO mode is now the default for new sessions",
+    "date": "2026-07-06",
+    "type": "feat",
+    "tags": ["sessions", "yolo", "automation"],
+    "description": "New sessions now register with YOLO mode enabled by default — automatic tool-approval responses so agents never block on a permission prompt during unattended runs. The watchdog detects the unique 'Esc to cancel' marker (which only appears on tool-approval prompts) and auto-answers. Sessions that need interactive review can opt out per-registration. Provider badge removed from Claude session cards (cleaner UI)."
+  },
+  {
+    "hash": "0fc61bc",
+    "short": "0fc61bc",
+    "title": "Saved messages — canned prompts stored in the DB, triggered from ⋮ menu",
+    "date": "2026-07-06",
+    "type": "feat",
+    "tags": ["peek", "productivity", "mobile"],
+    "description": "You can now save frequently-used prompts directly in the database and recall them from the ⋮ menu in any session peek panel. Saved messages persist across devices and sessions. Each message is stored per-session so your context-specific canned responses stay organized. Replaces copy-pasting from notes — trigger in one tap."
+  },
+  {
+    "hash": "061fa79",
+    "short": "061fa79",
+    "title": "Board status gates — confirm-on-move checklists with per-session overrides",
+    "date": "2026-07-06",
+    "type": "feat",
+    "tags": ["board", "workflow", "quality"],
+    "description": "Moving a card to 'done' or 'verified' now shows a configurable checklist of criteria to confirm before the move commits. Gates can be set globally, overridden per-session, or overridden per-card — so high-stakes tasks can require explicit sign-off while routine work moves freely. The '☑ Gate' button on each card makes the affordance discoverable. Built to prevent the common failure mode of marking work done before it's actually been verified in production."
+  },
+  {
+    "hash": "fcab39a",
+    "short": "fcab39a",
+    "title": "Full-screen compose + ellipsis attach/history menu in peek input",
+    "date": "2026-07-06",
+    "type": "feat",
+    "tags": ["peek", "compose", "mobile"],
+    "description": "The ⋮ button in the session peek input now opens an attach/history menu — access file attachments and message history from a single tap. A new expand-to-fullscreen compose mode gives you a full-viewport editor for long prompts, with markdown preview and word count. Enter in the standard textarea now inserts a newline (standard behavior) rather than sending — use the Send button or Ctrl+Enter to send."
+  },
+  {
+    "hash": "c7bee8e",
+    "short": "c7bee8e",
+    "title": "Gemini API key + Google API key support in BYO key settings",
+    "date": "2026-07-06",
+    "type": "feat",
+    "tags": ["cloud", "providers", "gemini"],
+    "description": "GEMINI_API_KEY and GOOGLE_API_KEY are now whitelisted in the bring-your-own-key settings panel. Cloud users can now configure Antigravity CLI (Google's successor to Gemini CLI) sessions alongside Claude Code and Codex sessions — all three providers managed from one dashboard."
+  },
+  {
+    "hash": "e247c23",
+    "short": "e247c23",
+    "title": "Session peek now has a dedicated Schedules tab",
+    "date": "2026-07-06",
+    "type": "feat",
+    "tags": ["peek", "scheduler", "sessions"],
+    "description": "Each session peek panel now includes a Schedules tab that shows all recurring tasks associated with that session — the same view as the main scheduler, scoped to a single session. Create, edit, pause, and run schedules without leaving the session context."
+  },
+  {
+    "hash": "6d7866a",
+    "short": "6d7866a",
+    "title": "CRM auto-sync to external CRM (Lightfield integration)",
+    "date": "2026-07-01",
+    "type": "feat",
+    "tags": ["crm", "integration", "sync"],
+    "description": "amux CRM writes now optionally sync to an external CRM via configurable webhook. The first integration is Lightfield. When configured, every contact create/update in amux propagates automatically with TLS-verified delivery. Keeps amux's agent-native CRM in sync with your external source of truth without manual export."
+  },
+  {
+    "hash": "78464a1",
+    "short": "78464a1",
+    "title": "Markdown rendering in transcript history — bold, code, tables match tmux output",
+    "date": "2026-07-01",
+    "type": "feat",
+    "tags": ["peek", "transcript", "ui"],
+    "description": "The transcript / history tab in session peek now renders markdown — bold, inline code, code blocks, and tables display formatted, matching how Claude Code renders output in the terminal. Previously the history showed raw markdown syntax, which was harder to read on mobile. The live terminal pane remains unchanged (raw ANSI output)."
+  },
+  {
+    "hash": "48461e25",
+    "short": "48461e2",
+    "title": "Gmail API routing for email — real signatures, threading, no AppleScript",
+    "date": "2026-06-29",
+    "type": "feat",
+    "tags": ["email", "gmail", "integration"],
+    "description": "The /api/email/send and /api/email/reply endpoints now route through the Gmail API for connected Google Workspace accounts (ethan@mixpeek.com, info@mixpeek.com). Replies thread correctly via In-Reply-To/References headers, the account's real Gmail signature is auto-appended, and every send is audit-logged to email-sent.jsonl. Mail.app/AppleScript is retained as fallback for non-Gmail accounts. Connect a new Gmail account via GET /api/gmail/auth?account=<email>."
+  },
+  {
+    "hash": "1cde9780",
+    "short": "1cde978",
+    "title": "Clean JSONL transcript tab — gap-free conversation history",
+    "date": "2026-06-23",
+    "type": "feat",
+    "tags": ["peek", "transcript", "sessions"],
+    "description": "The transcript tab in session peek now shows a clean, gap-free conversation history parsed from the Claude Code JSONL transcript file. Messages are de-duplicated across restarts and compaction cycles. Harness noise (task-notification, local-command-caveat XML tags) is stripped automatically. The result is a readable conversation thread that matches what actually happened — not the raw tmux output."
+  },
+  {
+    "hash": "eee39910",
+    "short": "eee3991",
+    "title": "Reasoning effort controls — set and change extended thinking level per session",
+    "date": "2026-06-23",
+    "type": "feat",
+    "tags": ["sessions", "claude", "reasoning"],
+    "description": "Sessions now show a reasoning effort badge (low / medium / high / extended) next to the model name. Change the effort level from the session card's ellipsis menu without restarting the session. Extended thinking is automatically routed to compatible Claude models. Higher effort produces more thorough work on complex tasks; low effort reduces token spend on routine tasks. The reasoning effort dial is also available in the model picker when creating a session."
+  },
+  {
+    "hash": "f07aa7ba",
+    "short": "f07aa7b",
+    "title": "Workspace panes are now full peek views — send, steer, and monitor from the workspace",
+    "date": "2026-06-22",
+    "type": "feat",
+    "tags": ["workspace", "peek", "monitoring"],
+    "description": "Session panes in the Workspace tab are now embedded full peek views rather than read-only terminal snapshots. You can send messages, queue steering instructions, view issues, and switch tabs — all without leaving the multi-pane workspace view. Width snap presets (1/3, 1/2, 2/3, full) let you quickly resize panes for the task at hand. The 'All sessions' scope toggle in the Issues tab shows the full board across every session at once."
+  },
+  {
+    "hash": "a6bfa0a5",
+    "short": "a6bfa0a",
+    "title": "Background Web Push (VAPID) — agent alerts reach your phone even when the app is closed",
+    "date": "2026-06-20",
+    "type": "feat",
+    "tags": ["notifications", "ios", "pwa"],
+    "description": "amux now sends real background push notifications via VAPID/Web Push — so you're alerted when an agent finishes a task, hits an error, or needs attention, even if the PWA is closed or the phone is locked. Formatted as 'session / type / description' without emoji for clean iOS notification center display. A test-notification button in settings verifies delivery. Works on iOS via the Service Worker — no native app required, though the native iOS app also receives these."
+  },
+  {
+    "hash": "79193e3a",
+    "short": "79193e3",
+    "title": "Scheduler redesign — Loop, Routine, Trigger, and Once modes",
+    "date": "2026-06-19",
+    "type": "feat",
+    "tags": ["scheduler", "orchestration", "automation"],
+    "description": "The scheduler has four distinct modes: Loop (runs on a cron schedule, indefinitely), Routine (runs on a schedule with a done-pattern that disables it when complete), Trigger (fires when another session completes or emits a pattern — enabling closed-loop orchestration without polling), and Once (runs at a specific datetime and disables itself). The create modal adapts to the selected mode. Session status and run history are shown inline. Schedule IDs appear as badges on session cards so you can see at a glance which sessions are driven by schedules."
+  },
+  {
+    "hash": "bc77aa04",
+    "short": "bc77aa0",
+    "title": "Skills tab — browse and search all slash commands across all sources",
+    "date": "2026-06-19",
+    "type": "feat",
+    "tags": ["skills", "slash-commands", "ui"],
+    "description": "A new Skills tab shows every slash command available in amux — project-level skills (from .claude/skills/), user-level skills (~/.claude/skills/), and built-in skills — grouped by source and searchable. Expandable cards show the full command body with copy-pasteable code blocks. The tab can be hidden if you don't use skills. The /orchestrate skill is included by default to scaffold closed agent orchestration loops."
+  },
+  {
+    "hash": "8b813e31",
+    "short": "8b813e3",
+    "title": "iTerm2 native attach via tmux control mode (amux-remote -CC)",
+    "date": "2026-06-19",
+    "type": "feat",
+    "tags": ["terminal", "iterm2", "remote"],
+    "description": "amux-remote now supports attaching to any session in iTerm2's native tmux control mode (-CC). Sessions open in real iTerm2 tabs/windows — full color, native scrollback, keyboard shortcuts, and iTerm2 integrations. Use: amux-remote attach <session>. Previously only basic SSH passthrough was available. Also supports SSH config for key-based auth."
+  },
+  {
+    "hash": "1a778eb6",
+    "short": "1a778eb",
+    "title": "Interactive terminal panes in Workspace — type directly in any session tile",
+    "date": "2026-06-15",
+    "type": "feat",
+    "tags": ["workspace", "terminal", "ui"],
+    "description": "Workspace panes now support interactive terminal input. Click into any session tile and type directly — keystrokes go to the tmux session in real time. Scroll lock keeps the view pinned to the bottom so you see live output. Combined with the peek-view embed (June 22), the workspace is now a true multi-session command center: send messages, run commands, and read output from every session on one screen."
+  },
+  {
+    "hash": "9fa35f39",
+    "short": "9fa35f3",
+    "title": "ANSI color rendering in peek panel — terminal output looks like the terminal",
+    "date": "2026-06-10",
+    "type": "feat",
+    "tags": ["peek", "terminal", "ui"],
+    "description": "The session peek panel now renders ANSI escape codes — colors, bold, underline — so Claude Code output looks like it does in the actual terminal. Syntax-highlighted diffs, colored test output, and progress bars all display correctly. Previously the peek panel showed raw escape sequences, making colored output difficult to read on mobile."
+  },
+  {
+    "hash": "521fd417",
+    "short": "521fd41",
+    "title": "Per-session standing instructions — persistent autonomy config for each agent",
+    "date": "2026-06-04",
+    "type": "feat",
+    "tags": ["sessions", "autonomy", "steering"],
+    "description": "Each session can now have a set of standing instructions — a persistent system-level prompt that governs the session's behavior on every turn. Editable from the Steering tab in the session peek panel. Use standing instructions to set agent personas, define scope boundaries, specify output formats, or enforce coding conventions without including them in every message. Standing instructions survive restarts and compaction."
+  },
+  {
+    "hash": "4d9b0e9b",
+    "short": "4d9b0e9",
+    "title": "Event-triggered schedules — close the agent loop without polling",
+    "date": "2026-06-04",
+    "type": "feat",
+    "tags": ["scheduler", "orchestration", "automation"],
+    "description": "Schedules can now trigger on events emitted by other sessions — not just on a time interval. When session A completes a task (or its output matches a configurable pattern), schedule B fires automatically. This enables closed-loop orchestration: a coding agent finishes → a review agent starts → a deploy agent fires — all without a human in the loop and without a polling workaround. Configure via trigger_on and trigger_sessions fields in the schedule API or the scheduler modal."
+  },
+  {
+    "hash": "94293a1d",
+    "short": "94293a1",
+    "title": "Verified board column — distinct from done, requires prod evidence",
+    "date": "2026-06-04",
+    "type": "feat",
+    "tags": ["board", "workflow", "quality"],
+    "description": "The kanban board now has a fourth column: verified. Moving a card to verified signals that the work is confirmed live in production — not just implemented and merged. The verified status is distinct from done in the board API, awareness digest, and session prompt context. The verify-gate feature (also shipped this day) blocks a session from marking verified if it has uncommitted local work."
+  },
+  {
+    "hash": "28f96b78",
+    "short": "28f96b7",
+    "title": "Idle commit-guard — agents that leave uncommitted work get a nudge",
+    "date": "2026-06-04",
+    "type": "feat",
+    "tags": ["sessions", "git", "quality"],
+    "description": "Sessions that go idle with uncommitted changes in their working directory now receive an automatic nudge from the watchdog: 'You have uncommitted work — commit before continuing or you risk losing progress.' The commit-guard can be toggled per-session from the UI or configured globally. Combined with the verify-gate, this creates a lightweight quality enforcement layer without blocking agent autonomy."
+  },
+  {
+    "hash": "dde54c0c",
+    "short": "dde54c0",
+    "title": "Fleet-aware rate-limit detection + auto-resume across all sessions",
+    "date": "2026-05-11",
+    "type": "feat",
+    "tags": ["reliability", "rate-limit", "fleet"],
+    "description": "When the Anthropic API returns a rate-limit response (weekly or usage cap), amux now detects it fleet-wide, surfaces the cap in bulk actions with a clear warning, and queues pending work to auto-resume when the limit resets. Previously, sessions would fail silently or require manual intervention. Now the watchdog tracks rate-limit state across all sessions and resumes automatically — critical for overnight fleets that exhaust the quota mid-run."
+  },
+  {
+    "hash": "af7c0d2b",
+    "short": "af7c0d2",
+    "title": "Chrome-style browser tabs — open multiple amux views simultaneously",
+    "date": "2026-05-04",
+    "type": "feat",
+    "tags": ["ui", "navigation", "tabs"],
+    "description": "amux now has Chrome-style browser tabs in the dashboard. Each tab opens a fully independent amux view — sessions, board, notes, files, whatever you need. Tabs persist across page reloads. Open a session peek in one tab and the board in another without losing context. Double-click to rename, middle-click to close, + to add a new tab with a view picker. The tabs bar is collapsible if you prefer a single-view experience."
+  },
+  {
+    "hash": "6b0e7fc4",
+    "short": "6b0e7fc",
+    "title": "OpenAI Codex provider — full parity with Claude sessions",
+    "date": "2026-05-02",
+    "type": "feat",
+    "tags": ["codex", "providers", "openai"],
+    "description": "amux now supports OpenAI Codex as a first-class provider alongside Claude Code. Create Codex sessions with the same session management, board integration, self-healing watchdog, steering queue, and mobile monitoring that Claude sessions get. Sessions are fully isolated — each Codex session runs in its own tmux pane with its own conversation history. Route tasks to Claude for architecture/review and Codex for implementation to optimize cost and throughput across your fleet."
+  },
+  {
+    "hash": "eebe2559",
+    "short": "eebe255",
+    "title": "Mid-execution steering — queue messages for delivery at the next turn boundary",
+    "date": "2026-04-22",
+    "type": "feat",
+    "tags": ["steering", "sessions", "mobile"],
+    "description": "The Steering queue lets you inject instructions into a running session without interrupting the current turn. Messages are held until the agent finishes what it's doing and returns to a ready state — then delivered atomically. Queue multiple messages and they're delivered in order. A badge on the session card shows pending steering messages so you know what's queued. From your phone, you can redirect a running agent in seconds without watching it finish first."
+  },
+  {
+    "hash": "7acd7bef",
+    "short": "7acd7be",
+    "title": "Homepage redesign — warm amber Geist design with new positioning",
+    "date": "2026-04-25",
+    "type": "feat",
+    "tags": ["homepage", "design", "marketing"],
+    "description": "Complete homepage redesign with a warm amber Geist palette. New positioning: 'Run an AI engineering team from one dashboard' — emphasizes outcome (team output, phone management, overnight delivery) over implementation details. Mobile-first layout, cleaner hero, consolidated feature sections. The redesign reflects amux's evolution from a developer utility to a full AI engineering team control plane."
+  },
+  {
+    "hash": "9860a1f6",
+    "short": "9860a1f",
+    "title": "AI coding agent cost calculator — interactive token/cost estimator",
+    "date": "2026-04-26",
+    "type": "feat",
+    "tags": ["tools", "cost", "calculator"],
+    "description": "New interactive cost calculator at amux.io/tools/ai-agent-cost-calculator/. Estimate monthly spend for any fleet configuration: Claude Code Max plan ($100-200/mo) vs API keys (pay-per-token), 1-50 parallel agents, model mix (Opus/Sonnet/Haiku), hours per day, waste percentage, and overnight batch vs interactive use. Shows Max vs API breakeven, per-component breakdown, and model routing savings (50-65%). Presets for solo developer, small team, agent fleet, and overnight batch."
+  },
+  {
+    "hash": "ac530c96",
+    "short": "ac530c9",
+    "title": "In-app notification system for iOS PWA — no native app required",
+    "date": "2026-04-27",
+    "type": "feat",
+    "tags": ["notifications", "ios", "pwa"],
+    "description": "amux now delivers in-app notifications that work within the iOS PWA (installed from Safari to the home screen) — without requiring the native App Store app. Notifications appear as toast banners with session context and auto-dismiss after 5 seconds. Tapping navigates directly to the session. This was a workaround for Safari's PWA notification limitations before full VAPID support landed in June."
+  },
+  {
+    "hash": "a309b62d",
+    "short": "a309b62",
+    "title": "Server-side message history — syncs across devices and survives restarts",
+    "date": "2026-04-29",
+    "type": "feat",
+    "tags": ["sessions", "history", "sync"],
+    "description": "Message history is now stored server-side and synced across all connected clients. Previously, history was browser-local — clearing the cache or switching devices lost it. Now every message you send is persisted in the DB and available on any device. The history modal re-pulls from the server on every open to stay current. Particularly useful for mobile-desktop workflows where you queue instructions from your phone and review history on desktop."
+  },
+  {
+    "hash": "1787024a",
+    "short": "1787024",
+    "title": "Auto-pickup queued board tasks — idle sessions claim work automatically",
+    "date": "2026-04-29",
+    "type": "feat",
+    "tags": ["board", "automation", "sessions"],
+    "description": "Sessions that go idle with no pending work now automatically check the board for unclaimed tasks and pick one up. Combined with atomic task claiming (POST /api/board/:id/claim — 409 if already taken), this creates a self-coordinating agent fleet: queue 20 tasks on the board, start 10 sessions, they work through the queue in parallel without any manual assignment. The idle nudge timeout is configurable via WATCHDOG_IDLE_TIMEOUT."
+  },
+  {
     "hash": "fcc5ab3",
     "short": "fcc5ab3",
     "title": "White-label branding — custom name, icon, logo, and accent color",
     "date": "2026-03-24",
     "type": "feat",
     "tags": ["branding", "white-label", "customization"],
-    "description": "Click the logo in the top-left to open the branding editor. Customize the app name, tagline, square icon, wide logo, and accent color. Images accept drag-and-drop or file picker. Everything is stored server-side so all connected clients see the same branding. The PWA manifest, page title, favicon, and all icon endpoints dynamically serve custom assets. Reset to defaults with one click. API: GET/POST/DELETE /api/branding."
+    "description": "Click the logo in the top-left to open the branding editor. Customize the app name, tagline, square icon, wide logo, and accent color. Images accept drag-and-drop or file picker. Everything is stored server-side so all connected clients see the same branding. The PWA manifest, page title, favicon, and all icon endpoints dynamically serve custom assets. Reset to defaults with one click. API: GET/POST/DELETE /api/branding. Teams and agencies can ship a fully branded deployment of amux for their clients."
   },
   {
     "hash": "fd8b6f8",
     "short": "fd8b6f8",
-    "title": "Fix scheduler cron day-of-week bug and long prompt send failures",
-    "date": "2026-03-16",
-    "type": "fix",
-    "tags": ["scheduler", "send", "reliability"],
-    "description": "Fixed two reported issues: (1) Cron-style scheduled jobs used Python's weekday convention (0=Monday) instead of standard cron (0=Sunday), causing jobs targeting specific days to fire on the wrong day. (2) Long prompts sent from the dashboard could fail silently or get split mid-text. The root cause was tmux's paste-buffer interpreting newlines as Enter keypresses and concurrent sends racing on the same global paste buffer. Fixed by using named buffers with the -p (literal paste) flag, increased timeouts, and proper buffer cleanup."
-  },
-  {
-    "hash": "fd8b6f8",
-    "short": "fd8b6f8",
-    "title": "Offline notes caching — notes always available on device",
+    "title": "Workspace layout presets — 6 one-click grid arrangements",
     "date": "2026-03-16",
     "type": "feat",
-    "tags": ["notes", "offline", "pwa"],
-    "description": "Notes are now cached locally on the device using both localStorage (for the list) and IndexedDB (for individual note content). The notes list loads instantly on startup from cache, and individual notes are cached when opened and updated on save. When offline, notes load from cache instead of showing empty state. Cache is cleaned up when notes are deleted."
+    "tags": ["workspace", "ui", "layout"],
+    "description": "Layout dropdown with 6 preset arrangements: Focus (single column), Split (2 columns), 3 Columns, 2x2 Grid, Main + Sidebar, and Stacked Rows. Selecting a preset instantly rearranges all open panes. If no panes are open, all sessions are added automatically. Pairs with the June 22 width snap presets (1/3, 1/2, 2/3, full) for full layout control."
   },
   {
-    "hash": "fd8b6f8",
-    "short": "fd8b6f8",
-    "title": "Workspace layout presets — one-click grid arrangements",
-    "date": "2026-03-16",
-    "type": "feat",
-    "tags": ["workspace", "ui"],
-    "description": "Added a Layout dropdown to the Workspace tab with 6 preset arrangements: Focus (single column), Split (2 columns), 3 Columns, 2x2 Grid, Main + Sidebar, and Stacked Rows. Selecting a preset instantly rearranges all open panes into the chosen layout. If no panes are open, all sessions are added automatically."
-  },
-  {
-    "hash": "2dc168121706eb9290b55f532803732f0a06aedf",
-    "short": "2dc1681",
-    "title": "Notes sidebar panel icons, offline save queuing, title sync",
-    "date": "2026-03-04",
-    "type": "feat",
-    "tags": ["notes", "ui", "offline"],
-    "description": "Replaced the text chevrons (‹ ›) in the notes sidebar toggle buttons with proper shadcn-style Lucide PanelLeftClose / PanelLeftOpen SVG icons, matching the rest of the amux UI. When offline, note saves are now queued and show a 'Queued' status indicator instead of the misleading 'Saved'. The list refresh after a save is skipped when offline to avoid fetch errors. Title changes made in the title input now sync immediately to the sidebar list without waiting for a server round-trip.",
-    "video": "2dc1681.mp4"
-  },
-  {
-    "hash": "63b473205e45393eedf2bcd1c8d6ccec1c9721f1",
-    "short": "63b4732",
-    "title": "Notes sidebar collapse/expand + mobile full-width panel switching",
-    "date": "2026-03-04",
-    "type": "feat",
-    "tags": ["notes", "mobile", "ui"],
-    "description": "The notes sidebar can now be collapsed to free up editor space. A toggle button in the sidebar header collapses it to zero width with a smooth CSS transition. An expand button appears in the editor header when collapsed. On mobile (≤600px), the sidebar becomes a full-width absolute overlay that slides in and out via CSS transform, while the editor remains full-width underneath. Sidebar open/closed state is persisted in localStorage so it survives page reloads.",
-    "video": "63b4732.mp4"
-  },
-  {
-    "hash": "f5453bb35e64c491fdfe9c1e9411de6b3bfb7309",
-    "short": "f5453bb",
-    "title": "Fix notes title overwrite — bidirectional H1 sync, flush save on switch",
-    "date": "2026-03-04",
-    "type": "fix",
-    "tags": ["notes", "bug"],
-    "description": "Fixed a bug where changing the note title and then switching to another note would lose the change. The fix has two parts: (1) bidirectional sync between the title input and Quill's H1 heading — typing in the title input updates the H1 in Quill, and editing the H1 directly in Quill updates the title input; (2) pending debounced saves are now flushed synchronously before switching notes, ensuring no content is lost when rapidly switching between notes.",
-    "video": "f5453bb.mp4"
-  },
-  {
-    "hash": "3b549e5aee17d17a87b032ec5f39e4830a8ba9bf",
-    "short": "3b549e5",
-    "title": "Fix notes sidebar click broken by JSON.stringify double-quote conflict",
-    "date": "2026-03-04",
-    "type": "fix",
-    "tags": ["notes", "bug"],
-    "description": "Fixed a bug where clicking notes in the sidebar did nothing. The root cause was that note paths were embedded in onclick attributes using JSON.stringify, which wraps strings in double quotes — breaking the surrounding HTML double-quoted attribute. The fix replaces the inline onclick pattern with data-path attributes and this.dataset.path lookups, which is both correct and XSS-safe.",
-    "video": "3b549e5.mp4"
-  },
-  {
-    "hash": "21ace5e7ade4a5b34b46d241555a6597cd250c78",
-    "short": "21ace5e",
-    "title": "Quill WYSIWYG editor for notes + pin to top",
-    "date": "2026-03-04",
-    "type": "feat",
-    "tags": ["notes", "editor", "ui"],
-    "description": "Replaced the plain textarea + markdown preview with Quill v2 WYSIWYG editor. The toolbar supports headings, bold, italic, underline, strikethrough, blockquote, code block, ordered/unordered lists, and links — no markdown syntax required. Notes can now be pinned to the top of the sidebar list with a pin icon that appears on hover. Pinned notes are visually indicated with a left accent border and a persistent pin icon. Pin state is stored in a hidden .pins.json file in the notes directory.",
-    "video": "21ace5e.mp4"
-  },
-  {
-    "hash": "c43ade5b73ed86e61b7b6c1a23b9a844d0651af6",
-    "short": "c43ade5",
-    "title": "Notes tab — create, edit, search, and manage Markdown notes",
-    "date": "2026-03-04",
-    "type": "feat",
-    "tags": ["notes", "feature"],
-    "description": "Introduced the Notes tab — a full note-taking interface inside amux. Notes are stored as Markdown files in ~/.amux/notes/ and support full CRUD operations. The sidebar lists all notes sorted by last-modified time with a search/filter input. Notes are named by their H1 heading; if no heading is present, the filename stem is used. All note mutations go through the offline queue (apiCall) so edits made without connectivity are replayed when the server comes back.",
-    "video": "c43ade5.mp4"
-  },
-  {
-    "hash": "56e9397ce0ce230cf7139b5bd4a6984d28f8f65d",
-    "short": "56e9397",
-    "title": "Live search/filter in session explorer and Files tab",
-    "date": "2026-03-04",
-    "type": "feat",
-    "tags": ["sessions", "files", "search"],
-    "description": "Added real-time search filtering to the session explorer and Files tab. In sessions, typing in the search bar immediately filters visible cards by session name and directory path. In Files, a search input filters by filename and path. Both filters work client-side with no server round-trips, making filtering instant even with hundreds of sessions or files.",
-    "video": "56e9397.mp4"
-  },
-  {
-    "hash": "c76d47ddebc7a543c4472aeaca25726594141138",
-    "short": "c76d47d",
-    "title": "Pin files and directories to top of session file explorer",
-    "date": "2026-03-04",
-    "type": "feat",
-    "tags": ["files", "ui"],
-    "description": "Files and directories in the session file explorer can now be pinned to the top of the listing. A pin icon appears on hover; clicking it persists the pin in a .pins.json file in the session's home directory. Pinned items are always sorted first, separated visually from the rest of the list, making it easy to keep important files like READMEs and config files accessible.",
-    "video": "c76d47d.mp4"
-  },
-  {
-    "hash": "af5705e8bf52306fe98f2220b7795ddedbca1916",
+    "hash": "af5705e8",
     "short": "af5705e",
-    "title": "Scheduler tab — recurring tasks, run history, free-text schedule expressions",
+    "title": "Scheduler tab — recurring tasks with free-text schedule expressions",
     "date": "2026-03-04",
     "type": "feat",
-    "tags": ["scheduler", "feature"],
-    "description": "Added a Scheduler tab for defining recurring tasks that run on a cron-like schedule. Schedules are defined using free-text expressions (e.g. 'every 5 minutes', 'daily at 9am') which are parsed into cron format. Each scheduled task can target any active session. The tab shows a full run history with timestamps and status. Tasks can be paused, resumed, or deleted individually.",
-    "video": "af5705e.mp4"
+    "tags": ["scheduler", "automation", "feature"],
+    "description": "The Scheduler tab lets you define recurring tasks that send prompts to any session on a cron-like schedule. Schedules use natural language expressions: 'every 5 minutes', 'daily at 9am', 'weekly on Monday at 8am'. Each task targets a session and fires automatically at the configured interval. Run history shows timestamps and status per job. Pause, resume, or delete schedules individually. This was the foundation for the event-triggered and mode-driven scheduler that shipped in June."
   },
   {
-    "hash": "caef823be2b0de34c0fad4ede29a32ab46f23151",
+    "hash": "caef823b",
     "short": "caef823",
-    "title": "Auto-restart Claude when it exits to a shell prompt (context escape hatch)",
+    "title": "Auto-restart Claude when it exits to a shell prompt",
     "date": "2026-03-03",
     "type": "feat",
-    "tags": ["sessions", "claude", "reliability"],
-    "description": "When Claude reaches its context limit, it exits back to the shell with a message like 'claude>'. amux now detects this shell prompt pattern and automatically re-launches Claude in the same session without any manual intervention. This means long-running Claude sessions no longer stall — they seamlessly continue from where the context was exhausted, keeping the workflow uninterrupted.",
-    "video": "caef823.mp4"
+    "tags": ["sessions", "reliability", "self-healing"],
+    "description": "When Claude Code exits to the shell (typically after context exhaustion), amux now detects the shell prompt pattern and automatically re-launches Claude in the same session without manual intervention. The agent continues from where it left off. This was the first self-healing capability — the foundation for the full watchdog system (context threshold compaction, thinking-block crash recovery, YOLO mode) that launched later."
   },
   {
-    "hash": "8785f5d87ede84de480916a5dfcd4ee8df7deb73",
-    "short": "8785f5d",
-    "title": "Auto-configure Claude for cloud containers — skip setup wizard",
-    "date": "2026-03-03",
-    "type": "feat",
-    "tags": ["cloud", "claude", "onboarding"],
-    "description": "Cloud containers now automatically configure Claude Code at startup using the user's Anthropic API key, skipping the interactive setup wizard that would otherwise block the session. The _init_claude_config() function writes ~/.claude.json directly with the correct OAuth/API key, so Claude is ready to use immediately when a cloud session is first opened.",
-    "video": "8785f5d.mp4"
-  },
-  {
-    "hash": "4f24b8a27026ae9e28b5eec247dded308ec69e13",
-    "short": "4f24b8a",
-    "title": "Gateway-level org/invite system with workspace switching",
-    "date": "2026-03-03",
-    "type": "feat",
-    "tags": ["cloud", "org", "gateway"],
-    "description": "Added a full organization and invitation system to the amux cloud gateway. Users can create workspaces, invite members by email, and switch between workspaces. The gateway handles org membership validation, invite tokens, and workspace routing — proxying each request to the correct user container based on the active workspace. Members management is exposed in the settings panel.",
-    "video": "4f24b8a.mp4"
-  },
-  {
-    "hash": "c959a55044100be2ca79023ffb092042bb00f4f6",
-    "short": "c959a55",
-    "title": "Collapse template section by default in create session modal",
-    "date": "2026-03-03",
-    "type": "fix",
-    "tags": ["sessions", "ui"],
-    "description": "The template selector in the Create Session modal is now collapsed by default, reducing visual clutter for users who don't use templates. A chevron toggle expands it when needed. This makes the modal feel lighter and faster to interact with for the common case.",
-    "video": "c959a55.mp4"
-  },
-  {
-    "hash": "01c68c49da038a1f011199d6a831d7dfa327c871",
+    "hash": "01c68c49",
     "short": "01c68c4",
-    "title": "Offline-first PWA — HTTPS, service worker, draft sessions, sync engine",
+    "title": "Offline-first PWA — HTTPS, service worker, sync engine, draft sessions",
     "date": "2026-02-17",
     "type": "feat",
-    "tags": ["pwa", "offline", "sync"],
-    "description": "Transformed amux into a full offline-first Progressive Web App. Features include: a service worker that caches the app shell and API responses; HTTPS via self-signed cert with automatic Tailscale cert fallback; draft session creation that queues when offline and syncs on reconnect; an IndexedDB-backed sync engine that stores board issues and sessions locally; SSE push updates that write to IDB and trigger UI refreshes; and an offline banner with a visible queue of pending operations.",
-    "video": "01c68c4.mp4"
+    "tags": ["pwa", "offline", "sync", "mobile"],
+    "description": "amux became a full offline-first Progressive Web App: service worker caching the app shell and API responses; HTTPS via self-signed cert with automatic Tailscale cert fallback; draft session creation that queues when offline and syncs on reconnect; IndexedDB-backed sync engine storing board issues and sessions locally; SSE push updates writing to IDB and triggering UI refreshes; and an offline banner showing the pending operations queue. Install to your iPhone home screen for a native-app-like experience managing your agent fleet from anywhere."
   }
 ]
