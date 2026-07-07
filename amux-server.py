@@ -6818,10 +6818,20 @@ def _scheduler_loop():
         except Exception as e:
             slog(f"[sched] scheduler loop error: {e}")
 
+_ical_debounce_timer: threading.Timer | None = None
+_ical_debounce_lock = threading.Lock()
+
 def _push_ical_bg():
-    """Trigger S3 iCal upload in a background thread."""
-    if _S3_BUCKET:
-        threading.Thread(target=_upload_ical_to_s3, daemon=True).start()
+    """Trigger S3 iCal upload in a background thread, debounced to 2s."""
+    global _ical_debounce_timer
+    if not _S3_BUCKET:
+        return
+    with _ical_debounce_lock:
+        if _ical_debounce_timer is not None:
+            _ical_debounce_timer.cancel()
+        _ical_debounce_timer = threading.Timer(2.0, _upload_ical_to_s3)
+        _ical_debounce_timer.daemon = True
+        _ical_debounce_timer.start()
 
 def _gcal_sync_bg(item_id, **kwargs):
     """Trigger Google Calendar sync for a single item in a background thread."""
