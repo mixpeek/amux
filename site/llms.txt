@@ -157,6 +157,20 @@ Claude Code runs one agent per terminal. amux runs dozens — with live monitori
 - [amux vs Claude Desktop](https://amux.io/compare/amux-vs-claude-desktop/)
 - [amux vs Antigravity CLI (agy)](https://amux.io/compare/amux-vs-antigravity-cli/): Antigravity CLI replaced Gemini CLI on June 18, 2026. amux runs and manages multiple agy sessions in parallel — self-healing, kanban, and mobile monitoring built in.
 
+## Press
+
+- [Press Kit](https://amux.io/press/): Official press kit — product description, boilerplate copy, key stats (MIT+CC, ~30k LOC single Python file, iOS App Store, 2025 launch), screenshots, and media contact (ethan@mixpeek.com). FAQ for journalists: what problem amux solves, who built it, pricing, and how it differs from Cursor and Devin.
+
+## Curated Lists
+
+- [Curated Lists Hub](https://amux.io/lists/): Index of ranked, research-backed lists of AI tools, coding agents, orchestrators, and developer frameworks.
+- [Best AI Coding Agents 2026](https://amux.io/lists/best-ai-coding-agents-2026/): 10 tools ranked — Claude Code (#1), amux (#2 as fleet orchestrator), Codex CLI, Cursor, Devin, Cline, Aider, GitHub Copilot, Windsurf, Gemini CLI. Pricing, strengths, summary table.
+- [Best Tools for Claude Code Users 2026](https://amux.io/lists/best-claude-code-tools-2026/): amux fleet manager, claude-squad, essential MCP servers, CLAUDE.md patterns, slash command skills, git worktrees, iTerm2 integration, standing instructions.
+- [Best AI Agent Orchestrators 2026](https://amux.io/lists/best-ai-agent-orchestrators-2026/): amux, LangGraph, CrewAI, AutoGen, OpenAI Symphony, Claude Managed Agents, Hermes Agent, dmux, OpenHands, sandboxed.sh — architecture, OSS status, when to use.
+- [Best Open Source AI Coding Tools 2026](https://amux.io/lists/open-source-ai-coding-tools-2026/): OSS-only — amux, Aider, Cline/Roo Code, OpenHands, Continue.dev, Goose, Antigravity CLI. License, language, model provider.
+- [Best AI Tools for Solopreneurs 2026](https://amux.io/lists/ai-tools-for-solopreneurs-2026/): 10 tools — what each replaces, monthly cost, time saved. amux, Claude, Cursor, Notion AI, Copilot, Perplexity, Make, v0, Bolt.new, Linear AI.
+- [AI Agent Frameworks Compared 2026](https://amux.io/lists/ai-agent-frameworks-comparison-2026/): amux, LangGraph, CrewAI, AutoGen, Semantic Kernel, Bee Agent, Agency Swarm, MetaGPT — language, multi-agent, state management, best use cases.
+
 ## Source
 
 - GitHub: https://github.com/mixpeek/amux

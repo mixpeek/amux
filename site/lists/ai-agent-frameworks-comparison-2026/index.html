@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agent Frameworks Compared 2026 — Developer Guide</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="AI agent frameworks compared for developers in 2026: amux, LangGraph, CrewAI, AutoGen, Semantic Kernel, Bee Agent, Agency Swarm, MetaGPT. Language, architecture, multi-agent support, and when to use each.">
+  <meta name="keywords" content="AI agent frameworks 2026, LangGraph vs CrewAI, AutoGen vs LangGraph, best multi-agent framework, AI agent framework comparison developer guide">
+  <link rel="canonical" href="https://amux.io/lists/ai-agent-frameworks-comparison-2026/">
+  <meta property="og:title" content="AI Agent Frameworks Compared 2026 — Developer Guide">
+  <meta property="og:description" content="Developer guide to AI agent frameworks: amux, LangGraph, CrewAI, AutoGen, Semantic Kernel, Bee Agent, Agency Swarm, MetaGPT — language, architecture, state management, and best use cases.">
+  <meta property="og:url" content="https://amux.io/lists/ai-agent-frameworks-comparison-2026/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Lists","item":"https://amux.io/lists/"},{"@type":"ListItem","position":3,"name":"AI Agent Frameworks Comparison 2026","item":"https://amux.io/lists/ai-agent-frameworks-comparison-2026/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Which AI agent framework should I use in 2026?","acceptedAnswer":{"@type":"Answer","text":"It depends on your use case. For coding-specific agent fleets (Claude Code, Codex, Gemini CLI), amux requires no framework code — you configure sessions and tasks via a web UI. For custom multi-agent pipelines in Python, LangGraph is the most mature framework with the best persistence and streaming support. For role-based workflows (researcher-writer-reviewer teams), CrewAI has the most intuitive API. For Microsoft Azure environments, AutoGen integrates natively. For production enterprise agents, Semantic Kernel has the strongest enterprise tooling."}},{"@type":"Question","name":"What is the difference between LangGraph and CrewAI?","acceptedAnswer":{"@type":"Answer","text":"LangGraph models agents as a directed graph — nodes are steps, edges are transitions, and you have full control over state flow including cycles and branching. CrewAI abstracts this into roles and tasks — you define agents with roles (researcher, writer) and tasks, and CrewAI handles the orchestration. LangGraph is more flexible and powerful; CrewAI is easier to get started with for standard patterns."}},{"@type":"Question","name":"Can I use LangGraph with Claude?","acceptedAnswer":{"@type":"Answer","text":"Yes. LangGraph is model-agnostic — it supports Claude via the LangChain Anthropic integration, as well as GPT-4, Gemini, and local models. The same graph definition works with any LLM provider by swapping the model object."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/lists/">Lists</a> <span class="sep">›</span> <span>AI Agent Frameworks Comparison 2026</span></div>
+
+    <h1>AI Agent Frameworks Compared 2026</h1>
+    <p class="subtitle">Developer guide — architecture, language, multi-agent support, state management, and honest when-to-use. Last updated July 2026.</p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Framework</th>
+          <th>Language</th>
+          <th>Multi-agent</th>
+          <th>Local/Cloud</th>
+          <th>State management</th>
+          <th>Best for</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>amux</strong></td><td>Python (no code required)</td><td>Yes — fleets</td><td>Local-first</td><td>SQLite + REST API</td><td>Coding agent fleets, overnight runs</td></tr>
+        <tr><td><strong>LangGraph</strong></td><td>Python / JS</td><td>Yes — graphs</td><td>Both</td><td>TypedDict, LangGraph Cloud</td><td>Custom stateful pipelines</td></tr>
+        <tr><td><strong>CrewAI</strong></td><td>Python</td><td>Yes — crews</td><td>Both</td><td>Per-task output passing</td><td>Role-based document workflows</td></tr>
+        <tr><td><strong>AutoGen</strong></td><td>Python</td><td>Yes — conversations</td><td>Both</td><td>Conversation history</td><td>Microsoft Azure, conversation agents</td></tr>
+        <tr><td><strong>Semantic Kernel</strong></td><td>C# / Python / Java</td><td>Yes — plugins</td><td>Both (Azure native)</td><td>Memory + kernel state</td><td>Enterprise, .NET shops</td></tr>
+        <tr><td><strong>Bee Agent (IBM)</strong></td><td>TypeScript</td><td>Yes</td><td>Both</td><td>Memory modules</td><td>IBM/TypeScript teams, complex memory</td></tr>
+        <tr><td><strong>Agency Swarm</strong></td><td>Python</td><td>Yes — agencies</td><td>Both</td><td>Thread-based</td><td>OpenAI Assistants API orchestration</td></tr>
+        <tr><td><strong>MetaGPT</strong></td><td>Python</td><td>Yes — software teams</td><td>Local-first</td><td>Shared message pool</td><td>Simulating software engineering teams</td></tr>
+      </tbody>
+    </table>
+
+    <h2>amux — Orchestrator, not a framework</h2>
+    <p>amux differs from the others on this list: it is not a coding framework. You don't write Python to define agents. Instead, you configure tmux-based Claude Code, Codex, or Gemini CLI sessions via a web UI, queue tasks on a shared kanban board, and let agents claim and execute them. Self-healing watchdog, mobile monitoring, zero code to write for standard coding workflows.</p>
+    <p><strong>Multi-agent:</strong> Fleet model — 10–50 coding agents sharing one kanban board. Atomic SQLite claiming prevents duplicate work. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Get amux →</a></p>
+
+    <h2>LangGraph</h2>
+    <p>The most mature Python framework for stateful multi-agent systems. Agents are nodes in a directed graph; edges define the transitions. Supports cycles (for retry and reflection loops), conditional routing, and parallel fan-out. Streams token output. LangGraph Cloud provides hosted checkpointing and deployment.</p>
+    <p><strong>State management:</strong> A TypedDict that every node reads and returns an update for. Persisted via SQLite (local) or PostgreSQL (LangGraph Cloud).</p>
+    <p><strong>Multi-agent:</strong> Full support — subgraphs, handoffs, supervisor patterns. The most flexible option for complex workflows.</p>
+    <p><strong>When to use:</strong> You need full control over flow, state, and transitions. You are building a custom pipeline that doesn't fit a higher-level abstraction. <a href="/compare/amux-vs-langraph/">amux vs LangGraph →</a></p>
+
+    <h2>CrewAI</h2>
+    <p>Role-based multi-agent framework with an intuitive API. Define Agents with roles, goals, and backstories; define Tasks with expected outputs; wire them into a Crew. CrewAI handles sequencing, tool invocation, and output passing. Supports hierarchical crews with manager agents.</p>
+    <p><strong>State management:</strong> Output of each task is passed to the next. No explicit state graph — agents communicate via task outputs.</p>
+    <p><strong>Multi-agent:</strong> Yes — sequential or hierarchical crews. Manager agent can delegate to worker agents dynamically.</p>
+    <p><strong>When to use:</strong> Document production, report generation, research-write-review pipelines where role separation is natural and you want a higher-level API than LangGraph.</p>
+
+    <h2>AutoGen (Microsoft)</h2>
+    <p>Conversation-based multi-agent framework from Microsoft Research. Agents communicate by sending messages to each other; you configure which agents talk to which and what triggers termination. Strong observability via AutoGen Studio. First-class Azure OpenAI integration.</p>
+    <p><strong>State management:</strong> Conversation history is the primary state. Agents reference prior messages to maintain context.</p>
+    <p><strong>Multi-agent:</strong> GroupChat for multiple agents; can include a HumanProxyAgent for human-in-the-loop approval.</p>
+    <p><strong>When to use:</strong> Microsoft/Azure environments, research scenarios requiring conversation-based agent coordination, teams that want AutoGen Studio's visual debugger. <a href="/compare/amux-vs-autogen/">amux vs AutoGen →</a></p>
+
+    <h2>Semantic Kernel (Microsoft)</h2>
+    <p>Enterprise-grade AI framework in C#, Python, and Java. Native Azure integration (Azure OpenAI, Cosmos DB, Azure Functions). Plugin-based architecture where tools are "skills" that the kernel invokes. Strong memory abstractions and enterprise governance features.</p>
+    <p><strong>State management:</strong> Kernel memory (volatile, persistent, semantic search). Deep Azure Cosmos DB integration for enterprise persistence.</p>
+    <p><strong>When to use:</strong> .NET/enterprise shops, Azure-native deployments, organizations that need enterprise governance and compliance tooling around AI agents.</p>
+
+    <h2>Bee Agent Framework (IBM)</h2>
+    <p>TypeScript-native agent framework from IBM Research. Modular memory system (token, summarize, sliding window), streaming output, tool integration via function calling. Well-suited for complex memory scenarios and TypeScript-first teams.</p>
+    <p><strong>When to use:</strong> TypeScript-first teams who need sophisticated memory management and prefer not to use Python.</p>
+
+    <h2>Agency Swarm</h2>
+    <p>Python framework built on top of the OpenAI Assistants API. Agencies are groups of specialized agents that can communicate via threads. Designed specifically for OpenAI's persistent thread model. Less flexible than LangGraph but easier to build on top of OpenAI's hosted agent state.</p>
+    <p><strong>When to use:</strong> Teams deeply committed to the OpenAI Assistants API who want a higher-level abstraction for multi-agent coordination.</p>
+
+    <h2>MetaGPT</h2>
+    <p>Research-oriented framework that simulates a software engineering team — Product Manager, Architect, Engineer, QA. Each role has specific responsibilities and generates artifacts (PRDs, architecture docs, code). More opinionated than LangGraph or CrewAI; less flexible but powerful for full software development simulation.</p>
+    <p><strong>When to use:</strong> Research, demonstrations, or scenarios where you want to simulate a full software team from requirements to code. Less suited for production pipelines.</p>
+
+    <p>See also: <a href="/lists/best-ai-agent-orchestrators-2026/">Best Orchestrators →</a> · <a href="/compare/">All amux comparisons →</a></p>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Lists</div>
+          <ul>
+            <li><a href="/lists/">All Lists</a></li>
+            <li><a href="/lists/best-ai-coding-agents-2026/">Best AI Coding Agents</a></li>
+            <li><a href="/lists/best-ai-agent-orchestrators-2026/">Best Orchestrators</a></li>
+            <li><a href="/lists/open-source-ai-coding-tools-2026/">Open Source Tools</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
