@@ -36,3 +36,13 @@ Track query gaps, target sections, priority, and status. Update every run.
 | best AI coding tools 2026 | /guides/ai-coding-tools-landscape-2026/ | L | existing |
 | vibe coding quality | /guides/vibe-coding-quality-gates/ | L | existing |
 | AI agent security | /guides/ai-agent-security-hardening/ | L | existing |
+| scale AI agents to 50+ | /guides/scaling-to-50-agents/ | H | enriched 2026-07-07 |
+| run 50 Claude Code agents parallel | /guides/scaling-to-50-agents/ | H | enriched 2026-07-07 |
+| Claude Code Codex Gemini CLI together | /guides/multi-runtime-agent-setup/ | H | shipped 2026-07-07 |
+| multi-runtime AI agent orchestration | /guides/multi-runtime-agent-setup/ | H | shipped 2026-07-07 |
+| run all three AI coding runtimes | /guides/multi-runtime-agent-setup/ | H | shipped 2026-07-07 |
+| amux vs Jules Google | /compare/amux-vs-jules/ | H | shipped 2026-07-07 |
+| Jules AI coding agent alternative | /compare/amux-vs-jules/ | H | shipped 2026-07-07 |
+| indie hacker AI agents 2026 | /for/indie-hackers/ | H | shipped 2026-07-07 |
+| build products solo with AI agents | /for/indie-hackers/ | H | shipped 2026-07-07 |
+| indie maker AI coding team | /for/indie-hackers/ | H | shipped 2026-07-07 |

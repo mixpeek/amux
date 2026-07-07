@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://amux.io/</loc><lastmod>2026-03-16</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>
+  <url><loc>https://amux.io/</loc><lastmod>2026-07-07</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>
   <url><loc>https://amux.io/press/</loc><lastmod>2026-07-06</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/lists/</loc><lastmod>2026-07-06</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/lists/best-ai-coding-agents-2026/</loc><lastmod>2026-07-06</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
@@ -12,6 +12,9 @@
   <url><loc>https://amux.io/concierge/</loc><lastmod>2026-07-03</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/for/solopreneurs/</loc><lastmod>2026-07-03</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/for/startup-founders/</loc><lastmod>2026-07-04</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/for/indie-hackers/</loc><lastmod>2026-07-07</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/compare/amux-vs-jules/</loc><lastmod>2026-07-07</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/guides/multi-runtime-agent-setup/</loc><lastmod>2026-07-07</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/guides/mobile-management-pwa/</loc><lastmod>2026-07-04</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-antigravity-cli/</loc><lastmod>2026-07-03</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/guides/team-workflow-setup/</loc><lastmod>2026-07-03</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
@@ -226,7 +229,7 @@
   <url><loc>https://amux.io/guides/running-10-plus-agents/</loc><lastmod>2026-07-05</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/guides/ai-agent-automations/</loc><lastmod>2026-07-05</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/for/ai-engineers/</loc><lastmod>2026-07-05</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
-  <url><loc>https://amux.io/guides/scaling-to-50-agents/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/guides/scaling-to-50-agents/</loc><lastmod>2026-07-07</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/guides/self-healing-configuration/</loc><lastmod>2026-07-06</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/guides/managed-ai-agent-setup/</loc><lastmod>2026-07-06</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-hermes-agent/</loc><lastmod>2026-07-06</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
