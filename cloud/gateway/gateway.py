@@ -135,6 +135,18 @@ _LOGIN_HTML = """<!DOCTYPE html>
     .promo-msg { font-size: 0.8rem; margin-top: 4px; min-height: 1.2em; }
     .promo-msg.ok { color: #34d399; }
     .promo-msg.err { color: #f87171; }
+    /* Clerk contrast overrides */
+    .cl-socialButtonsBlockButton { color: #e0e0e0 !important; border-color: #444 !important; }
+    .cl-socialButtonsBlockButtonText { color: #e0e0e0 !important; }
+    .cl-headerSubtitle { color: #ccc !important; }
+    .cl-dividerText { color: #bbb !important; }
+    .cl-dividerLine { border-color: #444 !important; }
+    .cl-footerActionText { color: #ccc !important; }
+    .cl-footerActionLink { color: #a99cf0 !important; }
+    .cl-card { border: 1px solid #333 !important; }
+    .cl-formFieldLabel { color: #e0e0e0 !important; }
+    .cl-footerPages { color: #ccc !important; }
+    .cl-footerPagesLink { color: #ccc !important; }
   </style>
 </head>
 <body>
@@ -313,13 +325,23 @@ _LOGIN_HTML = """<!DOCTYPE html>
 
     const _clerkAppearance = {
       variables: {
-        colorBackground: '#1e1e30',
-        colorText: '#f0f0f0',
-        colorTextSecondary: '#c0c0c0',
-        colorPrimary: '#9b8fe0',
-        colorInputBackground: '#161625',
-        colorInputText: '#f0f0f0',
+        colorBackground: '#1c1c2e',
+        colorText: '#f5f5f5',
+        colorTextSecondary: '#d4d4d4',
+        colorPrimary: '#a99cf0',
+        colorInputBackground: '#14142a',
+        colorInputText: '#f5f5f5',
         borderRadius: '8px',
+      },
+      elements: {
+        socialButtonsBlockButton: { color: '#e0e0e0', borderColor: '#3a3a5c' },
+        headerSubtitle: { color: '#d4d4d4' },
+        dividerText: { color: '#bbb' },
+        dividerLine: { borderColor: '#3a3a5c' },
+        footerActionText: { color: '#ccc' },
+        footerActionLink: { color: '#a99cf0' },
+        formFieldLabel: { color: '#e0e0e0' },
+        card: { borderColor: '#3a3a5c', border: '1px solid #3a3a5c' },
       },
     };
 
