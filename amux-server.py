@@ -536,6 +536,181 @@ def _bu_list_profiles() -> list:
     except Exception:
         return []
 
+# ── Browser profile registry ──────────────────────────────────────────────────
+# A "profile" is a named persistent Chrome context: browser-use runs it via
+# `-b real --profile <name>`, which reuses the real Chrome user-data-dir with
+# <name> as the profile sub-directory. Logging in once under a name persists —
+# so the whole game is to ALWAYS run under a named profile and remember which
+# domains each is logged into. The registry below is that memory: a small JSON
+# mapping profile name -> {domains, label, updated}. It lets us AUTO-SELECT the
+# right (already-logged-in) profile from a target URL's host. An agent only has
+# to call /api/browser/start with a URL — the matching profile loads itself.
+_PROFILES_REGISTRY = CC_HOME / "playwright-auth" / "profiles.json"
+_registry_lock = threading.Lock()
+
+def _bu_registry_load() -> dict:
+    try:
+        if _PROFILES_REGISTRY.exists():
+            data = json.loads(_PROFILES_REGISTRY.read_text())
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+def _bu_registry_save(reg: dict) -> bool:
+    try:
+        _PROFILES_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _PROFILES_REGISTRY.with_name(_PROFILES_REGISTRY.name + ".tmp")
+        tmp.write_text(json.dumps(reg, indent=2, sort_keys=True))
+        tmp.replace(_PROFILES_REGISTRY)
+        return True
+    except Exception:
+        return False
+
+def _host_of(url: str) -> str:
+    """Return the lowercase hostname of a URL (tolerates missing scheme)."""
+    try:
+        from urllib.parse import urlparse
+        u = url if "://" in url else "https://" + url
+        return (urlparse(u).hostname or "").lower()
+    except Exception:
+        return ""
+
+def _domain_matches(host: str, domain: str) -> bool:
+    """Suffix match: host equals domain or is a sub-domain of it."""
+    host = (host or "").lower().lstrip(".")
+    domain = (domain or "").lower().lstrip(".")
+    if not host or not domain:
+        return False
+    return host == domain or host.endswith("." + domain)
+
+def _bu_registry_register(name: str, host: str = "", label: str = "") -> dict:
+    """Ensure a profile is registered; add host to its domains. Returns the entry."""
+    with _registry_lock:
+        reg = _bu_registry_load()
+        entry = reg.get(name) if isinstance(reg.get(name), dict) else None
+        if entry is None:
+            entry = {"domains": [], "label": "", "updated": 0}
+        if host and host not in entry["domains"]:
+            entry["domains"].append(host)
+        if label:
+            entry["label"] = label
+        entry["updated"] = int(time.time())
+        reg[name] = entry
+        _bu_registry_save(reg)
+        return entry
+
+def _bu_pick_profile(url: str, explicit: str = "") -> tuple:
+    """Resolve which profile to use for a URL.
+
+    Explicit wins. Otherwise auto-select the registered profile whose domains
+    best (longest / most specific) match the URL's host. Falls back to 'default'.
+    Returns (name, auto_selected_bool).
+    """
+    if explicit:
+        return explicit, False
+    host = _host_of(url)
+    reg = _bu_registry_load()
+    best, best_len = None, -1
+    for name, meta in reg.items():
+        if not isinstance(meta, dict):
+            continue
+        for dom in (meta.get("domains") or []):
+            if _domain_matches(host, dom) and len(dom) > best_len:
+                best, best_len = name, len(dom)
+    if best:
+        return best, True
+    return "default", False
+
+def _bu_session_profile(session: str) -> str:
+    """Profile the running browser-use session was created with (from its meta), or ''."""
+    try:
+        import tempfile
+        meta = Path(tempfile.gettempdir()) / f"browser-use-{session}.meta"
+        if meta.exists():
+            return json.loads(meta.read_text()).get("profile") or ""
+    except Exception:
+        pass
+    return ""
+
+def _bu_open(url: str, session: str = "amux", explicit_profile: str = "",
+             fresh: bool = False, timeout_s: int = 30) -> dict:
+    """Open a URL under the correct profile.
+
+    Auto-selects a registered profile by domain when explicit_profile is empty,
+    so callers/agents stay logged in without tracking cookies themselves. The
+    session is (re)created with the resolved profile when the currently running
+    session uses a different one — that's what makes `-b real --profile` login
+    persistence actually take effect. Same-profile navigation reuses the session.
+    The response carries `profile` (chosen) and `auto_profile` (was it inferred).
+    """
+    profile, auto = _bu_pick_profile(url, explicit_profile)
+    cur = _bu_session_profile(session)
+    if cur and cur == profile and not fresh:
+        res = _bu_call(["open", url], session=session, timeout_s=timeout_s)
+    else:
+        if cur:  # existing session runs a different profile — close before reopening
+            _bu_call(["close"], session=session, timeout_s=10)
+        res = _bu_call(["-b", "real", "--profile", profile, "open", url],
+                       session=session, timeout_s=timeout_s)
+        # Graceful fallback: if real-Chrome mode can't launch, browse anyway
+        if isinstance(res, dict) and res.get("error"):
+            fb = _bu_call(["open", url], session=session, timeout_s=timeout_s)
+            if isinstance(fb, dict) and not fb.get("error"):
+                fb["profile"] = profile
+                fb["auto_profile"] = auto
+                fb["profile_fallback"] = True
+                return fb
+    if isinstance(res, dict):
+        res = dict(res)
+        res["profile"] = profile
+        res["auto_profile"] = auto
+    return res
+
+def _bu_parse_elements(raw_text: str, limit: int = 120) -> dict:
+    """Parse browser-use `state` _raw_text into {viewport, elements[]}.
+
+    _raw_text lines look like:  [1102]<button />   then an indented label line.
+    Returns numbered, index-addressable elements for ref-based clicking — the
+    structured (accessibility-first) perception surface, more reliable than
+    pixel clicking.
+    """
+    vp = None
+    els = []
+    if not raw_text:
+        return {"viewport": vp, "elements": els}
+    el_re = re.compile(r"^(\s*)\*?\[(\d+)\]<([a-zA-Z0-9\-]+)([^>]*?)/?>\s*$")
+    attr_label_re = re.compile(r'(?:aria-label|id|role|name|placeholder|value)=([^\s/>]+)')
+    lines = raw_text.splitlines()
+    for i, line in enumerate(lines):
+        if vp is None and line.startswith("viewport:"):
+            m = re.search(r"(\d+)\s*x\s*(\d+)", line)
+            if m:
+                vp = {"w": int(m.group(1)), "h": int(m.group(2))}
+            continue
+        m = el_re.match(line)
+        if not m:
+            continue
+        indent, idx, tag, attrs = m.groups()
+        # Label: prefer a following deeper-indented text (non-bracket) line
+        label = ""
+        for j in range(i + 1, min(i + 4, len(lines))):
+            nxt = lines[j]
+            if "[" in nxt and "]<" in nxt:
+                break
+            t = nxt.strip()
+            if t and not t.startswith("|") and not t.startswith("<"):
+                label = t
+                break
+        if not label:
+            am = attr_label_re.search(attrs or "")
+            if am:
+                label = am.group(1)
+        els.append({"index": int(idx), "tag": tag, "label": label[:80]})
+        if len(els) >= limit:
+            break
+    return {"viewport": vp, "elements": els}
+
 def _bu_screenshot(session: str = "amux", path: str = "", retries: int = 3) -> dict:
     """Take a screenshot, return {path, size}. Retries on SessionManager errors."""
     dest = path or str(CC_HOME / "browser-screenshots" / "latest.jpg")
@@ -42175,29 +42350,51 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
         if path.startswith("/api/browser"):
 
             # GET /api/browser/profiles
+            # Returns the profile REGISTRY (name + domains + label) so an agent
+            # can see which named profile is logged into which sites. Opening a
+            # URL via /start or /navigate auto-loads the matching profile — a
+            # caller need only pass a URL and it lands already-logged-in.
+            # Also returns `chrome_profiles`: the real local Chrome sub-profiles.
             if method == "GET" and path == "/api/browser/profiles":
-                return self._json({"profiles": _bu_list_profiles()})
+                reg = _bu_registry_load()
+                profiles = [
+                    {"name": n,
+                     "domains": (m.get("domains") or []) if isinstance(m, dict) else [],
+                     "label": (m.get("label") or "") if isinstance(m, dict) else "",
+                     "updated": (m.get("updated") or 0) if isinstance(m, dict) else 0}
+                    for n, m in sorted(reg.items())
+                ]
+                return self._json({
+                    "profiles": profiles,
+                    "registry": reg,
+                    "chrome_profiles": _bu_list_profiles(),
+                })
 
-            # POST /api/browser/start  {"url":"...","session":"...","profile":"..."}
+            # POST /api/browser/start  {"url":"...","session":"...","profile":"...","fresh":false}
+            # Omit `profile` to auto-select the registered profile matching the
+            # URL host (else 'default'). Response includes the chosen `profile`
+            # and `auto_profile` (True when it was inferred).
             if method == "POST" and path == "/api/browser/start":
                 body = self._read_body()
                 url = body.get("url", "about:blank")
                 session = body.get("session", "amux")
-                profile = body.get("profile", "default")
-                args = []
-                if profile:
-                    args += ["-b", "real", "--profile", profile]
-                args += ["open", url]
-                return self._json(_bu_call(args, session=session, timeout_s=30))
+                profile = (body.get("profile") or "").strip()
+                fresh = bool(body.get("fresh"))
+                return self._json(_bu_open(url, session=session,
+                                           explicit_profile=profile, fresh=fresh,
+                                           timeout_s=30))
 
-            # POST /api/browser/navigate  {"url":"...","session":"..."}
+            # POST /api/browser/navigate  {"url":"...","session":"...","profile":"..."}
+            # Same auto-profile logic as /start (keeps you logged in across hops).
             if method == "POST" and path == "/api/browser/navigate":
                 body = self._read_body()
                 url = body.get("url", "")
                 if not url:
                     return self._json({"error": "url required"}, 400)
                 session = body.get("session", "amux")
-                return self._json(_bu_call(["open", url], session=session))
+                profile = (body.get("profile") or "").strip()
+                return self._json(_bu_open(url, session=session,
+                                           explicit_profile=profile, timeout_s=30))
 
             # GET /api/browser/screenshot?session=amux&url=...
             if method == "GET" and path == "/api/browser/screenshot":
@@ -42211,10 +42408,23 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 return self._json(_bu_screenshot(session=session))
 
             # GET /api/browser/state?session=amux
+            # Structured (accessibility-first) perception snapshot. In addition
+            # to browser-use's raw state, we surface a parsed `elements` list
+            # ([{index,tag,label}]) + `viewport` for ref-based clicking.
             if method == "GET" and path == "/api/browser/state":
                 session = (qs.get("session", ["amux"])[0] if isinstance(qs.get("session"), list)
                            else qs.get("session", "amux"))
-                return self._json(_bu_call(["state"], session=session))
+                res = _bu_call(["state"], session=session)
+                try:
+                    raw = (res.get("data") or {}).get("_raw_text", "") if isinstance(res, dict) else ""
+                    if raw:
+                        parsed = _bu_parse_elements(raw)
+                        res = dict(res)
+                        res["elements"] = parsed["elements"]
+                        res["viewport"] = parsed["viewport"]
+                except Exception:
+                    pass
+                return self._json(res)
 
             # POST /api/browser/action  {"action":"click|type|key|scroll|eval","session":"...","..."}
             if method == "POST" and path == "/api/browser/action":
@@ -42318,19 +42528,32 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     profiles.add("default")
                 return self._json({"profiles": sorted(profiles)})
 
-            # POST /api/browser/save-profile  {"name":"...", "session":"..."}
+            # POST /api/browser/save-profile  {"name":"...", "session":"...", "host":"...", "label":"..."}
+            # "Saving" a profile = registering it and recording the domain(s) it
+            # is logged into. The login itself already persists in the profile's
+            # Chrome user-data-dir (that's automatic with `-b real --profile`);
+            # this just teaches the registry so the domain auto-selects the
+            # profile next time. `name` defaults to the session's active profile.
             if method == "POST" and path == "/api/browser/save-profile":
                 body = self._read_body()
-                name = body.get("name", "").strip()
-                if not name:
-                    return self._json({"error": "name required"}, 400)
                 session = body.get("session", "amux")
-                # Save current browser-use session cookies to a Playwright auth profile
-                dest = CC_HOME / "playwright-auth" / "profiles" / name
-                dest.mkdir(parents=True, exist_ok=True)
+                name = (body.get("name") or "").strip() or _bu_session_profile(session) or "default"
+                label = (body.get("label") or "").strip()
+                host = (body.get("host") or "").strip().lower()
+                if not host:
+                    # Derive the current page's host from the live session
+                    ev = _bu_call(["eval", "location.hostname"], session=session)
+                    if isinstance(ev, dict) and ev.get("success"):
+                        host = str((ev.get("data") or {}).get("result", "") or "").lower()
                 try:
-                    result = _bu_call(["save-cookies", str(dest)], session=session, timeout_s=15)
-                    return self._json({"success": True, "profile": name, "path": str(dest)})
+                    entry = _bu_registry_register(name, host=host, label=label)
+                    return self._json({
+                        "success": True,
+                        "profile": name,
+                        "host": host,
+                        "domains": entry.get("domains", []),
+                        "label": entry.get("label", ""),
+                    })
                 except Exception as e:
                     return self._json({"error": str(e)}, 500)
 
