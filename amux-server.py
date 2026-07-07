@@ -12972,6 +12972,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     border-radius: 9px; background: rgba(88,166,255,0.14); color: var(--accent);
     border: 1px solid rgba(88,166,255,0.28); vertical-align: 1px; line-height: 1.2; }
   .peek-tab-count.has-count { display: inline-block; }
+  /* Schedules badge: green when the session has ≥1 active schedule, grey when all inactive. */
+  .peek-tab-count.sched-on { background: rgba(63,185,80,0.16); color: #3fb950; border-color: rgba(63,185,80,0.34); }
+  .peek-tab-count.sched-off { background: rgba(139,148,158,0.14); color: var(--dim); border-color: rgba(139,148,158,0.28); }
   .peek-dir-bar { display: flex; align-items: center; gap: 8px; padding: 3px 14px;
     font-size: 0.75rem; color: var(--dim); border-bottom: 1px solid var(--border);
     flex-shrink: 0; min-width: 0; overflow: hidden; }
@@ -21211,6 +21214,16 @@ function _renderPeekIssuesKanban(items, list) {
   });
 }
 // ── Peek Schedules (scheduler tasks for this session) ────────────────────────
+// Color the Schedules tab badge: green when the session has ≥1 ACTIVE (enabled)
+// schedule, grey when it has schedules but all are inactive (paused).
+function _peekColorSchedBadge(schedList) {
+  const el = document.getElementById('peek-tab-schedules-count');
+  if (!el) return;
+  const n = (schedList || []).length;
+  const anyActive = (schedList || []).some(s => s.enabled);
+  el.classList.toggle('sched-on', n > 0 && anyActive);
+  el.classList.toggle('sched-off', n > 0 && !anyActive);
+}
 async function _peekUpdateTabCounts() {
   if (!peekSession) return;
   const sess = peekSession;
@@ -21233,8 +21246,9 @@ async function _peekUpdateTabCounts() {
     const r = await fetch(API + '/api/schedules');
     if (peekSession !== sess) return;
     const all = await r.json();
-    const n = all.filter(s => s.session === sess && !s.deleted).length;
-    setCount('peek-tab-schedules-count', n);
+    const sched = all.filter(s => s.session === sess && !s.deleted);
+    setCount('peek-tab-schedules-count', sched.length);
+    _peekColorSchedBadge(sched);
   } catch(e) {}
   try {
     const r = await fetch(API + '/api/notes');
@@ -21268,12 +21282,14 @@ async function _peekLoadSchedules() {
     await Promise.all([fetchSchedules(), fetchSchedulerRuns()]);
     if (!peekSession) return;
     _peekRenderSchedules();
-    const n = schedules.filter(s => s.session === peekSession && !s.deleted).length;
+    const sched = schedules.filter(s => s.session === peekSession && !s.deleted);
+    const n = sched.length;
     const tabCount = document.getElementById('peek-tab-schedules-count');
     if (tabCount) {
       if (n > 0) { tabCount.textContent = n; tabCount.classList.add('has-count'); }
       else { tabCount.textContent = ''; tabCount.classList.remove('has-count'); }
     }
+    _peekColorSchedBadge(sched);
   } catch(e) {
     list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 4px;">Failed to load schedules.</div>';
   }
@@ -21708,7 +21724,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.44';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.45';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21766,7 +21782,7 @@ function openPeek(name, opts) {
   // Reset tab badges; will be repopulated by _peekUpdateTabCounts
   ['peek-tab-steering-count','peek-tab-issues-count','peek-tab-schedules-count','peek-tab-notes-count'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) { el.textContent = ''; el.classList.remove('has-count'); }
+    if (el) { el.textContent = ''; el.classList.remove('has-count', 'sched-on', 'sched-off'); }
   });
   _peekUpdateTabCounts();
   loadPeekCommitGuard(name);
@@ -37856,7 +37872,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.44';
+const CACHE = 'amux-v0.9.45';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
