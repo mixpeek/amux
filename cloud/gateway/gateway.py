@@ -2035,7 +2035,20 @@ class Handler(BaseHTTPRequestHandler):
                 checkout_params["subscription_data"] = {
                     "trial_period_days": TRIAL_DAYS,
                 }
-            session = stripe.checkout.Session.create(**checkout_params)
+            try:
+                session = stripe.checkout.Session.create(**checkout_params)
+            except stripe._error.InvalidRequestError as e:
+                if "No such customer" in str(e):
+                    db.execute("UPDATE orgs SET stripe_customer_id=NULL WHERE id=?", (target_org,))
+                    db.execute("UPDATE users SET stripe_customer_id=NULL WHERE id=?", (target_org,))
+                    db.commit()
+                    checkout_params.pop("customer", None)
+                    checkout_params["customer_email"] = user_email
+                    session = stripe.checkout.Session.create(**checkout_params)
+                else:
+                    return self._json({"error": str(e)}, 400)
+            except Exception as e:
+                return self._json({"error": f"stripe error: {e}"}, 500)
             return self._json({"url": session.url})
 
         if path == "/api/stripe/portal" and self.command == "POST":
