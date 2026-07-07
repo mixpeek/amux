@@ -5722,11 +5722,13 @@ def _auto_create_board_issue(session_name: str, title: str, prompt_text: str):
         ).fetchone()
         now = int(time.time())
         if existing:
-            # Update title and move to doing
-            db.execute("UPDATE issues SET title=?, status='doing', updated=? WHERE id=?",
-                       (title, now, existing["id"]))
-            db.commit()
-            _board_changed()
+            # An active agent card already exists for this session — LOG the new
+            # prompt against it, but NEVER overwrite its title or flip its status.
+            # (2026-07-06) Auto-retitling with a haiku summary + auto-moving to
+            # 'doing' on every inbound message clobbered manually-managed cards
+            # (orch MO-2952/2963 incident) — and it's the same footgun the codebase
+            # already forbids in _complete_session_board_issue: a status/title
+            # change must be a deliberate act, never a side effect of run-state.
             _append_board_log(existing["id"], f"New task: {prompt_text[:200]}")
             return
         # Create new issue
@@ -45001,7 +45003,13 @@ def main():
     schedule_job(_evict_stale_caches,    interval=300,                  name="cache_evict", initial_delay=60)
     schedule_job(_cleanup_tmp,           interval=1800,                 name="tmp_cleanup", initial_delay=60)
     schedule_job(_auto_archive_idle,     interval=3600,                 name="auto_archive", initial_delay=300)
-    schedule_job(_board_stale_nudge,     interval=120,                  name="board_stale", initial_delay=30)
+    # DISABLED 2026-07-06 — auto-steering every idle session about stale doing/review
+    # cards woke ~20 sessions at once into a churn storm and created a nag loop
+    # (each nudge is a message → _summarize_task_bg re-titles the session's active
+    # card). Two live reports within minutes of deploy. The `stale` UI flag on
+    # board items stays (advisory, harmless); only the auto-steer is off. Re-enable
+    # behind an explicit opt-in / gentler design before turning back on.
+    # schedule_job(_board_stale_nudge,     interval=120,                  name="board_stale", initial_delay=30)
     schedule_job(_enforce_archived_stopped, interval=600,                name="archive_enforce", initial_delay=30)
     schedule_job(_cleanup_old_transcripts, interval=86400,              name="transcript_cleanup", initial_delay=600)
     schedule_job(_cleanup_logs,             interval=86400,              name="log_rotation",       initial_delay=120)
