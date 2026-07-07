@@ -41,6 +41,12 @@
       theme = next;
       applyTheme(next);
     };
-    nav.insertBefore(btn, nav.firstChild);
+    // Insert just before the first CTA button so toggle sits between text links and action buttons
+    var firstCta = nav.querySelector('.nav-cta, .cta, [class*="cta"]');
+    if (firstCta) {
+      nav.insertBefore(btn, firstCta);
+    } else {
+      nav.appendChild(btn);
+    }
   });
 })();
