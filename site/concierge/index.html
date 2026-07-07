@@ -382,18 +382,22 @@
 
   /* ── Dark mode ── */
   [data-theme="dark"] {
-    --bg:#1c1814; --bg-soft:#231f18; --bg-soft2:#2a2519;
-    --ink:#f0ece4; --ink-2:#b8b0a0; --ink-3:#8a8070; --mute:#6a6055;
+    --bg:#1c1814; --bg-soft:#231f18; --bg-soft2:#2e2820;
+    --ink:#f0ece4; --ink-2:#c0b8a8; --ink-3:#9a9080; --mute:#6a6055;
     --line:#3a342a; --line-2:#4a4035;
-    --brand:#e07040;
-    --accent:#e07040; --accent-2:#c85a28; --accent-soft:rgba(224,112,64,.15);
+    --brand:#e07848;
+    --accent:#e07848; --accent-2:#c85a28; --accent-soft:rgba(224,120,72,.15);
     --ok:#7ab05a; --ok-soft:rgba(122,176,90,.15);
-    --dark:#1c1814; --dark-2:#231f18; --dark-3:#2a2519;
-    --cream:#2a2519; --cream-dim:#4a4035;
-    --shadow:0 1px 2px rgba(0,0,0,.2), 0 12px 32px -16px rgba(0,0,0,.5);
+    /* --dark must differ slightly from --bg so .on-dark sections read as panels */
+    --dark:#131108; --dark-2:#1a1610; --dark-3:#221d14;
+    /* --cream stays LIGHT — used as text color inside .on-dark dark sections */
+    --cream:#f0ece4; --cream-dim:#c0b8a8;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 12px 32px -16px rgba(0,0,0,.6);
   }
   [data-theme="dark"] body { background: var(--bg); color: var(--ink); }
-  [data-theme="dark"] header.site { background: oklch(0.14 0.010 60 / 0.90); border-color: var(--line); }
+  [data-theme="dark"] header.site { background: rgba(28,24,20,.88); border-color: var(--line); }
+  [data-theme="dark"] .btn-ghost { background: var(--bg-soft2); color: var(--ink); border-color: var(--line-2); }
+  [data-theme="dark"] .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
   .theme-toggle {
     background: var(--bg-soft);
     border: 1px solid var(--line-2);
