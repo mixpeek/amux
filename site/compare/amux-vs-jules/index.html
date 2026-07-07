@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs Jules (Google) — Background Coding Agents Compared (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs Jules: compare Google's autonomous background coding agent with amux's open-source multi-agent control plane. Self-hosted vs cloud-managed, fleet-first vs single-task, free vs paid.">
+  <meta name="keywords" content="amux vs jules, jules google alternative, jules ai coding agent, background coding agent comparison, autonomous coding agent open source, jules vs claude code, google jules alternative">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-jules/">
+  <meta property="og:title" content="amux vs Jules (Google) — Background Coding Agents Compared (2026)">
+  <meta property="og:description" content="Jules is Google's background AI coding agent. amux is an open-source fleet of them. Here's how they compare on autonomy, scale, cost, and control.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-jules/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux vs Jules (Google) — Background Coding Agents Compared (2026)">
+  <meta name="twitter:description" content="Jules is Google's background AI coding agent. amux is an open-source fleet of them. Self-hosted vs cloud-managed, fleet-first vs single-task.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"},
+      {"@type": "ListItem", "position": 3, "name": "amux vs Jules", "item": "https://amux.io/compare/amux-vs-jules/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux vs Jules (Google) — Background Coding Agents Compared",
+    "description": "Compare Google's Jules background coding agent with amux's open-source multi-agent control plane. Self-hosted vs cloud-managed, fleet-first vs single-task.",
+    "url": "https://amux.io/compare/amux-vs-jules/",
+    "datePublished": "2026-07-07",
+    "dateModified": "2026-07-07",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
+    "image": "https://amux.io/og-image.png"
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is Jules by Google?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Jules is Google's autonomous AI coding agent, announced in 2025. It connects to your GitHub repository, reads open issues, writes code to fix them, and opens pull requests — all without you being present. It runs in Google's cloud infrastructure using Gemini models. Jules is designed for single-task background execution: you assign an issue, Jules works on it asynchronously."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the main difference between amux and Jules?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Scale and control. Jules is a single-agent cloud service — you submit one task, it runs in Google's sandbox. amux is an open-source control plane for running dozens of agents simultaneously on your own infrastructure. With amux you can run 10-50 Claude Code, Codex, or Gemini CLI agents in parallel, with a shared kanban board, atomic task claiming, self-healing watchdog, and monitoring from your phone. amux is also model-agnostic; Jules is Gemini-only."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is amux a Jules alternative?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "If you want a 'submit an issue, get back a PR' cloud service, Jules and similar tools are purpose-built for that. If you want to run 20 parallel tasks overnight from your own machine, use multiple AI providers, and have a dashboard to monitor everything, amux is the better fit. They're not direct replacements — Jules is a cloud micro-service, amux is an open-source orchestration platform."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does Jules support running multiple agents in parallel?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Jules runs tasks one at a time per issue submission — it's a sequential cloud-hosted service. amux runs 10-50 agents simultaneously from a single dashboard, all sharing a task queue with atomic claiming. For high-throughput parallel workloads, amux provides capabilities Jules does not offer."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I self-host Jules?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. Jules runs entirely on Google's cloud infrastructure. amux is open-source (MIT + Commons Clause) and self-hosted on your own machine or cloud VM. With amux you control your code, your infrastructure, and your API keys — nothing runs in a third-party sandbox."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Jules</span></div>
+
+    <h1>amux vs Jules (Google)</h1>
+    <p class="subtitle">Jules is Google's cloud-hosted autonomous coding agent for GitHub issues. amux is an open-source control plane that runs a fleet of them — dozens of agents simultaneously, on your own infrastructure, with your choice of model. Here is how they compare. <em>Updated July 2026.</em></p>
+
+    <p><strong>Jules</strong> (Google) is an autonomous AI coding agent that connects to your GitHub repository and resolves issues autonomously. You assign an issue to Jules; it analyzes the problem, writes code, opens a draft PR, and asks for review. It runs entirely in Google's cloud, powered by Gemini models. Jules focuses on the single-task-at-a-time workflow: assign one issue, get back a PR.</p>
+
+    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of Claude Code, Codex, or Gemini CLI sessions simultaneously. Built-in kanban board with atomic task claiming, notes, CRM, Gmail API, browser automation, and scheduler. Single Python file, MIT + Commons Clause licensed, zero external dependencies.</p>
+
+    <h2>At a Glance</h2>
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Feature</th>
+            <th style="padding:10px 16px;text-align:center;">amux</th>
+            <th style="padding:10px 16px;text-align:center;">Jules</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Parallel agents</td>
+            <td style="padding:10px 16px;text-align:center;">10-50+ simultaneously</td>
+            <td style="padding:10px 16px;text-align:center;">One task at a time</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">AI model</td>
+            <td style="padding:10px 16px;text-align:center;">Claude, Codex, Gemini — your choice</td>
+            <td style="padding:10px 16px;text-align:center;">Gemini only</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Self-hosted</td>
+            <td style="padding:10px 16px;text-align:center;">Yes — your machine or VM</td>
+            <td style="padding:10px 16px;text-align:center;">No — Google's cloud only</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Open source</td>
+            <td style="padding:10px 16px;text-align:center;">Yes (MIT + Commons Clause)</td>
+            <td style="padding:10px 16px;text-align:center;">No</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Monitoring dashboard</td>
+            <td style="padding:10px 16px;text-align:center;">Web + iOS app + mobile PWA</td>
+            <td style="padding:10px 16px;text-align:center;">Web (GitHub PR interface)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Task queue / kanban</td>
+            <td style="padding:10px 16px;text-align:center;">Built-in (SQLite, atomic claiming)</td>
+            <td style="padding:10px 16px;text-align:center;">GitHub Issues</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Self-healing on crash</td>
+            <td style="padding:10px 16px;text-align:center;">Yes (watchdog auto-restart)</td>
+            <td style="padding:10px 16px;text-align:center;">Managed by Google</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Built-in CRM / email</td>
+            <td style="padding:10px 16px;text-align:center;">Yes</td>
+            <td style="padding:10px 16px;text-align:center;">No</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Browser automation</td>
+            <td style="padding:10px 16px;text-align:center;">Yes (built-in)</td>
+            <td style="padding:10px 16px;text-align:center;">No</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Cost (orchestration layer)</td>
+            <td style="padding:10px 16px;text-align:center;">Free (open source)</td>
+            <td style="padding:10px 16px;text-align:center;">Usage-based (Google AI)</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">Setup time</td>
+            <td style="padding:10px 16px;text-align:center;">~5 min (local install)</td>
+            <td style="padding:10px 16px;text-align:center;">~5 min (GitHub OAuth)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>How Jules Works</h2>
+    <p>Jules integrates with GitHub at the repository level. When you assign an issue to Jules (or tag it with a Jules label), it:</p>
+    <ol>
+      <li>Clones your repository in Google's sandboxed environment</li>
+      <li>Reads the issue description and associated context</li>
+      <li>Plans and writes code to resolve the issue</li>
+      <li>Opens a draft pull request with the changes</li>
+      <li>Requests review from the issue author or repository maintainers</li>
+    </ol>
+    <p>Jules is optimized for this specific workflow — the "autonomous issue-to-PR" pipeline. It handles one issue at a time per assignment, running asynchronously in the background while you do other things.</p>
+
+    <h2>How amux Works</h2>
+    <p>amux is a control plane that runs on your machine (or a cloud VM) and manages a fleet of AI coding agents — Claude Code, Codex CLI, or Antigravity CLI (Gemini). You register sessions with task descriptions, and agents pull work from a shared kanban board with atomic claiming to prevent duplicate effort. A background watchdog auto-restarts crashed agents and compacts context on overflow.</p>
+    <p>Unlike Jules, amux is not limited to GitHub Issues. Agents can work on any task you define — feature implementation, refactoring, documentation, testing, code review, data processing, or any other software task. The built-in CRM, Gmail API, browser automation, and scheduler mean agents can also handle business tasks beyond coding.</p>
+
+    <h2>Which Should You Use?</h2>
+    <p>The honest answer is that they serve different needs:</p>
+
+    <h3>Use Jules when</h3>
+    <ul>
+      <li>You have a GitHub Issues workflow and want to automate specific issues without infrastructure setup</li>
+      <li>You want a managed cloud service with no operational overhead</li>
+      <li>Your task is well-defined, bounded, and maps cleanly to a single GitHub issue</li>
+      <li>You're comfortable with code running in Google's sandbox (not on your own infrastructure)</li>
+    </ul>
+
+    <h3>Use amux when</h3>
+    <ul>
+      <li>You want to run 10-50 agents in parallel overnight and wake up to dozens of completed tasks</li>
+      <li>You want to mix Claude Code + Codex + Gemini CLI in the same fleet</li>
+      <li>You need complete control over your code, keys, and infrastructure (self-hosted)</li>
+      <li>Your tasks go beyond GitHub Issues — business automation, browser tasks, email, CRM</li>
+      <li>Cost matters — amux is free; you pay only for AI provider tokens at market rates</li>
+      <li>You want a mobile app and iOS monitoring for your agent fleet</li>
+    </ul>
+
+    <h3>Use both</h3>
+    <p>They are not mutually exclusive. A common pattern: use Jules for triaging and resolving individual GitHub issues with a simple workflow, use amux for large batch jobs, overnight coding sprints, and anything that requires running multiple agents simultaneously or mixing providers.</p>
+
+    <h2>Cost Comparison</h2>
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Usage scenario</th>
+            <th style="padding:10px 16px;text-align:left;">amux</th>
+            <th style="padding:10px 16px;text-align:left;">Jules</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Orchestration layer</td>
+            <td style="padding:10px 16px;">Free (open source)</td>
+            <td style="padding:10px 16px;">Usage-based (Google AI pricing)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">AI inference</td>
+            <td style="padding:10px 16px;">Your API keys (Claude/OpenAI/Google) at market rates</td>
+            <td style="padding:10px 16px;">Bundled in Jules service</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Infrastructure</td>
+            <td style="padding:10px 16px;">Your machine (free) or VM (~$0.60-1.20/hr)</td>
+            <td style="padding:10px 16px;">Google's cloud (included)</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">10 tasks overnight</td>
+            <td style="padding:10px 16px;">~$5-20 in API tokens (varies by model/task)</td>
+            <td style="padding:10px 16px;">Per-task pricing (varies)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Frequently Asked Questions</h2>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What is Jules by Google?</summary>
+      <p style="margin:0.8rem 0 0;">Jules is Google's autonomous AI coding agent that connects to GitHub repositories, resolves issues independently, and opens pull requests. It runs on Google's cloud infrastructure using Gemini models. Designed for the "assign an issue, get back a PR" workflow.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Can amux do what Jules does?</summary>
+      <p style="margin:0.8rem 0 0;">Yes, and more. amux can run an agent configured to read GitHub Issues and submit PRs — this is just one of many tasks agents can take from the board. The difference is amux runs this at scale (10-50 agents simultaneously) on your own infrastructure, with your choice of AI model, and with visibility in a dashboard or iOS app. Jules is a managed cloud product; amux is a self-hosted platform.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Does Jules support running multiple agents in parallel?</summary>
+      <p style="margin:0.8rem 0 0;">Jules handles one task at a time per issue assignment. amux runs 10-50 agents simultaneously, all pulling from a shared task queue with atomic claiming to prevent duplicate work. For high-throughput parallel workloads, amux is designed specifically for this.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Can I self-host Jules?</summary>
+      <p style="margin:0.8rem 0 0;">No. Jules is a managed Google cloud service. amux is open-source (MIT + Commons Clause) and fully self-hosted — your machine, your keys, your infrastructure. Nothing runs in a third-party sandbox.</p>
+    </details>
+
+    <div class="cta-box">
+      <h3>Run your AI engineering team from one dashboard</h3>
+      <p>amux is the open-source control plane for running a fleet of AI coding agents — Claude Code, Codex, Gemini CLI — simultaneously, with self-healing, kanban, and iOS app monitoring. Single Python file, zero dependencies, MIT licensed.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <a class="btn" href="/guides/ai-coding-agents-overnight/" style="margin-left:0.75rem;">Overnight agent guide →</a>
+    </div>
+
+    <p style="margin-top:2rem;"><strong>Related comparisons:</strong>
+      <a href="/compare/amux-vs-devin/">amux vs Devin</a> ·
+      <a href="/compare/amux-vs-codex/">amux vs Codex CLI</a> ·
+      <a href="/compare/amux-vs-github-copilot/">amux vs GitHub Copilot</a> ·
+      <a href="/compare/amux-vs-openhands/">amux vs OpenHands</a> ·
+      <a href="/compare/">All comparisons →</a>
+    </p>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-codex/">vs Codex</a></li>
+            <li><a href="/compare/amux-vs-github-copilot/">vs GitHub Copilot</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/concierge/">Concierge</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
