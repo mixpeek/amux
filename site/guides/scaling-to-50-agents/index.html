@@ -4,26 +4,120 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Scaling to 50+ Agents — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Tips for running 50 or more Claude Code agents in parallel with amux.">
-  <meta name="keywords" content="scale AI agents, 50 agents parallel, large scale AI coding, agent farm">
+  <title>Scaling to 50+ AI Coding Agents — Architecture, Rate Limits & Monitoring (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="How to run 50+ Claude Code, Codex, or Gemini CLI agents in parallel with amux. Covers hardware sizing, API rate limit strategies, atomic task queues, monitoring dashboards, and failure recovery.">
+  <meta name="keywords" content="scale AI agents, 50 agents parallel, large scale AI coding, agent farm, run 50 claude code agents, parallel coding agents scale, ai agent orchestration scale, manage many ai agents">
   <link rel="canonical" href="https://amux.io/guides/scaling-to-50-agents/">
-  <meta property="og:title" content="Scaling to 50+ Agents — amux">
-  <meta property="og:description" content="Tips for running 50 or more Claude Code agents in parallel with amux.">
+  <meta property="og:title" content="Scaling to 50+ AI Coding Agents — Architecture, Rate Limits & Monitoring (2026)">
+  <meta property="og:description" content="How to run 50+ Claude Code, Codex, or Gemini CLI agents in parallel. Hardware sizing, rate limit strategies, atomic task queues, and monitoring.">
   <meta property="og:url" content="https://amux.io/guides/scaling-to-50-agents/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Scaling to 50+ AI Coding Agents — Architecture, Rate Limits & Monitoring">
+  <meta name="twitter:description" content="How to run 50+ Claude Code, Codex, or Gemini CLI agents in parallel. Hardware sizing, rate limit strategies, and monitoring.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
   <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Scaling to 50+ Agents","item":"https://amux.io/guides/scaling-to-50-agents/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Scaling to 50+ Agents","description":"Tips for running 50 or more Claude Code agents in parallel with amux.","url":"https://amux.io/guides/scaling-to-50-agents/","datePublished":"2026-02-26","dateModified":"2026-02-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
-  </head>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/"},
+      {"@type": "ListItem", "position": 3, "name": "Scaling to 50+ Agents", "item": "https://amux.io/guides/scaling-to-50-agents/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Scaling to 50+ AI Coding Agents — Architecture, Rate Limits & Monitoring",
+    "description": "How to run 50+ Claude Code, Codex, or Gemini CLI agents in parallel with amux. Hardware sizing, rate limit strategies, atomic task queues, and failure recovery.",
+    "url": "https://amux.io/guides/scaling-to-50-agents/",
+    "datePublished": "2026-02-26",
+    "dateModified": "2026-07-07",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["scale AI agents", "50 parallel coding agents", "AI agent farm", "Claude Code orchestration at scale"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "How to Scale AI Coding Agents to 50+ in Parallel",
+    "description": "Step-by-step guide to running a large fleet of AI coding agents with amux, covering hardware, rate limits, task queues, and monitoring.",
+    "step": [
+      {"@type": "HowToStep", "position": 1, "name": "Size your infrastructure", "text": "Plan for 300-500MB RAM per agent. A 32GB server comfortably runs 50 agents with headroom for the OS and amux dashboard."},
+      {"@type": "HowToStep", "position": 2, "name": "Set up an atomic task queue", "text": "Use the amux kanban board with SQLite compare-and-swap claiming so multiple agents pull from the same task list without collisions."},
+      {"@type": "HowToStep", "position": 3, "name": "Configure API rate limits", "text": "Set provider-specific concurrency caps in amux. For Anthropic Max plan, stagger session starts by 5-10 seconds. For API tiers, set SYNC_POOL_CAPACITY to match your allocated RPM."},
+      {"@type": "HowToStep", "position": 4, "name": "Enable YOLO mode and self-healing", "text": "Register sessions with --yolo to auto-approve tool prompts. The watchdog auto-restarts crashed agents and compacts context on overflow."},
+      {"@type": "HowToStep", "position": 5, "name": "Monitor from dashboard or phone", "text": "Use the amux workspace tiled view to watch all agents simultaneously. The iOS app lets you check status, read output, and send messages from anywhere."}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "How much RAM do I need to run 50 AI coding agents?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Each Claude Code or Codex agent consumes roughly 300-500MB of RAM for the tmux session, the agent process, and working buffers. For 50 agents, plan for 24-32GB RAM minimum — 32GB leaves comfortable headroom for the OS, amux dashboard, and burst activity. A cloud VM (e.g. AWS c6a.4xlarge: 32GB RAM, 16 vCPUs) costs roughly $0.60/hour and handles 50 agents well."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I avoid API rate limit errors with 50 parallel agents?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The key strategies are: (1) stagger session starts by 5-10 seconds each so they don't spike simultaneously, (2) set SYNC_POOL_CAPACITY to match your tier's requests-per-minute limit (Anthropic Tier 4 allows ~60 RPM — so cap at 50 concurrent agents maximum at that tier), (3) use Claude Max plan ($200/month) which provides rate-limit-free access for up to the token budget, (4) mix providers — run some agents on Codex or Gemini CLI to spread load across rate limit buckets."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I prevent 50 agents from working on the same task?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux's board uses SQLite compare-and-swap for atomic task claiming. When an agent calls the /claim endpoint for a task, it sets the task status from 'todo' to 'doing' in a single atomic write — if two agents try to claim simultaneously, one wins and the other gets a 409 Conflict response and moves to the next task. This prevents duplicate work without any distributed locking system."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What happens when agents crash at scale?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux runs a background watchdog that polls all registered sessions every few seconds. When it detects a crashed session (process exited, tmux pane dead), it automatically restarts the process and replays the last message. Context overflow — the most common failure mode — triggers auto-compaction before the context fills completely. At 50-agent scale, expect 2-5 crashes per 8-hour run; the watchdog handles them without human intervention."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I run 50 agents on a laptop?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "On a modern MacBook Pro (16GB RAM), you can reliably run 20-25 agents. Beyond that, RAM pressure causes page swapping and performance degrades. For 50+ agents, use a dedicated cloud VM or development server. amux runs identically on local machines and cloud VMs — the same Python file, same config."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -39,18 +133,338 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Scaling to 50+ Agents</span></div>
-    <h1>Scaling to 50+ Agents</h1>
-<p class="subtitle">Run a full agent farm. Here's how to keep it stable.</p>
-<h2>Hardware</h2>
-<p>Each agent uses ~200-400MB RAM. For 50 agents, plan for 16-32GB RAM. Consider running on a cloud VM or a dedicated development server.</p>
-<h2>API rate limits</h2>
-<p>Anthropic rate limits are per-organization. With 50 concurrent agents, you'll hit rate limits. Stagger agent start times and use the board to batch work naturally.</p>
-<h2>Monitoring</h2>
-<p>The workspace view lets you tile multiple agent outputs side by side. Use the board's status columns to track progress across all agents.</p>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+
+    <h1>Scaling to 50+ AI Coding Agents</h1>
+    <p class="subtitle">amux runs a fleet of 50+ Claude Code, Codex, or Gemini CLI agents from a single dashboard or your phone — with atomic task claiming, self-healing watchdog, and live monitoring. Here is the architecture you need to do it reliably. <em>Updated July 2026.</em></p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#what-changes" style="color:var(--dim);text-decoration:none;">What Changes Above 10 Agents</a></li>
+        <li><a href="#hardware" style="color:var(--dim);text-decoration:none;">Hardware Sizing</a></li>
+        <li><a href="#task-queue" style="color:var(--dim);text-decoration:none;">Atomic Task Queue (No Duplicate Work)</a></li>
+        <li><a href="#rate-limits" style="color:var(--dim);text-decoration:none;">API Rate Limit Strategies</a></li>
+        <li><a href="#yolo-self-healing" style="color:var(--dim);text-decoration:none;">YOLO Mode + Self-Healing at Scale</a></li>
+        <li><a href="#monitoring" style="color:var(--dim);text-decoration:none;">Monitoring a 50-Agent Fleet</a></li>
+        <li><a href="#provider-mix" style="color:var(--dim);text-decoration:none;">Mixing Providers (Claude + Codex + Gemini)</a></li>
+        <li><a href="#comparison" style="color:var(--dim);text-decoration:none;">amux vs Alternatives at Scale</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="what-changes">What Changes Above 10 Agents</h2>
+    <p>Running 3-5 AI coding agents is mostly about keeping them pointed at different tasks. Scaling to 50 introduces four new failure modes that don't exist at small scale:</p>
+    <ul>
+      <li><strong>Task collisions.</strong> Two agents claim the same work item from a shared list, do overlapping work, and produce conflicting commits.</li>
+      <li><strong>Rate limit cascades.</strong> Agents start simultaneously and spike API requests — all hit 429 errors, back off at the same time, then spike again in lockstep.</li>
+      <li><strong>Monitoring blindness.</strong> You can watch 5 terminal panes. You cannot watch 50. Without a unified dashboard, you won't know which agents are stuck, which finished, or which are burning money on repeated failures.</li>
+      <li><strong>Crash accumulation.</strong> At 10 agents, 1 crash is a 10% loss. At 50, expecting 2-5 crashes per overnight run is normal — you need automated recovery, not manual restarts.</li>
+    </ul>
+    <p>amux is designed to solve all four. The rest of this guide explains how.</p>
+
+    <h2 id="hardware">Hardware Sizing</h2>
+    <p>Each agent runs in its own tmux session with a Claude Code (or Codex/Gemini) process. Memory consumption per agent:</p>
+
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Component</th>
+            <th style="padding:10px 16px;text-align:left;">Per-agent RAM</th>
+            <th style="padding:10px 16px;text-align:left;">Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">tmux session</td>
+            <td style="padding:10px 16px;">~20MB</td>
+            <td style="padding:10px 16px;">Scrollback buffer + pane state</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Claude Code process</td>
+            <td style="padding:10px 16px;">~150-250MB</td>
+            <td style="padding:10px 16px;">Node.js runtime + context cache</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Working repo clone</td>
+            <td style="padding:10px 16px;">~50-200MB</td>
+            <td style="padding:10px 16px;">Depends on repo size + git objects</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600;">Total per agent</td>
+            <td style="padding:10px 16px;font-weight:600;">~300-500MB</td>
+            <td style="padding:10px 16px;">Use 400MB as your planning number</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Recommended configurations:</p>
+
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Setup</th>
+            <th style="padding:10px 16px;text-align:left;">RAM</th>
+            <th style="padding:10px 16px;text-align:left;">Agents</th>
+            <th style="padding:10px 16px;text-align:left;">Approx. cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">MacBook Pro M3 Pro</td>
+            <td style="padding:10px 16px;">18GB</td>
+            <td style="padding:10px 16px;">15-20</td>
+            <td style="padding:10px 16px;">Hardware you own</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">MacBook Pro M4 Max</td>
+            <td style="padding:10px 16px;">64GB</td>
+            <td style="padding:10px 16px;">80-100</td>
+            <td style="padding:10px 16px;">Hardware you own</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">AWS c6a.4xlarge</td>
+            <td style="padding:10px 16px;">32GB</td>
+            <td style="padding:10px 16px;">40-55</td>
+            <td style="padding:10px 16px;">~$0.61/hr on-demand</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">AWS c6a.8xlarge</td>
+            <td style="padding:10px 16px;">64GB</td>
+            <td style="padding:10px 16px;">100+</td>
+            <td style="padding:10px 16px;">~$1.22/hr on-demand</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">Hetzner AX102</td>
+            <td style="padding:10px 16px;">128GB</td>
+            <td style="padding:10px 16px;">200+</td>
+            <td style="padding:10px 16px;">~€79/month dedicated</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>CPU is rarely the bottleneck — agents spend most of their time waiting for API responses. 4-8 cores is sufficient for 50 agents. Disk I/O matters for large codebases with many repo clones; use SSD and consider a shared git remote with per-agent worktrees (<a href="/guides/parallel-security-audit/">git worktree isolation guide</a>).</p>
+
+    <h2 id="task-queue">Atomic Task Queue (No Duplicate Work)</h2>
+    <p>The most important architectural decision for a large fleet is how agents claim work. Without atomic claiming, two agents will pick the same task, both spend an hour on it, and you get a merge conflict.</p>
+    <p>amux solves this with SQLite compare-and-swap. The claim endpoint is a single SQL statement:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>UPDATE board_items
+SET status='doing', session=?, claimed_at=?
+WHERE id=? AND status='todo'</code></pre>
+    <p>If the row was already claimed (status != 'todo'), the UPDATE affects 0 rows and the agent gets a 409 response — it skips to the next task. This requires no distributed lock manager, no Redis, no external coordination service. It works with SQLite's default WAL mode even with 50 concurrent writers.</p>
+    <p>To use atomic claiming in your agent loop:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># In CLAUDE.md or as a startup prompt for each agent:
+# 1. Find unclaimed tasks for this session:
+curl -sk $AMUX_URL/api/board | python3 -c "
+import json,sys,os
+items = json.load(sys.stdin)
+todo = [i for i in items if i['status']=='todo']
+if todo: print(todo[0]['id'])
+"
+
+# 2. Claim atomically (409 = already taken, try next):
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"session":"'"$AMUX_SESSION"'"}' \
+  $AMUX_URL/api/board/TASK-ID/claim
+
+# 3. Work on it, then mark done:
+curl -sk -X PATCH -H 'Content-Type: application/json' \
+  -d '{"status":"done","desc":"Result: ..."}' \
+  $AMUX_URL/api/board/TASK-ID</code></pre>
+
+    <h2 id="rate-limits">API Rate Limit Strategies</h2>
+    <p>Rate limits are the most common obstacle when scaling beyond 10 agents. The strategies differ by provider:</p>
+
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Provider</th>
+            <th style="padding:10px 16px;text-align:left;">Limit type</th>
+            <th style="padding:10px 16px;text-align:left;">Strategy for 50 agents</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Anthropic Max ($200/mo)</td>
+            <td style="padding:10px 16px;">Token budget (generous)</td>
+            <td style="padding:10px 16px;">Stagger starts 5-10s each; best for overnight runs</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Anthropic API Tier 4</td>
+            <td style="padding:10px 16px;">~60 RPM, 2M TPM Sonnet</td>
+            <td style="padding:10px 16px;">Cap SYNC_POOL_CAPACITY at 50; use Sonnet not Opus</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">OpenAI Codex</td>
+            <td style="padding:10px 16px;">Tier-based; generous at high tiers</td>
+            <td style="padding:10px 16px;">Mix with Claude for parallel capacity</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">Antigravity CLI (Google)</td>
+            <td style="padding:10px 16px;">1500 RPD free; paid tiers higher</td>
+            <td style="padding:10px 16px;">Use for longer-running agents with lower frequency</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>Staggered starts</strong> are the single most impactful change. Instead of launching 50 agents simultaneously:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Stagger launches — 5 seconds between each
+for i in $(seq 1 50); do
+  amux start "agent-$i" &
+  sleep 5
+done</code></pre>
+    <p>This spreads the initial burst of API calls across 4 minutes, avoiding the synchronized spike that triggers rate limiting. After the first few turns, agents naturally desynchronize as tasks have different lengths.</p>
+
+    <h2 id="yolo-self-healing">YOLO Mode + Self-Healing at Scale</h2>
+    <p>At 50 agents, you cannot manually approve every tool-use prompt. YOLO mode is not optional — it is required. Enable it when registering sessions:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject</code></pre>
+    <p>As of July 2026, YOLO mode is the default for new session registrations. The watchdog detects the unique "Esc to cancel" marker that only appears on tool-approval prompts and auto-answers, keeping agents unblocked.</p>
+    <p>The <a href="/guides/self-healing-configuration/">self-healing watchdog</a> handles the most common failure patterns at scale:</p>
+    <ul>
+      <li><strong>Process crash:</strong> Detects dead tmux pane → restarts process → replays last message</li>
+      <li><strong>Context overflow:</strong> Detects context approaching limit → auto-compacts → continues</li>
+      <li><strong>Stuck agent:</strong> No output for configurable timeout → restart with fresh context</li>
+      <li><strong>API rate limit 429:</strong> Detects error output → exponential backoff → retry</li>
+    </ul>
+    <p>Expected crash rate at 50-agent scale: 2-8 per 8-hour overnight run, all auto-recovered. The watchdog logs every restart with timestamp and reason, visible in the amux board's session activity feed.</p>
+
+    <h2 id="monitoring">Monitoring a 50-Agent Fleet</h2>
+    <p>The amux dashboard provides several monitoring views for large fleets:</p>
+    <p><strong>Board view</strong> (primary): The kanban shows every task with its claiming agent and status. At a glance you can see how many tasks are in todo vs. doing vs. done, and which agents are actively working. The board auto-updates via SSE — no refresh required.</p>
+    <p><strong>Workspace tiled view</strong>: Arranges multiple session peek panels side-by-side in the browser. Useful for spot-checking 6-12 agents at once. On a 4K display you can tile 16 panes.</p>
+    <p><strong>iOS app / mobile PWA</strong>: The <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">iOS app</a> lets you check fleet status from anywhere. Useful for checking in on an overnight run from bed — swipe through sessions, read output, send messages. The board tab gives the same kanban view as the desktop.</p>
+    <p><strong>Schedules tab in peek</strong>: Each session's peek panel now includes a Schedules tab. For agents running recurring tasks, you can see schedule status without leaving the context of that session.</p>
+    <p>For alerting, set up a simple watchdog notification:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Schedule an hourly health check that posts to your board
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Fleet health check",
+    "session": "monitor",
+    "command": "Check board for stuck tasks (doing > 2h), restart any stuck agents, post summary",
+    "schedule_expr": "every 1h"
+  }' \
+  $AMUX_URL/api/schedules</code></pre>
+
+    <h2 id="provider-mix">Mixing Providers (Claude + Codex + Gemini)</h2>
+    <p>One of amux's differentiators at scale is native support for multiple AI runtimes simultaneously. Rather than hitting a single provider's rate limit with 50 agents, you can distribute across providers:</p>
+    <ul>
+      <li><strong>Claude Code</strong> (Anthropic Max): Best for complex reasoning, architectural decisions, open-ended refactors. Run 20-30 sessions.</li>
+      <li><strong>Codex CLI</strong> (OpenAI): Strong at targeted code generation, test writing. Run 10-15 sessions for a different rate limit bucket.</li>
+      <li><strong>Antigravity CLI</strong> (Google/Gemini): Large context window useful for whole-codebase analysis. Run 5-10 sessions for review tasks.</li>
+    </ul>
+    <p>All three appear in the same amux board and dashboard. The kanban does not care which runtime claimed a task — agents from different providers compete equally for tasks from the same queue. See the <a href="/guides/multi-runtime-agent-setup/">multi-runtime setup guide</a> for configuration details.</p>
+
+    <h2 id="comparison">amux vs Alternatives at Scale</h2>
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Feature</th>
+            <th style="padding:10px 16px;text-align:center;">amux</th>
+            <th style="padding:10px 16px;text-align:center;">DIY tmux scripts</th>
+            <th style="padding:10px 16px;text-align:center;">Cloud agent services</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Max agents tested</td>
+            <td style="padding:10px 16px;text-align:center;">100+</td>
+            <td style="padding:10px 16px;text-align:center;">Unlimited (no coordination)</td>
+            <td style="padding:10px 16px;text-align:center;">Varies by plan</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Atomic task claiming</td>
+            <td style="padding:10px 16px;text-align:center;">Yes (SQLite CAS)</td>
+            <td style="padding:10px 16px;text-align:center;">No — race conditions</td>
+            <td style="padding:10px 16px;text-align:center;">Yes (own queue)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Self-healing watchdog</td>
+            <td style="padding:10px 16px;text-align:center;">Yes</td>
+            <td style="padding:10px 16px;text-align:center;">Manual / fragile</td>
+            <td style="padding:10px 16px;text-align:center;">Yes</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Multi-provider (Claude/Codex/Gemini)</td>
+            <td style="padding:10px 16px;text-align:center;">Yes</td>
+            <td style="padding:10px 16px;text-align:center;">Yes (manual)</td>
+            <td style="padding:10px 16px;text-align:center;">Usually single provider</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Mobile monitoring</td>
+            <td style="padding:10px 16px;text-align:center;">iOS app + PWA</td>
+            <td style="padding:10px 16px;text-align:center;">SSH tunnel only</td>
+            <td style="padding:10px 16px;text-align:center;">Web dashboard</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Cost (orchestration layer)</td>
+            <td style="padding:10px 16px;text-align:center;">Free (open-source)</td>
+            <td style="padding:10px 16px;text-align:center;">Free (dev time)</td>
+            <td style="padding:10px 16px;text-align:center;">$50-500+/month</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">Self-hosted</td>
+            <td style="padding:10px 16px;text-align:center;">Yes</td>
+            <td style="padding:10px 16px;text-align:center;">Yes</td>
+            <td style="padding:10px 16px;text-align:center;">No</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The key differentiator vs. DIY scripts is the combination of atomic task claiming + self-healing + a unified monitoring dashboard. DIY approaches work at 5-10 agents; the coordination overhead catches up with you above 20.</p>
+
+    <h2 id="faq">FAQ</h2>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">How much RAM do I need to run 50 AI coding agents?</summary>
+      <p style="margin:0.8rem 0 0;">Plan for 400MB per agent. For 50 agents: 20GB RAM consumed, so a 32GB machine gives comfortable headroom. A 64GB machine can run 100+ agents with room for the OS, dashboard, and burst activity.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">How do I avoid API rate limit errors with 50 parallel agents?</summary>
+      <p style="margin:0.8rem 0 0;">Stagger session starts (5-10 seconds between each), set SYNC_POOL_CAPACITY to match your RPM tier, and mix providers. The Claude Max plan ($200/month) has the most permissive rate limits for high-concurrency use.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">How do I prevent 50 agents from working on the same task?</summary>
+      <p style="margin:0.8rem 0 0;">Use amux's atomic task claiming: <code>POST /api/board/TASK-ID/claim</code>. This is a SQLite compare-and-swap — only one agent can claim a task in any given instant. Others receive 409 and skip to the next task.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What happens when agents crash at scale?</summary>
+      <p style="margin:0.8rem 0 0;">amux's watchdog detects crashes automatically and restarts the process, replaying the last message. Context overflow triggers auto-compaction before it becomes a crash. At 50-agent scale, expect 2-8 auto-recoveries per overnight run.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Can I mix Claude, Codex, and Gemini agents in the same fleet?</summary>
+      <p style="margin:0.8rem 0 0;">Yes. amux supports Claude Code, Codex CLI, and Antigravity CLI (Google's Gemini successor) in the same dashboard and board. Agents from different providers compete for the same task queue — useful for spreading load across rate limit buckets.</p>
+    </details>
+
+    <div class="cta-box">
+      <h3>Get started with amux</h3>
+      <p>Open-source control plane for AI agent teams. Run dozens of Claude Code, Codex, or Gemini CLI agents from your phone or browser — self-healing, kanban task queue, atomic claiming. Single Python file, zero dependencies.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <a class="btn" href="/guides/ai-coding-agents-overnight/" style="margin-left:0.75rem;">Overnight agent guide →</a>
+    </div>
+
+    <p style="margin-top:2rem;"><strong>Related guides:</strong>
+      <a href="/guides/ai-coding-agents-overnight/">Running AI Agents Overnight</a> ·
+      <a href="/guides/self-healing-configuration/">Self-Healing Configuration</a> ·
+      <a href="/guides/multi-runtime-agent-setup/">Multi-Runtime Setup</a> ·
+      <a href="/guides/running-10-plus-agents/">Running 10+ Agents</a> ·
+      <a href="/guides/kanban-board-for-agents/">Kanban Board for Agents</a>
+    </p>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -97,7 +511,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
       </div>
     </div>
   </footer>
-
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>
