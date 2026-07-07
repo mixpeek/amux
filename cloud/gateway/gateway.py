@@ -101,9 +101,9 @@ _LOGIN_HTML = """<!DOCTYPE html>
       align-items: center; justify-content: center; gap: 28px;
     }
     .logo { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.5px; color: #fff; }
-    .logo span { color: #555; font-weight: 400; }
+    .logo span { color: #999; font-weight: 400; }
     #clerk-root { min-width: 320px; }
-    #status { color: #aaa; font-size: 0.85rem; min-height: 1.2em; text-align: center; }
+    #status { color: #bbb; font-size: 0.85rem; min-height: 1.2em; text-align: center; }
     #status.error { color: #f87171; }
     .spinner {
       width: 18px; height: 18px;
@@ -117,8 +117,8 @@ _LOGIN_HTML = """<!DOCTYPE html>
       padding: 8px 20px; font-size: 0.85rem; cursor: pointer; margin-top: 12px;
     }
     .retry-btn:hover { background: #444; }
-    .promo-toggle { color: #888; font-size: 0.82rem; cursor: pointer; text-decoration: underline; text-decoration-color: #444; text-underline-offset: 3px; }
-    .promo-toggle:hover { color: #aaa; }
+    .promo-toggle { color: #aaa; font-size: 0.82rem; cursor: pointer; text-decoration: underline; text-decoration-color: #555; text-underline-offset: 3px; }
+    .promo-toggle:hover { color: #ccc; }
     .promo-box { display: none; margin-top: 4px; }
     .promo-box.open { display: flex; }
     .promo-input {
@@ -150,12 +150,12 @@ _LOGIN_HTML = """<!DOCTYPE html>
     </div>
     <div id="promo-msg" class="promo-msg"></div>
   </div>
-  <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;color:#888;font-size:0.82rem;text-decoration:none;margin-top:8px;">
+  <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;color:#aaa;font-size:0.82rem;text-decoration:none;margin-top:8px;">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
     Get the iOS App
   </a>
   <div id="self-host-back" style="display:none;margin-top:24px;">
-    <a href="#" id="self-host-link" style="color:#888;font-size:0.82rem;text-decoration:underline;text-decoration-color:#444;text-underline-offset:3px;">Back to self-hosted</a>
+    <a href="#" id="self-host-link" style="color:#aaa;font-size:0.82rem;text-decoration:underline;text-decoration-color:#555;text-underline-offset:3px;">Back to self-hosted</a>
   </div>
   <script>
     // Show "back to self-hosted" if user has amux_connections in localStorage
@@ -313,12 +313,12 @@ _LOGIN_HTML = """<!DOCTYPE html>
 
     const _clerkAppearance = {
       variables: {
-        colorBackground: '#1a1a2e',
-        colorText: '#e5e5e5',
-        colorTextSecondary: '#aaa',
-        colorPrimary: '#7c6fcd',
-        colorInputBackground: '#111',
-        colorInputText: '#e5e5e5',
+        colorBackground: '#1e1e30',
+        colorText: '#f0f0f0',
+        colorTextSecondary: '#c0c0c0',
+        colorPrimary: '#9b8fe0',
+        colorInputBackground: '#161625',
+        colorInputText: '#f0f0f0',
         borderRadius: '8px',
       },
     };
