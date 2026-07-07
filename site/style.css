@@ -41,6 +41,38 @@
   --nav-bg:     color-mix(in oklab, oklch(0.17 0.012 250) 85%, transparent);
 }
 
+[data-theme="light"] {
+  --bg:         oklch(0.97 0.004 90);
+  --bg-2:       oklch(0.93 0.006 90);
+  --bg-3:       oklch(0.88 0.007 90);
+  --line:       oklch(0.80 0.008 90);
+  --line-2:     oklch(0.72 0.010 90);
+  --fg:         oklch(0.18 0.012 250);
+  --fg-dim:     oklch(0.38 0.014 250);
+  --fg-mute:    oklch(0.52 0.012 250);
+  --accent:     oklch(0.40 0.18 85);
+  --accent-dim: oklch(0.40 0.18 85 / .15);
+  --ok:         oklch(0.36 0.18 145);
+  --warn:       oklch(0.44 0.18 65);
+  --err:        oklch(0.44 0.20 25);
+  --blue:       oklch(0.38 0.18 240);
+
+  /* Legacy compat */
+  --surface:    oklch(0.93 0.006 90);
+  --surface-2:  oklch(0.88 0.007 90);
+  --border:     oklch(0.80 0.008 90);
+  --border-dim: oklch(0.84 0.007 90);
+  --text:       oklch(0.18 0.012 250);
+  --dim:        oklch(0.38 0.014 250);
+  --muted:      oklch(0.52 0.012 250);
+  --green:      oklch(0.36 0.18 145);
+  --green-dim:  oklch(0.32 0.16 145);
+  --green-glow: oklch(0.36 0.18 145 / .15);
+  --amber:      oklch(0.40 0.18 85);
+  --red:        oklch(0.44 0.20 25);
+  --nav-bg:     color-mix(in oklab, oklch(0.97 0.004 90) 90%, transparent);
+}
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html {
@@ -149,7 +181,27 @@ a:hover { color: var(--accent); }
   color: var(--bg);
 }
 
-.theme-toggle { display: none; }
+.theme-toggle {
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  padding: 5px 9px;
+  line-height: 1;
+  min-width: 34px;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.12s, border-color 0.12s;
+}
+.theme-toggle:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
 
 @media (max-width: 640px) {
   .site-header { padding: 0 16px; }
