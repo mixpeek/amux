@@ -13,7 +13,13 @@
 
 ## Running Experiments
 
-_None yet — site launched PostHog on 2026-07-07. Accumulating baseline data._
+### EXP-001 — Hero CTA button copy
+- **Status:** `running`
+- **Started:** 2026-07-07
+- **Change:** "View on GitHub" → "⭐ Star on GitHub" (both hero CTA instances in index.html, `replace_all`)
+- **Hypothesis:** More action-oriented, emoji-prefixed star CTA increases GitHub star click-through by 20%+
+- **KPI:** GitHub star clicks (PostHog autocapture on github.com/mixpeek/amux link)
+- **Measure after:** 2026-07-14 (7 days minimum)
 
 ---
 
@@ -23,8 +29,8 @@ _None yet — site launched PostHog on 2026-07-07. Accumulating baseline data._
 - **Hypothesis:** "View on GitHub" → "⭐ Star on GitHub" increases star click-through by 20%+
 - **Page:** `/` (homepage hero)
 - **KPI:** GitHub star clicks
-- **Status:** `queued`
-- **Implementation:** Change nav CTA text + add star count inline
+- **Status:** `running` — started 2026-07-07
+- **Implementation:** Changed both "View on GitHub" instances to "⭐ Star on GitHub" in site/index.html
 - **Effort:** XS (1 line edit)
 
 ### EXP-002 — iOS CTA placement in nav
@@ -83,6 +89,22 @@ _None yet — site launched PostHog on 2026-07-07. Accumulating baseline data._
 - **Implementation:** `posthog.register({ theme_preference: theme })` in site.js
 - **Effort:** XS
 
+### EXP-009 — "Indie hackers" and "overnight builders" language in hero subtitle
+- **Hypothesis:** Explicitly calling out the indie hacker / overnight builder persona in the homepage hero subtitle increases conversion from that audience (HN, Product Hunt, Indie Hackers forum traffic).
+- **Page:** `/` (hero subtitle)
+- **KPI:** GitHub stars + concierge signups
+- **Status:** `queued`
+- **Implementation:** A/B between current subtitle and one that mentions "indie hackers", "solo builders", or "ship overnight"
+- **Effort:** XS
+
+### EXP-010 — Feature table reorder: phone-first features at top
+- **Hypothesis:** Most visitors who convert on cloud/iOS CTAs are non-enterprise users who are drawn to the phone/mobile angle. Reordering the feature comparison table to lead with "Mobile dashboard (iOS app + PWA)" before "Self-healing watchdog" may increase iOS and cloud CTA clicks.
+- **Page:** `/` (feature comparison table)
+- **KPI:** iOS downloads + cloud signups
+- **Status:** `queued`
+- **Implementation:** Reorder table rows in the homepage feature grid
+- **Effort:** XS
+
 ---
 
 ## Concluded Experiments
@@ -98,6 +120,8 @@ _Updated by SCHED-149 Job 9 after each run with PostHog data and experiment resu
 | Date | Finding | Action taken |
 |------|---------|--------------|
 | 2026-07-07 | PostHog installed, baseline accumulation started | — |
+| 2026-07-07 | PostHog HogQL query returned 0 events — no click data yet after 1 day of tracking | EXP-001 shipped; wait for data to accumulate before scoring |
+| 2026-07-07 | EXP-001 launched: "View on GitHub" → "⭐ Star on GitHub" on both hero CTAs in homepage | Implement complete; measure 2026-07-14 |
 
 ---
 
