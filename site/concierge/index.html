@@ -432,6 +432,30 @@
     transition: color 0.12s, border-color 0.12s;
   }
   .theme-toggle:hover { color: var(--ink); border-color: var(--accent); }
+
+  /* ── DARK MODE: card / surface overrides ── */
+  /* Industry tabs */
+  [data-theme="dark"] .tab { background: var(--bg-soft); border-color: var(--line-2); color: var(--cream-dim); }
+  [data-theme="dark"] .tab:hover { border-color: var(--accent); color: var(--accent); }
+  [data-theme="dark"] .tab[aria-selected="true"] { background: var(--accent-2); border-color: var(--accent-2); color: var(--cream); }
+  /* Panel / feature / step / setup cards */
+  [data-theme="dark"] .panel-card { background: var(--bg-soft); border-color: var(--line); }
+  [data-theme="dark"] .panel-top { background: var(--bg-soft2); border-color: var(--line); }
+  [data-theme="dark"] .step, [data-theme="dark"] .feat, [data-theme="dark"] .setup { background: var(--bg-soft); border-color: var(--line); }
+  [data-theme="dark"] .step h3, [data-theme="dark"] .feat h3, [data-theme="dark"] .setup h3 { color: var(--ink); }
+  [data-theme="dark"] .step p, [data-theme="dark"] .feat p, [data-theme="dark"] .setup p { color: var(--ink-3); }
+  /* Keep .on-dark elements even deeper dark */
+  [data-theme="dark"] .on-dark .step, [data-theme="dark"] .on-dark .feat,
+  [data-theme="dark"] .on-dark .future-viz { background: var(--dark-2); border-color: #3a3428; }
+  /* Pricing, FAQ */
+  [data-theme="dark"] .price-card { background: var(--bg-soft); border-color: var(--accent-2); }
+  [data-theme="dark"] .price-note { background: var(--bg-soft2); border-color: var(--line); }
+  [data-theme="dark"] details.q { background: var(--bg-soft); border-color: var(--line); }
+  /* Section backgrounds */
+  [data-theme="dark"] .section-soft { background: var(--bg-soft); border-color: var(--line); }
+  [data-theme="dark"] .future-viz { background: var(--bg-soft); border-color: var(--line); }
+  [data-theme="dark"] .safe { background: rgba(200,90,40,.12); border-color: #6a3a20; color: var(--ink-3); }
+  [data-theme="dark"] footer.site { background: var(--bg-soft); border-color: var(--line); }
 </style>
 <script src="/site.js"></script>
 </head>
