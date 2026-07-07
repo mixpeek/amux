@@ -94,7 +94,7 @@
   .wrap{max-width:var(--maxw); margin:0 auto; padding:0 24px}
   .eyebrow{
     font-family:var(--mono); font-size:12px; font-weight:600; letter-spacing:.12em;
-    text-transform:uppercase; color:var(--accent);
+    text-transform:uppercase; color:var(--accent-2);
   }
 
   /* ── HEADER ── */
@@ -135,7 +135,7 @@
   .hero h1 .grad{background:linear-gradient(100deg,#c75b2e,#d98a3d); -webkit-background-clip:text; background-clip:text; color:transparent}
   .hero .lead{font-size:clamp(1.05rem,2.2vw,1.3rem); color:var(--ink-3); max-width:62ch; margin:22px 0 0}
   .hero .cta-row{display:flex; flex-wrap:wrap; gap:12px; margin-top:32px}
-  .trust{display:flex; flex-wrap:wrap; gap:8px 22px; margin-top:30px; font-size:14px; color:var(--mute)}
+  .trust{display:flex; flex-wrap:wrap; gap:8px 22px; margin-top:30px; font-size:14px; color:var(--ink-3)}
   .trust span{display:inline-flex; align-items:center; gap:7px}
   .trust .dot{width:7px; height:7px; border-radius:50%; background:var(--ok)}
 
@@ -400,6 +400,21 @@
   [data-theme="dark"] header.site { background: rgba(28,24,20,.88); border-color: var(--line); }
   [data-theme="dark"] .btn-ghost { background: var(--bg-soft2); color: var(--ink); border-color: var(--line-2); }
   [data-theme="dark"] .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+  /* Phone demo widget — always render as light-mode mockup regardless of page theme */
+  [data-theme="dark"] .phone, [data-theme="dark"] .phone-screen { background: #fdf9f5; color: #1b1813; }
+  [data-theme="dark"] .pa-name { color: #1b1813; }
+  [data-theme="dark"] .pa-greet, [data-theme="dark"] .pa-plabel, [data-theme="dark"] .pa-hlabel,
+  [data-theme="dark"] .pa-hrow { color: #6b6558; }
+  [data-theme="dark"] .pa-card { background: #f4efe4; color: #1b1813; }
+  [data-theme="dark"] .pa-ct b { color: #1b1813; }
+  [data-theme="dark"] .pa-ct small { color: #6b6558; }
+  /* CTA button: use original terracotta (4.2:1 with white) not lightened accent */
+  [data-theme="dark"] .btn { background: #c85a28; border-color: #c85a28; }
+  [data-theme="dark"] .btn:hover { background: #b84e20; }
+  /* Toggle icon: must be readable on parchment in light mode */
+  .theme-toggle { color: var(--ink-2); }
+  [data-theme="light"] .theme-toggle { color: var(--ink); }
+  [data-theme="dark"] .theme-toggle { color: var(--cream-dim); }
   .theme-toggle {
     background: var(--bg-soft);
     border: 1px solid var(--line-2);
