@@ -11876,6 +11876,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .overlay-body .file-link:active { color: #79ead3; }
   .overlay-body .md-link { color: var(--yellow); text-decoration: none; border-bottom: 1px dashed var(--yellow); cursor: pointer; }
   .overlay-body .md-link:active { color: #e8c547; }
+  /* Box-drawing tables/frames: keep monospace alignment, scroll sideways instead
+     of wrapping (which detached borders and shredded rows on narrow screens). */
+  .overlay-body .peek-box { display: block; white-space: pre; overflow-x: auto; max-width: 100%;
+    word-break: normal; overflow-wrap: normal; -webkit-overflow-scrolling: touch; }
+  .overlay-body .peek-box::-webkit-scrollbar { height: 6px; }
+  .overlay-body .peek-box::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.22); border-radius: 3px; }
   .overlay-status { color: var(--dim); font-size: 0.68rem; margin-top: 2px; flex-shrink: 0; text-align: center; }
   .scroll-lock-badge {
     position: sticky; bottom: 0; left: 0; right: 0;
@@ -20193,7 +20199,7 @@ async function loadPeekTranscript(showLoading) {
       return;
     }
     const atBottom = _isScrolledToBottom(body);
-    const html = ansiToHtml(d.output);
+    const html = wrapBoxBlocks(ansiToHtml(d.output));
     if (html !== body._lastHTML) {
       body._lastHTML = html;
       body.innerHTML = html;
@@ -21479,7 +21485,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.38';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.39';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -21561,7 +21567,7 @@ function openPeek(name, opts) {
   _idb.get('peek_' + name).then(cached => {
     if (peekSession !== name) return;  // session changed before cache resolved
     if (cached && (!lastPeekHTML || lastPeekHTML.includes('Loading...'))) {
-      lastPeekHTML = highlightPrompts(ansiToHtml(cached.output));
+      lastPeekHTML = wrapBoxBlocks(highlightPrompts(ansiToHtml(cached.output)));
       applyPeekSearch();
       const ago = Math.floor((Date.now() - cached.time) / 60000);
       document.getElementById('peek-status').textContent = 'Cached ' + (ago < 1 ? 'just now' : ago + 'm ago');
@@ -22141,11 +22147,13 @@ function ansiToHtml(text) {
     .replace(/\x1b[()][A-Z0-9]/g,'')                          // charset selection
     .replace(/\x1b[\x20-\x2f]*[\x40-\x5a\x5c-\x7e]/g,'')     // other C1 (excl [ = 0x5b)
     .replace(/\x1b\[[0-9;?]*[A-Za-ln-z]/g,'')                 // CSI non-SGR (not m)
-    .replace(/^─{10,}\n?/gm,'')                                // drop bare full-line rules
-    // Cap long box-drawing rules (Claude's 220-col input-box borders are ANSI-colored,
-    // so they dodge the rule above) to a compact divider — otherwise each one wraps into
-    // ~6 empty lines on the narrow mobile peek and eats the screen.
-    .replace(/[─━═]{24,}/g, s => s[0].repeat(24));
+    .replace(/^─{10,}\n?/gm,'');                               // drop bare full-line rules
+  // NOTE: box-drawing tables and wide rules are deliberately NOT capped here.
+  // The old `[─━═]{24,}` cap shortened horizontal rules but left the │-bordered
+  // content rows full-width, which DETACHED table borders (the "floating right
+  // border" peek bug). wrapBoxBlocks() now wraps each contiguous box block in a
+  // horizontal-scroll container, so alignment is preserved and a wide rule scrolls
+  // instead of wrapping into empty lines.
   let bold=false,dim=false,italic=false,uline=false,fg=null,bg=null,spanOpen=false;
   const closeSpan=()=>{ if(!spanOpen)return ''; spanOpen=false; return '</span>'; };
   const openSpan=()=>{
@@ -22294,6 +22302,33 @@ function highlightPrompts(html) {
   return out.join('\n');
 }
 
+// Wrap each contiguous run of box-drawing lines (tables, framed boxes, wide rules)
+// in a horizontal-scroll container so monospace alignment survives on narrow
+// screens instead of wrapping — which shredded tables and detached their borders.
+function wrapBoxBlocks(html) {
+  const BOX   = /[─-╿]/;              // any box-drawing char (U+2500–257F)
+  const HRULE = /[─━═]/;         // ─ ━ ═ → structural border line
+  const VERT  = /[│┃┌-╿]/g; // │┃ + corners/junctions/rounded/diagonals
+  const stripTags = s => s.replace(/<[^>]*>/g, '');
+  const isBoxLine = raw => {
+    const t = stripTags(raw);
+    if (!BOX.test(t)) return false;
+    if (HRULE.test(t)) return true;                 // a border/rule line
+    return (t.match(VERT) || []).length >= 2;       // a content row: │ a │ b │
+  };
+  const lines = html.split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; ) {
+    if (isBoxLine(lines[i])) {
+      let j = i;
+      while (j < lines.length && isBoxLine(lines[j])) j++;
+      out.push('<div class="peek-box">' + lines.slice(i, j).join('\n') + '</div>');
+      i = j;
+    } else { out.push(lines[i]); i++; }
+  }
+  return out.join('\n');
+}
+
 let peekSelecting = false;
 let _peekScrollLocked = false;
 
@@ -22339,7 +22374,7 @@ async function refreshPeek() {
     _lastPeekRaw = output;
     const atBottom = _isScrolledToBottom(body);
     if (atBottom) _peekScrollLocked = false;
-    const newHTML = highlightPrompts(ansiToHtml(output));
+    const newHTML = wrapBoxBlocks(highlightPrompts(ansiToHtml(output)));
     if (peekSelecting || (window.getSelection()?.toString().length > 0)) return;
     if (_sendingSnapshot && newHTML !== _sendingSnapshot) clearSendingIndicator();
     lastPeekHTML = newHTML;
@@ -22369,7 +22404,7 @@ async function refreshPeek() {
     if (!lastPeekHTML || lastPeekHTML.includes('Loading...')) {
       const cached = await _idb.get('peek_' + peekSession);
       if (cached) {
-        lastPeekHTML = highlightPrompts(ansiToHtml(cached.output));
+        lastPeekHTML = wrapBoxBlocks(highlightPrompts(ansiToHtml(cached.output)));
         applyPeekSearch();
         const ago = Math.floor((Date.now() - cached.time) / 60000);
         statusEl.textContent = 'Cached ' + (ago < 1 ? 'just now' : ago + 'm ago');
@@ -37477,7 +37512,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.38';
+const CACHE = 'amux-v0.9.39';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
