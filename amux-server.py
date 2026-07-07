@@ -501,18 +501,33 @@ def _bu_call(args: list, timeout_s: int = 30, session: str = "amux") -> dict:
         if args and args[0] != "close":
             _browser_touch(session)
         cmd = [_BROWSER_USE_BIN, "--json", "--session", session] + args
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        # Self-heal the transient "SessionManager not initialized" race: the
+        # persistent browser-use session server can lag a beat behind /start, so
+        # the next action/screenshot lands before it's ready. Retry ONLY that
+        # (and empty-output) transient — real command errors return immediately.
+        last = None
+        for attempt in range(3):
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                return {"error": "browser operation timed out"}
+            except Exception as e:
+                return {"error": str(e)}
             out = r.stdout.strip()
             if not out:
-                return {"error": r.stderr.strip() or f"browser-use exited {r.returncode}"}
-            return json.loads(out)
-        except subprocess.TimeoutExpired:
-            return {"error": "browser operation timed out"}
-        except json.JSONDecodeError:
-            return {"error": r.stdout.strip()[:200] if r.stdout else "invalid JSON"}
-        except Exception as e:
-            return {"error": str(e)}
+                last = {"error": r.stderr.strip() or f"browser-use exited {r.returncode}"}
+            else:
+                try:
+                    res = json.loads(out)
+                except json.JSONDecodeError:
+                    return {"error": out[:200]}
+                err = (res.get("error") or "") if isinstance(res, dict) else ""
+                if not (err and ("SessionManager" in err or "not initialized" in err)):
+                    return res  # success, or a real (non-transient) error
+                last = res
+            if attempt < 2:
+                time.sleep(1.2)
+        return last or {"error": "browser call failed"}
     finally:
         lock.release()
 
