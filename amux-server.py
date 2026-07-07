@@ -1833,7 +1833,7 @@ _last_log_save: dict[str, float] = {}  # session -> monotonic time of last save
 _LOG_SAVE_INTERVAL = 30  # seconds between saves per session
 
 _peek_cache: dict[str, tuple[float, int, dict]] = {}  # session -> (monotonic_time, lines, response_dict)
-_PEEK_CACHE_TTL = 1.2  # seconds
+_PEEK_CACHE_TTL = 2.5  # seconds — long enough that multiple clients share one cached result
 
 _transcript_render_cache: dict[tuple, tuple[float, int, str]] = {}  # (path, max_chars) -> (mtime, size, rendered)
 _jsonl_path_cache: dict[str, tuple[float, "Path | None"]] = {}  # session -> (monotonic, path)
@@ -21570,7 +21570,7 @@ function openPeek(name, opts) {
     }
   });
   refreshPeek();
-  peekTimer = setInterval(refreshPeek, 1200);
+  peekTimer = setInterval(refreshPeek, 3000);
   _updateSendSplit();   // sync the Send/Queue button label to the current mode
   _savePeekState();
 }
