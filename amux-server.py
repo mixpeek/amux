@@ -2278,6 +2278,45 @@ def _session_jsonl_path(name: str):
     return result
 
 
+def _session_cc_tasks(name: str) -> dict:
+    """Read Claude Code's native task list for a session — the ephemeral
+    TaskCreate/TaskUpdate items it stores in ~/.claude/tasks/<conv_id>/<n>.json
+    (the agent's live execution plan, with blockedBy/blocks deps). Surfaced
+    READ-ONLY in peek so you can see the agent's checklist without it touching
+    the amux board (the durable, gated ledger stays the source of truth).
+    Returns {tasks, counts, active, total}."""
+    try:
+        p = _session_jsonl_path(name)
+        if not p:
+            return {"tasks": [], "counts": {}, "active": None, "total": 0}
+        tdir = CLAUDE_HOME / "tasks" / p.stem
+        if not tdir.is_dir():
+            return {"tasks": [], "counts": {}, "active": None, "total": 0}
+        tasks = []
+        for jf in tdir.glob("[0-9]*.json"):
+            try:
+                d = json.loads(jf.read_text())
+            except Exception:
+                continue
+            if not isinstance(d, dict):
+                continue
+            tasks.append({
+                "id": str(d.get("id") or jf.stem),
+                "subject": (d.get("subject") or d.get("activeForm") or "").strip(),
+                "activeForm": (d.get("activeForm") or "").strip(),
+                "status": d.get("status") or "pending",
+                "blockedBy": [str(x) for x in (d.get("blockedBy") or [])],
+            })
+        tasks.sort(key=lambda t: int(t["id"]) if t["id"].isdigit() else 1_000_000)
+        counts = {}
+        for t in tasks:
+            counts[t["status"]] = counts.get(t["status"], 0) + 1
+        active = next((t for t in tasks if t["status"] == "in_progress"), None)
+        return {"tasks": tasks, "counts": counts, "active": active, "total": len(tasks)}
+    except Exception:
+        return {"tasks": [], "counts": {}, "active": None, "total": 0}
+
+
 def _session_jsonl_path_uncached(name: str):
     env_file = CC_SESSIONS / f"{name}.env"
     if not env_file.exists():
@@ -43404,6 +43443,9 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
 
 
         if method == "GET":
+            if action == "tasks":
+                # Claude Code's native task list (read-only) — the agent's live plan.
+                return self._json(_session_cc_tasks(name))
             if action == "peek":
                 lines = int(qs.get("lines", ["80"])[0])
                 now = time.monotonic()
