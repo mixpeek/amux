@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://amux.io/</loc><lastmod>2026-03-16</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>
+  <url><loc>https://amux.io/press/</loc><lastmod>2026-07-06</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/lists/</loc><lastmod>2026-07-06</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/lists/best-ai-coding-agents-2026/</loc><lastmod>2026-07-06</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/lists/best-claude-code-tools-2026/</loc><lastmod>2026-07-06</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/lists/best-ai-agent-orchestrators-2026/</loc><lastmod>2026-07-06</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/lists/open-source-ai-coding-tools-2026/</loc><lastmod>2026-07-06</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/lists/ai-tools-for-solopreneurs-2026/</loc><lastmod>2026-07-06</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/lists/ai-agent-frameworks-comparison-2026/</loc><lastmod>2026-07-06</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/concierge/</loc><lastmod>2026-07-03</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/for/solopreneurs/</loc><lastmod>2026-07-03</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/for/startup-founders/</loc><lastmod>2026-07-04</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
@@ -263,4 +271,7 @@
   <url><loc>https://amux.io/use-cases/research-and-prototyping/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/use-cases/security-audit/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/use-cases/test-generation-at-scale/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://amux.io/compare/amux-vs-aider/</loc><lastmod>2026-07-06</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/compare/amux-vs-github-copilot/</loc><lastmod>2026-07-06</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/compare/amux-vs-openai-symphony/</loc><lastmod>2026-07-06</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
 </urlset>

@@ -46,6 +46,15 @@
 <table><thead><tr><th>Feature</th><th>amux</th><th>Devin</th></tr></thead><tbody><tr><td>Hosting</td><td>Your machine (local-first)</td><td>Cloud sandbox</td></tr><tr><td>Agent count</td><td>Unlimited parallel sessions</td><td>One agent per task</td></tr><tr><td>Environment</td><td>Full access to your tools/env</td><td>Isolated sandbox</td></tr><tr><td>Cost</td><td>Pay per Claude API token</td><td>$500/mo subscription</td></tr><tr><td>Open source</td><td>Yes (MIT)</td><td>No</td></tr><tr><td>Self-healing</td><td>Auto-compact, restart, unstick</td><td>Proprietary recovery</td></tr><tr><td>Customization</td><td>Full control over session config</td><td>Limited configuration</td></tr></tbody></table>
 <h2>The trade-off</h2>
 <p>Devin offers a polished, fully-managed experience but at a high price point with limited customization. amux gives you <strong>full control</strong> over your agents, runs on your own infrastructure, and costs only what you pay for Claude API tokens.</p>
+
+<h2>See also</h2>
+<ul>
+  <li><a href="/guides/getting-started/">Getting started with amux</a> — running your first agent in 5 minutes</li>
+  <li><a href="/guides/self-healing-configuration/">Self-healing configuration</a> — the watchdog that keeps agents running overnight</li>
+  <li><a href="/guides/ai-coding-agents-overnight/">Running agents overnight</a> — unattended operation guide</li>
+  <li><a href="/compare/amux-vs-claude-managed-agents/">amux vs Claude Managed Agents</a></li>
+  <li><a href="/compare/amux-vs-openhands/">amux vs OpenHands</a></li>
+</ul>
 <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject

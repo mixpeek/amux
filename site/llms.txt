@@ -135,7 +135,9 @@ Claude Code runs one agent per terminal. amux runs dozens — with live monitori
 - [amux vs Claude Managed Agents](https://amux.io/compare/amux-vs-claude-managed-agents/): Self-hosted alternative to Anthropic's April 2026 Managed Agents launch. $0 session fees vs $0.08/session-hour, model-agnostic, MIT-licensed.
 - [amux vs Claude Code Agent Teams](https://amux.io/compare/amux-vs-claude-code-agent-teams/)
 - [amux vs Cursor](https://amux.io/compare/amux-vs-cursor/)
-- [amux vs Aider](https://amux.io/compare/amux-vs-aider/)
+- [amux vs Aider](https://amux.io/compare/amux-vs-aider/): Aider (open-source AI pair programmer, ~25k stars, Apache 2.0, multi-LLM) vs amux. Aider = single-session interactive pair programming with excellent diff quality, 20+ LLM providers. amux = parallel fleet for unattended overnight runs, Claude Code-native, web dashboard, self-healing watchdog. Complementary: Aider for surgical interactive edits, amux for batch fleet runs. FAQPage JSON-LD (5 Qs). July 2026.
+- [amux vs GitHub Copilot](https://amux.io/compare/amux-vs-github-copilot/): GitHub Copilot (~1.8M paid users, $10-19/mo, GPT-4o/4.5, IDE-integrated) vs amux. Copilot = inline completions + chat inside VS Code/JetBrains/Vim, synchronous interactive loop. amux = autonomous parallel fleet (10-50 sessions overnight), unattended, self-healing, mobile dashboard. Different layers of the stack — most developers use both. FAQPage JSON-LD (5 Qs). July 2026.
+- [amux vs OpenAI Symphony](https://amux.io/compare/amux-vs-openai-symphony/): OpenAI Symphony (open-sourced June 2026, ticket-driven Codex orchestrator, Elixir/OTP, requires Linear) vs amux (Claude Code fleet, Python, built-in SQLite kanban, web dashboard). Symphony = fully autonomous pipeline, no dashboard, Linear-only. amux = developer cockpit with observability, mobile management, 5-min setup. FAQPage JSON-LD (5 Qs). July 2026.
 - [amux vs Devin](https://amux.io/compare/amux-vs-devin/)
 - [amux vs GitHub Copilot](https://amux.io/compare/amux-vs-github-copilot/)
 - [amux vs Windsurf](https://amux.io/compare/amux-vs-windsurf/)

@@ -45,7 +45,16 @@
 <h2>Key differences</h2>
 <table><thead><tr><th>Feature</th><th>amux</th><th>Cursor</th></tr></thead><tbody><tr><td>Architecture</td><td>Headless CLI agents + web dashboard</td><td>GUI IDE with AI features</td></tr><tr><td>Parallel agents</td><td>Dozens of independent sessions</td><td>Single agent per window</td></tr><tr><td>Unattended operation</td><td>Self-healing watchdog, runs overnight</td><td>Requires IDE to be open</td></tr><tr><td>Mobile management</td><td>PWA on iOS/Android</td><td>Desktop only</td></tr><tr><td>Task coordination</td><td>Shared kanban board + REST API</td><td>No built-in coordination</td></tr><tr><td>Agent model</td><td>Claude Code (any model)</td><td>Proprietary + Claude/GPT</td></tr><tr><td>Cost model</td><td>Pay per API token</td><td>$20-40/mo subscription</td></tr><tr><td>Open source</td><td>Yes (MIT)</td><td>No</td></tr></tbody></table>
 <h2>They complement each other</h2>
-<p>Many developers use Cursor for <strong>interactive editing</strong> (inline completions, quick fixes) and amux for <strong>batch operations</strong> (running 10 agents overnight to generate tests, refactor modules, or fix bugs across a monorepo). You don't have to choose one.</p>
+<p>Many developers use Cursor for <strong>interactive editing</strong> (inline completions, quick fixes) and amux for <strong>batch operations</strong> (running 10 agents overnight to generate tests, refactor modules, or fix bugs across a monorepo). You don't have to choose one. → See <a href="/guides/claude-code-cursor-hybrid-workflow/">The Hybrid Stack guide</a> for a practical workflow combining both tools.</p>
+
+<h2>See also</h2>
+<ul>
+  <li><a href="/guides/getting-started/">Getting started with amux</a> — install in 5 minutes</li>
+  <li><a href="/guides/self-healing-configuration/">Self-healing configuration</a> — how amux keeps agents running while Cursor is closed</li>
+  <li><a href="/guides/running-10-plus-agents/">Running 10+ agents in parallel</a></li>
+  <li><a href="/compare/amux-vs-github-copilot/">amux vs GitHub Copilot</a></li>
+  <li><a href="/compare/amux-vs-cline/">amux vs Cline</a></li>
+</ul>
 <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
