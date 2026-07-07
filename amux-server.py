@@ -4915,9 +4915,28 @@ case "$cmd" in
     sub="$1"; shift 2>/dev/null || true
     case "$sub" in
       done|doing|todo|backlog|review|verified|discarded)
-        for id in "$@"; do
+        # The server enforces per-status gates: a move into a gated status returns
+        # 409 unless acknowledged. Surface that gate to the agent so it can satisfy
+        # the criteria; pass --force to override (same escape hatch as the UI).
+        force=""; ids=""
+        for a in "$@"; do
+          if [ "$a" = "--force" ]; then force=",\"force\":true"; else ids="$ids $a"; fi
+        done
+        for id in $ids; do
           curl -sk -X PATCH -H 'Content-Type: application/json' \
-            -d "{\"status\":\"$sub\"}" "$AMUX_URL/api/board/$id" >/dev/null
+            -d "{\"status\":\"$sub\"$force}" "$AMUX_URL/api/board/$id" | python3 -c "
+import json,sys
+iid=sys.argv[1]
+try: d=json.load(sys.stdin)
+except Exception: print(iid+': (no/invalid response)'); sys.exit(0)
+if d.get('error')=='gate not acknowledged':
+    print(iid+': BLOCKED — \''+str(d.get('status',''))+'\' has an unmet gate. Satisfy these, then re-run with --force:')
+    for g in d.get('gate',[]): print('   [ ] '+str(g))
+    sys.exit(2)
+if d.get('error'):
+    print(iid+': error: '+str(d.get('error'))); sys.exit(1)
+print(iid+' -> '+str(d.get('status','?')))
+" "$id"
         done ;;
       add)
         title="$*"
@@ -5867,6 +5886,92 @@ _DEFAULT_STATUSES = [
 ]
 
 
+# ── Board staleness (in-progress cards on idle sessions) ────────────────────
+_BOARD_STALE_AGE = 1800                # 30 min without an update → stale
+_BOARD_STALE_STATUSES = ("doing", "review")
+_BOARD_NUDGE_COOLDOWN = 6 * 3600       # min seconds between nudges for the same item
+_board_stale_nudged: dict[str, float] = {}   # item_id -> last nudge epoch
+
+
+def _board_item_stale(item: dict, now: float, working_sessions=None) -> bool:
+    """True when a card is parked in an in-progress status but its owning session
+    isn't actively working and it hasn't been touched in a while.
+
+    `working` means the session is actively generating (raw status 'active').
+    When `working_sessions` is None the cheap cached `_session_prev_status` view is
+    used (safe for the frequently-called _load_board path); the nudge job does a
+    fresh live check before actually steering.
+    """
+    try:
+        if item.get("status") not in _BOARD_STALE_STATUSES:
+            return False
+        sess = item.get("session")
+        if not sess:
+            return False
+        upd = item.get("updated") or 0
+        if not upd or (now - upd) < _BOARD_STALE_AGE:
+            return False
+        if working_sessions is None:
+            working = (_session_prev_status.get(sess) == "active")
+        else:
+            working = sess in working_sessions
+        return not working
+    except Exception:
+        return False
+
+
+def _board_stale_nudge():
+    """Periodic: steer a concise nudge to any session sitting on a stale
+    in-progress card. Only nudges sessions that are RUNNING and IDLE (so the
+    message can be received and acted on), never changes status itself (the
+    agent must do the work + satisfy the gate), and throttles per item.
+    Fully guarded so a failure can never take down the scheduler."""
+    try:
+        now = time.time()
+        items = _load_board(done_limit=0)
+    except Exception:
+        return
+    for item in items:
+        try:
+            if not _board_item_stale(item, now):
+                continue
+            sess = item.get("session")
+            iid = item.get("id")
+            if not sess or not iid:
+                continue
+            if now - _board_stale_nudged.get(iid, 0) < _BOARD_NUDGE_COOLDOWN:
+                continue
+            # Must be running AND idle (not actively generating) to receive + act.
+            if not is_running(sess):
+                continue
+            raw = tmux_capture(sess, 60)
+            if raw and _detect_claude_status(raw) == "active":
+                continue  # working — leave it alone
+            title = (item.get("title") or "")[:60]
+            status = item.get("status", "")
+            idle_min = int((now - (item.get("updated") or now)) / 60)
+            msg = (f"[board] {iid} (\"{title}\") is still '{status}' but this session "
+                   f"is idle — advance it to done/verified per its gate, or move it back "
+                   f"to todo if blocked.")
+            try:
+                msg_id = f"steer-{int(now * 1000)}"
+                entry = {"id": msg_id, "text": msg, "queued_at": now}
+                with _steering_lock:
+                    _steering_queue.setdefault(sess, []).append(entry)
+                gdb = get_db()
+                gdb.execute(
+                    "INSERT OR REPLACE INTO steering_queue(id, session, text, queued_at) VALUES(?,?,?,?)",
+                    (msg_id, sess, msg, now),
+                )
+                gdb.commit()
+                _board_stale_nudged[iid] = now
+                slog(f"[board-stale] nudged {sess} about {iid} ('{title}', {status}, idle {idle_min}m)")
+            except Exception as _e:
+                slog(f"[board-stale] failed to nudge {sess} about {iid}: {_e}")
+        except Exception:
+            continue
+
+
 def _load_board(done_limit: int = 100) -> list:
     """Load non-deleted issues from SQLite, with tags joined.
 
@@ -5922,6 +6027,7 @@ def _load_board(done_limit: int = 100) -> list:
         ).fetchall()
     # Sort in Python: pinned first, then by pos, then by updated
     result = []
+    _now = time.time()
     for row in rows:
         item = dict(row)
         tags_csv = item.pop("tags_csv") or ""
@@ -5931,6 +6037,10 @@ def _load_board(done_limit: int = 100) -> list:
             item["gate"] = json.loads(g) if g else []
         except Exception:
             item["gate"] = []
+        # Cheap staleness flag (in-progress card on a non-working session, untouched
+        # for a while) so the UI can surface it; uses the cached session-status view.
+        if _board_item_stale(item, _now):
+            item["stale"] = True
         result.append(item)
     result.sort(key=lambda x: (-x.get("pinned", 0),
                                 0 if x.get("pos", 0) == 0 else -1,
@@ -6006,6 +6116,48 @@ def _item_by_id(bid: str) -> dict | None:
     except Exception:
         item["gate"] = []
     return item
+
+
+def _effective_gate(item, target_status: str) -> list:
+    """Resolve the effective gate checklist for moving `item` into `target_status`.
+
+    Mirrors the client's _effectiveGate resolution order:
+      1. card-level override (issues.gate, if non-empty)
+      2. per-session override (session_gates[session][status], if non-empty)
+      3. global status default (statuses.gate[status])
+
+    `item` may be an issue id (str) or a dict/row with at least `session` and
+    (optionally) `gate`. Returns a list of criterion strings (possibly empty).
+    """
+    if isinstance(item, str):
+        item = _item_by_id(item) or {}
+    else:
+        try:
+            item = dict(item) if item else {}
+        except Exception:
+            item = {}
+    # 1. Card-level override
+    g = item.get("gate")
+    if isinstance(g, str):
+        try:
+            g = json.loads(g) if g else []
+        except Exception:
+            g = []
+    if isinstance(g, list) and g:
+        return [str(x) for x in g if str(x).strip()]
+    # 2. Per-session override for the target status
+    session = item.get("session")
+    if session:
+        sg = _load_session_gates().get(session, {})
+        gs = sg.get(target_status)
+        if isinstance(gs, list) and gs:
+            return [str(x) for x in gs if str(x).strip()]
+    # 3. Global status default
+    for st in _load_board_statuses():
+        if st.get("id") == target_status:
+            d = st.get("gate")
+            return [str(x) for x in d if str(x).strip()] if isinstance(d, list) else []
+    return []
 
 
 def _prefix_from_session(session: str) -> str:
@@ -20777,7 +20929,7 @@ function _renderPeekIssuesKanban(items, list) {
           // Gate: confirm the status change; on cancel, revert the visual move.
           _gateConfirm(item, newStatus).then(ok => {
             if (!ok) { renderPeekIssues(); return; }
-            moveBoardItem(id, newStatus, newPos);
+            moveBoardItem(id, newStatus, newPos, ok);
             renderPeekIssues();
           });
           return;
@@ -21286,7 +21438,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.37';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.38';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -28715,7 +28867,7 @@ function boardColDrop(e, col) {
     const dragId = _boardDragId;
     const item = boardItems.find(i => i.id === dragId);
     if (item && item.status !== col) {
-      _gateConfirm(item, col).then(ok => { if (ok) moveBoardItem(dragId, col); else renderBoard(); });
+      _gateConfirm(item, col).then(ok => { if (ok) moveBoardItem(dragId, col, undefined, ok); else renderBoard(); });
     }
     _boardDragId = null;
   }
@@ -29048,7 +29200,7 @@ function renderBoard() {
             // visual move by re-rendering from the (unchanged) boardItems.
             _gateConfirm(item || {}, newStatus).then(ok => {
               if (!ok) { renderBoard(); return; }
-              moveBoardItem(id, newStatus, newPos);
+              moveBoardItem(id, newStatus, newPos, ok);
               _flush();
             });
             return;
@@ -29560,15 +29712,19 @@ async function boardDetailSave() {
   const _cur = boardItems.find(i => i.id === boardDetailId);
   // Gate: if the status changed to a different status with an effective gate
   // (using the possibly-just-edited override), confirm before saving.
+  let _gateAck = null;
   if (_cur && boardDetailStatus !== (_cur.status || 'todo')) {
     const ok = await _gateConfirm({ ..._cur, gate }, boardDetailStatus);
     if (!ok) { const el = document.getElementById('bd-save-status'); if (el) el.textContent = ''; return; }
+    _gateAck = ok;
   }
   document.getElementById('bd-save-status').textContent = 'Saving...';
   const dueInput = document.getElementById('bd-due');
   const dueTimeInput = document.getElementById('bd-due-time');
   const changes = { title, desc, status: boardDetailStatus, due: dueInput ? dueInput.value : '', due_time: dueTimeInput ? dueTimeInput.value : '', tags: [..._tagState['bd']], gate };
   if (session !== undefined) changes.session = session;
+  // The server enforces status gates: forward acknowledgement from _gateConfirm.
+  if (_gateAck) { changes.gate_ack = true; if (Array.isArray(_gateAck)) changes.gate_checked = _gateAck; }
   await updateBoardItem(boardDetailId, changes);
   delete _boardDrafts[boardDetailId];
   document.getElementById('bd-save-status').textContent = 'Saved';
@@ -29682,7 +29838,12 @@ function _gateConfirm(item, targetStatusId) {
     chks.forEach(c => c.addEventListener('change', upd)); upd();
     const done = v => { bg.remove(); resolve(v); };
     box.querySelector('#_gate-cancel').onclick = () => done(false);
-    box.querySelector('#_gate-ok').onclick = () => done(true);
+    // Resolve with the list of acknowledged criteria (empty→true) so callers can
+    // forward gate_ack / gate_checked to the server, which now enforces the gate.
+    box.querySelector('#_gate-ok').onclick = () => {
+      const checked = [...chks].filter(c => c.checked).map(c => gate[+c.dataset.i]).filter(x => x != null);
+      done(checked.length ? checked : true);
+    };
     bg.onclick = e => { if (e.target === bg) done(false); };
   });
 }
@@ -29768,7 +29929,7 @@ function editSessionGate(session, statusId) {
   box.querySelector('#_sgate-edit-save').onclick = () => persist(ta.value.split('\n').map(x => x.trim()).filter(Boolean));
 }
 
-function moveBoardItem(id, newStatus, newPos) {
+function moveBoardItem(id, newStatus, newPos, gateAck) {
   // Optimistic: update in-memory + cache immediately; Sortable already moved the DOM
   const idx = boardItems.findIndex(i => i.id === id);
   if (idx >= 0) {
@@ -29780,6 +29941,8 @@ function moveBoardItem(id, newStatus, newPos) {
   // Sync to backend silently — no renderBoard() so the drag stays smooth
   const body = { status: newStatus };
   if (typeof newPos === 'number' && isFinite(newPos)) body.pos = newPos;
+  // The server enforces status gates: forward acknowledgement from _gateConfirm.
+  if (gateAck) { body.gate_ack = true; if (Array.isArray(gateAck)) body.gate_checked = gateAck; }
   apiCall(API + '/api/board/' + id, {
     method: 'PATCH', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body)
@@ -37273,7 +37436,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.37';
+const CACHE = 'amux-v0.9.38';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -40071,6 +40234,41 @@ class CCHandler(BaseHTTPRequestHandler):
                                     "dirty_count": len(dirty),
                                     "dirty_files": dirty[:20],
                                 }, 409)
+                    # ── Gate enforcement on status transitions ──────────────────
+                    # Any move to a DIFFERENT status that has a non-empty effective
+                    # gate must be acknowledged (gate_ack:true OR gate_checked:[...]).
+                    # This is the server-side mirror of the client's confirm dialog,
+                    # so CLI/API callers (agents) can't silently skip the gate. For
+                    # 'verified' this STACKS on the clean-tree check above — both must
+                    # pass. `force:true` bypasses the gate (same escape hatch as the
+                    # clean-tree gate; judgment stays with the caller).
+                    new_status = body.get("status")
+                    if new_status is not None and prior and new_status != prior["status"]:
+                        # Resolve the gate against the item as it WILL be after this
+                        # PATCH (session and/or card gate may change in the same call).
+                        gate_item = _item_by_id(bid) or {}
+                        if "session" in body:
+                            gate_item["session"] = body.get("session") or None
+                        if "gate" in body:
+                            _g = body.get("gate")
+                            gate_item["gate"] = ([str(x).strip() for x in _g if str(x).strip()]
+                                                 if isinstance(_g, list) else [])
+                        eff_gate = _effective_gate(gate_item, new_status)
+                        if eff_gate and not body.get("force"):
+                            acked = (bool(body.get("gate_ack"))
+                                     or isinstance(body.get("gate_checked"), list))
+                            if not acked:
+                                return self._json({
+                                    "error": "gate not acknowledged",
+                                    "gate": eff_gate,
+                                    "status": new_status,
+                                    "item": bid,
+                                }, 409)
+                        if eff_gate:
+                            _chk = body.get("gate_checked")
+                            slog(f"[board-gate] {bid} {prior['status']}->{new_status} "
+                                 f"acknowledged (force={bool(body.get('force'))}, "
+                                 f"checked={len(_chk) if isinstance(_chk, list) else 0}/{len(eff_gate)})")
                     set_clauses, params = [], []
                     for k in ("title", "desc", "status", "session", "due", "due_time", "owner_type", "pinned", "pos"):
                         if k in body:
@@ -43550,16 +43748,61 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     new_log = CC_LOGS / f"{new_name}.log"
                     if old_log.exists() and not new_log.exists():
                         old_log.rename(new_log)
-                    # Update board items referencing old session name
+                    # Cascade the rename across every table/queue that keys off the
+                    # session name, so nothing is orphaned under the old name.
                     try:
                         db = get_db()
+                        # Board items (active only — historical/deleted keep old name).
                         db.execute(
                             "UPDATE issues SET session=? WHERE session=? AND deleted IS NULL",
                             (new_name, name),
                         )
+                        # Scheduler tasks that target this session.
+                        db.execute(
+                            "UPDATE schedules SET session=? WHERE session=?",
+                            (new_name, name),
+                        )
+                        # Per-session gate overrides.
+                        db.execute(
+                            "UPDATE session_gates SET session=? WHERE session=?",
+                            (new_name, name),
+                        )
+                        # Saved (quick-send) messages scoped to this session.
+                        db.execute(
+                            "UPDATE saved_messages SET session=? WHERE session=?",
+                            (new_name, name),
+                        )
                         db.commit()
+                    except Exception as _e:
+                        slog(f"[rename] DB cascade failed for {name}->{new_name}: {_e}")
+                    # Migrate the in-memory steering queue (keyed by session name) so
+                    # any still-queued nudges/steers deliver to the renamed session.
+                    try:
+                        with _steering_lock:
+                            q = _steering_queue.pop(name, None)
+                            if q:
+                                _steering_queue.setdefault(new_name, []).extend(q)
+                        db2 = get_db()
+                        db2.execute("UPDATE steering_queue SET session=? WHERE session=?", (new_name, name))
+                        db2.commit()
                     except Exception:
                         pass
+                    # Re-export AMUX_SESSION in the running tmux session so new panes
+                    # and commands (e.g. the `amux` CLI stub) see the new name.
+                    # NOTE: tmux setenv only affects the tmux *environment* used for
+                    # future processes — the already-running interactive shell (and the
+                    # live claude process) will NOT pick this up until it is restarted or
+                    # re-reads its env. We set it best-effort so at least new panes/commands
+                    # inside the session get the correct $AMUX_SESSION.
+                    try:
+                        if is_running(new_name):
+                            subprocess.run(
+                                ["tmux", "setenv", "-t", tmux_target(new_name), "AMUX_SESSION", new_name],
+                                capture_output=True, timeout=5,
+                            )
+                    except Exception:
+                        pass
+                    _board_changed()
                     return self._json({"ok": True, "message": f"renamed to {new_name}"})
 
                 # Change provider
@@ -44748,6 +44991,7 @@ def main():
     schedule_job(_evict_stale_caches,    interval=300,                  name="cache_evict", initial_delay=60)
     schedule_job(_cleanup_tmp,           interval=1800,                 name="tmp_cleanup", initial_delay=60)
     schedule_job(_auto_archive_idle,     interval=3600,                 name="auto_archive", initial_delay=300)
+    schedule_job(_board_stale_nudge,     interval=120,                  name="board_stale", initial_delay=30)
     schedule_job(_enforce_archived_stopped, interval=600,                name="archive_enforce", initial_delay=30)
     schedule_job(_cleanup_old_transcripts, interval=86400,              name="transcript_cleanup", initial_delay=600)
     schedule_job(_cleanup_logs,             interval=86400,              name="log_rotation",       initial_delay=120)
