@@ -15627,21 +15627,68 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 
 <div id="browser-view" style="display:none;">
-  <div style="display:flex;align-items:center;gap:8px;padding:8px;flex-wrap:wrap;">
-    <select id="bw-profile" style="font-size:0.78rem;padding:4px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-family:inherit;min-width:120px;">
-      <option value="">No profile</option>
+  <style>
+    #browser-view .bw-btn { font-size:0.82rem;padding:5px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--fg);font-family:inherit;line-height:1.1;white-space:nowrap; }
+    #browser-view .bw-btn:hover { border-color:var(--accent); }
+    #browser-view .bw-btn.primary { background:var(--accent);color:#fff;border:none;font-weight:500; }
+    #browser-view .bw-btn.active { background:var(--accent);color:#fff;border-color:var(--accent); }
+    #browser-view .bw-in { font-size:0.82rem;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-family:inherit; }
+    #browser-view .bw-row { display:flex;align-items:center;gap:6px;padding:0 8px 8px;flex-wrap:wrap; }
+    #bw-elements-panel .bw-el { padding:4px 8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:0.74rem;display:flex;gap:6px;align-items:baseline; }
+    #bw-elements-panel .bw-el:hover { background:var(--surface); }
+    #bw-elements-panel .bw-el .idx { color:var(--accent);font-family:monospace;font-weight:600;min-width:34px; }
+    #bw-elements-panel .bw-el .tag { color:var(--dim);font-family:monospace; }
+    @media (max-width:600px){ #browser-view .bw-btn{ min-height:44px;min-width:44px; } #browser-view .bw-in{ min-height:40px; } }
+  </style>
+  <!-- Nav row -->
+  <div class="bw-row" style="padding-top:8px;">
+    <select id="bw-profile" class="bw-in" style="min-width:120px;" title="Profile — 'Auto' matches the URL to a logged-in profile">
+      <option value="">Auto profile</option>
     </select>
-    <button onclick="_bwBack()" style="font-size:0.82rem;padding:4px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--fg);">&larr;</button>
-    <input id="bw-url" type="text" placeholder="https://example.com" style="flex:1;min-width:200px;font-size:0.82rem;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-family:inherit;" onkeydown="if(event.key==='Enter')_bwGo()">
-    <button onclick="_bwGo()" style="font-size:0.82rem;padding:4px 14px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:500;">Go</button>
-    <button onclick="_bwScreenshot()" style="font-size:0.82rem;padding:4px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--fg);">&#128247; Snap</button>
-    <button onclick="_bwSaveProfile()" style="font-size:0.82rem;padding:4px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--fg);">&#128190; Save Profile</button>
+    <button class="bw-btn" onclick="_bwBack()" title="Back">&larr;</button>
+    <input id="bw-url" type="text" placeholder="https://example.com" class="bw-in" style="flex:1;min-width:180px;" onkeydown="if(event.key==='Enter')_bwGo()">
+    <button class="bw-btn primary" onclick="_bwGo()">Go</button>
+    <button id="bw-live-btn" class="bw-btn" onclick="_bwToggleLive()" title="Live auto-refresh">&#9658; Live</button>
+    <button class="bw-btn" onclick="_bwScreenshot()" title="Snapshot">&#128247;</button>
+    <button class="bw-btn" onclick="_bwSaveProfile()" title="Register current site to a profile">&#128190; Save</button>
+  </div>
+  <!-- Status / logged-in indicator -->
+  <div class="bw-row" style="padding-bottom:4px;">
+    <span id="bw-loggedin" style="font-size:0.7rem;padding:2px 8px;border-radius:10px;display:none;"></span>
     <span id="bw-status" style="font-size:0.72rem;color:var(--dim);"></span>
   </div>
-  <div id="bw-viewport" style="position:relative;padding:0 8px 8px;cursor:crosshair;height:calc(100vh - 160px);overflow:auto;">
-    <img id="bw-img" style="max-width:100%;border:1px solid var(--border);border-radius:4px;display:none;" onclick="_bwClick(event)">
-    <div id="bw-placeholder" style="display:flex;align-items:center;justify-content:center;height:400px;color:var(--dim);font-size:0.9rem;">
-      Enter a URL and click Go to start browsing
+  <!-- Interaction row -->
+  <div class="bw-row">
+    <input id="bw-type" type="text" placeholder="Type text into page&hellip;" class="bw-in" style="flex:1;min-width:140px;" onkeydown="if(event.key==='Enter'){event.preventDefault();_bwType(true);}">
+    <button class="bw-btn" onclick="_bwType(false)">Type</button>
+    <button class="bw-btn" onclick="_bwKey('Enter')" title="Press Enter">&#9166;</button>
+    <button class="bw-btn" onclick="_bwKey('Tab')" title="Press Tab">Tab</button>
+    <button class="bw-btn" onclick="_bwKey('Backspace')" title="Backspace">&#9003;</button>
+    <button class="bw-btn" onclick="_bwScroll(-1)" title="Scroll up">&#9650;</button>
+    <button class="bw-btn" onclick="_bwScroll(1)" title="Scroll down">&#9660;</button>
+    <button id="bw-el-btn" class="bw-btn" onclick="_bwToggleElements()" title="Show clickable elements">&#9776; Elements</button>
+  </div>
+  <!-- Agent task row -->
+  <div class="bw-row">
+    <input id="bw-task" type="text" placeholder="Give the browser agent a task (autonomous, vision)&hellip;" class="bw-in" style="flex:1;min-width:180px;" onkeydown="if(event.key==='Enter')_bwAgentRun()">
+    <button class="bw-btn primary" onclick="_bwAgentRun()">&#9658; Run agent</button>
+    <button id="bw-agent-stop" class="bw-btn" style="display:none;" onclick="_bwAgentStop()">Stop</button>
+  </div>
+  <div id="bw-agent-result" style="display:none;margin:0 8px 8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:0.76rem;max-height:160px;overflow:auto;white-space:pre-wrap;"></div>
+  <!-- Viewport + elements panel -->
+  <div style="display:flex;gap:8px;padding:0 8px 8px;height:calc(100vh - 260px);min-height:280px;">
+    <div id="bw-viewport" tabindex="0" style="position:relative;flex:1;min-width:0;cursor:crosshair;overflow:auto;outline:none;" onkeydown="_bwViewportKey(event)">
+      <img id="bw-img" style="max-width:100%;border:1px solid var(--border);border-radius:4px;display:none;" onclick="_bwClick(event)">
+      <div id="bw-placeholder" style="display:flex;align-items:center;justify-content:center;height:400px;color:var(--dim);font-size:0.9rem;text-align:center;padding:0 20px;">
+        Enter a URL and click Go to start browsing.<br>Click the page to interact; focus it and type to send keys.
+      </div>
+    </div>
+    <div id="bw-elements-panel" style="display:none;width:280px;flex-shrink:0;border:1px solid var(--border);border-radius:6px;overflow:auto;background:var(--bg);">
+      <div style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:0.74rem;color:var(--dim);display:flex;justify-content:space-between;align-items:center;">
+        <span id="bw-el-count">Elements</span>
+        <button class="bw-btn" style="padding:2px 6px;" onclick="_bwLoadElements()">&#x21bb;</button>
+      </div>
+      <div id="bw-elements-list"></div>
     </div>
   </div>
 </div>
@@ -27094,7 +27141,7 @@ function switchView(view) {
   if (view === 'crm') { _crmDirty = false; _crmLoad(); _crmApplySidebarState(); } // always refresh on tab switch
   if (view === 'map') { _mapLoad(); _mapInit(); }
   if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); } // always refresh on tab switch
-  if (view === 'browser') _bwInit();
+  if (view === 'browser') _bwInit(); else if (typeof _bwStopLive === 'function') _bwStopLive();
   if (view === 'journal') _journalInit();
   if (view === 'habits') _habitsLoad();
   if (view === 'skills') _skillsTabLoad();
@@ -36334,32 +36381,50 @@ function _graphRestorePositions() {
 }
 
 // ── Browser ─────────────────────────────────────────────────────────────────
+// Thin harness over the browser-use CLI. Structured-first: a named profile
+// auto-loads by URL (persistent login), the page is driven by real actions
+// (click/type/keys/scroll), and `state` gives an index-addressable element list
+// for ref-based clicking. The Computer-Use agent is the vision fallback.
 let _bwInited = false;
 let _bwSession = 'amux';
+let _bwViewport = null;        // {w,h} of the page viewport, for click scaling
+let _bwCurrentUrl = '';        // last URL we navigated to (for the agent start_url)
+let _bwActiveProfile = '';     // profile the current session is running under
+let _bwLive = false;           // live auto-refresh on?
+let _bwLiveTimer = null;
+let _bwShotInFlight = false;   // debounce: skip a screenshot while one is running
+let _bwAgentCtl = null;        // AbortController for the running agent task
 
 async function _bwInit() {
-  if (_bwInited) return;
-  _bwInited = true;
-  // Load profiles
+  if (!_bwInited) {
+    _bwInited = true;
+    await _bwLoadProfiles();
+  }
+}
+
+async function _bwLoadProfiles() {
   try {
     const r = await fetch('/api/browser/profiles');
     const d = await r.json();
     const sel = document.getElementById('bw-profile');
+    if (!sel) return;
+    const cur = sel.value;
+    // Rebuild: Auto (empty) + registered profiles + real Chrome profiles
+    sel.innerHTML = '<option value="">Auto profile</option>';
     (d.profiles || []).forEach(p => {
       const o = document.createElement('option');
-      o.value = p; o.textContent = p;
+      o.value = p.name;
+      const doms = (p.domains || []).join(', ');
+      o.textContent = '🔓 ' + p.name + (doms ? ' — ' + doms : '');
+      if (doms) o.title = doms;
       sel.appendChild(o);
     });
-    // Also add Playwright auth profiles
-    const pw = await fetch('/api/browser/pw-profiles').catch(() => null);
-    if (pw && pw.ok) {
-      const pd = await pw.json();
-      (pd.profiles || []).forEach(p => {
-        const o = document.createElement('option');
-        o.value = 'pw:' + p; o.textContent = '🔐 ' + p;
-        sel.appendChild(o);
-      });
-    }
+    (d.chrome_profiles || []).forEach(p => {
+      const o = document.createElement('option');
+      o.value = p; o.textContent = '🌐 ' + p;
+      sel.appendChild(o);
+    });
+    if (cur) sel.value = cur;
   } catch(e) {}
 }
 
@@ -36368,97 +36433,257 @@ function _bwStatus(msg) {
   if (el) el.textContent = msg;
 }
 
+function _bwShowProfile(profile, auto) {
+  _bwActiveProfile = profile || '';
+  const el = document.getElementById('bw-loggedin');
+  if (!el) return;
+  if (!profile) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.textContent = (auto ? '🔒 auto: ' : '🔓 ') + profile;
+  el.style.background = 'var(--surface)';
+  el.style.border = '1px solid var(--border)';
+  el.style.color = 'var(--fg)';
+  el.title = auto ? 'Profile auto-selected by URL' : 'Profile: ' + profile;
+}
+
 async function _bwGo() {
-  const url = document.getElementById('bw-url').value.trim();
+  let url = document.getElementById('bw-url').value.trim();
   if (!url) return;
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url) && !url.startsWith('about:')) url = 'https://' + url;
   const profile = document.getElementById('bw-profile').value;
-  _bwStatus('Loading...');
+  _bwStatus('Loading…');
   try {
     const body = { url, session: _bwSession };
-    if (profile && !profile.startsWith('pw:')) body.profile = profile;
-    else if (profile && profile.startsWith('pw:')) body.profile = profile.slice(3);
+    if (profile) body.profile = profile;   // empty = auto-select by URL
     const r = await fetch('/api/browser/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const d = await r.json();
     if (d.error) { _bwStatus('Error: ' + d.error); return; }
-    _bwStatus('Navigated');
-    // Auto-screenshot after a delay
-    setTimeout(() => _bwScreenshot(2), 2000);
+    _bwCurrentUrl = (d.data && d.data.url) || url;
+    _bwShowProfile(d.profile, d.auto_profile);
+    _bwStatus('Navigated' + (d.profile_fallback ? ' (no profile — Chrome busy)' : ''));
+    _bwViewport = null;
+    await _bwFetchViewport();
+    // Auto-refresh a couple times, then flip live view on so the page stays current
+    setTimeout(() => _bwScreenshot(2), 1500);
+    if (!_bwLive) _bwSetLive(true);
   } catch(e) { _bwStatus('Error: ' + e.message); }
 }
 
-async function _bwScreenshot(retries) {
+async function _bwFetchViewport() {
+  try {
+    const r = await fetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action: 'eval', script: '({w:window.innerWidth,h:window.innerHeight})', session: _bwSession }) });
+    const d = await r.json();
+    const res = (d.data || {}).result;
+    if (res && res.w && res.h) _bwViewport = { w: res.w, h: res.h };
+  } catch(e) {}
+}
+
+async function _bwScreenshot(retries, silent) {
   retries = retries || 0;
-  _bwStatus('Taking screenshot...');
+  if (_bwShotInFlight) return;   // debounce — don't stack requests
+  _bwShotInFlight = true;
+  if (!silent) _bwStatus('Taking screenshot…');
   try {
     const r = await fetch('/api/browser/screenshot?session=' + _bwSession + '&t=' + Date.now());
     const d = await r.json();
     if (d.path) {
-      // Load via file raw API
       const img = document.getElementById('bw-img');
       img.src = _authUrl('/api/file/raw?path=' + encodeURIComponent(d.path) + '&t=' + Date.now());
       img.style.display = '';
       document.getElementById('bw-placeholder').style.display = 'none';
-      _bwStatus('Screenshot taken');
+      if (!silent) _bwStatus('Updated ' + new Date().toLocaleTimeString());
     } else if (retries > 0) {
-      _bwStatus('Retrying screenshot...');
-      setTimeout(() => _bwScreenshot(retries - 1), 2000);
-    } else {
+      _bwShotInFlight = false;
+      setTimeout(() => _bwScreenshot(retries - 1, silent), 1500);
+      return;
+    } else if (!silent) {
       _bwStatus(d.error || 'Screenshot failed');
     }
   } catch(e) {
     if (retries > 0) {
-      _bwStatus('Retrying screenshot...');
-      setTimeout(() => _bwScreenshot(retries - 1), 2000);
-    } else {
-      _bwStatus('Error: ' + e.message);
-    }
+      _bwShotInFlight = false;
+      setTimeout(() => _bwScreenshot(retries - 1, silent), 1500);
+      return;
+    } else if (!silent) { _bwStatus('Error: ' + e.message); }
+  } finally {
+    _bwShotInFlight = false;
   }
+}
+
+// ── Live auto-refresh (deliverable #4) ──
+function _bwSetLive(on) {
+  _bwLive = on;
+  const btn = document.getElementById('bw-live-btn');
+  if (btn) {
+    btn.classList.toggle('active', on);
+    btn.innerHTML = on ? '&#10074;&#10074; Live' : '&#9658; Live';
+  }
+  if (on) _bwLiveTick();
+  else if (_bwLiveTimer) { clearTimeout(_bwLiveTimer); _bwLiveTimer = null; }
+}
+function _bwToggleLive() { _bwSetLive(!_bwLive); }
+function _bwStopLive() { if (_bwLive) _bwSetLive(false); }
+async function _bwLiveTick() {
+  if (!_bwLive) return;
+  // Only refresh when the Browser tab is actually visible
+  if (activeView === 'browser' && !document.hidden && !_bwShotInFlight) {
+    await _bwScreenshot(0, true);
+  }
+  if (_bwLive) _bwLiveTimer = setTimeout(_bwLiveTick, 900);
 }
 
 async function _bwClick(event) {
   const img = document.getElementById('bw-img');
   const rect = img.getBoundingClientRect();
-  // Scale click coords to actual viewport (1280x800 default)
-  const scaleX = 1280 / rect.width;
-  const scaleY = 800 / rect.height;
-  const x = Math.round((event.clientX - rect.left) * scaleX);
-  const y = Math.round((event.clientY - rect.top) * scaleY);
-  _bwStatus('Clicking ' + x + ',' + y + '...');
+  // Scale display coords → page viewport coords. Prefer the real innerWidth/
+  // innerHeight; fall back to the screenshot's natural size (correct at dpr=1).
+  let vw, vh;
+  if (_bwViewport && _bwViewport.w && _bwViewport.h) { vw = _bwViewport.w; vh = _bwViewport.h; }
+  else { vw = img.naturalWidth || rect.width; vh = img.naturalHeight || rect.height; }
+  const x = Math.round((event.clientX - rect.left) * (vw / rect.width));
+  const y = Math.round((event.clientY - rect.top) * (vh / rect.height));
+  try { document.getElementById('bw-viewport').focus({ preventScroll: true }); } catch(e) {}
+  _bwStatus('Click ' + x + ',' + y + '…');
   try {
     await fetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action: 'click', x, y, session: _bwSession }) });
-    setTimeout(() => _bwScreenshot(1), 1000);
+    setTimeout(() => _bwScreenshot(1), 800);
   } catch(e) { _bwStatus('Error: ' + e.message); }
+}
+
+// ── Real interaction: type / keys / scroll (deliverable #2) ──
+async function _bwAction(payload, note) {
+  try {
+    payload.session = _bwSession;
+    if (note) _bwStatus(note);
+    await fetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    setTimeout(() => _bwScreenshot(1), 500);
+  } catch(e) { _bwStatus('Error: ' + e.message); }
+}
+async function _bwType(fromInput) {
+  const inp = document.getElementById('bw-type');
+  const text = inp.value;
+  if (!text) return;
+  await _bwAction({ action: 'type', text }, 'Typing…');
+  if (fromInput) inp.value = '';
+}
+function _bwKey(key) { _bwAction({ action: 'key', key }, 'Key ' + key + '…'); }
+function _bwScroll(dir) { _bwAction({ action: 'scroll', dy: dir * 600 }, dir > 0 ? 'Scroll down…' : 'Scroll up…'); }
+
+// Keyboard passthrough from the focused viewport — printable chars → type,
+// named keys (Enter/Tab/Arrows/…) → key. Lets you drive the page directly.
+const _BW_NAMED_KEYS = new Set(['Enter','Tab','Backspace','Delete','Escape','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End','PageUp','PageDown']);
+function _bwViewportKey(event) {
+  if (event.metaKey || event.ctrlKey || event.altKey) return;  // leave shortcuts alone
+  if (_BW_NAMED_KEYS.has(event.key)) {
+    event.preventDefault();
+    _bwKey(event.key);
+  } else if (event.key.length === 1) {
+    event.preventDefault();
+    _bwAction({ action: 'type', text: event.key }, null);
+  }
 }
 
 async function _bwBack() {
-  _bwStatus('Going back...');
+  _bwStatus('Going back…');
   try {
     await fetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action: 'back', session: _bwSession }) });
-    setTimeout(() => _bwScreenshot(1), 1000);
+    setTimeout(() => _bwScreenshot(1), 800);
   } catch(e) { _bwStatus('Error: ' + e.message); }
 }
 
-async function _bwSaveProfile() {
-  const name = prompt('Profile name to save current session as:');
-  if (!name) return;
-  _bwStatus('Saving profile...');
+// ── Structured perception: element list + ref-based click (deliverables #3/#5) ──
+async function _bwToggleElements() {
+  const panel = document.getElementById('bw-elements-panel');
+  const btn = document.getElementById('bw-el-btn');
+  const open = panel.style.display === 'none';
+  panel.style.display = open ? '' : 'none';
+  if (btn) btn.classList.toggle('active', open);
+  if (open) await _bwLoadElements();
+}
+async function _bwLoadElements() {
+  const list = document.getElementById('bw-elements-list');
+  list.innerHTML = '<div style="padding:8px;color:var(--dim);font-size:0.74rem;">Loading…</div>';
   try {
-    const r = await fetch('/api/browser/save-profile', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, session: _bwSession }) });
+    const r = await fetch('/api/browser/state?session=' + _bwSession);
     const d = await r.json();
-    _bwStatus(d.success ? 'Profile saved: ' + name : (d.error || 'Save failed'));
+    if (d.viewport) _bwViewport = d.viewport;
+    const els = d.elements || [];
+    document.getElementById('bw-el-count').textContent = els.length + ' elements';
+    if (!els.length) { list.innerHTML = '<div style="padding:8px;color:var(--dim);font-size:0.74rem;">No elements</div>'; return; }
+    list.innerHTML = els.map(e =>
+      '<div class="bw-el" onclick="_bwClickIndex(' + e.index + ')">' +
+      '<span class="idx">' + e.index + '</span>' +
+      '<span class="tag">&lt;' + esc(e.tag) + '&gt;</span>' +
+      '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;">' + esc(e.label || '') + '</span></div>'
+    ).join('');
+  } catch(e) {
+    list.innerHTML = '<div style="padding:8px;color:var(--dim);font-size:0.74rem;">Error: ' + esc(e.message) + '</div>';
+  }
+}
+async function _bwClickIndex(index) {
+  _bwStatus('Click element [' + index + ']…');
+  try {
+    await fetch('/api/browser/action', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action: 'click', index, session: _bwSession }) });
+    setTimeout(() => { _bwScreenshot(1); _bwLoadElements(); }, 800);
+  } catch(e) { _bwStatus('Error: ' + e.message); }
+}
+
+// ── Save profile: register current site to a profile (deliverable #1 UI) ──
+async function _bwSaveProfile() {
+  const suggested = _bwActiveProfile || '';
+  const name = prompt('Register the current site to which profile?\n(Logging in under this profile persists automatically.)', suggested);
+  if (name === null) return;
+  _bwStatus('Saving profile…');
+  try {
+    const r = await fetch('/api/browser/save-profile', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: name.trim(), session: _bwSession }) });
+    const d = await r.json();
     if (d.success) {
-      // Add to dropdown if not there
-      const sel = document.getElementById('bw-profile');
-      const exists = Array.from(sel.options).some(o => o.value === 'pw:' + name);
-      if (!exists) {
-        const o = document.createElement('option');
-        o.value = 'pw:' + name; o.textContent = '🔐 ' + name;
-        sel.appendChild(o);
-        sel.value = 'pw:' + name;
-      }
+      _bwStatus('Saved: ' + d.profile + (d.host ? ' → ' + d.host : ''));
+      _bwShowProfile(d.profile, false);
+      await _bwLoadProfiles();
+      document.getElementById('bw-profile').value = d.profile;
+    } else {
+      _bwStatus(d.error || 'Save failed');
     }
   } catch(e) { _bwStatus('Error: ' + e.message); }
 }
+
+// ── Autonomous agent (Computer-Use vision loop) — deliverable #5 ──
+async function _bwAgentRun() {
+  const inp = document.getElementById('bw-task');
+  const task = inp.value.trim();
+  if (!task) return;
+  const out = document.getElementById('bw-agent-result');
+  const stopBtn = document.getElementById('bw-agent-stop');
+  out.style.display = '';
+  out.textContent = '⏳ Agent working on: ' + task + '\n(this can take a while — vision loop)';
+  stopBtn.style.display = '';
+  _bwStatus('Agent running…');
+  _bwAgentCtl = new AbortController();
+  try {
+    const body = { task, session: _bwSession };
+    if (_bwCurrentUrl) body.start_url = _bwCurrentUrl;
+    const r = await fetch('/api/browser/agent', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body), signal: _bwAgentCtl.signal });
+    const d = await r.json();
+    if (d.error) { out.textContent = '⚠️ ' + d.error; }
+    else {
+      let txt = (d.result || '(no summary)') + '\n\n— ' + (d.iterations || 0) + ' steps, stop: ' + (d.stop_reason || '?');
+      if (d.log && d.log.length) {
+        txt += '\n\nActions:\n' + d.log.filter(l => l.type === 'tool_use').map(l => '· ' + l.name + ' ' + JSON.stringify(l.input || {})).join('\n');
+      }
+      out.textContent = txt;
+    }
+    _bwStatus('Agent done');
+    _bwScreenshot(1);
+  } catch(e) {
+    if (e.name === 'AbortError') { out.textContent = '⏹ Stopped (client). The server-side loop finishes its current step.'; _bwStatus('Agent stopped'); }
+    else { out.textContent = '⚠️ ' + e.message; _bwStatus('Agent error'); }
+  } finally {
+    stopBtn.style.display = 'none';
+    _bwAgentCtl = null;
+  }
+}
+function _bwAgentStop() { if (_bwAgentCtl) _bwAgentCtl.abort(); }
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 let _jrnlEntries = [];
