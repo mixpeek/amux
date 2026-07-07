@@ -4930,7 +4930,7 @@ iid=sys.argv[1]
 try: d=json.load(sys.stdin)
 except Exception: print(iid+': (no/invalid response)'); sys.exit(0)
 if d.get('error')=='gate not acknowledged':
-    print(iid+': BLOCKED — \''+str(d.get('status',''))+'\' has an unmet gate. Satisfy these, then re-run with --force:')
+    print(iid+': BLOCKED — \''+str(d.get('attempted_status',d.get('status','')))+'\' has an unmet gate. Satisfy these, then re-run with --force:')
     for g in d.get('gate',[]): print('   [ ] '+str(g))
     sys.exit(2)
 if d.get('error'):
@@ -7379,6 +7379,29 @@ _status_last_active: dict[str, float] = {}
 _COMPLETED_TURN_RE = re.compile(r" for \d+\s*[hms]\b")
 
 
+def _has_running_subagent(raw_output: str) -> bool:
+    """True when Claude Code's background-agents panel shows a still-running
+    subagent — a row led by ◯ (U+25EF) carrying an elapsed timer and/or a
+    '↓ N tokens' counter, e.g.:
+
+        ⏺ main
+        ◯ general-purpose  Make board the source of truth   14m 59s · ↓ 136.0k tokens
+
+    Distinct from the '⏺ main' (U+23FA) row and from a finished agent (a
+    different glyph). Used ONLY by the client-facing status so the UI reflects an
+    in-flight subagent even when the MAIN loop is idle at the prompt; the raw
+    _detect_claude_status the steering loop uses stays 'idle', so a queued
+    message still delivers to the resting main loop."""
+    if not raw_output:
+        return False
+    clean = _STRIP_ANSI.sub("", raw_output)
+    for l in clean.splitlines()[-16:]:
+        s = l.strip()
+        if s[:1] == "◯" and (re.search(r"\d+\s*[hms]\b", s) or "tokens" in s.lower()):
+            return True
+    return False
+
+
 def _detect_session_status(name: str, raw_output: str) -> str:
     raw = _detect_claude_status(raw_output)
     now = time.monotonic()
@@ -7386,6 +7409,12 @@ def _detect_session_status(name: str, raw_output: str) -> str:
         _status_last_active[name] = now
         return "active"
     if raw in ("idle", ""):
+        # A background subagent still in flight (◯ panel row) means the session
+        # is working even though the main loop is resting — surface it as active
+        # for the UI (client-facing only; steering still sees raw 'idle').
+        if _has_running_subagent(raw_output):
+            _status_last_active[name] = now
+            return "active"
         definitive_idle = False
         if raw == "idle":
             clean = _STRIP_ANSI.sub("", raw_output)
@@ -40242,6 +40271,8 @@ class CCHandler(BaseHTTPRequestHandler):
                                 return self._json({
                                     "error": "session has uncommitted changes; commit before "
                                              "verifying, or pass force=true if unrelated to this task",
+                                    "ok": False,
+                                    "blocked": True,
                                     "session": eff_session,
                                     "dirty_count": len(dirty),
                                     "dirty_files": dirty[:20],
@@ -40271,9 +40302,16 @@ class CCHandler(BaseHTTPRequestHandler):
                                      or isinstance(body.get("gate_checked"), list))
                             if not acked:
                                 return self._json({
+                                    # NB: NO "status" key here. It used to echo the
+                                    # attempted target ("done"), so a client reading
+                                    # the body instead of the HTTP code misread the
+                                    # rejection as success (orch MO-2952, 07-06). The
+                                    # ok/blocked flags make the failure unambiguous.
                                     "error": "gate not acknowledged",
+                                    "ok": False,
+                                    "blocked": True,
                                     "gate": eff_gate,
-                                    "status": new_status,
+                                    "attempted_status": new_status,
                                     "item": bid,
                                 }, 409)
                         if eff_gate:
