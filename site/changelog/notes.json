@@ -1,5 +1,23 @@
 [
   {
+    "hash": "aad60de7b2f",
+    "short": "aad60de",
+    "title": "Browser Inspect panel — console logs, network requests, and errors in the dashboard",
+    "date": "2026-07-07",
+    "type": "feat",
+    "tags": ["browser", "debugging", "inspect"],
+    "description": "The browser automation panel now includes a full Inspect tab — real-time console logs, captured network requests, and JavaScript errors from the active browser session. GET /api/browser/inspect returns all three channels in one call. The dashboard UI exposes them in collapsible sections with filtering. Previously, debugging a failed browser automation required SSHing in and reading raw logs; now it's visible in the dashboard without leaving the browser."
+  },
+  {
+    "hash": "4522b58",
+    "short": "4522b58",
+    "title": "Dark / light mode toggle on homepage and concierge page",
+    "date": "2026-07-07",
+    "type": "feat",
+    "tags": ["ui", "theme", "concierge"],
+    "description": "The homepage and concierge page now support dark and light mode via a toggle in the navigation bar. The concierge page defaults to light mode (better for the broader audience it targets). The homepage defaults to dark. Both respect system preference and remember the user's choice via site.js. The toggle is positioned between nav links and CTA buttons for discoverability on both desktop and mobile."
+  },
+  {
     "hash": "d8a1d72",
     "short": "d8a1d72",
     "title": "YOLO mode is now the default for new sessions",
