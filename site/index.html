@@ -852,6 +852,64 @@
   [data-theme="light"] #mobile {
     background: linear-gradient(to bottom, transparent, oklch(0.89 0.008 70) 30%, transparent) !important;
   }
+
+  /* ── Terminal/code mockups: keep dark-mode CSS vars so text stays legible on dark backgrounds ── */
+  [data-theme="light"] .install,
+  [data-theme="light"] .code-block {
+    --fg:       oklch(0.96 0.005 80);
+    --fg-2:     oklch(0.78 0.010 80);
+    --fg-3:     oklch(0.58 0.010 80);
+    --bg-2:     oklch(0.21 0.009 70);
+    --bg-3:     oklch(0.24 0.010 70);
+    --line:     oklch(0.30 0.010 70);
+    --accent:   oklch(0.80 0.16 65);
+    --accent-2: oklch(0.78 0.14 145);
+    --accent-3: oklch(0.74 0.13 250);
+  }
+  /* Dashboard content + phone screens are intentionally dark (they show the dark-themed app UI) */
+  [data-theme="light"] .desktop-body,
+  [data-theme="light"] .phone .screen {
+    --fg:       oklch(0.96 0.005 80);
+    --fg-2:     oklch(0.78 0.010 80);
+    --fg-3:     oklch(0.58 0.010 80);
+    --bg:       oklch(0.17 0.008 70);
+    --bg-2:     oklch(0.21 0.009 70);
+    --bg-3:     oklch(0.24 0.010 70);
+    --line:     oklch(0.30 0.010 70);
+    --line-2:   oklch(0.36 0.010 70);
+    --accent:   oklch(0.80 0.16 65);
+    --accent-2: oklch(0.78 0.14 145);
+    --accent-3: oklch(0.74 0.13 250);
+  }
+  /* Browser chrome address bar — adapts to light mode (not part of the dark app UI) */
+  [data-theme="light"] .win-url {
+    background: oklch(0.93 0.006 80);
+    color: var(--fg-2);
+    border-color: var(--line-2);
+  }
+  /* Problem/solution table: dark header row → light in light mode */
+  [data-theme="light"] .ps-row.h {
+    background: var(--bg-3);
+  }
+  [data-theme="light"] .ps-row.h .ps-cell {
+    color: var(--fg-2);
+  }
+  /* Feature card numbers: raise contrast from --fg-3 (L=0.52) to --fg-2 (L=0.38) */
+  [data-theme="light"] .feat .num {
+    color: var(--fg-2);
+  }
+  /* Footer: raise contrast of muted labels and copyright text */
+  [data-theme="light"] .foot-col h4 {
+    color: var(--fg-2);
+  }
+  [data-theme="light"] .foot-bottom,
+  [data-theme="light"] .foot-bottom a {
+    color: var(--fg-2);
+  }
+  [data-theme="light"] .foot-bottom a:hover {
+    color: var(--fg);
+  }
+
   .theme-toggle {
     background: var(--bg-2);
     border: 1px solid var(--line-2);
