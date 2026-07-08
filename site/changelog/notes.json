@@ -1,11 +1,93 @@
 [
   {
+    "hash": "1d431a498b3167dec22b28dfe29926d44969de94",
+    "short": "1d431a4",
+    "title": "Long task names scroll horizontally in peek panel — no more truncation",
+    "date": "2026-07-08",
+    "type": "feat",
+    "tags": [
+      "peek",
+      "ux",
+      "tasks"
+    ],
+    "description": "Agent task names that exceeded the peek panel width previously truncated silently — you had no idea what the full task was. Now the task row scrolls horizontally, revealing the full name on swipe or mouse drag. This matters most when running 10+ agents overnight: your morning review now shows the complete task for every session without having to click in."
+  },
+  {
+    "hash": "c0ca76104a3166181cd49eb2925208292f9c3a69",
+    "short": "c0ca761",
+    "title": "Saved messages modal — This session / All sessions tabs",
+    "date": "2026-07-08",
+    "type": "feat",
+    "tags": [
+      "peek",
+      "saved-messages",
+      "productivity"
+    ],
+    "description": "The saved-messages modal now has two tabs: This Session (canned prompts stored for the current agent) and All Sessions (global prompts you send to every agent). Save your most common instructions — \"summarize progress\", \"check for errors\", \"open a PR\" — and trigger them in one tap from the peek input. The prompts persist in the database and sync across devices via the amux server."
+  },
+  {
+    "hash": "b2cd520b92d6dc7e1e7e21043c9ed8090a0ca6dc",
+    "short": "b2cd520",
+    "title": "Quick-action chips streamlined + swipe hijack fixed",
+    "date": "2026-07-08",
+    "type": "feat",
+    "tags": [
+      "peek",
+      "mobile",
+      "ux"
+    ],
+    "description": "The chip row above the peek input is cleaner: fewer chips, better labels, no overlap with swipe gestures on mobile. The chip row was stealing horizontal swipes meant for page navigation on iOS — that is now fixed. Mobile users can swipe freely without accidentally triggering agent commands."
+  },
+  {
+    "hash": "b1e53595f289a158155aa33e6808542ba7226bd9",
+    "short": "b1e535",
+    "title": "Schedules tab badge color-coded by active state",
+    "date": "2026-07-08",
+    "type": "feat",
+    "tags": [
+      "peek",
+      "schedules",
+      "ux"
+    ],
+    "description": "The Schedules tab in the session peek panel now shows a color-coded badge: green when the session has active (enabled) schedules, grey when all are disabled, and no badge when none exist. At a glance you know which agents have recurring tasks running — useful when managing 20+ sessions and needing to confirm overnight automations are armed."
+  },
+  {
+    "hash": "70f62721b1c04ac576b9b9ffe26a7dc706e26760",
+    "short": "70f6272",
+    "title": "Plan strip — read-only view of the agent's Claude Code task list",
+    "date": "2026-07-08",
+    "type": "feat",
+    "tags": [
+      "peek",
+      "plan",
+      "visibility"
+    ],
+    "description": "amux now reads Claude Code's native task list and renders it as a collapsible Plan strip in the session peek panel. See exactly what the agent is working on: pending tasks are listed in order, the current task is highlighted, and completed tasks are struck through. The server endpoint GET /api/sessions/{name}/plan returns the raw task list; the UI polls it every few seconds. This is the missing visibility layer for unattended overnight runs — wake up and see what every agent accomplished vs. what it was still working on."
+  },
+  {
+    "hash": "edb8f64815d5d00c4e989db9493a65cc224a9248",
+    "short": "edb8f64",
+    "title": "Browser automation self-heals SessionManager race on startup",
+    "date": "2026-07-08",
+    "type": "fix",
+    "tags": [
+      "browser",
+      "reliability",
+      "self-healing"
+    ],
+    "description": "A race condition between Playwright starting and the first browser API call could produce a transient \"SessionManager not initialized\" error, leaving the browser automation stuck. The fix retries the initialization handshake with exponential backoff — the error no longer surfaces to users. Browser automations that previously required a manual restart now recover silently."
+  },
+  {
     "hash": "aad60de7b2f",
     "short": "aad60de",
     "title": "Browser Inspect panel — console logs, network requests, and errors in the dashboard",
     "date": "2026-07-07",
     "type": "feat",
-    "tags": ["browser", "debugging", "inspect"],
+    "tags": [
+      "browser",
+      "debugging",
+      "inspect"
+    ],
     "description": "The browser automation panel now includes a full Inspect tab — real-time console logs, captured network requests, and JavaScript errors from the active browser session. GET /api/browser/inspect returns all three channels in one call. The dashboard UI exposes them in collapsible sections with filtering. Previously, debugging a failed browser automation required SSHing in and reading raw logs; now it's visible in the dashboard without leaving the browser."
   },
   {
@@ -14,7 +96,11 @@
     "title": "Dark / light mode toggle on homepage and concierge page",
     "date": "2026-07-07",
     "type": "feat",
-    "tags": ["ui", "theme", "concierge"],
+    "tags": [
+      "ui",
+      "theme",
+      "concierge"
+    ],
     "description": "The homepage and concierge page now support dark and light mode via a toggle in the navigation bar. The concierge page defaults to light mode (better for the broader audience it targets). The homepage defaults to dark. Both respect system preference and remember the user's choice via site.js. The toggle is positioned between nav links and CTA buttons for discoverability on both desktop and mobile."
   },
   {
@@ -23,7 +109,11 @@
     "title": "YOLO mode is now the default for new sessions",
     "date": "2026-07-06",
     "type": "feat",
-    "tags": ["sessions", "yolo", "automation"],
+    "tags": [
+      "sessions",
+      "yolo",
+      "automation"
+    ],
     "description": "New sessions now register with YOLO mode enabled by default — automatic tool-approval responses so agents never block on a permission prompt during unattended runs. The watchdog detects the unique 'Esc to cancel' marker (which only appears on tool-approval prompts) and auto-answers. Sessions that need interactive review can opt out per-registration. Provider badge removed from Claude session cards (cleaner UI)."
   },
   {
@@ -32,7 +122,11 @@
     "title": "Saved messages — canned prompts stored in the DB, triggered from ⋮ menu",
     "date": "2026-07-06",
     "type": "feat",
-    "tags": ["peek", "productivity", "mobile"],
+    "tags": [
+      "peek",
+      "productivity",
+      "mobile"
+    ],
     "description": "You can now save frequently-used prompts directly in the database and recall them from the ⋮ menu in any session peek panel. Saved messages persist across devices and sessions. Each message is stored per-session so your context-specific canned responses stay organized. Replaces copy-pasting from notes — trigger in one tap."
   },
   {
@@ -41,7 +135,11 @@
     "title": "Board status gates — confirm-on-move checklists with per-session overrides",
     "date": "2026-07-06",
     "type": "feat",
-    "tags": ["board", "workflow", "quality"],
+    "tags": [
+      "board",
+      "workflow",
+      "quality"
+    ],
     "description": "Moving a card to 'done' or 'verified' now shows a configurable checklist of criteria to confirm before the move commits. Gates can be set globally, overridden per-session, or overridden per-card — so high-stakes tasks can require explicit sign-off while routine work moves freely. The '☑ Gate' button on each card makes the affordance discoverable. Built to prevent the common failure mode of marking work done before it's actually been verified in production."
   },
   {
@@ -50,7 +148,11 @@
     "title": "Full-screen compose + ellipsis attach/history menu in peek input",
     "date": "2026-07-06",
     "type": "feat",
-    "tags": ["peek", "compose", "mobile"],
+    "tags": [
+      "peek",
+      "compose",
+      "mobile"
+    ],
     "description": "The ⋮ button in the session peek input now opens an attach/history menu — access file attachments and message history from a single tap. A new expand-to-fullscreen compose mode gives you a full-viewport editor for long prompts, with markdown preview and word count. Enter in the standard textarea now inserts a newline (standard behavior) rather than sending — use the Send button or Ctrl+Enter to send."
   },
   {
@@ -59,7 +161,11 @@
     "title": "Gemini API key + Google API key support in BYO key settings",
     "date": "2026-07-06",
     "type": "feat",
-    "tags": ["cloud", "providers", "gemini"],
+    "tags": [
+      "cloud",
+      "providers",
+      "gemini"
+    ],
     "description": "GEMINI_API_KEY and GOOGLE_API_KEY are now whitelisted in the bring-your-own-key settings panel. Cloud users can now configure Antigravity CLI (Google's successor to Gemini CLI) sessions alongside Claude Code and Codex sessions — all three providers managed from one dashboard."
   },
   {
@@ -68,7 +174,11 @@
     "title": "Session peek now has a dedicated Schedules tab",
     "date": "2026-07-06",
     "type": "feat",
-    "tags": ["peek", "scheduler", "sessions"],
+    "tags": [
+      "peek",
+      "scheduler",
+      "sessions"
+    ],
     "description": "Each session peek panel now includes a Schedules tab that shows all recurring tasks associated with that session — the same view as the main scheduler, scoped to a single session. Create, edit, pause, and run schedules without leaving the session context."
   },
   {
@@ -77,7 +187,11 @@
     "title": "CRM auto-sync to external CRM (Lightfield integration)",
     "date": "2026-07-01",
     "type": "feat",
-    "tags": ["crm", "integration", "sync"],
+    "tags": [
+      "crm",
+      "integration",
+      "sync"
+    ],
     "description": "amux CRM writes now optionally sync to an external CRM via configurable webhook. The first integration is Lightfield. When configured, every contact create/update in amux propagates automatically with TLS-verified delivery. Keeps amux's agent-native CRM in sync with your external source of truth without manual export."
   },
   {
@@ -86,7 +200,11 @@
     "title": "Markdown rendering in transcript history — bold, code, tables match tmux output",
     "date": "2026-07-01",
     "type": "feat",
-    "tags": ["peek", "transcript", "ui"],
+    "tags": [
+      "peek",
+      "transcript",
+      "ui"
+    ],
     "description": "The transcript / history tab in session peek now renders markdown — bold, inline code, code blocks, and tables display formatted, matching how Claude Code renders output in the terminal. Previously the history showed raw markdown syntax, which was harder to read on mobile. The live terminal pane remains unchanged (raw ANSI output)."
   },
   {
@@ -95,7 +213,11 @@
     "title": "Gmail API routing for email — real signatures, threading, no AppleScript",
     "date": "2026-06-29",
     "type": "feat",
-    "tags": ["email", "gmail", "integration"],
+    "tags": [
+      "email",
+      "gmail",
+      "integration"
+    ],
     "description": "The /api/email/send and /api/email/reply endpoints now route through the Gmail API for connected Google Workspace accounts (ethan@mixpeek.com, info@mixpeek.com). Replies thread correctly via In-Reply-To/References headers, the account's real Gmail signature is auto-appended, and every send is audit-logged to email-sent.jsonl. Mail.app/AppleScript is retained as fallback for non-Gmail accounts. Connect a new Gmail account via GET /api/gmail/auth?account=<email>."
   },
   {
@@ -104,7 +226,11 @@
     "title": "Clean JSONL transcript tab — gap-free conversation history",
     "date": "2026-06-23",
     "type": "feat",
-    "tags": ["peek", "transcript", "sessions"],
+    "tags": [
+      "peek",
+      "transcript",
+      "sessions"
+    ],
     "description": "The transcript tab in session peek now shows a clean, gap-free conversation history parsed from the Claude Code JSONL transcript file. Messages are de-duplicated across restarts and compaction cycles. Harness noise (task-notification, local-command-caveat XML tags) is stripped automatically. The result is a readable conversation thread that matches what actually happened — not the raw tmux output."
   },
   {
@@ -113,7 +239,11 @@
     "title": "Reasoning effort controls — set and change extended thinking level per session",
     "date": "2026-06-23",
     "type": "feat",
-    "tags": ["sessions", "claude", "reasoning"],
+    "tags": [
+      "sessions",
+      "claude",
+      "reasoning"
+    ],
     "description": "Sessions now show a reasoning effort badge (low / medium / high / extended) next to the model name. Change the effort level from the session card's ellipsis menu without restarting the session. Extended thinking is automatically routed to compatible Claude models. Higher effort produces more thorough work on complex tasks; low effort reduces token spend on routine tasks. The reasoning effort dial is also available in the model picker when creating a session."
   },
   {
@@ -122,7 +252,11 @@
     "title": "Workspace panes are now full peek views — send, steer, and monitor from the workspace",
     "date": "2026-06-22",
     "type": "feat",
-    "tags": ["workspace", "peek", "monitoring"],
+    "tags": [
+      "workspace",
+      "peek",
+      "monitoring"
+    ],
     "description": "Session panes in the Workspace tab are now embedded full peek views rather than read-only terminal snapshots. You can send messages, queue steering instructions, view issues, and switch tabs — all without leaving the multi-pane workspace view. Width snap presets (1/3, 1/2, 2/3, full) let you quickly resize panes for the task at hand. The 'All sessions' scope toggle in the Issues tab shows the full board across every session at once."
   },
   {
@@ -131,7 +265,11 @@
     "title": "Background Web Push (VAPID) — agent alerts reach your phone even when the app is closed",
     "date": "2026-06-20",
     "type": "feat",
-    "tags": ["notifications", "ios", "pwa"],
+    "tags": [
+      "notifications",
+      "ios",
+      "pwa"
+    ],
     "description": "amux now sends real background push notifications via VAPID/Web Push — so you're alerted when an agent finishes a task, hits an error, or needs attention, even if the PWA is closed or the phone is locked. Formatted as 'session / type / description' without emoji for clean iOS notification center display. A test-notification button in settings verifies delivery. Works on iOS via the Service Worker — no native app required, though the native iOS app also receives these."
   },
   {
@@ -140,7 +278,11 @@
     "title": "Scheduler redesign — Loop, Routine, Trigger, and Once modes",
     "date": "2026-06-19",
     "type": "feat",
-    "tags": ["scheduler", "orchestration", "automation"],
+    "tags": [
+      "scheduler",
+      "orchestration",
+      "automation"
+    ],
     "description": "The scheduler has four distinct modes: Loop (runs on a cron schedule, indefinitely), Routine (runs on a schedule with a done-pattern that disables it when complete), Trigger (fires when another session completes or emits a pattern — enabling closed-loop orchestration without polling), and Once (runs at a specific datetime and disables itself). The create modal adapts to the selected mode. Session status and run history are shown inline. Schedule IDs appear as badges on session cards so you can see at a glance which sessions are driven by schedules."
   },
   {
@@ -149,7 +291,11 @@
     "title": "Skills tab — browse and search all slash commands across all sources",
     "date": "2026-06-19",
     "type": "feat",
-    "tags": ["skills", "slash-commands", "ui"],
+    "tags": [
+      "skills",
+      "slash-commands",
+      "ui"
+    ],
     "description": "A new Skills tab shows every slash command available in amux — project-level skills (from .claude/skills/), user-level skills (~/.claude/skills/), and built-in skills — grouped by source and searchable. Expandable cards show the full command body with copy-pasteable code blocks. The tab can be hidden if you don't use skills. The /orchestrate skill is included by default to scaffold closed agent orchestration loops."
   },
   {
@@ -158,7 +304,11 @@
     "title": "iTerm2 native attach via tmux control mode (amux-remote -CC)",
     "date": "2026-06-19",
     "type": "feat",
-    "tags": ["terminal", "iterm2", "remote"],
+    "tags": [
+      "terminal",
+      "iterm2",
+      "remote"
+    ],
     "description": "amux-remote now supports attaching to any session in iTerm2's native tmux control mode (-CC). Sessions open in real iTerm2 tabs/windows — full color, native scrollback, keyboard shortcuts, and iTerm2 integrations. Use: amux-remote attach <session>. Previously only basic SSH passthrough was available. Also supports SSH config for key-based auth."
   },
   {
@@ -167,7 +317,11 @@
     "title": "Interactive terminal panes in Workspace — type directly in any session tile",
     "date": "2026-06-15",
     "type": "feat",
-    "tags": ["workspace", "terminal", "ui"],
+    "tags": [
+      "workspace",
+      "terminal",
+      "ui"
+    ],
     "description": "Workspace panes now support interactive terminal input. Click into any session tile and type directly — keystrokes go to the tmux session in real time. Scroll lock keeps the view pinned to the bottom so you see live output. Combined with the peek-view embed (June 22), the workspace is now a true multi-session command center: send messages, run commands, and read output from every session on one screen."
   },
   {
@@ -176,7 +330,11 @@
     "title": "ANSI color rendering in peek panel — terminal output looks like the terminal",
     "date": "2026-06-10",
     "type": "feat",
-    "tags": ["peek", "terminal", "ui"],
+    "tags": [
+      "peek",
+      "terminal",
+      "ui"
+    ],
     "description": "The session peek panel now renders ANSI escape codes — colors, bold, underline — so Claude Code output looks like it does in the actual terminal. Syntax-highlighted diffs, colored test output, and progress bars all display correctly. Previously the peek panel showed raw escape sequences, making colored output difficult to read on mobile."
   },
   {
@@ -185,7 +343,11 @@
     "title": "Per-session standing instructions — persistent autonomy config for each agent",
     "date": "2026-06-04",
     "type": "feat",
-    "tags": ["sessions", "autonomy", "steering"],
+    "tags": [
+      "sessions",
+      "autonomy",
+      "steering"
+    ],
     "description": "Each session can now have a set of standing instructions — a persistent system-level prompt that governs the session's behavior on every turn. Editable from the Steering tab in the session peek panel. Use standing instructions to set agent personas, define scope boundaries, specify output formats, or enforce coding conventions without including them in every message. Standing instructions survive restarts and compaction."
   },
   {
@@ -194,7 +356,11 @@
     "title": "Event-triggered schedules — close the agent loop without polling",
     "date": "2026-06-04",
     "type": "feat",
-    "tags": ["scheduler", "orchestration", "automation"],
+    "tags": [
+      "scheduler",
+      "orchestration",
+      "automation"
+    ],
     "description": "Schedules can now trigger on events emitted by other sessions — not just on a time interval. When session A completes a task (or its output matches a configurable pattern), schedule B fires automatically. This enables closed-loop orchestration: a coding agent finishes → a review agent starts → a deploy agent fires — all without a human in the loop and without a polling workaround. Configure via trigger_on and trigger_sessions fields in the schedule API or the scheduler modal."
   },
   {
@@ -203,7 +369,11 @@
     "title": "Verified board column — distinct from done, requires prod evidence",
     "date": "2026-06-04",
     "type": "feat",
-    "tags": ["board", "workflow", "quality"],
+    "tags": [
+      "board",
+      "workflow",
+      "quality"
+    ],
     "description": "The kanban board now has a fourth column: verified. Moving a card to verified signals that the work is confirmed live in production — not just implemented and merged. The verified status is distinct from done in the board API, awareness digest, and session prompt context. The verify-gate feature (also shipped this day) blocks a session from marking verified if it has uncommitted local work."
   },
   {
@@ -212,7 +382,11 @@
     "title": "Idle commit-guard — agents that leave uncommitted work get a nudge",
     "date": "2026-06-04",
     "type": "feat",
-    "tags": ["sessions", "git", "quality"],
+    "tags": [
+      "sessions",
+      "git",
+      "quality"
+    ],
     "description": "Sessions that go idle with uncommitted changes in their working directory now receive an automatic nudge from the watchdog: 'You have uncommitted work — commit before continuing or you risk losing progress.' The commit-guard can be toggled per-session from the UI or configured globally. Combined with the verify-gate, this creates a lightweight quality enforcement layer without blocking agent autonomy."
   },
   {
@@ -221,7 +395,11 @@
     "title": "Fleet-aware rate-limit detection + auto-resume across all sessions",
     "date": "2026-05-11",
     "type": "feat",
-    "tags": ["reliability", "rate-limit", "fleet"],
+    "tags": [
+      "reliability",
+      "rate-limit",
+      "fleet"
+    ],
     "description": "When the Anthropic API returns a rate-limit response (weekly or usage cap), amux now detects it fleet-wide, surfaces the cap in bulk actions with a clear warning, and queues pending work to auto-resume when the limit resets. Previously, sessions would fail silently or require manual intervention. Now the watchdog tracks rate-limit state across all sessions and resumes automatically — critical for overnight fleets that exhaust the quota mid-run."
   },
   {
@@ -230,7 +408,11 @@
     "title": "Chrome-style browser tabs — open multiple amux views simultaneously",
     "date": "2026-05-04",
     "type": "feat",
-    "tags": ["ui", "navigation", "tabs"],
+    "tags": [
+      "ui",
+      "navigation",
+      "tabs"
+    ],
     "description": "amux now has Chrome-style browser tabs in the dashboard. Each tab opens a fully independent amux view — sessions, board, notes, files, whatever you need. Tabs persist across page reloads. Open a session peek in one tab and the board in another without losing context. Double-click to rename, middle-click to close, + to add a new tab with a view picker. The tabs bar is collapsible if you prefer a single-view experience."
   },
   {
@@ -239,7 +421,11 @@
     "title": "OpenAI Codex provider — full parity with Claude sessions",
     "date": "2026-05-02",
     "type": "feat",
-    "tags": ["codex", "providers", "openai"],
+    "tags": [
+      "codex",
+      "providers",
+      "openai"
+    ],
     "description": "amux now supports OpenAI Codex as a first-class provider alongside Claude Code. Create Codex sessions with the same session management, board integration, self-healing watchdog, steering queue, and mobile monitoring that Claude sessions get. Sessions are fully isolated — each Codex session runs in its own tmux pane with its own conversation history. Route tasks to Claude for architecture/review and Codex for implementation to optimize cost and throughput across your fleet."
   },
   {
@@ -248,7 +434,11 @@
     "title": "Mid-execution steering — queue messages for delivery at the next turn boundary",
     "date": "2026-04-22",
     "type": "feat",
-    "tags": ["steering", "sessions", "mobile"],
+    "tags": [
+      "steering",
+      "sessions",
+      "mobile"
+    ],
     "description": "The Steering queue lets you inject instructions into a running session without interrupting the current turn. Messages are held until the agent finishes what it's doing and returns to a ready state — then delivered atomically. Queue multiple messages and they're delivered in order. A badge on the session card shows pending steering messages so you know what's queued. From your phone, you can redirect a running agent in seconds without watching it finish first."
   },
   {
@@ -257,7 +447,11 @@
     "title": "Homepage redesign — warm amber Geist design with new positioning",
     "date": "2026-04-25",
     "type": "feat",
-    "tags": ["homepage", "design", "marketing"],
+    "tags": [
+      "homepage",
+      "design",
+      "marketing"
+    ],
     "description": "Complete homepage redesign with a warm amber Geist palette. New positioning: 'Run an AI engineering team from one dashboard' — emphasizes outcome (team output, phone management, overnight delivery) over implementation details. Mobile-first layout, cleaner hero, consolidated feature sections. The redesign reflects amux's evolution from a developer utility to a full AI engineering team control plane."
   },
   {
@@ -266,7 +460,11 @@
     "title": "AI coding agent cost calculator — interactive token/cost estimator",
     "date": "2026-04-26",
     "type": "feat",
-    "tags": ["tools", "cost", "calculator"],
+    "tags": [
+      "tools",
+      "cost",
+      "calculator"
+    ],
     "description": "New interactive cost calculator at amux.io/tools/ai-agent-cost-calculator/. Estimate monthly spend for any fleet configuration: Claude Code Max plan ($100-200/mo) vs API keys (pay-per-token), 1-50 parallel agents, model mix (Opus/Sonnet/Haiku), hours per day, waste percentage, and overnight batch vs interactive use. Shows Max vs API breakeven, per-component breakdown, and model routing savings (50-65%). Presets for solo developer, small team, agent fleet, and overnight batch."
   },
   {
@@ -275,7 +473,11 @@
     "title": "In-app notification system for iOS PWA — no native app required",
     "date": "2026-04-27",
     "type": "feat",
-    "tags": ["notifications", "ios", "pwa"],
+    "tags": [
+      "notifications",
+      "ios",
+      "pwa"
+    ],
     "description": "amux now delivers in-app notifications that work within the iOS PWA (installed from Safari to the home screen) — without requiring the native App Store app. Notifications appear as toast banners with session context and auto-dismiss after 5 seconds. Tapping navigates directly to the session. This was a workaround for Safari's PWA notification limitations before full VAPID support landed in June."
   },
   {
@@ -284,7 +486,11 @@
     "title": "Server-side message history — syncs across devices and survives restarts",
     "date": "2026-04-29",
     "type": "feat",
-    "tags": ["sessions", "history", "sync"],
+    "tags": [
+      "sessions",
+      "history",
+      "sync"
+    ],
     "description": "Message history is now stored server-side and synced across all connected clients. Previously, history was browser-local — clearing the cache or switching devices lost it. Now every message you send is persisted in the DB and available on any device. The history modal re-pulls from the server on every open to stay current. Particularly useful for mobile-desktop workflows where you queue instructions from your phone and review history on desktop."
   },
   {
@@ -293,7 +499,11 @@
     "title": "Auto-pickup queued board tasks — idle sessions claim work automatically",
     "date": "2026-04-29",
     "type": "feat",
-    "tags": ["board", "automation", "sessions"],
+    "tags": [
+      "board",
+      "automation",
+      "sessions"
+    ],
     "description": "Sessions that go idle with no pending work now automatically check the board for unclaimed tasks and pick one up. Combined with atomic task claiming (POST /api/board/:id/claim — 409 if already taken), this creates a self-coordinating agent fleet: queue 20 tasks on the board, start 10 sessions, they work through the queue in parallel without any manual assignment. The idle nudge timeout is configurable via WATCHDOG_IDLE_TIMEOUT."
   },
   {
@@ -302,7 +512,11 @@
     "title": "White-label branding — custom name, icon, logo, and accent color",
     "date": "2026-03-24",
     "type": "feat",
-    "tags": ["branding", "white-label", "customization"],
+    "tags": [
+      "branding",
+      "white-label",
+      "customization"
+    ],
     "description": "Click the logo in the top-left to open the branding editor. Customize the app name, tagline, square icon, wide logo, and accent color. Images accept drag-and-drop or file picker. Everything is stored server-side so all connected clients see the same branding. The PWA manifest, page title, favicon, and all icon endpoints dynamically serve custom assets. Reset to defaults with one click. API: GET/POST/DELETE /api/branding. Teams and agencies can ship a fully branded deployment of amux for their clients."
   },
   {
@@ -311,7 +525,11 @@
     "title": "Workspace layout presets — 6 one-click grid arrangements",
     "date": "2026-03-16",
     "type": "feat",
-    "tags": ["workspace", "ui", "layout"],
+    "tags": [
+      "workspace",
+      "ui",
+      "layout"
+    ],
     "description": "Layout dropdown with 6 preset arrangements: Focus (single column), Split (2 columns), 3 Columns, 2x2 Grid, Main + Sidebar, and Stacked Rows. Selecting a preset instantly rearranges all open panes. If no panes are open, all sessions are added automatically. Pairs with the June 22 width snap presets (1/3, 1/2, 2/3, full) for full layout control."
   },
   {
@@ -320,7 +538,11 @@
     "title": "Scheduler tab — recurring tasks with free-text schedule expressions",
     "date": "2026-03-04",
     "type": "feat",
-    "tags": ["scheduler", "automation", "feature"],
+    "tags": [
+      "scheduler",
+      "automation",
+      "feature"
+    ],
     "description": "The Scheduler tab lets you define recurring tasks that send prompts to any session on a cron-like schedule. Schedules use natural language expressions: 'every 5 minutes', 'daily at 9am', 'weekly on Monday at 8am'. Each task targets a session and fires automatically at the configured interval. Run history shows timestamps and status per job. Pause, resume, or delete schedules individually. This was the foundation for the event-triggered and mode-driven scheduler that shipped in June."
   },
   {
@@ -329,7 +551,11 @@
     "title": "Auto-restart Claude when it exits to a shell prompt",
     "date": "2026-03-03",
     "type": "feat",
-    "tags": ["sessions", "reliability", "self-healing"],
+    "tags": [
+      "sessions",
+      "reliability",
+      "self-healing"
+    ],
     "description": "When Claude Code exits to the shell (typically after context exhaustion), amux now detects the shell prompt pattern and automatically re-launches Claude in the same session without manual intervention. The agent continues from where it left off. This was the first self-healing capability — the foundation for the full watchdog system (context threshold compaction, thinking-block crash recovery, YOLO mode) that launched later."
   },
   {
@@ -338,7 +564,12 @@
     "title": "Offline-first PWA — HTTPS, service worker, sync engine, draft sessions",
     "date": "2026-02-17",
     "type": "feat",
-    "tags": ["pwa", "offline", "sync", "mobile"],
+    "tags": [
+      "pwa",
+      "offline",
+      "sync",
+      "mobile"
+    ],
     "description": "amux became a full offline-first Progressive Web App: service worker caching the app shell and API responses; HTTPS via self-signed cert with automatic Tailscale cert fallback; draft session creation that queues when offline and syncs on reconnect; IndexedDB-backed sync engine storing board issues and sessions locally; SSE push updates writing to IDB and triggering UI refreshes; and an offline banner showing the pending operations queue. Install to your iPhone home screen for a native-app-like experience managing your agent fleet from anywhere."
   }
 ]
