@@ -5055,6 +5055,35 @@ def _init_claude_config():
         settings_file.write_text(_json.dumps(settings, indent=2))
 
 
+def _ensure_no_native_artifacts():
+    """Systematically block the native Claude **Artifact** tool for every session.
+
+    The Artifact tool publishes HTML/Markdown to claude.ai (claude.ai/…/artifact/…),
+    outside our system. amux output must live in OUR directory structure — the repo
+    the session works in, or an amux note — never on claude.ai. Runs on every
+    startup regardless of auth (API key OR Claude Plan), so it applies even where
+    _init_claude_config early-returns for Plan users. `deny` is honored even under
+    yolo / --dangerously-skip-permissions; the global CLAUDE.md rule adds the
+    positive guidance (what to write instead)."""
+    import json as _json, pathlib as _pathlib
+    sf = _pathlib.Path.home() / ".claude" / "settings.json"
+    try:
+        sf.parent.mkdir(parents=True, exist_ok=True)
+        settings = _json.loads(sf.read_text()) if sf.exists() else {}
+        if not isinstance(settings, dict):
+            settings = {}
+        deny = settings.setdefault("permissions", {}).setdefault("deny", [])
+        changed = False
+        for tool in ("Artifact", "Artifact(*)"):
+            if tool not in deny:
+                deny.append(tool)
+                changed = True
+        if changed:
+            sf.write_text(_json.dumps(settings, indent=2))
+    except Exception as e:
+        print(f"[artifact-block] failed to write settings.json: {e}", flush=True)
+
+
 def _auto_trust_dir(work_dir: str):
     """Pre-trust a directory in ~/.claude.json so Claude doesn't show the folder trust dialog."""
     import json as _json
@@ -45404,6 +45433,7 @@ def main():
 
     # Pre-configure ~/.claude.json to skip interactive setup wizard
     _init_claude_config()
+    _ensure_no_native_artifacts()   # block the Artifact tool for every session (all auth types)
     _sync_skills_and_cli()
 
     # Bind one HTTPS server per host in bind_hosts. Retry on TIME_WAIT after restart.
