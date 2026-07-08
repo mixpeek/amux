@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
   <title>AI Coding While You Sleep — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Run autonomous AI coding agents overnight with self-healing. Wake up to completed features.">
-  <meta name="keywords" content="AI coding while you sleep, unattended AI coding, autonomous coding overnight, AI agents 24/7">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Wake up to shipped features. amux runs 10–50 Claude Code agents overnight with self-healing watchdog, YOLO mode auto-approval, and morning board review from your phone.">
+  <meta name="keywords" content="AI coding while you sleep, run coding agents overnight, unattended AI coding, autonomous coding overnight, AI agents 24/7, Claude Code overnight, AI engineering team runs while you sleep">
   <link rel="canonical" href="https://amux.io/use-cases/ai-coding-while-you-sleep/">
   <meta property="og:title" content="AI Coding While You Sleep — amux">
-  <meta property="og:description" content="Run autonomous AI coding agents overnight with self-healing. Wake up to completed features.">
+  <meta property="og:description" content="Wake up to shipped features. amux runs 10–50 Claude Code agents overnight with self-healing watchdog, YOLO mode auto-approval, and morning board review from your phone.">
   <meta property="og:url" content="https://amux.io/use-cases/ai-coding-while-you-sleep/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -22,8 +22,10 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Use Cases","item":"https://amux.io/use-cases/"},{"@type":"ListItem","position":3,"name":"AI Coding While You Sleep","item":"https://amux.io/use-cases/ai-coding-while-you-sleep/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Coding While You Sleep","description":"Run autonomous AI coding agents overnight with self-healing. Wake up to completed features.","url":"https://amux.io/use-cases/ai-coding-while-you-sleep/","datePublished":"2026-02-26","dateModified":"2026-02-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
-  </head>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Coding While You Sleep","description":"Wake up to shipped features. amux runs 10–50 Claude Code agents overnight with self-healing watchdog, YOLO mode auto-approval, and morning board review from your phone.","url":"https://amux.io/use-cases/ai-coding-while-you-sleep/","datePublished":"2026-02-26","dateModified":"2026-07-08","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can Claude Code run overnight without supervision?","acceptedAnswer":{"@type":"Answer","text":"Yes. With amux, you register your project sessions with YOLO mode enabled (now the default for new sessions), add tasks to the shared kanban board, start your sessions, and go to sleep. The self-healing watchdog monitors every session for idle hangs, context overflow, and process crashes — handling each automatically without any human input."}},{"@type":"Question","name":"What is YOLO mode in amux and is it safe?","acceptedAnswer":{"@type":"Answer","text":"YOLO mode makes amux auto-respond 'yes' to every tool-approval prompt Claude Code raises, so sessions never block waiting for human input overnight. It is safe to use on a dedicated dev machine or inside a properly scoped project directory. As of July 2026, YOLO mode is the default for new sessions registered with amux. You can disable it per-session with the --no-yolo flag."}},{"@type":"Question","name":"What happens if a Claude Code session runs out of context while I'm asleep?","acceptedAnswer":{"@type":"Answer","text":"amux's watchdog detects the context-overflow signal and automatically sends the /compact slash command to the session. A 5-minute cooldown prevents repeated compactions from thrashing. If the session enters a thinking-block corruption state, the watchdog restarts the session entirely and replays the last message, so work continues without any human intervention."}},{"@type":"Question","name":"How do I check on my AI coding agents from my phone in the morning?","acceptedAnswer":{"@type":"Answer","text":"Open the amux PWA at https://localhost:8822 from your phone (or use the native iOS app). The board tab shows which tasks each session completed, is still working on, or failed. Tap any session to peek at its last 100 lines of output. From there you can send a one-tap saved message to redirect an agent, or open GitHub to review the pull requests it opened overnight."}},{"@type":"Question","name":"How many AI coding agents can run overnight on one machine?","acceptedAnswer":{"@type":"Answer","text":"On a Mac with 32 GB of RAM you can comfortably run 10–20 parallel Claude Code sessions. A Mac Studio or Mac Pro with 64–192 GB of RAM supports 30–50 sessions. Each Claude Code session uses roughly 1–2 GB of RAM at peak. The practical limit is usually your Anthropic API rate limit and disk I/O throughput, not CPU or RAM alone."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to run AI coding agents overnight with amux","description":"Set up amux so Claude Code agents run autonomously overnight, with self-healing and morning board review.","totalTime":"PT10M","step":[{"@type":"HowToStep","position":1,"name":"Install amux","text":"Clone the repo and run the install script. amux requires Python 3 and tmux — no other dependencies.","url":"https://amux.io/guides/getting-started/"},{"@type":"HowToStep","position":2,"name":"Register your project with YOLO mode","text":"Run 'amux register myproject --dir ~/Dev/myproject --yolo'. YOLO mode (now default) auto-approves all tool prompts so sessions never block overnight.","url":"https://amux.io/guides/setting-up-yolo-mode/"},{"@type":"HowToStep","position":3,"name":"Add tasks to the board","text":"Use 'amux board add' to create one task per agent. The board uses SQLite CAS (compare-and-swap) so two agents can never claim the same task simultaneously."},{"@type":"HowToStep","position":4,"name":"Start sessions and go to sleep","text":"Run 'amux start myproject' for each session slot. The watchdog activates immediately. Check the live board at localhost:8822 before closing your laptop."},{"@type":"HowToStep","position":5,"name":"Review results in the morning","text":"Open the amux PWA or iOS app, check the board for completed tasks, peek at session output, and review pull requests on GitHub.","url":"https://amux.io/guides/mobile-management-pwa/"}]}</script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -40,29 +42,302 @@
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/use-cases/">Use Cases</a> <span class="sep">›</span> <span>AI Coding While You Sleep</span></div>
     <h1>AI Coding While You Sleep</h1>
-<p class="subtitle">Queue up work before bed. Wake up to pull requests.</p>
-<p>The dream of autonomous coding requires one thing DIY setups can't deliver: <strong>reliability</strong>. Claude Code sessions crash from context compaction, get stuck on prompts, and silently hang. amux's self-healing watchdog handles all of this automatically.</p>
-<h2>What goes wrong at 3am (and how amux fixes it)</h2>
-<table>
-<thead><tr><th>Problem</th><th>amux's response</th></tr></thead>
-<tbody>
-<tr><td>Context window fills up</td><td>Auto-sends <code>/compact</code> (5-min cooldown)</td></tr>
-<tr><td>Thinking-block corruption</td><td>Restarts session + replays last message</td></tr>
-<tr><td>Stuck on tool-approval prompt</td><td>Auto-responds in YOLO mode</td></tr>
-<tr><td>Silent hang / no output</td><td>Detects idle + sends continue signal</td></tr>
-</tbody>
-</table>
-<h2>Morning routine</h2>
-<ol>
-<li>Open amux on your phone (PWA)</li>
-<li>Check the board — see what agents completed</li>
-<li>Peek into each session's output</li>
-<li>Review and merge the PRs</li>
-</ol>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+    <p class="subtitle">Queue up work before bed. Wake up to pull requests.</p>
+
+    <p class="answer-box">Yes — with amux you can run 10 to 50 Claude Code sessions overnight and wake up to completed features and open pull requests. amux's self-healing watchdog handles every failure mode automatically: context overflow triggers <code>/compact</code>, tool-approval prompts are auto-accepted via YOLO mode (now the default), crashed sessions restart and replay the last message, and idle hangs receive a continue signal. In the morning you review the board from your phone, peek at any session, and merge the PRs. No babysitting required.</p>
+
+    <p class="freshness-note"><strong>Updated July 2026</strong> — reflects YOLO mode as the default for new sessions, the new per-session plan strip, and saved messages for one-tap phone interaction. See the <a href="/changelog/">changelog</a> for details.</p>
+
+    <h2>What goes wrong at 3 AM — and how amux fixes it</h2>
+    <p>DIY overnight setups using raw tmux fail silently. You wake up to a screen full of paused prompts and zero commits. amux's watchdog runs continuously and handles each failure mode before it can stall progress.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Problem</th><th>What DIY setups do</th><th>What amux does</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Context window fills up</td>
+            <td>Session blocks, waits for manual <code>/compact</code></td>
+            <td>Watchdog detects overflow signal, auto-sends <code>/compact</code> with 5-min cooldown between compactions</td>
+          </tr>
+          <tr>
+            <td>Thinking-block corruption</td>
+            <td>Session hangs in unrecoverable state</td>
+            <td>Detects corrupted pane output, kills and restarts session, replays last message</td>
+          </tr>
+          <tr>
+            <td>Tool-approval prompt</td>
+            <td>Session blocks until you type <kbd>y</kbd></td>
+            <td>YOLO mode (default since July 2026) auto-approves every prompt — no human input needed</td>
+          </tr>
+          <tr>
+            <td>Silent hang / no output</td>
+            <td>Stays frozen until morning</td>
+            <td>Idle detector fires after configurable inactivity threshold, sends continue signal</td>
+          </tr>
+          <tr>
+            <td>Process crash / tmux pane dies</td>
+            <td>Work stops, you never know</td>
+            <td>Watchdog detects missing pane, relaunches the session and replays the last message</td>
+          </tr>
+          <tr>
+            <td>Two agents claim the same task</td>
+            <td>Duplicated work, merge conflicts</td>
+            <td>SQLite compare-and-swap board claim — atomically assigned, impossible to double-book</td>
+          </tr>
+          <tr>
+            <td>No visibility into what's done</td>
+            <td>SSH in, scroll through tmux panes</td>
+            <td>Board shows todo / doing / done per session; peek at any session's output from phone</td>
+          </tr>
+          <tr>
+            <td>Task deadline tracking</td>
+            <td>External spreadsheet or calendar</td>
+            <td>iCal sync exports board due dates directly to Google Calendar or Apple Calendar</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>How to set up AI coding agents to run overnight</h2>
+    <p>Setup takes under ten minutes. You need Python 3, tmux, and a valid Anthropic API key. No Docker, no cloud account, no external services required — amux is a single Python file with zero external dependencies.</p>
+
+    <h3>Step 1 — Install amux</h3>
+    <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh</code></pre>
+    <p>The install script adds <code>amux</code> to your PATH. See <a href="/guides/getting-started/">the getting-started guide</a> for OS-specific notes.</p>
+
+    <h3>Step 2 — Register your project with YOLO mode</h3>
+    <pre><code>amux register myproject --dir ~/Dev/myproject --yolo</code></pre>
+    <p>YOLO mode is now the default for new sessions. It auto-approves every tool-approval prompt Claude Code raises — file writes, shell commands, web fetches. Without it, a session that hits a prompt at 2 AM will sit frozen until morning. If you want to restrict auto-approval to specific tool categories, see <a href="/guides/setting-up-yolo-mode/">the YOLO mode configuration guide</a>.</p>
+
+    <h3>Step 3 — Load tasks onto the board</h3>
+    <pre><code>amux board add "Implement OAuth refresh token rotation"
+amux board add "Add rate limiting middleware to /api/v2"
+amux board add "Write integration tests for payment webhook handler"
+amux board add "Refactor UserService to use repository pattern"</code></pre>
+    <p>Each task becomes a board card with a unique ID. When a session starts, it calls <code>amux board claim TASK-ID</code> which atomically marks the task as owned by that session. No two sessions can claim the same task — the underlying SQLite compare-and-swap operation makes this a hard guarantee, not a race condition waiting to happen.</p>
+
+    <h3>Step 4 — Start sessions</h3>
+    <pre><code>amux start myproject   # start one session
+amux start myproject   # start another — each claims its own task from the board</code></pre>
+    <p>Each session opens in its own tmux pane, initializes Claude Code in the project directory, pulls the next unclaimed board task, and begins working. The watchdog activates immediately. Check the live dashboard at <code>https://localhost:8822</code> before you close your laptop — you'll see all sessions in the "doing" column within 30 seconds.</p>
+    <p>Start the server if it isn't already running: <code>amux serve</code></p>
+
+    <h3>Step 5 — Go to sleep</h3>
+    <p>That's it. Sessions run until their tasks complete, then pull the next available task from the board. If you have 20 tasks and 5 sessions, each session will work through 4 tasks sequentially through the night. The board is updated in real time as tasks move from todo to doing to done.</p>
+
+    <p>Want to dig deeper? Read the full <a href="/guides/ai-coding-agents-overnight/">overnight agent configuration guide</a> and the <a href="/guides/self-healing-configuration/">self-healing configuration reference</a>.</p>
+
+    <h2>What to check in the morning</h2>
+    <p>Your morning review takes about five minutes from your phone. Open the amux PWA at <code>https://localhost:8822</code> or launch the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">native iOS app</a>.</p>
+
+    <h3>1. Scan the board</h3>
+    <p>The board's three columns — <strong>todo</strong>, <strong>doing</strong>, <strong>done</strong> — tell you everything at a glance. A healthy overnight run has zero cards in "doing" and most cards in "done." Any cards still in "doing" means that session is still running (or got stuck — check next).</p>
+
+    <h3>2. Check the plan strip</h3>
+    <p>New in July 2026: each session card now shows a <strong>plan strip</strong> — a read-only view of the agent's current internal task list. If an agent is still running you can see exactly which sub-step it's on without reading raw terminal output. This makes it much faster to tell the difference between "agent is making good progress" and "agent has been on step 2 of 8 for three hours."</p>
+
+    <h3>3. Peek at session output</h3>
+    <p>Tap any session to view its last 100 lines of output. Look for error messages, stuck git operations, or ambiguous spec questions the agent left as comments. If something needs a quick human answer, use <strong>saved messages</strong> (new July 2026) — per-session canned prompts you can send with one tap. For example, you might pre-save "focus on the happy path only, skip edge cases for now" or "push what you have and open a draft PR."</p>
+
+    <h3>4. Review pull requests</h3>
+    <p>Sessions that completed their tasks will have opened pull requests (if your project's agent prompt includes that instruction). Jump to GitHub from the session output link, review the diff, and merge — or set the PR into your normal review queue.</p>
+
+    <h3>5. Verify CI</h3>
+    <p>Check that CI is green on each open PR before merging. A green board does not mean production is safe — that requires a passing pipeline and a prod smoke test. Board status <code>done</code> means implemented; <code>verified</code> means confirmed working in prod after CI and deployment.</p>
+
+    <h2>How many agents can run overnight?</h2>
+    <p>The practical ceiling depends on RAM and API rate limits, not CPU:</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Machine</th><th>RAM</th><th>Comfortable parallel sessions</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>MacBook Pro (M3/M4)</td>
+            <td>16 GB</td>
+            <td>5–8</td>
+            <td>Fine for focused overnight sprints on one codebase</td>
+          </tr>
+          <tr>
+            <td>MacBook Pro (M3/M4 Max)</td>
+            <td>32–64 GB</td>
+            <td>10–20</td>
+            <td>Sweet spot for most solo developers running an agent fleet</td>
+          </tr>
+          <tr>
+            <td>Mac Studio (M4 Max/Ultra)</td>
+            <td>64–192 GB</td>
+            <td>20–50</td>
+            <td>Run a full AI engineering team; multiple codebases simultaneously</td>
+          </tr>
+          <tr>
+            <td>Mac Pro</td>
+            <td>192 GB</td>
+            <td>50+</td>
+            <td>API rate limits become the binding constraint before RAM does</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Each Claude Code session uses roughly 1–2 GB of RAM at peak (during large diffs or test suite runs). Disk I/O throughput matters for repos with large test suites — an SSD is effectively mandatory above 10 parallel sessions. Network bandwidth for API calls is negligible; the Claude API uses text tokens, not large payloads.</p>
+
+    <p>The real ceiling for most setups is the <strong>Anthropic API rate limit</strong>. A Tier 4 or 5 account (typically reached after sustained monthly spend) gives you enough throughput for 20–30 active sessions. If you hit rate limits, amux sessions back off gracefully and retry — they do not crash or lose work.</p>
+
+    <h2>What if an agent gets stuck?</h2>
+    <p>Most stuck states are handled automatically before you need to intervene:</p>
+
+    <ul>
+      <li><strong>Context overflow</strong> — auto-compacted with a 5-minute cooldown. The session continues with a fresh context window summarizing prior work.</li>
+      <li><strong>Tool-approval prompt</strong> — auto-approved by YOLO mode. The session never blocks on these.</li>
+      <li><strong>Process crash</strong> — watchdog detects the dead pane within seconds, restarts the session, and replays the last message. Restart takes under 30 seconds.</li>
+      <li><strong>Thinking-block corruption</strong> — watchdog detects the malformed state from Claude's output stream, kills the session cleanly, and relaunches.</li>
+      <li><strong>Idle hang (genuinely stuck)</strong> — the idle detector fires after a configurable threshold (default: a few minutes of no output). It sends a nudge prompt to break the session out of any reasoning loop.</li>
+    </ul>
+
+    <p>The one case that still requires human judgment is a <strong>genuine ambiguity in the spec</strong> — where the agent correctly identifies that two valid interpretations exist and needs a decision. Well-written agents (and Claude Code is good at this) will write a comment in the code, open a draft PR noting the ambiguity, mark their board task done, and move on to the next task rather than spinning. In the morning you'll see a draft PR with a question — answer it and the agent can finish in minutes.</p>
+
+    <p>If you see a session that's been in "doing" for hours with no output, use the <strong>peek</strong> view from your phone to read the last 100 lines. You can send a saved message directly to that session — "summarize what you're stuck on and open a draft PR with what you have" is a useful recovery prompt to pre-save.</p>
+
+    <p>For advanced self-healing tuning, see <a href="/guides/self-healing-configuration/">the self-healing configuration guide</a>.</p>
+
+    <h2>amux vs. DIY tmux — what you actually get</h2>
+    <p>Many developers start with raw tmux and shell scripts before switching to amux. Here's what the comparison looks like in practice:</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Capability</th><th>DIY tmux + shell scripts</th><th>amux</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Context overflow recovery</td>
+            <td>Manual — you run <code>/compact</code> when you notice</td>
+            <td>Automatic, with 5-minute cooldown to prevent thrashing</td>
+          </tr>
+          <tr>
+            <td>Tool-approval prompts overnight</td>
+            <td>Session blocks until you SSH in and type <kbd>y</kbd></td>
+            <td>YOLO mode auto-approves; default for new sessions as of July 2026</td>
+          </tr>
+          <tr>
+            <td>Crash recovery</td>
+            <td>Custom watchdog script (usually buggy)</td>
+            <td>Built-in watchdog: detects dead pane, restarts, replays last message</td>
+          </tr>
+          <tr>
+            <td>Thinking-block corruption</td>
+            <td>Usually undetected until you read output</td>
+            <td>Detected from output stream, clean kill + restart</td>
+          </tr>
+          <tr>
+            <td>Task distribution to agents</td>
+            <td>Shared file or Slack message</td>
+            <td>SQLite CAS board claim — atomically assigned, no race conditions</td>
+          </tr>
+          <tr>
+            <td>Parallel session count visibility</td>
+            <td>tmux list-panes; hard to read at a glance</td>
+            <td>Live dashboard: all sessions, statuses, and current task in one view</td>
+          </tr>
+          <tr>
+            <td>Morning review from phone</td>
+            <td>SSH into laptop, navigate tmux panes</td>
+            <td>PWA board + session peek; native iOS app available</td>
+          </tr>
+          <tr>
+            <td>Plan strip (current sub-task view)</td>
+            <td>Not available</td>
+            <td>Read-only view of agent's internal task list per session (July 2026)</td>
+          </tr>
+          <tr>
+            <td>Saved messages (one-tap prompts)</td>
+            <td>Not available</td>
+            <td>Per-session canned prompts; send from phone with one tap (July 2026)</td>
+          </tr>
+          <tr>
+            <td>Deadline tracking</td>
+            <td>External calendar or spreadsheet</td>
+            <td>iCal sync: board due dates exported to Google / Apple Calendar automatically</td>
+          </tr>
+          <tr>
+            <td>Setup complexity</td>
+            <td>Hours of scripting; breaks when Claude Code updates</td>
+            <td>10-minute install; single Python file, zero external dependencies</td>
+          </tr>
+          <tr>
+            <td>License</td>
+            <td>Your own scripts (unmaintained)</td>
+            <td>MIT open source</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Frequently asked questions</h2>
+
+    <div class="faq-list">
+      <details open>
+        <summary><h3>Can Claude Code run overnight without supervision?</h3></summary>
+        <p>Yes. With amux, you register your project sessions with YOLO mode enabled (now the default for new sessions), add tasks to the shared kanban board, start your sessions, and go to sleep. The self-healing watchdog monitors every session for idle hangs, context overflow, and process crashes — handling each automatically without any human input. The morning review takes about five minutes from your phone.</p>
+      </details>
+
+      <details>
+        <summary><h3>What is YOLO mode and is it safe?</h3></summary>
+        <p>YOLO mode makes amux auto-respond "yes" to every tool-approval prompt Claude Code raises — file writes, shell commands, web fetches, MCP tool calls. Without it, any prompt blocks the session until a human responds. As of July 2026 it is the default for new sessions registered with amux. It is safe to use on a machine and project directory dedicated to agent work; scope your project directory carefully and run with a non-root user as you would any automated process. Disable per-session with <code>--no-yolo</code>. See the <a href="/guides/setting-up-yolo-mode/">YOLO mode guide</a> for per-tool-category restriction options.</p>
+      </details>
+
+      <details>
+        <summary><h3>What happens if a session runs out of context while I'm asleep?</h3></summary>
+        <p>amux's watchdog detects the context-overflow signal in the session output and automatically sends <code>/compact</code> to the session. A 5-minute cooldown prevents repeated compactions from thrashing. Claude Code's <code>/compact</code> command summarizes the full conversation into a compressed context, then continues from where it left off. If the session enters a thinking-block corruption state — a different failure mode where Claude's output stream becomes malformed — the watchdog detects it, kills the session, restarts it cleanly, and replays the last message.</p>
+      </details>
+
+      <details>
+        <summary><h3>How do I check on my agents from my phone in the morning?</h3></summary>
+        <p>Open the amux PWA at <code>https://localhost:8822</code> from Safari on your phone (add to home screen for a native feel), or use the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">native iOS app</a>. The board tab shows which tasks each session completed, is still working on, or failed. Tap any session to peek at its last 100 lines of output. From there you can send a one-tap saved message to redirect an agent, or tap through to GitHub to review the pull requests it opened overnight. Full walkthrough in the <a href="/guides/mobile-management-pwa/">mobile management guide</a>.</p>
+      </details>
+
+      <details>
+        <summary><h3>How many AI coding agents can run in parallel overnight?</h3></summary>
+        <p>On a Mac with 32 GB of RAM you can comfortably run 10–20 parallel Claude Code sessions. A Mac Studio or Mac Pro with 64–192 GB supports 30–50 sessions. Each session uses roughly 1–2 GB of RAM at peak. The practical ceiling is usually your Anthropic API rate limit (a Tier 4/5 account handles 20–30 active sessions comfortably) and disk I/O throughput during large test suite runs, not CPU or RAM alone.</p>
+      </details>
+
+      <details>
+        <summary><h3>What happens if a Claude Code agent makes a bad commit overnight?</h3></summary>
+        <p>Agents working from well-scoped board tasks open pull requests rather than pushing directly to main — this is standard practice and easy to enforce with branch protection rules. If you also run CI on the PR branch, any breaking change is caught before merge. The morning board review includes checking CI status on each open PR before you approve. If an agent does push bad code (on a development branch), <code>git revert</code> is the safe recovery; the board card will be in "done" and you can see exactly which commits the session made by reading its output in the peek view.</p>
+      </details>
+    </div>
+
+    <div class="cta-box">
+      <h3>Run your AI engineering team tonight</h3>
+      <p>Install amux in ten minutes. Queue tasks before bed. Wake up to pull requests. Open source, single Python file, MIT licensed.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
+amux board add "Your first overnight task"
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8822</code></pre>
+      <div class="cta-buttons">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+        <a class="btn" href="/guides/getting-started/">Getting started guide</a>
+        <a class="btn" href="/guides/ai-coding-agents-overnight/">Overnight setup guide</a>
+      </div>
+    </div>
+
+    <div class="related-guides">
+      <h3>Related guides</h3>
+      <ul>
+        <li><a href="/guides/getting-started/">Getting started with amux</a></li>
+        <li><a href="/guides/self-healing-configuration/">Self-healing configuration reference</a></li>
+        <li><a href="/guides/setting-up-yolo-mode/">Setting up YOLO mode</a></li>
+        <li><a href="/guides/mobile-management-pwa/">Managing your agent fleet from your phone</a></li>
+        <li><a href="/guides/ai-coding-agents-overnight/">Overnight agent configuration guide</a></li>
+      </ul>
+    </div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -110,6 +385,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
     </div>
   </footer>
 
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>
