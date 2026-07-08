@@ -12370,7 +12370,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .fe-crumb:hover { text-decoration: underline; }
   .fe-crumb-sep { color: var(--dim); margin: 0 2px; }
   .fe-col-headers {
-    display: grid; grid-template-columns: minmax(0,1fr) 72px 108px 32px;
+    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 30px;
     padding: 0 4px; border-bottom: 2px solid var(--border); flex-shrink: 0;
     background: var(--card);
   }
@@ -12384,7 +12384,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .fe-sort-arrow { font-size: 0.65rem; opacity: 0.7; }
   .fe-col-hdr-actions { padding: 5px 4px; }
   .fe-row {
-    display: grid; grid-template-columns: minmax(0,1fr) 72px 108px 32px;
+    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 30px;
     padding: 0 4px; border-bottom: 1px solid rgba(139,148,158,0.08);
     cursor: pointer; transition: background 0.08s;
     -webkit-tap-highlight-color: transparent;
@@ -12393,22 +12393,22 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .fe-row:active { background: rgba(88,166,255,0.08); }
   .fe-row.fe-dir .fe-cell-name { font-weight: 500; }
   .fe-cell-name {
-    display: flex; align-items: center; gap: 7px; padding: 7px 8px;
+    display: flex; align-items: center; gap: 4px; padding: 4px 6px;
     min-width: 0; overflow: hidden;
   }
   /* Inline folder-expand chevron (accordion). Row still navigates on click. */
-  .fe-expand { background: none; border: none; color: var(--dim); cursor: pointer; padding: 2px;
-    width: 20px; height: 20px; flex-shrink: 0; font-size: 0.7rem; line-height: 1;
+  .fe-expand { background: none; border: none; color: var(--dim); cursor: pointer; padding: 0;
+    width: 18px; height: 22px; flex-shrink: 0; font-size: 1.05rem; line-height: 1;
     display: inline-flex; align-items: center; justify-content: center; transition: transform 0.12s; }
   .fe-expand:hover { color: var(--text); }
   .fe-expand.open { transform: rotate(90deg); }
   .fe-expand.loading { opacity: 0.4; }
-  .fe-expand-spacer { display: inline-block; width: 20px; flex-shrink: 0; }
+  .fe-expand-spacer { display: inline-block; width: 18px; flex-shrink: 0; }
   .fe-row.fe-expanded > .fe-cell-name { color: var(--accent); }
-  @media (max-width: 600px) { .fe-expand, .fe-expand-spacer { width: 26px; height: 26px; } }
+  @media (max-width: 600px) { .fe-expand { width: 24px; font-size: 1.25rem; } .fe-expand-spacer { width: 22px; } }
   .fe-cell-name span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.83rem; }
-  .fe-cell-size { padding: 7px 8px; font-size: 0.72rem; color: var(--dim); display: flex; align-items: center; }
-  .fe-cell-date { padding: 7px 8px; font-size: 0.72rem; color: var(--dim); display: flex; align-items: center; }
+  .fe-cell-size { padding: 4px 6px; font-size: 0.72rem; color: var(--dim); display: flex; align-items: center; }
+  .fe-cell-date { padding: 4px 6px; font-size: 0.72rem; color: var(--dim); display: flex; align-items: center; }
   .fe-cell-actions { padding: 4px 2px; display: flex; align-items: center; justify-content: center; }
   .fe-menu-btn {
     background: none; border: none; color: var(--dim); cursor: pointer;
@@ -12421,7 +12421,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     border-top: 1px solid var(--border); background: var(--card);
   }
   .fe-back-row {
-    display: grid; grid-template-columns: minmax(0,1fr) 72px 108px 32px;
+    display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 30px;
     padding: 0 4px; border-bottom: 1px solid rgba(139,148,158,0.08);
     cursor: pointer;
   }
@@ -12430,7 +12430,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .fe-col-headers { grid-template-columns: minmax(0,1fr) 32px; }
     .fe-row, .fe-back-row { grid-template-columns: minmax(0,1fr) 32px; }
     .fe-cell-size, .fe-cell-date, .fe-col-hdr:nth-child(2), .fe-col-hdr:nth-child(3) { display: none; }
-    .fe-cell-name { padding: 10px 8px; }
+    .fe-cell-name { padding: 7px 8px; }
     .fe-cell-name span { font-size: 0.9rem; }
     .fe-menu-btn { opacity: 0.5; font-size: 1.1rem; }
   }
@@ -21865,7 +21865,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.56';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.57';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -38261,7 +38261,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.56';
+const CACHE = 'amux-v0.9.57';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
