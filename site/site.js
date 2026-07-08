@@ -51,5 +51,45 @@
     } else {
       nav.appendChild(btn);
     }
+
+    // EXP-002: sticky mobile iOS CTA bar — only on small screens
+    // Inject CSS + DOM element so the App Store button is always reachable on mobile
+    var expStyle = document.createElement('style');
+    expStyle.textContent = [
+      '@media(max-width:600px){',
+      '  .nav-cta-primary.hide-on-mobile-exp{display:none!important}',
+      '  .mobile-ios-sticky{',
+      '    position:fixed;bottom:0;left:0;right:0;z-index:9999;',
+      '    background:var(--bg);border-top:1px solid var(--border);',
+      '    padding:10px 16px calc(10px + env(safe-area-inset-bottom)) 16px;',
+      '    display:flex;align-items:center;justify-content:center;gap:10px;',
+      '  }',
+      '  .mobile-ios-sticky a{',
+      '    display:block;flex:1;max-width:320px;text-align:center;',
+      '    background:var(--accent);color:#fff;font-weight:600;font-size:.92rem;',
+      '    padding:12px 20px;border-radius:10px;text-decoration:none;min-height:44px;',
+      '    line-height:1.2;display:flex;align-items:center;justify-content:center;',
+      '  }',
+      '  .mobile-ios-sticky a:active{opacity:.85}',
+      '  body{padding-bottom:calc(64px + env(safe-area-inset-bottom))}',
+      '}',
+      '@media(min-width:601px){.mobile-ios-sticky{display:none!important}}'
+    ].join('');
+    document.head.appendChild(expStyle);
+
+    // Hide the nav iOS link on mobile to avoid duplicate CTAs
+    var iosNavLink = nav.querySelector('a[href*="apps.apple.com"].nav-cta-primary');
+    if (iosNavLink) iosNavLink.classList.add('hide-on-mobile-exp');
+
+    // Inject sticky bar
+    var stickyBar = document.createElement('div');
+    stickyBar.className = 'mobile-ios-sticky';
+    stickyBar.innerHTML = '<a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" data-ph-event="exp002-ios-sticky-tap">Get the iOS App — Manage Agents From Your Phone</a>';
+    document.body.appendChild(stickyBar);
+
+    // Track EXP-002 tap in PostHog
+    stickyBar.querySelector('a').addEventListener('click', function() {
+      if (window.posthog) posthog.capture('exp002_ios_sticky_tap', { experiment: 'EXP-002' });
+    });
   });
 })();

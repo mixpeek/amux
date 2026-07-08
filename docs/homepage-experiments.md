@@ -21,6 +21,14 @@
 - **KPI:** GitHub star clicks (PostHog autocapture on github.com/mixpeek/amux link)
 - **Measure after:** 2026-07-14 (7 days minimum)
 
+### EXP-002 — iOS CTA sticky mobile bottom bar
+- **Status:** `running`
+- **Started:** 2026-07-08
+- **Change:** Added sticky fixed bottom bar on mobile (≤600px) with App Store CTA; iOS nav link hidden on mobile. Implemented in site.js (CSS injection + DOM append). PostHog event: `exp002_ios_sticky_tap`.
+- **Hypothesis:** Moving "iOS app" from nav to a sticky mobile-only bottom bar increases iOS App Store taps on mobile by 30%+
+- **KPI:** iOS downloads (PostHog `exp002_ios_sticky_tap` event + App Store link clicks)
+- **Measure after:** 2026-07-15 (7 days minimum)
+
 ---
 
 ## Experiment Backlog (prioritized)
@@ -33,13 +41,13 @@
 - **Implementation:** Changed both "View on GitHub" instances to "⭐ Star on GitHub" in site/index.html
 - **Effort:** XS (1 line edit)
 
-### EXP-002 — iOS CTA placement in nav
+### EXP-002 — iOS CTA sticky mobile bottom bar
 - **Hypothesis:** Moving "iOS app" from nav to a sticky mobile-only bottom bar increases iOS taps on mobile by 30%+
-- **Page:** All pages (site-header nav)
+- **Page:** All pages (site.js — injected globally)
 - **KPI:** iOS downloads
-- **Status:** `queued`
-- **Implementation:** Add `@media (max-width: 600px)` fixed bottom bar with App Store button; hide from nav on mobile
-- **Effort:** S (CSS + site.js)
+- **Status:** `running` — started 2026-07-08
+- **Implementation:** site.js injects CSS (fixed bottom bar, body padding-bottom, hide nav iOS link on ≤600px) and appends DOM element. PostHog custom event `exp002_ios_sticky_tap` on tap. Respects `env(safe-area-inset-bottom)` for iOS notch.
+- **Effort:** S (site.js injection)
 
 ### EXP-003 — Homepage hero subheadline
 - **Hypothesis:** Adding a concrete social proof line ("Join 2,000+ developers running AI teams overnight") under the H1 increases GitHub clicks and concierge signups
@@ -105,6 +113,22 @@
 - **Implementation:** Reorder table rows in the homepage feature grid
 - **Effort:** XS
 
+### EXP-011 — Plan strip / visibility callout in homepage feature list
+- **Hypothesis:** The new Plan strip feature (v0.9.44, July 2026) — which lets you see exactly what your Claude Code agent is planning — is a unique differentiator not communicated on the homepage. Adding a one-line callout in the feature list increases clicks from developers frustrated with agent opacity.
+- **Page:** `/` (feature grid or "new" badge on relevant feature row)
+- **KPI:** GitHub stars (developer audience)
+- **Status:** `queued`
+- **Implementation:** Add "Plan strip — see your agent's task list in real time (new)" row or badge to homepage feature table
+- **Effort:** XS
+
+### EXP-012 — Freelancer CTA on compare pages
+- **Hypothesis:** Compare pages attract high-intent "is this the right tool?" visitors. Adding a "Freelancer? Scale to 5x clients →" contextual CTA on compare pages targets a specific high-converting audience segment identified from the /for/freelancers/ page creation today.
+- **Page:** All `/compare/amux-vs-*/` pages (subset test first)
+- **KPI:** Concierge signups + /for/freelancers/ traffic
+- **Status:** `queued`
+- **Implementation:** Add a compact contextual CTA box after the main comparison table linking to /for/freelancers/ and /concierge/
+- **Effort:** S (bulk edit Python script)
+
 ---
 
 ## Concluded Experiments
@@ -122,6 +146,8 @@ _Updated by SCHED-149 Job 9 after each run with PostHog data and experiment resu
 | 2026-07-07 | PostHog installed, baseline accumulation started | — |
 | 2026-07-07 | PostHog HogQL query returned 0 events — no click data yet after 1 day of tracking | EXP-001 shipped; wait for data to accumulate before scoring |
 | 2026-07-07 | EXP-001 launched: "View on GitHub" → "⭐ Star on GitHub" on both hero CTAs in homepage | Implement complete; measure 2026-07-14 |
+| 2026-07-08 | PostHog still 0 events (Day 1 — accumulating) — EXP-001 cannot be scored yet (< 7 days) | EXP-002 shipped: sticky iOS bottom bar via site.js injection on all pages |
+| 2026-07-08 | EXP-002 launched: sticky mobile bottom bar with App Store CTA, PostHog event exp002_ios_sticky_tap | Measure after 2026-07-15; new hypothesis EXP-009 added (indie hacker language) |
 
 ---
 
