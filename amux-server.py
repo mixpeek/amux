@@ -227,6 +227,7 @@ _S3_KEY = os.environ.get("AMUX_S3_KEY", "amux/calendar.ics")
 _S3_REGION = os.environ.get("AMUX_S3_REGION", "us-east-1")
 # Google Calendar push sync (optional — set AMUX_GCAL_ID to enable)
 _GCAL_ID = os.environ.get("AMUX_GCAL_ID", "")
+_GCAL_TZ = os.environ.get("AMUX_GCAL_TZ", "America/New_York")
 _S3_CAL_URL = (
     f"https://{_S3_BUCKET}.s3.{_S3_REGION}.amazonaws.com/{_S3_KEY}"
     if _S3_BUCKET else ""
@@ -5518,6 +5519,7 @@ def _init_db():
         "ALTER TABLE schedules ADD COLUMN watch_timeout INTEGER NOT NULL DEFAULT 120",
         "ALTER TABLE schedules ADD COLUMN done_pattern TEXT",
         "ALTER TABLE schedules ADD COLUMN done_action TEXT NOT NULL DEFAULT 'disable'",
+        "ALTER TABLE schedules ADD COLUMN gcal_event_id TEXT",
         # Event triggers: wake a schedule's session when something changes (closed-loop
         # orchestration), in addition to (not instead of) the cron schedule_expr heartbeat.
         # trigger_on is a comma-separated set of event names (e.g. 'session_idle,board').
@@ -6765,6 +6767,106 @@ def _gcal_sync_item(item_id: str, title: str = "", due: str = "", due_time: str 
     except Exception as e:
         slog(f"[gcal] sync failed for {item_id}: {e}")
 
+
+def _gcal_service():
+    """Build a Google Calendar API client from ADC (calendar scope). None if unavailable."""
+    import google.auth, google.auth.transport.requests
+    from googleapiclient.discovery import build
+    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/calendar"])
+    creds.refresh(google.auth.transport.requests.Request())
+    return build("calendar", "v3", credentials=creds, cache_discovery=False)
+
+
+def _gcal_sync_schedule(sched_id: str, deleted: bool = False):
+    """Real-time push of a schedule to Google Calendar (if AMUX_GCAL_ID set).
+    Create/update/delete the event and track gcal_event_id on the schedule row.
+    This is the near-instant alternative to Google's slow iCal polling."""
+    if not _GCAL_ID:
+        return
+    try:
+        db = get_db()
+        cols = [d[1] for d in db.execute("PRAGMA table_info(schedules)").fetchall()]
+        row = db.execute("SELECT * FROM schedules WHERE id=?", (sched_id,)).fetchone()
+        sched = dict(zip(cols, row)) if row else None
+        event_id = sched.get("gcal_event_id") if sched else None
+        service = _gcal_service()
+        # Delete when removed / disabled / no next_run
+        if (not sched) or deleted or sched.get("deleted") or not sched.get("enabled") or not sched.get("next_run"):
+            if event_id:
+                try:
+                    service.events().delete(calendarId=_GCAL_ID, eventId=event_id).execute()
+                except Exception:
+                    pass
+                db.execute("UPDATE schedules SET gcal_event_id=NULL WHERE id=?", (sched_id,))
+                db.commit()
+                slog(f"[gcal] deleted schedule event for {sched_id}")
+            return
+        dtstart = _ical_dtstart(sched.get("next_run"))
+        if not dtstart:
+            return
+        from datetime import datetime as _dt, timedelta as _td
+        start = _dt.strptime(dtstart, "%Y%m%dT%H%M%S")
+        end = start + _td(minutes=30)
+        parts = []
+        if sched.get("session"):
+            parts.append("Session: " + str(sched["session"]))
+        if sched.get("command"):
+            parts.append("Command: " + str(sched["command"])[:400])
+        if sched.get("schedule_expr"):
+            parts.append("Schedule: " + str(sched["schedule_expr"]))
+        body = {
+            "summary": "⏰ " + (sched.get("title") or "Scheduled task"),
+            "description": "\n".join(parts) + f"\n\namux schedule {sched_id}",
+            "start": {"dateTime": start.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": _GCAL_TZ},
+            "end": {"dateTime": end.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": _GCAL_TZ},
+        }
+        rrule = _schedule_rrule(sched)
+        if rrule:
+            body["recurrence"] = ["RRULE:" + rrule]
+        if event_id:
+            try:
+                service.events().update(calendarId=_GCAL_ID, eventId=event_id, body=body).execute()
+                slog(f"[gcal] updated schedule event for {sched_id}")
+                return
+            except Exception:
+                pass   # event vanished — fall through to recreate
+        ev = service.events().insert(calendarId=_GCAL_ID, body=body).execute()
+        db.execute("UPDATE schedules SET gcal_event_id=? WHERE id=?", (ev["id"], sched_id))
+        db.commit()
+        slog(f"[gcal] created schedule event {ev['id']} for {sched_id}")
+    except Exception as e:
+        slog(f"[gcal] schedule sync failed for {sched_id}: {e}")
+
+
+def _gcal_sync_schedule_bg(sched_id: str, deleted: bool = False):
+    """Fire-and-forget schedule→GCal sync (skips entirely when GCal isn't configured)."""
+    if not _GCAL_ID or not sched_id:
+        return
+    threading.Thread(target=_gcal_sync_schedule, args=(sched_id,),
+                     kwargs={"deleted": deleted}, daemon=True).start()
+
+
+def _gcal_backfill():
+    """Push every enabled schedule into the configured Google Calendar. Returns count."""
+    if not _GCAL_ID:
+        return 0
+    db = get_db()
+    rows = db.execute("SELECT id FROM schedules WHERE deleted IS NULL AND enabled=1").fetchall()
+    n = 0
+    for r in rows:
+        try:
+            _gcal_sync_schedule(r[0]); n += 1
+        except Exception:
+            pass
+    slog(f"[gcal] backfilled {n} schedules")
+    return n
+
+
+def _gcal_set_id(cal_id: str):
+    """Persist + apply the target Google Calendar id (module global + server.env)."""
+    global _GCAL_ID
+    _env_set("AMUX_GCAL_ID", cal_id or "")
+    _GCAL_ID = cal_id or ""
 
 
 def _cron_next_run(parts: list, base) -> str | None:
@@ -39246,6 +39348,35 @@ class CCHandler(BaseHTTPRequestHandler):
                     _env_set("AMUX_URGENT_SMS", "1" if body.get("sms") else "0")
                 return self._json({"ok": True})
 
+        # ── Real-time Google Calendar push (schedules → GCal via ADC) ──
+        if path == "/api/gcal/status" and method == "GET":
+            adc_ok = False
+            try:
+                _gcal_service().calendarList().list(maxResults=1).execute(); adc_ok = True
+            except Exception:
+                pass
+            return self._json({"enabled": bool(_GCAL_ID), "calendar_id": _GCAL_ID, "adc_ok": adc_ok, "tz": _GCAL_TZ})
+        if path == "/api/gcal/enable" and method == "POST":
+            body = self._read_body()
+            try:
+                service = _gcal_service()
+                service.calendarList().list(maxResults=1).execute()   # verify calendar scope
+            except Exception as e:
+                return self._json({"error": "calendar auth unavailable — run: gcloud auth application-default "
+                                   "login --scopes=openid,https://www.googleapis.com/auth/userinfo.email,"
+                                   "https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive,"
+                                   "https://www.googleapis.com/auth/calendar", "detail": str(e)[:150]}, 400)
+            cal_id = (body.get("calendar_id") or "").strip()
+            if not cal_id:
+                cal = service.calendars().insert(body={"summary": "amux Schedules", "timeZone": _GCAL_TZ}).execute()
+                cal_id = cal["id"]
+            _gcal_set_id(cal_id)
+            threading.Thread(target=_gcal_backfill, daemon=True).start()
+            return self._json({"ok": True, "calendar_id": cal_id, "backfill": "started"})
+        if path == "/api/gcal/disable" and method == "POST":
+            _gcal_set_id("")
+            return self._json({"ok": True})
+
         # GET /
         if method == "GET" and path == "/":
             import json as _json
@@ -41630,6 +41761,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 )
                 db.commit()
                 _push_ical_bg()   # schedules drive the calendar feed now
+                _gcal_sync_schedule_bg(sched["id"])   # real-time push to Google Calendar
                 self._json(sched, 201)
                 return
 
@@ -41711,6 +41843,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 )
                 db.commit()
                 _push_ical_bg()   # schedule changed → refresh calendar feed
+                _gcal_sync_schedule_bg(sched_id)   # real-time push to Google Calendar
                 self._json(sched)
                 return
 
@@ -41721,6 +41854,7 @@ class CCHandler(BaseHTTPRequestHandler):
                            (int(_time.time()), int(_time.time()), sched_id))
                 db.commit()
                 _push_ical_bg()   # schedule removed → refresh calendar feed
+                _gcal_sync_schedule_bg(sched_id, deleted=True)   # remove from Google Calendar
                 self._json({"deleted": sched_id})
                 return
 
