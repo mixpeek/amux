@@ -21740,7 +21740,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.45';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.46';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -22336,10 +22336,24 @@ function _vvTick() {
   const el = document.getElementById('peek-overlay');
   const body = document.getElementById('peek-body');
   let sx = 0, sy = 0, tracking = false;
+  // True when the touch began inside a horizontally-scrollable element (chips row,
+  // tab bar, a wide table…). Those own the horizontal gesture, so the overlay's
+  // swipe-to-close must NOT hijack it (that dragged the whole session out to the
+  // list when you tried to scroll the button row).
+  const _inHScroller = (node) => {
+    for (let n = node; n && n !== el; n = n.parentElement) {
+      if (n.scrollWidth > n.clientWidth + 2) {
+        const ox = getComputedStyle(n).overflowX;
+        if (ox === 'auto' || ox === 'scroll') return true;
+      }
+    }
+    return false;
+  };
   el.addEventListener('touchstart', e => {
     if (!el.classList.contains('active')) return;
-    // Let the terminal body handle its own touches (scrolling + text selection)
-    if (body && body.contains(e.target)) { tracking = false; return; }
+    // Let the terminal body handle its own touches (scrolling + text selection),
+    // and let horizontal scrollers (chips, tabs) keep their own pan gesture.
+    if ((body && body.contains(e.target)) || _inHScroller(e.target)) { tracking = false; return; }
     const t = e.touches[0];
     sx = t.clientX; sy = t.clientY; tracking = true;
     el.style.transition = 'none';
@@ -23504,20 +23518,17 @@ let SLASH_COMMANDS = [];
 // Each chip: { id, label, action, value, danger? }
 // action: 'send' (text), 'keys' (keystroke), 'slash' (populate input), 'special' (named fn)
 const DEFAULT_CHIPS = [
-  { id: 'continue', label: 'continue', action: 'send', value: 'continue' },
+  { id: 'continue', label: 'Continue', action: 'send', value: 'continue' },
   { id: 'enter', label: 'Enter', action: 'keys', value: 'Enter' },
-  { id: 'up', label: '\u2191', action: 'keys', value: 'Up' },
-  { id: 'down', label: '\u2193', action: 'keys', value: 'Down' },
-  { id: 'push', label: '\u2B06 Push', action: 'special', value: 'gitPush' },
-  { id: 'status', label: '/status', action: 'slash', value: '/status' },
-  { id: 'model', label: '/model', action: 'slash', value: '/model' },
-  { id: 'mcp', label: '/mcp', action: 'slash', value: '/mcp' },
-  { id: 'ctrlc', label: 'Ctrl+C', action: 'keys', value: 'C-c', danger: true },
-  { id: 'ctrlo', label: 'Ctrl+O', action: 'keys', value: 'C-o' },
-  { id: 'clear', label: '/clear', action: 'slash', value: '/clear' },
-  { id: 'compact', label: '/compact', action: 'slash', value: '/compact' },
+  { id: 'up', label: '\u2191 Up', action: 'keys', value: 'Up' },
+  { id: 'down', label: '\u2193 Down', action: 'keys', value: 'Down' },
+  { id: 'space', label: 'Space', action: 'keys', value: 'Space' },
+  { id: 'ctrlc', label: 'Ctrl C', action: 'keys', value: 'C-c', danger: true },
   { id: 'esc', label: 'Esc', action: 'keys', value: 'Escape' },
 ];
+// Ids of the previous built-in default set \u2014 used to migrate users who never
+// customized their chips to the streamlined set above (see _getChips).
+const _OLD_DEFAULT_CHIP_IDS = 'continue,enter,up,down,push,status,model,mcp,ctrlc,ctrlo,clear,compact,esc';
 
 // All possible chips the user can add
 const _ACTION_CHIPS = [
@@ -23529,6 +23540,7 @@ const _ACTION_CHIPS = [
     { id: 'ctrlc', label: 'Ctrl+C', action: 'keys', value: 'C-c', desc: 'Interrupt', danger: true },
     { id: 'ctrlo', label: 'Ctrl+O', action: 'keys', value: 'C-o', desc: 'Accept & continue' },
     { id: 'esc', label: 'Esc', action: 'keys', value: 'Escape', desc: 'Escape' },
+    { id: 'space', label: 'Space', action: 'keys', value: 'Space', desc: 'Space key' },
     { id: 'tab', label: 'Tab', action: 'keys', value: 'Tab', desc: 'Tab key' },
     { id: 'yes', label: 'Yes', action: 'send', value: 'yes', desc: 'Send "yes"' },
     { id: 'no', label: 'No', action: 'send', value: 'no', desc: 'Send "no"' },
@@ -23559,7 +23571,18 @@ function _saveChips(chips) {
   localStorage.setItem('amux_chips', JSON.stringify(chips));
 }
 function _getChips() {
-  return _loadChips() || DEFAULT_CHIPS.map(c => ({...c}));
+  const saved = _loadChips();
+  if (saved) {
+    // One-time migration: users still on the previous built-in default get the
+    // new streamlined set; genuine customizations are left untouched.
+    if (saved.map(c => c.id).join(',') === _OLD_DEFAULT_CHIP_IDS) {
+      const nd = DEFAULT_CHIPS.map(c => ({...c}));
+      _saveChips(nd);
+      return nd;
+    }
+    return saved;
+  }
+  return DEFAULT_CHIPS.map(c => ({...c}));
 }
 
 function _chipAction(chip, sessionName, isPeek) {
@@ -37888,7 +37911,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.45';
+const CACHE = 'amux-v0.9.46';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
