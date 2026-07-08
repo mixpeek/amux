@@ -12396,6 +12396,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     display: flex; align-items: center; gap: 7px; padding: 7px 8px;
     min-width: 0; overflow: hidden;
   }
+  /* Inline folder-expand chevron (accordion). Row still navigates on click. */
+  .fe-expand { background: none; border: none; color: var(--dim); cursor: pointer; padding: 2px;
+    width: 20px; height: 20px; flex-shrink: 0; font-size: 0.7rem; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center; transition: transform 0.12s; }
+  .fe-expand:hover { color: var(--text); }
+  .fe-expand.open { transform: rotate(90deg); }
+  .fe-expand.loading { opacity: 0.4; }
+  .fe-expand-spacer { display: inline-block; width: 20px; flex-shrink: 0; }
+  .fe-row.fe-expanded > .fe-cell-name { color: var(--accent); }
+  @media (max-width: 600px) { .fe-expand, .fe-expand-spacer { width: 26px; height: 26px; } }
   .fe-cell-name span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.83rem; }
   .fe-cell-size { padding: 7px 8px; font-size: 0.72rem; color: var(--dim); display: flex; align-items: center; }
   .fe-cell-date { padding: 7px 8px; font-size: 0.72rem; color: var(--dim); display: flex; align-items: center; }
@@ -21835,7 +21845,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.54';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.55';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -25851,6 +25861,71 @@ async function loadFiles(path) {
     }
   }
 }
+function _feHighlight(name, q) {
+  if (!q) return esc(name);
+  const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+  return esc(name).replace(re, m => `<mark style="background:rgba(99,102,241,0.25);color:inherit;border-radius:2px;">${m}</mark>`);
+}
+// Build one file-explorer row. Dirs get an expand chevron (inline accordion) AND
+// still navigate on row click; `depth` indents nested rows.
+function _feBuildRow(entry, parentPath, depth, q) {
+  const entryPath = parentPath.replace(/\/$/, '') + '/' + entry.name;
+  const row = document.createElement('div');
+  row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
+  row.dataset.depth = depth;
+  row.dataset.path = entryPath;
+  const nameHtml = _feHighlight(entry.name, q);
+  const icon = _fileTypeIcon(entry.name, entry.type);
+  const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
+  const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
+  const dateStr = entry.modified ? timeAgo(entry.modified) : '';
+  const ep = entryPath.replace(/'/g, "\\'");
+  const toggle = entry.type === 'dir'
+    ? `<button class="fe-expand" title="Expand / collapse" onclick="event.stopPropagation();_feToggleExpand(this)">&#9656;</button>`
+    : `<span class="fe-expand-spacer"></span>`;
+  const indentStyle = depth ? ` style="padding-left:${depth * 16}px"` : '';
+  row.innerHTML =
+    `<div class="fe-cell-name"${indentStyle}>${toggle}${icon}<span>${nameHtml}${slash}</span></div>` +
+    `<div class="fe-cell-size">${sizeStr}</div>` +
+    `<div class="fe-cell-date">${dateStr}</div>` +
+    `<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu('${ep}',this,'${entry.type}')">⋯</button></div>`;
+  row.onclick = entry.type === 'dir' ? () => loadFiles(entryPath) : () => openFilePreview(entryPath);
+  return row;
+}
+// Toggle a folder's inline expansion (accordion). Inserts/removes the folder's
+// child rows right after it, without navigating into the folder.
+async function _feToggleExpand(btn) {
+  const row = btn.closest('.fe-row');
+  if (!row) return;
+  const dirPath = row.dataset.path;
+  const depth = parseInt(row.dataset.depth || '0', 10);
+  if (row.classList.contains('fe-expanded')) {
+    let n = row.nextElementSibling;
+    while (n && n.classList && n.classList.contains('fe-row') && parseInt(n.dataset.depth || '0', 10) > depth) {
+      const next = n.nextElementSibling; n.remove(); n = next;
+    }
+    row.classList.remove('fe-expanded'); btn.classList.remove('open');
+    return;
+  }
+  btn.classList.add('loading');
+  let data = null;
+  try {
+    const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(dirPath) + (_filesShowHidden ? '&hidden=1' : ''));
+    data = await r.json();
+    if (data && !data.error) { _idb.setFile(dirPath, { type: 'dir', data }); _autoCacheDirFiles(dirPath, data.entries); }
+  } catch(e) {
+    const cached = await _idb.getFile(dirPath);
+    if (cached && cached.type === 'dir') data = cached.data;
+  }
+  btn.classList.remove('loading');
+  if (!data || data.error) return;
+  const q = (document.getElementById('files-search')?.value || '').toLowerCase();
+  const list = q ? (data.entries || []).filter(e => e.name.toLowerCase().includes(q)) : (data.entries || []);
+  const entries = _filesSortEntries(list);
+  let anchor = row;
+  for (const entry of entries) { const child = _feBuildRow(entry, dirPath, depth + 1, q); anchor.after(child); anchor = child; }
+  row.classList.add('fe-expanded'); btn.classList.add('open');
+}
 function _renderFilesEntries(body, path, data, cacheTs) {
   _filesLastData = { path, data, cacheTs };
   body.innerHTML = '';
@@ -25901,29 +25976,8 @@ function _renderFilesEntries(body, path, data, cacheTs) {
     return;
   }
 
-  const qRe = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi') : null;
-  const highlightName = (name) => qRe ? esc(name).replace(qRe, m => `<mark style="background:rgba(99,102,241,0.25);color:inherit;border-radius:2px;">${m}</mark>`) : esc(name);
-
   for (const entry of entries) {
-    const entryPath = path.replace(/\/$/, '') + '/' + entry.name;
-    const row = document.createElement('div');
-    row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
-
-    const nameHtml = highlightName(entry.name);
-    const icon = _fileTypeIcon(entry.name, entry.type);
-    const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
-    const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
-    const dateStr = entry.modified ? timeAgo(entry.modified) : '';
-    const ep = entryPath.replace(/'/g, "\\'");
-
-    row.innerHTML =
-      `<div class="fe-cell-name">${icon}<span>${nameHtml}${slash}</span></div>` +
-      `<div class="fe-cell-size">${sizeStr}</div>` +
-      `<div class="fe-cell-date">${dateStr}</div>` +
-      `<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu('${ep}',this,'${entry.type}')">⋯</button></div>`;
-
-    row.onclick = entry.type === 'dir' ? () => loadFiles(entryPath) : () => openFilePreview(entryPath);
-    body.appendChild(row);
+    body.appendChild(_feBuildRow(entry, path, 0, q));
   }
 
   // Drag-and-drop upload
@@ -38178,7 +38232,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.54';
+const CACHE = 'amux-v0.9.55';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
