@@ -18318,6 +18318,21 @@ function reconcileQueue(queue) {
       }
     }
   }
+  // Last-write-wins: collapse repeated writes to the SAME resource so replay
+  // fires only the final version (5 offline edits of one note/file → 1 write),
+  // instead of clobbering the server with every superseded intermediate.
+  const lwwKey = (u, body) => {
+    let m;
+    if (/\/api\/memory\/global/.test(u)) return 'memglobal';
+    if (/\/api\/prefs\b/.test(u)) return 'prefs';
+    if ((m = u.match(/\/api\/notes\/([^/?]+)/))) return 'note:' + m[1];
+    if ((m = u.match(/\/api\/sessions\/([^/]+)\/memory/))) return 'mem:' + m[1];
+    if (/\/api\/file\b/.test(u)) { try { return 'file:' + (JSON.parse(body || '{}').path || ''); } catch(e) { return null; } }
+    return null;
+  };
+  const lastByKey = {};
+  queue.forEach((q, i) => { if (dominated.has(i)) return; const k = lwwKey(q.url || '', q.options && q.options.body); if (k) lastByKey[k] = i; });
+  queue.forEach((q, i) => { if (dominated.has(i)) return; const k = lwwKey(q.url || '', q.options && q.options.body); if (k && lastByKey[k] !== i) dominated.add(i); });
   return queue.filter((_, i) => !dominated.has(i));
 }
 
@@ -21347,20 +21362,25 @@ async function _peekLoadSchedules() {
   const list = document.getElementById('peek-schedules-list');
   if (!peekSession || !list) return;
   list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 4px;">Loading…</div>';
-  try {
-    await Promise.all([fetchSchedules(), fetchSchedulerRuns()]);
-    if (!peekSession) return;
+  const _paint = () => {
     _peekRenderSchedules();
     const sched = schedules.filter(s => s.session === peekSession && !s.deleted);
-    const n = sched.length;
     const tabCount = document.getElementById('peek-tab-schedules-count');
     if (tabCount) {
-      if (n > 0) { tabCount.textContent = n; tabCount.classList.add('has-count'); }
+      if (sched.length > 0) { tabCount.textContent = sched.length; tabCount.classList.add('has-count'); }
       else { tabCount.textContent = ''; tabCount.classList.remove('has-count'); }
     }
     _peekColorSchedBadge(sched);
+  };
+  try {
+    await Promise.all([fetchSchedules(), fetchSchedulerRuns()]);
+    if (!peekSession) return;
+    _idb.set('schedules_all', schedules);   // cache for offline reads
+    _paint();
   } catch(e) {
-    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 4px;">Failed to load schedules.</div>';
+    const cached = await _idb.get('schedules_all');   // offline fallback
+    if (Array.isArray(cached)) { try { schedules.length = 0; schedules.push(...cached); } catch(_) {} _paint(); }
+    else list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 4px;">Failed to load schedules.</div>';
   }
 }
 async function _peekToggleSchedule(id, val) {
@@ -21430,9 +21450,7 @@ async function _peekNotesLoad() {
   const list = document.getElementById('peek-notes-list');
   if (!peekSession) return;
   list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 8px;">Loading…</div>';
-  try {
-    const r = await fetch(API + '/api/notes');
-    const all = await r.json();
+  const _render = (all) => {
     const folder = _peekNotesFolder() + '/';
     _peekNotesAll = all.filter(n => n.path.startsWith(folder));
     _peekNotesRenderList(_peekNotesAll);
@@ -21441,13 +21459,18 @@ async function _peekNotesLoad() {
       if (_peekNotesAll.length > 0) { tabCount.textContent = _peekNotesAll.length; tabCount.classList.add('has-count'); }
       else { tabCount.textContent = ''; tabCount.classList.remove('has-count'); }
     }
-    // Auto-open first note if none active
-    if (!_peekNotesActive && _peekNotesAll.length) {
-      _peekNotesOpen(_peekNotesAll[0].path);
-    }
+    if (!_peekNotesActive && _peekNotesAll.length) _peekNotesOpen(_peekNotesAll[0].path);
     if (!_peekNotesAll.length) _peekNotesShowEmpty();
+  };
+  try {
+    const r = await fetch(API + '/api/notes');
+    const all = await r.json();
+    if (Array.isArray(all)) _idb.set('notes_all', all);   // cache for offline reads
+    _render(all);
   } catch(e) {
-    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 8px;">Failed to load notes.</div>';
+    const cached = await _idb.get('notes_all');   // offline fallback
+    if (Array.isArray(cached)) _render(cached);
+    else list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px 8px;">Failed to load notes.</div>';
   }
 }
 
@@ -21734,7 +21757,7 @@ async function savePeekMemory() {
   const save = document.getElementById('peek-memory-save');
   save.disabled = true; save.textContent = 'Saving...';
   try {
-    await fetch(API + '/api/sessions/' + peekSession + '/memory', {
+    await apiCall(API + '/api/sessions/' + peekSession + '/memory', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ content: inp.value })
     });
@@ -21751,7 +21774,7 @@ async function syncPeekMemory() {
   const prompt = 'Please update your memory file now with any new facts, decisions, constraints, ' +
     'API details, file paths, or patterns from our recent work. Be concise and add only what ' +
     'is not already captured. Do not remove existing entries unless they are wrong.';
-  await fetch(API + '/api/sessions/' + peekSession + '/send', {
+  await apiCall(API + '/api/sessions/' + peekSession + '/send', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ text: prompt })
   });
@@ -21779,7 +21802,7 @@ async function saveGlobalMemory() {
   const save = document.getElementById('peek-memory-save');
   save.disabled = true; save.textContent = 'Saving...';
   try {
-    await fetch(API + '/api/memory/global', {
+    await apiCall(API + '/api/memory/global', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ content: inp.value })
     });
@@ -21793,7 +21816,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.49';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.50';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -22965,7 +22988,13 @@ async function _smRefresh() {
   const url = _smScope === 'all'
     ? (API + '/api/saved-messages')
     : (API + '/api/saved-messages?session=' + encodeURIComponent(peekSession || ''));
-  try { const r = await fetch(url); items = await r.json(); } catch(e) {}
+  const _ck = 'sm_' + _smScope + '_' + (peekSession || '');
+  try {
+    const r = await fetch(url); items = await r.json();
+    if (Array.isArray(items)) _idb.set(_ck, items);   // cache for offline reads
+  } catch(e) {
+    const c = await _idb.get(_ck); if (Array.isArray(c)) items = c;   // offline fallback
+  }
   if (!Array.isArray(items) || !items.length) {
     listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px 12px;text-align:center;">'
       + (_smScope === 'all' ? 'No saved messages on any session yet.' : 'No saved messages for this session yet.')
@@ -22989,7 +23018,7 @@ async function _smRefresh() {
     const it = items.find(x => String(x.id) === id) || {};
     el.querySelector('[data-act=del]').onclick = async (e) => {
       e.stopPropagation();
-      await fetch(API + '/api/saved-messages/' + id, { method: 'DELETE' }).catch(()=>{});
+      await apiCall(API + '/api/saved-messages/' + id, { method: 'DELETE' });
       _smRefresh();
     };
     el.onclick = () => {
@@ -23004,10 +23033,10 @@ async function _smSave() {
   const nt = document.getElementById('sm-new');
   const text = nt ? nt.value.trim() : '';
   if (!text) { if (nt) nt.focus(); return; }
-  await fetch(API + '/api/saved-messages', {
+  await apiCall(API + '/api/saved-messages', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ text, session: peekSession || '' })
-  }).catch(()=>{});
+  });
   if (nt) nt.value = '';
   _smRefresh();
 }
@@ -23469,12 +23498,13 @@ async function channelSend() {
   const btn = document.getElementById('channel-send-btn');
   btn.disabled = true;
   try {
-    const r = await fetch(API + '/api/channels/' + encodeURIComponent(_channelMe) +
+    const r = await apiCall(API + '/api/channels/' + encodeURIComponent(_channelMe) +
       '/' + encodeURIComponent(_channelOther) + '/messages',
       { method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ text }) });
+    if (!r) { await channelRefresh(); return; }  // offline-queued (or error) — apiCall already toasted
     const d = await r.json();
-    if (!r.ok || !d.ok) {
+    if (!d.ok) {
       showToast('Send failed: ' + (d.error || r.status));
     } else if (!d.delivered) {
       showToast('Saved, but ' + _channelOther + ' is not running');
@@ -25493,11 +25523,18 @@ async function _fileSave() {
   btn.classList.add('saving');
   btn.textContent = 'Saving…';
   try {
-    const r = await fetch(API + '/api/file', {
+    const r = await apiCall(API + '/api/file', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({path: _fileData.path, content})
     });
+    if (!r) {  // offline-queued (or error) — reflect locally; the PUT replays on reconnect
+      _fileData.content = content;
+      btn.textContent = online ? 'Error' : 'Queued';
+      btn.classList.remove('saving');
+      setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('saving'); }, 1500);
+      return;
+    }
     const d = await r.json();
     if (d.ok) {
       _fileData.content = content;
@@ -38074,7 +38111,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.49';
+const CACHE = 'amux-v0.9.50';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
