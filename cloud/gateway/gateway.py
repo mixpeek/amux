@@ -1278,7 +1278,12 @@ def _tunnel_routes(handler, path, qs):
         if not org:
             handler._json({"error": "unauthorized or no active subscription"}, 402)
             return True
-        tid = secrets.token_urlsafe(12)
+        # Stable tid derived from the token → the public URL persists across
+        # restarts/reconnects (essential for calendar subscriptions).
+        from urllib.parse import urlparse as _up
+        _auth = handler.headers.get("Authorization", "")
+        _tok = _auth[7:].strip() if _auth.startswith("Bearer ") else parse_qs(_up(handler.path).query).get("token", [""])[0]
+        tid = hashlib.sha256(("amux-tunnel:" + _tok).encode()).hexdigest()[:16]
         with _tunnel_lock:
             _tunnels[tid] = {"org_id": org["id"], "q": _queue.Queue(),
                              "last_seen": time.time(), "created": time.time()}
