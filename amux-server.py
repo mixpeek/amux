@@ -39021,6 +39021,18 @@ class CCHandler(BaseHTTPRequestHandler):
         if not self._check_auth(method, path):
             return
 
+        # ── amux tunnel control (cloud reverse proxy for localhost) ──
+        if path == "/api/tunnel/status" and method == "GET":
+            return self._json({"running": _tunnel_client["running"], "url": _tunnel_client["url"],
+                               "error": _tunnel_client["error"], "requests": _tunnel_client["requests"],
+                               "target": _tunnel_client["target"], "configured": bool(_TUNNEL_TOKEN),
+                               "gateway": _TUNNEL_GATEWAY})
+        if path == "/api/tunnel/start" and method == "POST":
+            body = self._read_body()
+            return self._json(_tunnel_start(token=body.get("token"), target_port=body.get("port")))
+        if path == "/api/tunnel/stop" and method == "POST":
+            return self._json(_tunnel_stop())
+
         # GET /
         if method == "GET" and path == "/":
             import json as _json
@@ -45802,6 +45814,119 @@ def _kill_stale_port(port: int):
         pass
 
 
+# ── amux tunnel client ──────────────────────────────────────────────────────
+# Dials out to the amux cloud gateway and long-polls for public requests hitting
+# our tunnel URL (cloud.amux.io/t/<tid>/…), serving them from a local target
+# (this server by default, or any localhost port). Exposes localhost publicly
+# with no inbound port — gated on an active amux-cloud subscription (the token).
+_TUNNEL_GATEWAY = os.environ.get("AMUX_TUNNEL_GATEWAY", "https://cloud.amux.io")
+_TUNNEL_TOKEN = os.environ.get("AMUX_TUNNEL_TOKEN", "")
+_AMUX_SELF_PORT = 8822
+_AMUX_SELF_SCHEME = "https"
+_tunnel_client = {"running": False, "url": None, "tid": None, "error": None,
+                  "target": None, "thread": None, "requests": 0}
+
+
+def _tunnel_serve_one(req, target_base):
+    """Fetch one relayed request against the local target; return a reply dict."""
+    import ssl as _ssl
+    path = req.get("path", "/")
+    qs = req.get("qs", "")
+    url = target_base + path + (("?" + qs) if qs else "")
+    body = base64.b64decode(req.get("body", "")) if req.get("body") else None
+    skip = {"host", "content-length", "connection", "accept-encoding"}
+    hdrs = {k: v for k, v in (req.get("headers") or {}).items() if k.lower() not in skip}
+    r = urllib.request.Request(url, data=body, method=req.get("method", "GET"), headers=hdrs)
+    ctx = None
+    if target_base.startswith("https"):
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+    def _pack(status, headers, raw):
+        return {"status": status,
+                "headers": {k: v for k, v in headers.items()
+                            if k.lower() not in ("transfer-encoding", "connection", "content-encoding")},
+                "body": base64.b64encode(raw).decode()}
+    try:
+        resp = urllib.request.urlopen(r, timeout=30, context=ctx)
+        return _pack(resp.status, resp.headers, resp.read())
+    except urllib.error.HTTPError as e:
+        return _pack(e.code, e.headers, e.read())
+    except Exception as e:
+        return {"status": 502, "headers": {"Content-Type": "text/plain"},
+                "body": base64.b64encode(f"tunnel local fetch error: {e}".encode()).decode()}
+
+
+def _tunnel_loop(token, gateway, target_base):
+    backoff = 1
+    while _tunnel_client["running"]:
+        try:
+            req = urllib.request.Request(gateway + "/tunnel/register", method="POST",
+                                         headers={"Authorization": "Bearer " + token})
+            reg = json.loads(urllib.request.urlopen(req, timeout=20).read())
+            _tunnel_client.update({"tid": reg["tid"], "url": reg["url"], "error": None})
+            backoff = 1
+            slog(f"[tunnel] registered → {reg['url']}")
+        except Exception as e:
+            _tunnel_client["error"] = f"register failed: {e}"
+            time.sleep(min(backoff, 30)); backoff = min(backoff * 2, 30)
+            continue
+        tid = _tunnel_client["tid"]
+        while _tunnel_client["running"]:
+            try:
+                pr = urllib.request.Request(gateway + "/tunnel/poll?tid=" + tid,
+                                            headers={"Authorization": "Bearer " + token})
+                item = json.loads(urllib.request.urlopen(pr, timeout=40).read())
+            except urllib.error.HTTPError as e:
+                if e.code == 409:   # gateway lost our tunnel (restart) — re-register
+                    break
+                _tunnel_client["error"] = f"poll HTTP {e.code}"; time.sleep(2); continue
+            except Exception:
+                continue   # long-poll timeout / transient — just re-poll
+            if item.get("idle") or not item.get("rid"):
+                continue
+            _tunnel_client["requests"] += 1
+
+            def _handle(it):
+                reply = _tunnel_serve_one(it, target_base)
+                try:
+                    rr = urllib.request.Request(
+                        gateway + "/tunnel/reply?rid=" + it["rid"],
+                        data=json.dumps(reply).encode(), method="POST",
+                        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+                    urllib.request.urlopen(rr, timeout=30).read()
+                except Exception as e:
+                    slog(f"[tunnel] reply failed: {e}")
+            threading.Thread(target=_handle, args=(item,), daemon=True).start()
+    _tunnel_client.update({"url": None, "tid": None})
+    slog("[tunnel] stopped")
+
+
+def _tunnel_start(token=None, target_port=None):
+    if _tunnel_client["running"]:
+        return {"running": True, "url": _tunnel_client["url"], "already": True}
+    token = (token or _TUNNEL_TOKEN or "").strip()
+    if not token:
+        return {"error": "no tunnel token — set AMUX_TUNNEL_TOKEN (from your amux cloud account)"}
+    port = int(target_port) if target_port else _AMUX_SELF_PORT
+    scheme = _AMUX_SELF_SCHEME if port == _AMUX_SELF_PORT else "http"
+    target_base = f"{scheme}://127.0.0.1:{port}"
+    _tunnel_client.update({"running": True, "target": target_base, "error": None, "requests": 0})
+    t = threading.Thread(target=_tunnel_loop, args=(token, _TUNNEL_GATEWAY, target_base), daemon=True)
+    _tunnel_client["thread"] = t
+    t.start()
+    for _ in range(40):   # wait briefly for first registration
+        if _tunnel_client["url"] or _tunnel_client["error"]:
+            break
+        time.sleep(0.1)
+    return {"running": _tunnel_client["running"], "url": _tunnel_client["url"], "error": _tunnel_client["error"]}
+
+
+def _tunnel_stop():
+    _tunnel_client["running"] = False
+    return {"running": False}
+
+
 def main():
     # CLI: optional positional port, optional --bind host[,host,...]
     # Examples:
@@ -45905,6 +46030,10 @@ def main():
             print(f"\033[33m  TLS setup failed ({e}), falling back to HTTP\033[0m")
 
     _install_signal_handlers()
+    global _AMUX_SELF_PORT, _AMUX_SELF_SCHEME
+    _AMUX_SELF_PORT, _AMUX_SELF_SCHEME = port, scheme
+    if _TUNNEL_TOKEN:   # auto-start the cloud tunnel when a subscription token is configured
+        threading.Thread(target=_tunnel_start, daemon=True).start()
     slog(f"[startup] server starting — pid={os.getpid()}, port={port}, scheme={scheme}, python={sys.version.split()[0]}")
     _log_resource_snapshot("startup")
     print("\033[1m\033[34mamux\033[0m web dashboard running")

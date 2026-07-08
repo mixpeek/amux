@@ -5,7 +5,7 @@ Verifies Clerk JWTs, starts/stops Docker containers per user, reverse-proxies re
 """
 
 import os, json, time, sqlite3, subprocess, threading, urllib.request, urllib.error, base64
-import hmac, hashlib
+import hmac, hashlib, secrets, queue as _queue
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -672,6 +672,14 @@ def get_db():
             used_at     INTEGER,
             used_by     TEXT
         );
+        CREATE TABLE IF NOT EXISTS tunnel_tokens (
+            token       TEXT PRIMARY KEY,
+            org_id      TEXT NOT NULL,
+            email       TEXT,
+            label       TEXT,
+            created_at  INTEGER NOT NULL,
+            last_used   INTEGER
+        );
     """)
     # ── Migrate: user-as-org → proper orgs table ──
     # If users still have port column and orgs table is empty, migrate
@@ -1173,6 +1181,146 @@ def _resolve_share_token(token: str) -> int | None:
     return None
 
 
+# ── amux tunnel (ngrok-style reverse proxy) ─────────────────────────────────────
+# A paid, authenticated user's LOCAL amux server dials out and holds a long-poll
+# loop; the gateway relays public requests hitting /t/<tid>/... down to it. This
+# exposes any localhost service (calendar feed, dev server, …) at a public HTTPS
+# URL on cloud.amux.io — no inbound port opened on the user's machine, and gated
+# on an active (pro/trial) amux-cloud subscription.
+_tunnels: dict = {}          # tid -> {"org_id", "q": Queue, "last_seen", "created"}
+_tunnel_pending: dict = {}   # rid -> {"ev": Event, "resp": dict|None}
+_tunnel_lock = threading.Lock()
+
+
+def _tunnel_gate_ok(org_row) -> bool:
+    """True if the org may use tunnels (pro or still in trial). Mirrors the container gate."""
+    if not org_row:
+        return False
+    if org_row["plan"] == "pro":
+        return True
+    return (org_row["trial_ends_at"] or 0) >= int(time.time())
+
+
+def _tunnel_auth(handler):
+    """Resolve the caller's tunnel token → active org row (or None). Token via
+    Authorization: Bearer <tok> or ?token=."""
+    from urllib.parse import urlparse, parse_qs
+    tok = ""
+    auth = handler.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        tok = auth[7:].strip()
+    if not tok:
+        tok = parse_qs(urlparse(handler.path).query).get("token", [""])[0]
+    if not tok:
+        return None
+    db = get_db()
+    row = db.execute("SELECT org_id FROM tunnel_tokens WHERE token=?", (tok,)).fetchone()
+    if not row:
+        return None
+    try:
+        db.execute("UPDATE tunnel_tokens SET last_used=? WHERE token=?", (int(time.time()), tok))
+        db.commit()
+    except Exception:
+        pass
+    org = db.execute("SELECT id, plan, trial_ends_at FROM orgs WHERE id=?", (row["org_id"],)).fetchone()
+    return org if _tunnel_gate_ok(org) else None
+
+
+def _tunnel_serve_public(handler, tid, path, qs):
+    """Relay a public /t/<tid>/... request down the tunnel and return the reply."""
+    with _tunnel_lock:
+        tun = _tunnels.get(tid)
+    if not tun:
+        return handler._json({"error": "tunnel not found"}, 404)
+    length = int(handler.headers.get("Content-Length", 0))
+    body = handler.rfile.read(length) if length else b""
+    rid = secrets.token_urlsafe(10)
+    ev = threading.Event()
+    with _tunnel_lock:
+        _tunnel_pending[rid] = {"ev": ev, "resp": None}
+    skip = {"host", "content-length", "connection"}
+    fwd = {k: v for k, v in handler.headers.items() if k.lower() not in skip}
+    tun["q"].put({
+        "rid": rid, "method": handler.command, "path": path, "qs": qs,
+        "headers": fwd, "body": base64.b64encode(body).decode(),
+    })
+    got = ev.wait(timeout=35)
+    with _tunnel_lock:
+        pend = _tunnel_pending.pop(rid, None)
+    if not got or not pend or not pend["resp"]:
+        return handler._json({"error": "tunnel timeout — local amux not responding"}, 504)
+    resp = pend["resp"]
+    rbody = base64.b64decode(resp.get("body", "")) if resp.get("body") else b""
+    handler.send_response(int(resp.get("status", 200)))
+    for k, v in (resp.get("headers") or {}).items():
+        if k.lower() in ("transfer-encoding", "connection", "content-length"):
+            continue
+        handler.send_header(k, v)
+    handler.send_header("Content-Length", str(len(rbody)))
+    handler.end_headers()
+    try:
+        handler.wfile.write(rbody)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+
+
+def _tunnel_routes(handler, path, qs):
+    """Handle /t/<tid>/… (public) and /tunnel/{register,poll,reply} (token-authed).
+    Returns True if the request was handled."""
+    from urllib.parse import parse_qs
+    if path.startswith("/t/"):
+        tid, _, tail = path[3:].partition("/")
+        if tid:
+            _tunnel_serve_public(handler, tid, "/" + tail, qs)
+            return True
+    if path == "/tunnel/register" and handler.command == "POST":
+        org = _tunnel_auth(handler)
+        if not org:
+            handler._json({"error": "unauthorized or no active subscription"}, 402)
+            return True
+        tid = secrets.token_urlsafe(12)
+        with _tunnel_lock:
+            _tunnels[tid] = {"org_id": org["id"], "q": _queue.Queue(),
+                             "last_seen": time.time(), "created": time.time()}
+        base = f"https://{handler.headers.get('Host', 'cloud.amux.io')}"
+        handler._json({"tid": tid, "url": f"{base}/t/{tid}/"})
+        return True
+    if path == "/tunnel/poll" and handler.command == "GET":
+        org = _tunnel_auth(handler)
+        if not org:
+            handler._json({"error": "unauthorized"}, 402)
+            return True
+        tid = parse_qs(qs).get("tid", [""])[0]
+        with _tunnel_lock:
+            tun = _tunnels.get(tid)
+        if not tun or tun["org_id"] != org["id"]:
+            handler._json({"error": "tunnel not registered — re-register"}, 409)
+            return True
+        tun["last_seen"] = time.time()
+        try:
+            item = tun["q"].get(timeout=25)
+            handler._json(item)
+        except _queue.Empty:
+            handler._json({"idle": True})
+        return True
+    if path == "/tunnel/reply" and handler.command == "POST":
+        org = _tunnel_auth(handler)
+        if not org:
+            handler._json({"error": "unauthorized"}, 402)
+            return True
+        rid = parse_qs(qs).get("rid", [""])[0]
+        length = int(handler.headers.get("Content-Length", 0))
+        data = json.loads(handler.rfile.read(length)) if length else {}
+        with _tunnel_lock:
+            pend = _tunnel_pending.get(rid)
+        if pend:
+            pend["resp"] = data
+            pend["ev"].set()
+        handler._json({"ok": True})
+        return True
+    return False
+
+
 # ── Proxy helper ───────────────────────────────────────────────────────────────
 def proxy(handler, port, path, qs, user_email="", user_id=None):
     url = f"http://127.0.0.1:{port}{path}"
@@ -1371,6 +1519,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
             return
+
+        # ── amux tunnel: /t/<tid>/… (public) + /tunnel/* (token-authed) ──
+        if path.startswith("/t/") or path.startswith("/tunnel/"):
+            if _tunnel_routes(self, path, qs):
+                return
 
         # ── Public: Clerk path-based routing (sign-in/sign-up sub-pages) ──
         if path.startswith("/sign-in") or path.startswith("/sign-up"):
