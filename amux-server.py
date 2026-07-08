@@ -12093,7 +12093,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   /* Box-drawing tables/frames: keep monospace alignment, scroll sideways instead
      of wrapping (which detached borders and shredded rows on narrow screens). */
   .overlay-body .peek-box { display: block; white-space: pre; overflow-x: auto; max-width: 100%;
-    word-break: normal; overflow-wrap: normal; -webkit-overflow-scrolling: touch; }
+    word-break: normal; overflow-wrap: normal; -webkit-overflow-scrolling: touch;
+    /* Only claim HORIZONTAL pans; vertical scroll gestures pass through to the
+       peek-body. Without this, iOS treats each box block as its own touch-scroll
+       context and traps the vertical swipe when your finger lands on one — which
+       are the ──── rules around every prompt, so you couldn't scroll up past ❯. */
+    touch-action: pan-x; overscroll-behavior: contain; }
   .overlay-body .peek-box::-webkit-scrollbar { height: 6px; }
   .overlay-body .peek-box::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.22); border-radius: 3px; }
   /* Emoji occupy exactly 2 monospace cells inside tables so borders stay aligned
@@ -21830,7 +21835,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.51';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.52';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -38125,7 +38130,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.51';
+const CACHE = 'amux-v0.9.52';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
