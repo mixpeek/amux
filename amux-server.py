@@ -6400,56 +6400,190 @@ def _next_issue_id(prefix: str) -> str:
     return f"{prefix}-{row[0] if row else 1}"
 
 
+def _ical_escape(text) -> str:
+    """Escape a TEXT value per RFC 5545 §3.3.11 — backslash first, then ; , and newlines."""
+    if text is None:
+        return ""
+    return (str(text)
+            .replace("\\", "\\\\")
+            .replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "")
+            .replace(",", "\\,")
+            .replace(";", "\\;"))
+
+
+def _ical_fold(line: str) -> str:
+    """Fold a content line to <=75 octets per RFC 5545 §3.1 — continuation lines start
+    with a single space. Folds on character boundaries so multi-byte UTF-8 isn't split."""
+    segments, cur, cur_len, first = [], [], 0, True
+    for ch in line:
+        clen = len(ch.encode("utf-8"))
+        limit = 75 if first else 74   # continuation lines carry a leading space (1 octet)
+        if cur_len + clen > limit:
+            segments.append("".join(cur))
+            cur, cur_len, first = [ch], clen, False
+        else:
+            cur.append(ch)
+            cur_len += clen
+    segments.append("".join(cur))
+    return "\r\n ".join(segments)
+
+
+def _ical_dtstart(val):
+    """Convert a stored next_run/run_at into a floating-local DTSTART (YYYYMMDDTHHMMSS).
+    Floating (no Z/TZID) preserves wall-clock semantics across DST, matching a scheduler
+    that fires at a local wall time."""
+    if not val:
+        return None
+    s = str(val).strip()
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?", s)
+    if m:
+        y, mo, d, hh, mm, ss = m.groups()
+        return f"{y}{mo}{d}T{hh}{mm}{ss or '00'}"
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", s)
+    if m:
+        y, mo, d = m.groups()
+        return f"{y}{mo}{d}T090000"
+    return None
+
+
+def _cron_to_rrule(parts):
+    """Best-effort 5-field cron -> RRULE (day-or-coarser only; time comes from DTSTART).
+    Returns None for sub-daily cadences (hour='*', steps, lists) so they show as a
+    single upcoming event rather than a misleading daily projection."""
+    minute, hour, dom, _mon, dow = parts
+    if not re.match(r'^\d+$', minute) or not re.match(r'^\d+$', hour):
+        return None
+    _CD = {'0':'SU','7':'SU','1':'MO','2':'TU','3':'WE','4':'TH','5':'FR','6':'SA',
+           'sun':'SU','mon':'MO','tue':'TU','wed':'WE','thu':'TH','fri':'FR','sat':'SA'}
+    def _days(field):
+        out = []
+        for tok in field.split(','):
+            tok = tok.strip().lower()
+            if '-' in tok:
+                a, b = tok.split('-', 1)
+                try:
+                    for dnum in range(int(a), int(b) + 1):
+                        out.append(_CD.get(str(dnum % 7)))
+                except ValueError:
+                    return None
+            else:
+                out.append(_CD.get(tok))
+        out = [d for d in out if d]
+        return out or None
+    if dow != '*':
+        dl = _days(dow)
+        if dl:
+            return "FREQ=WEEKLY;BYDAY=" + ",".join(dict.fromkeys(dl))
+    if dom != '*':
+        try:
+            return "FREQ=MONTHLY;BYMONTHDAY=" + str(int(dom))
+        except ValueError:
+            pass
+    return "FREQ=DAILY"
+
+
+def _schedule_rrule(sched):
+    """Derive an RRULE for a schedule. Returns None for one-shots and sub-daily
+    cadences (those show as a single upcoming event so the calendar stays readable —
+    the exact cadence still appears in the event description)."""
+    if sched.get("sched_type", "once") == "once":
+        return None
+    expr = (sched.get("schedule_expr") or "").strip()
+    low = expr.lower()
+    _DAY_ICAL = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU']
+    if re.match(r'^every\s+\d+\s*(m|min|minutes?|h|hr|hours?)$', low):
+        return None   # sub-daily heartbeat — single event only
+    if re.match(r'^every\s+(\d+\s*)?(d|days?)$', low) or low == 'every day':
+        return "FREQ=DAILY"
+    if low.startswith('every weekday'):
+        return "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"
+    parts = expr.split()
+    if len(parts) == 5:
+        return _cron_to_rrule(parts)   # authoritative — None (sub-daily) must NOT fall through to daily
+    rec = sched.get("recurrence")
+    run_at = sched.get("run_at") or ""
+    if rec == 'hourly':
+        return None
+    if rec == 'daily':
+        return "FREQ=DAILY"
+    if rec == 'weekly':
+        try:
+            return "FREQ=WEEKLY;BYDAY=" + _DAY_ICAL[int(run_at.split(':', 1)[0])]
+        except (ValueError, IndexError):
+            return "FREQ=WEEKLY"
+    if rec == 'monthly':
+        try:
+            return "FREQ=MONTHLY;BYMONTHDAY=" + str(int(run_at.split(':', 1)[0]))
+        except (ValueError, IndexError):
+            return "FREQ=MONTHLY"
+    return "FREQ=DAILY"
+
+
 def _generate_ical() -> str:
-    """Generate iCal text from board items that have due dates."""
-    items = [i for i in _load_board() if i.get("due")]
+    """RFC 5545 iCalendar feed built from amux **schedules** (recurring & one-shot
+    scheduled tasks). Board issues are intentionally excluded — a calendar of every
+    due date was too noisy; the calendar now reflects when things actually run."""
+    from datetime import datetime, timezone
+    try:
+        db = get_db()
+        rows = db.execute(
+            "SELECT * FROM schedules WHERE deleted IS NULL AND enabled=1 "
+            "ORDER BY next_run ASC, created ASC"
+        ).fetchall()
+        cols = [d[1] for d in db.execute("PRAGMA table_info(schedules)").fetchall()]
+        scheds = [dict(zip(cols, r)) for r in rows]
+    except Exception:
+        scheds = []
+    dtstamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        "PRODID:-//amux//amux calendar//EN",
+        "PRODID:-//amux//amux scheduler//EN",
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
-        "X-WR-CALNAME:amux Board",
-        "X-WR-CALDESC:amux board items with due dates",
+        "X-WR-CALNAME:amux Schedules",
+        "X-WR-CALDESC:amux scheduled & recurring tasks",
         "REFRESH-INTERVAL;VALUE=DURATION:PT15M",
         "X-PUBLISHED-TTL:PT15M",
     ]
-    status_map = {"todo": "NEEDS-ACTION", "doing": "IN-PROCESS", "done": "COMPLETED"}
-    for item in items:
-        due = item["due"]
-        due_time = (item.get("due_time") or "").strip()
-        date_val = due.replace("-", "")
-        uid = item["id"] + "@amux"
-        summary = item.get("title", "").replace(",", "\\,").replace(";", "\\;").replace("\n", "\\n")
-        idesc = item.get("desc", "").replace(",", "\\,").replace(";", "\\;").replace("\n", "\\n")
-        vstatus = status_map.get(item.get("status", "todo"), "NEEDS-ACTION")
-        if due_time and re.match(r"^\d{2}:\d{2}$", due_time):
-            hh, mm = due_time.split(":")
-            dt_start = f"{date_val}T{hh}{mm}00"
-            ev_lines = [
-                "BEGIN:VEVENT",
-                f"UID:{uid}",
-                f"DTSTART:{dt_start}",
-                "DURATION:PT1H",
-                f"SUMMARY:{summary}",
-                f"DESCRIPTION:{idesc}",
-                f"STATUS:{vstatus}",
-                "END:VEVENT",
-            ]
-        else:
-            ev_lines = [
-                "BEGIN:VEVENT",
-                f"UID:{uid}",
-                f"DTSTART;VALUE=DATE:{date_val}",
-                f"DTEND;VALUE=DATE:{date_val}",
-                f"SUMMARY:{summary}",
-                f"DESCRIPTION:{idesc}",
-                f"STATUS:{vstatus}",
-                "END:VEVENT",
-            ]
-        lines += ev_lines
+    for s in scheds:
+        dtstart = _ical_dtstart(s.get("next_run") or s.get("run_at"))
+        if not dtstart:
+            continue
+        uid = f"{s.get('id', 'sched')}@amux"
+        summary = _ical_escape("⏰ " + (s.get("title") or "Scheduled task"))
+        parts = []
+        if s.get("session"):
+            parts.append("Session: " + str(s["session"]))
+        if s.get("command"):
+            cmd = str(s["command"])
+            parts.append("Command: " + (cmd[:200] + "…" if len(cmd) > 200 else cmd))
+        if s.get("schedule_expr"):
+            parts.append("Schedule: " + str(s["schedule_expr"]))
+        description = _ical_escape("\n".join(parts))
+        ev = [
+            "BEGIN:VEVENT",
+            f"UID:{uid}",
+            f"DTSTAMP:{dtstamp}",
+            f"DTSTART:{dtstart}",
+            "DURATION:PT30M",
+            f"SUMMARY:{summary}",
+        ]
+        if description:
+            ev.append(f"DESCRIPTION:{description}")
+        rrule = _schedule_rrule(s)
+        if rrule:
+            ev.append(f"RRULE:{rrule}")
+        ev += [
+            "CATEGORIES:amux,schedule",
+            "STATUS:CONFIRMED",
+            "TRANSP:TRANSPARENT",
+            "SEQUENCE:0",
+            "END:VEVENT",
+        ]
+        lines += ev
     lines.append("END:VCALENDAR")
-    return "\r\n".join(lines) + "\r\n"
+    return "\r\n".join(_ical_fold(l) for l in lines) + "\r\n"
 
 
 def _upload_ical_to_s3():
@@ -6480,9 +6614,12 @@ def _upload_ical_to_s3():
 
 def _gcal_sync_item(item_id: str, title: str = "", due: str = "", due_time: str = "",
                     desc: str = "", status: str = "", deleted: bool = False):
-    """Sync a single board item to Google Calendar (if AMUX_GCAL_ID is set).
-    Creates, updates, or deletes the corresponding GCal event."""
-    if not _GCAL_ID:
+    """Retired — board issues no longer belong on the calendar (too noisy). The
+    calendar is now driven by amux *schedules* via the iCal feed (_generate_ical).
+    Kept as a no-op so existing board call sites stay harmless; use _gcal_purge_board
+    to clear any stale board events previously pushed to Google Calendar."""
+    return
+    if not _GCAL_ID:  # noqa: unreachable — retained for the optional purge path below
         return
     try:
         import google.auth, google.auth.transport.requests
@@ -21865,7 +22002,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.57';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.58';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -30799,21 +30936,8 @@ let _fcInstance = null;
 
 function _fcGetEvents() {
   const events = [];
-  (boardItems || []).forEach(item => {
-    if (!item.due || item.deleted) return;
-    const sty = statusStyle(item.status || 'todo');
-    const ev = {
-      id: item.id,
-      title: item.title,
-      start: item.due_time ? item.due + 'T' + item.due_time : item.due,
-      allDay: !item.due_time,
-      backgroundColor: sty.bg,
-      borderColor: sty.color,
-      textColor: sty.color,
-      extendedProps: { _type: 'board', status: item.status || 'todo', desc: item.desc || '' },
-    };
-    events.push(ev);
-  });
+  // Board issues are intentionally excluded — the calendar reflects schedules
+  // (when things actually run), not every board due date (too noisy).
   (schedules || []).forEach(s => {
     if (s.deleted || !s.enabled || !s.next_run) return;
     events.push({
@@ -30877,18 +31001,10 @@ function _fcInit() {
     stickyHeaderDates: true,
     eventClick: function(info) {
       const props = info.event.extendedProps;
-      if (props._type === 'schedule') {
-        openSchedModal(props.schedId);
-      } else {
-        openBoardDetail(info.event.id);
-      }
+      if (props._type === 'schedule') openSchedModal(props.schedId);
     },
-    dateClick: function(info) {
-      openBoardAdd(info.dateStr);
-    },
-    select: function(info) {
-      openBoardAdd(info.startStr.slice(0, 10));
-    },
+    dateClick: function() { openSchedModal(); },   // calendar is schedules now → new schedule
+    select: function() { openSchedModal(); },
     viewDidMount: function(info) {
       localStorage.setItem('amux_cal_view', info.view.type);
     },
@@ -38261,7 +38377,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.57';
+const CACHE = 'amux-v0.9.58';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -40868,7 +40984,6 @@ class CCHandler(BaseHTTPRequestHandler):
                 db.commit()
                 _board_changed()  # invalidate SSE cache
                 item = _item_by_id(item_id)
-                _push_ical_bg()
                 if due:
                     _gcal_sync_bg(item_id, title=title, due=due, due_time=due_time or "", desc=desc, status=status)
                 _req_tl.event = {"type": "board", "action": "created", "target": item_id,
@@ -40895,7 +41010,6 @@ class CCHandler(BaseHTTPRequestHandler):
                 remaining = db.execute(
                     "SELECT COUNT(*) FROM issues WHERE deleted IS NULL"
                 ).fetchone()[0]
-                _push_ical_bg()
                 for did in done_ids:
                     _gcal_sync_bg(did, deleted=True)
                 return self._json({"ok": True, "remaining": remaining})
@@ -41160,7 +41274,6 @@ class CCHandler(BaseHTTPRequestHandler):
                                 )
                     db.commit()
                     _board_changed()
-                    _push_ical_bg()
                     updated_item = _item_by_id(bid)
                     _gcal_sync_bg(bid, title=updated_item.get("title", ""),
                                   due=updated_item.get("due", "") or "",
@@ -41181,7 +41294,6 @@ class CCHandler(BaseHTTPRequestHandler):
                     db.execute("UPDATE issues SET deleted = ? WHERE id = ?", (now, bid))
                     db.commit()
                     _board_changed()
-                    _push_ical_bg()
                     _gcal_sync_bg(bid, deleted=True)
                     return self._json({"ok": True, "deleted": bid})
 
@@ -41286,6 +41398,7 @@ class CCHandler(BaseHTTPRequestHandler):
                      sched["created"], sched["updated"], sched["deleted"])
                 )
                 db.commit()
+                _push_ical_bg()   # schedules drive the calendar feed now
                 self._json(sched, 201)
                 return
 
@@ -41366,6 +41479,7 @@ class CCHandler(BaseHTTPRequestHandler):
                      sched["updated"], sched_id)
                 )
                 db.commit()
+                _push_ical_bg()   # schedule changed → refresh calendar feed
                 self._json(sched)
                 return
 
@@ -41375,7 +41489,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 db.execute("UPDATE schedules SET deleted=?,updated=? WHERE id=?",
                            (int(_time.time()), int(_time.time()), sched_id))
                 db.commit()
-
+                _push_ical_bg()   # schedule removed → refresh calendar feed
                 self._json({"deleted": sched_id})
                 return
 
