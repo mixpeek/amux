@@ -22009,7 +22009,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.58';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.59';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -31039,39 +31039,89 @@ function renderCalendar() {
   }
 }
 
-function showIcalInfo() {
+async function _tunnelStatus() {
+  try { const r = await fetch(API + '/api/tunnel/status'); return await r.json(); }
+  catch(e) { return { error: String(e) }; }
+}
+function _tunnelCopy(btn, url) {
+  navigator.clipboard.writeText(url).then(() => {
+    const t = btn.textContent; btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = t, 1200);
+  }).catch(() => {});
+}
+async function _tunnelStartUI(box) {
+  const btn = box.querySelector('#tun-toggle'); if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+  try { await fetch(API + '/api/tunnel/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch(e) {}
+  for (let i = 0; i < 14; i++) { const s = await _tunnelStatus(); if (s.url || s.error) break; await new Promise(r => setTimeout(r, 500)); }
+  _renderIcalBody(box);
+}
+async function _tunnelStopUI(box) {
+  const btn = box.querySelector('#tun-toggle'); if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; }
+  try { await fetch(API + '/api/tunnel/stop', { method: 'POST' }); } catch(e) {}
+  _renderIcalBody(box);
+}
+async function _renderIcalBody(box) {
+  const esc_url = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const s3Url = window._AMUX_S3_ICAL_URL || '';
   const origin = window.location.origin;
   const localUrl = origin + '/api/calendar.ics';
   const isLocal = origin.includes('localhost') || origin.includes('127.0.0.1');
-  const subUrl = s3Url || localUrl;
+  const tun = await _tunnelStatus();
+  const tunUrl = (tun && tun.running && tun.url) ? (tun.url.replace(/\/$/, '') + '/api/calendar.ics') : '';
+  const subUrl = tunUrl || s3Url || localUrl;
   const googleUrl = 'https://calendar.google.com/calendar/r/settings/addbyurl?url=' + encodeURIComponent(subUrl);
-  const appleUrl = s3Url ? ('webcal://' + s3Url.replace(/^https?:\/\//, '')) : ('webcal://' + window.location.host + '/api/calendar.ics');
-  function esc_url(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
-  let html = '<div style="font-size:0.9rem;line-height:1.7;">';
-  html += '<p style="margin-bottom:0.8rem;font-weight:600;">Subscribe to amux calendar</p>';
-  if (s3Url) {
-    html += '<p style="margin-bottom:0.6rem;font-size:0.82rem;">Subscription URL (public S3):</p>';
-    html += '<code style="display:block;background:var(--card-bg);padding:0.5rem 0.8rem;border-radius:6px;font-size:0.78rem;margin-bottom:1rem;word-break:break-all;">' + esc_url(s3Url) + '</code>';
-  } else if (isLocal) {
-    html += '<p style="margin-bottom:0.8rem;color:var(--muted);font-size:0.82rem;">Set <code>AMUX_S3_BUCKET</code> for a publicly reachable subscription URL.</p>';
+  const appleUrl = /^https?:/.test(subUrl) ? ('webcal://' + subUrl.replace(/^https?:\/\//, '')) : subUrl;
+
+  let html = '<div style="font-size:0.9rem;line-height:1.6;">';
+  html += '<p style="margin:0 0 0.9rem;font-weight:600;font-size:1rem;">Subscribe to amux calendar</p>';
+
+  // ── Public tunnel (amux cloud) ──
+  html += '<div style="border:1px solid var(--border);border-radius:8px;padding:0.7rem 0.8rem;margin-bottom:0.9rem;background:var(--card,rgba(255,255,255,0.02));">';
+  if (tun && tun.running && tun.url) {
+    html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:0.45rem;"><span style="width:8px;height:8px;border-radius:50%;background:#3fb950;flex-shrink:0;"></span><strong style="font-size:0.85rem;">Public tunnel active</strong><span style="color:var(--dim);font-size:0.72rem;margin-left:auto;">' + (tun.requests || 0) + ' reqs</span></div>';
+    html += '<code style="display:block;background:var(--bg);padding:0.45rem 0.6rem;border-radius:6px;font-size:0.73rem;word-break:break-all;margin-bottom:0.5rem;">' + esc_url(tunUrl) + '</code>';
+    html += '<div style="display:flex;gap:0.4rem;">';
+    html += '<button class="btn" style="font-size:0.76rem;" onclick="_tunnelCopy(this,\'' + tunUrl.replace(/'/g, "\\'") + '\')">Copy URL</button>';
+    html += '<button id="tun-toggle" class="btn" style="font-size:0.76rem;" onclick="_tunnelStopUI(this.closest(\'[data-ical-box]\'))">Stop tunnel</button>';
+    html += '</div>';
+  } else if (tun && tun.configured) {
+    html += '<div style="margin-bottom:0.35rem;"><strong style="font-size:0.85rem;">Public tunnel</strong> <span style="color:var(--dim);font-size:0.78rem;">— off</span></div>';
+    html += '<p style="color:var(--muted);font-size:0.76rem;margin:0 0 0.5rem;">Expose this calendar at a public cloud URL you can subscribe to from anywhere.</p>';
+    if (tun.error) html += '<p style="color:var(--red);font-size:0.72rem;margin:0 0 0.4rem;word-break:break-word;">' + esc_url(tun.error) + '</p>';
+    html += '<button id="tun-toggle" class="btn" style="font-size:0.78rem;" onclick="_tunnelStartUI(this.closest(\'[data-ical-box]\'))">Start public tunnel</button>';
   } else {
-    html += '<code style="display:block;background:var(--card-bg);padding:0.5rem 0.8rem;border-radius:6px;font-size:0.78rem;margin-bottom:1rem;word-break:break-all;">' + esc_url(localUrl) + '</code>';
+    html += '<div style="margin-bottom:0.3rem;"><strong style="font-size:0.85rem;">Public tunnel</strong> <span style="color:var(--dim);font-size:0.78rem;">— amux cloud</span></div>';
+    html += '<p style="color:var(--muted);font-size:0.76rem;margin:0;">Sign in to amux cloud and set <code>AMUX_TUNNEL_TOKEN</code> to expose this calendar publicly — subscribe from Google/Apple anywhere, no port forwarding.</p>';
   }
-  html += '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.8rem;">';
+  html += '</div>';
+
+  // ── Subscription URL + actions ──
+  const label = tunUrl ? 'public tunnel' : (s3Url ? 'public S3' : (isLocal ? '' : 'server'));
+  if (label) html += '<p style="margin:0 0 0.4rem;font-size:0.8rem;color:var(--muted);">Subscription URL (' + label + '):</p>';
+  if (tunUrl || s3Url || !isLocal) {
+    html += '<code style="display:block;background:var(--card,rgba(255,255,255,0.02));padding:0.5rem 0.7rem;border-radius:6px;font-size:0.75rem;word-break:break-all;margin-bottom:0.9rem;">' + esc_url(subUrl) + '</code>';
+  } else {
+    html += '<p style="margin:0 0 0.9rem;color:var(--muted);font-size:0.8rem;">Local only — start the tunnel above (or set <code>AMUX_S3_BUCKET</code>) for a publicly reachable URL.</p>';
+  }
+  html += '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;">';
   html += '<a href="' + googleUrl + '" target="_blank" class="btn" style="font-size:0.8rem;">Add to Google Calendar</a>';
   html += '<a href="' + appleUrl + '" class="btn" style="font-size:0.8rem;">Add to Apple Calendar</a>';
   html += '<a href="/api/calendar.ics" download="amux.ics" class="btn" style="font-size:0.8rem;">Download .ics</a>';
   html += '</div></div>';
+
+  box.innerHTML = html + '<button onclick="this.closest(\'[data-ical-modal]\').remove()" class="btn" style="margin-top:0.9rem;font-size:0.8rem;">Close</button>';
+}
+function showIcalInfo() {
   const modal = document.createElement('div');
   modal.style.cssText = 'position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.55);';
   const box = document.createElement('div');
-  box.style.cssText = 'background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1.4rem;max-width:420px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.4);';
-  box.innerHTML = html + '<button onclick="this.closest(\'[data-ical-modal]\').remove()" class="btn" style="margin-top:0.4rem;font-size:0.8rem;">Close</button>';
+  box.setAttribute('data-ical-box', '1');
+  box.style.cssText = 'background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1.4rem;max-width:440px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.4);max-height:85vh;overflow:auto;';
+  box.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:0;">Loading…</p>';
   modal.setAttribute('data-ical-modal', '1');
   modal.appendChild(box);
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
   document.body.appendChild(modal);
+  _renderIcalBody(box);
 }
 
 // ═══════ GRID MODE ═══════
@@ -38384,7 +38434,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.58';
+const CACHE = 'amux-v0.9.59';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
