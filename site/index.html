@@ -837,6 +837,18 @@
     --fg-btn: var(--fg);
     --bd-btn: var(--line-2);
   }
+  /* Primary button: dark amber bg needs light text in light mode */
+  [data-theme="light"] .btn-primary {
+    --fg-btn: oklch(0.97 0.005 80);
+    --bd-btn: transparent;
+    box-shadow: 0 2px 12px -2px oklch(0.42 0.18 65 / 0.35);
+  }
+  /* Eyebrow badge: was dark bg + dark text — flip to light pill */
+  [data-theme="light"] .eyebrow {
+    background: var(--bg-3);
+    color: var(--fg);
+    border-color: var(--line-2);
+  }
   [data-theme="light"] #mobile {
     background: linear-gradient(to bottom, transparent, oklch(0.89 0.008 70) 30%, transparent) !important;
   }
