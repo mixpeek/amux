@@ -21,6 +21,7 @@ import time
 import uuid
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
+import urllib.request, urllib.error
 from urllib.parse import urlparse, parse_qs, unquote
 
 # Strip Claude Code env vars so child processes (new sessions) don't inherit them
@@ -45829,7 +45830,7 @@ _tunnel_client = {"running": False, "url": None, "tid": None, "error": None,
 
 def _tunnel_serve_one(req, target_base):
     """Fetch one relayed request against the local target; return a reply dict."""
-    import ssl as _ssl
+    import ssl as _ssl, urllib.request, urllib.error
     path = req.get("path", "/")
     qs = req.get("qs", "")
     url = target_base + path + (("?" + qs) if qs else "")
@@ -45858,12 +45859,18 @@ def _tunnel_serve_one(req, target_base):
 
 
 def _tunnel_loop(token, gateway, target_base):
+    import urllib.request, urllib.error, ssl as _ssl
+    try:                       # verify the gateway's real cert (macOS python lacks a system CA bundle)
+        import certifi
+        gwctx = _ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        gwctx = _ssl.create_default_context()
     backoff = 1
     while _tunnel_client["running"]:
         try:
             req = urllib.request.Request(gateway + "/tunnel/register", method="POST",
                                          headers={"Authorization": "Bearer " + token})
-            reg = json.loads(urllib.request.urlopen(req, timeout=20).read())
+            reg = json.loads(urllib.request.urlopen(req, timeout=20, context=gwctx).read())
             _tunnel_client.update({"tid": reg["tid"], "url": reg["url"], "error": None})
             backoff = 1
             slog(f"[tunnel] registered → {reg['url']}")
@@ -45876,7 +45883,7 @@ def _tunnel_loop(token, gateway, target_base):
             try:
                 pr = urllib.request.Request(gateway + "/tunnel/poll?tid=" + tid,
                                             headers={"Authorization": "Bearer " + token})
-                item = json.loads(urllib.request.urlopen(pr, timeout=40).read())
+                item = json.loads(urllib.request.urlopen(pr, timeout=40, context=gwctx).read())
             except urllib.error.HTTPError as e:
                 if e.code == 409:   # gateway lost our tunnel (restart) — re-register
                     break
@@ -45894,7 +45901,7 @@ def _tunnel_loop(token, gateway, target_base):
                         gateway + "/tunnel/reply?rid=" + it["rid"],
                         data=json.dumps(reply).encode(), method="POST",
                         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
-                    urllib.request.urlopen(rr, timeout=30).read()
+                    urllib.request.urlopen(rr, timeout=30, context=gwctx).read()
                 except Exception as e:
                     slog(f"[tunnel] reply failed: {e}")
             threading.Thread(target=_handle, args=(item,), daemon=True).start()
