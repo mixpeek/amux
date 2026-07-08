@@ -25134,7 +25134,9 @@ function _vvTick() {
   }
 })();
 
-// Swipe right to close peek (but never when touching the terminal body — preserve text selection)
+// Swipe right to close peek (but never when touching the terminal body — preserve text selection —
+// or either horizontally-scrolling row: the tab bar and the quick-command chip row. Without this,
+// dragging right to reveal earlier tabs/chips also drags the whole overlay closed underneath it.)
 (function() {
   const el = document.getElementById('peek-overlay');
   const body = document.getElementById('peek-body');
