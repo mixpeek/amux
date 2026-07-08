@@ -12991,6 +12991,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   /* Schedules badge: green when the session has ≥1 active schedule, grey when all inactive. */
   .peek-tab-count.sched-on { background: rgba(63,185,80,0.16); color: #3fb950; border-color: rgba(63,185,80,0.34); }
   .peek-tab-count.sched-off { background: rgba(139,148,158,0.14); color: var(--dim); border-color: rgba(139,148,158,0.28); }
+  /* Saved-messages modal: scope tabs (this session / all) + per-session badge. */
+  .sm-scope-tab { flex: 1; padding: 6px 10px; font-size: 0.8rem; background: var(--card); border: 1px solid var(--border); border-radius: 6px; color: var(--dim); cursor: pointer; font-family: inherit; min-height: 36px; }
+  .sm-scope-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 500; }
+  .sm-item .sm-sess { flex-shrink: 0; font-size: 0.66rem; color: var(--accent); background: rgba(88,166,255,0.12); border: 1px solid rgba(88,166,255,0.25); border-radius: 8px; padding: 1px 7px; white-space: nowrap; align-self: flex-start; }
   .peek-dir-bar { display: flex; align-items: center; gap: 8px; padding: 3px 14px;
     font-size: 0.75rem; color: var(--dim); border-bottom: 1px solid var(--border);
     flex-shrink: 0; min-width: 0; overflow: hidden; }
@@ -17129,6 +17133,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="btn primary" onclick="_smSave()" style="flex-shrink:0;">Save</button>
     </div>
     <div style="font-size:0.72rem;color:var(--dim);margin-bottom:10px;">Tap a saved message to load it into the input, ready to send.</div>
+    <div class="sm-scope-tabs" style="display:flex;gap:6px;margin-bottom:10px;">
+      <button class="sm-scope-tab active" id="sm-scope-session" onclick="_smSetScope('session')">This session</button>
+      <button class="sm-scope-tab" id="sm-scope-all" onclick="_smSetScope('all')">All sessions</button>
+    </div>
     <div id="sm-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;"></div>
   </div>
 </div>
@@ -21740,7 +21748,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.46';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.47';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -22877,10 +22885,22 @@ function _fsSend() {
 // ── Saved messages (canned messages, server-side so they survive restarts and
 // are the same on every device that hits this server) — same overlay modal as
 // message history. ──
+let _smScope = 'session';   // 'session' = active session only, 'all' = every session
+function _smSetScope(scope) {
+  _smScope = scope;
+  const st = document.getElementById('sm-scope-session'), al = document.getElementById('sm-scope-all');
+  if (st) st.classList.toggle('active', scope === 'session');
+  if (al) al.classList.toggle('active', scope === 'all');
+  _smRefresh();
+}
 function _openSavedMessages() {
   const m = document.getElementById('saved-messages-modal');
   if (!m) return;
   m.classList.add('active');
+  _smScope = 'session';
+  const st = document.getElementById('sm-scope-session'), al = document.getElementById('sm-scope-all');
+  if (st) st.classList.add('active');
+  if (al) al.classList.remove('active');
   const title = document.getElementById('sm-title');
   if (title) title.innerHTML = '&#128190; Saved messages' + (peekSession ? ' &middot; <span style="color:var(--dim);font-weight:400;">' + peekSession.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>' : '');
   const nt = document.getElementById('sm-new');
@@ -22897,16 +22917,25 @@ async function _smRefresh() {
   if (!listEl) return;
   listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:12px;">Loading…</div>';
   let items = [];
-  try { const r = await fetch(API + '/api/saved-messages?session=' + encodeURIComponent(peekSession || '')); items = await r.json(); } catch(e) {}
+  const url = _smScope === 'all'
+    ? (API + '/api/saved-messages')
+    : (API + '/api/saved-messages?session=' + encodeURIComponent(peekSession || ''));
+  try { const r = await fetch(url); items = await r.json(); } catch(e) {}
   if (!Array.isArray(items) || !items.length) {
-    listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px 12px;text-align:center;">No saved messages for this session yet.<br>Type above and tap Save.</div>';
+    listEl.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px 12px;text-align:center;">'
+      + (_smScope === 'all' ? 'No saved messages on any session yet.' : 'No saved messages for this session yet.')
+      + '<br>Type above and tap Save.</div>';
     return;
   }
   const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   listEl.innerHTML = items.map(it => {
     const preview = (it.label && it.label.trim()) ? it.label : it.text;
+    // In the all-sessions view, label each item with the session it came from.
+    const badge = (_smScope === 'all')
+      ? '<span class="sm-sess" title="Saved from this session">' + esc(it.session || '—') + '</span>' : '';
     return '<div class="sm-item" data-id="'+it.id+'" style="display:flex;gap:8px;align-items:flex-start;padding:10px 12px;border-radius:8px;cursor:pointer;border:1px solid var(--border);background:var(--card);">'
       + '<span style="flex:1;min-width:0;font-size:0.88rem;color:var(--text);white-space:pre-wrap;word-break:break-word;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;">'+esc(preview)+'</span>'
+      + badge
       + '<button class="btn" data-act="del" title="Delete" style="flex-shrink:0;font-size:0.72rem;padding:3px 8px;color:var(--red);">&#x2715;</button>'
       + '</div>';
   }).join('');
@@ -37911,7 +37940,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.46';
+const CACHE = 'amux-v0.9.47';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
