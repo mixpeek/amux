@@ -12140,6 +12140,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     margin-bottom: 8px; flex-shrink: 0;
   }
   .file-overlay-header h2 { font-size: 1rem; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-right: 8px; }
+  /* Desktop: actions lay out inline in the header; the ⋮ menu button is mobile-only. */
+  .file-actions { display: contents; }
+  .file-menu-btn { display: none; background: none; border: none; color: var(--text); cursor: pointer; font-size: 1.25rem; line-height: 1; padding: 4px 8px; flex-shrink: 0; }
   .file-overlay-body {
     flex: 1; overflow: auto; background: #010409; border: 1px solid var(--border); border-radius: 8px;
     padding: 14px; font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
@@ -12152,7 +12155,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     -webkit-tap-highlight-color: transparent; transition: all 0.15s; }
   .file-view-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
   .file-overlay-body.file-raw { white-space: pre-wrap; word-break: break-word; }
-  .file-overlay-body.file-image { display:flex;align-items:center;justify-content:center;background:var(--bg);white-space:normal; }
+  .file-overlay-body.file-image { display:flex;align-items:center;justify-content:center;background:var(--bg);white-space:normal;position:relative; }
+  /* Zoomable image preview (pinch / trackpad / double-tap). */
+  .img-zoom-wrap { position:absolute;inset:0;overflow:hidden;touch-action:none;display:flex;align-items:center;justify-content:center; }
+  .img-zoomable { max-width:100%;max-height:100%;height:auto;border-radius:4px;display:block;transform-origin:center center;will-change:transform;user-select:none;-webkit-user-select:none;-webkit-user-drag:none;cursor:zoom-in; }
+  .img-zoom-wrap.zoomed .img-zoomable { cursor:grab; }
   .file-overlay-body.file-video { display:flex;flex-direction:column;align-items:center;justify-content:center;background:#000;padding:0;white-space:normal; }
   .file-video-player { max-width:100%;max-height:calc(100% - 36px);outline:none;display:block; }
   .file-video-meta { width:100%;box-sizing:border-box;padding:6px 14px;display:flex;align-items:center;gap:12px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:0.72rem;color:var(--dim);flex-shrink:0;background:rgba(0,0,0,0.7); }
@@ -12213,17 +12220,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .overlay { top: env(safe-area-inset-top, 0px); }
   }
   @media (max-width: 600px) {
-    .file-overlay-header { flex-wrap: nowrap; gap: 6px; align-items: center; }
-    .file-overlay-header h2 { font-size: 0.82rem; flex: 0 1 auto; min-width: 0; max-width: 32vw; margin-right: 4px; }
-    .file-overlay-header .btn,
-    .file-overlay-header #file-save-btn,
-    .file-overlay-header #file-download-btn {
-      min-width: 40px; min-height: 40px; font-size: 0.95rem; padding: 6px 10px;
-      display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
-    }
-    .file-view-tabs { flex: 1 1 auto; min-width: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; flex-wrap: nowrap; gap: 4px; padding-bottom: 2px; }
-    .file-view-tabs::-webkit-scrollbar { display: none; }
-    .file-view-tab { flex-shrink: 0; min-height: 40px; padding: 6px 12px; font-size: 0.82rem; }
+    .file-overlay-header { flex-wrap: nowrap; gap: 6px; align-items: center; position: relative; }
+    /* Full title (no more 32vw cutoff) — actions move into the ⋮ menu. */
+    .file-overlay-header h2 { font-size: 0.9rem; flex: 1 1 auto; min-width: 0; max-width: none; margin-right: 4px; }
+    .file-overlay-header .btn { min-width: 40px; min-height: 40px; font-size: 0.95rem; padding: 6px 10px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .file-menu-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 40px; min-height: 40px; font-size: 1.35rem; }
+    /* Actions become a dropdown anchored under the ⋮ button. */
+    .file-actions { display: none; position: absolute; top: calc(100% + 4px); right: 6px; flex-direction: column; align-items: stretch; gap: 2px;
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+      padding: 6px; z-index: 60; min-width: 190px; max-width: 78vw; max-height: 70vh; overflow-y: auto; }
+    .file-actions.open { display: flex; }
+    .file-actions .file-view-tabs { flex-direction: column; align-items: stretch; width: 100%; overflow: visible; gap: 2px; padding: 0; }
+    .file-actions .file-view-tab,
+    .file-actions #file-save-btn,
+    .file-actions #file-download-btn {
+      width: 100%; justify-content: flex-start; text-align: left; min-height: 44px; border-radius: 8px; font-size: 0.9rem; padding: 8px 14px; flex-shrink: 0; }
     #md-search-row { padding: 8px 4px; }
     #md-search-input { font-size: 16px; min-height: 40px; }
     #md-search-row .btn { min-width: 40px; min-height: 40px; }
@@ -17252,6 +17263,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <div id="file-overlay" class="file-overlay" style="z-index:300;">
   <div class="file-overlay-header">
     <h2 id="file-title">file</h2>
+    <button class="file-menu-btn" id="file-menu-btn" onclick="_toggleFileMenu(event)" title="Actions" aria-label="Actions">&#x22EE;</button>
+    <div class="file-actions" id="file-actions">
     <div class="file-view-tabs" id="file-view-tabs" style="display:none;">
       <button class="file-view-tab active" id="file-tab-preview" onclick="setFileViewMode('preview')">Preview</button>
       <button class="file-view-tab" id="file-tab-edit" onclick="setFileViewMode('edit')" style="display:none;">Edit</button>
@@ -17263,6 +17276,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
     <button id="file-save-btn" onclick="_fileSave()" style="display:none;">Save</button>
     <button id="file-download-btn" onclick="_fileDownload()" style="display:none;font-size:0.72rem;padding:3px 10px;border:1px solid var(--border);border-radius:6px;color:var(--accent);background:transparent;cursor:pointer;white-space:nowrap;flex-shrink:0;">&#x2B07; Download</button>
+    </div><!-- /file-actions -->
     <button class="btn" onclick="closeFilePreview()" style="flex-shrink:0;">&#x2715;</button>
   </div>
   <div id="md-search-row">
@@ -21779,7 +21793,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.48';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.49';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -25042,6 +25056,90 @@ function _csvInitCellTap() {
 let _fileData = null;
 let _fileViewMode = 'preview';
 
+// Native-feeling zoom + pan for the image preview: pinch (iOS), trackpad pinch
+// (ctrl+wheel on Chrome, gesture events on Safari), wheel-pan when zoomed, and
+// double-tap/click to toggle. Element-level transform (the PWA viewport locks
+// page zoom, so we can't rely on the browser's own pinch).
+function _attachImageZoom(wrap, img) {
+  let scale = 1, tx = 0, ty = 0;
+  const MIN = 1, MAX = 8, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  function apply() { img.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')'; wrap.classList.toggle('zoomed', scale > 1.01); }
+  function clampPan() {
+    const r = wrap.getBoundingClientRect();
+    const maxX = Math.max(0, (img.offsetWidth * scale - r.width) / 2);
+    const maxY = Math.max(0, (img.offsetHeight * scale - r.height) / 2);
+    tx = clamp(tx, -maxX, maxX); ty = clamp(ty, -maxY, maxY);
+  }
+  // Zoom by `factor`, keeping the focal screen point (fx,fy) fixed (center-origin math).
+  function zoomAt(factor, fx, fy) {
+    const r = wrap.getBoundingClientRect();
+    const px = fx - r.left - r.width / 2, py = fy - r.top - r.height / 2;
+    const s2 = clamp(scale * factor, MIN, MAX), f = s2 / scale;
+    tx = px - (px - tx) * f; ty = py - (py - ty) * f; scale = s2;
+    if (scale <= 1.005) { scale = 1; tx = 0; ty = 0; }
+    clampPan(); apply();
+  }
+  const reset = () => { scale = 1; tx = 0; ty = 0; apply(); };
+  // Desktop: trackpad pinch (ctrl+wheel) zooms; plain wheel pans when zoomed.
+  wrap.addEventListener('wheel', e => {
+    e.preventDefault();
+    if (e.ctrlKey) zoomAt(Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY);
+    else if (scale > 1) { tx -= e.deltaX; ty -= e.deltaY; clampPan(); apply(); }
+  }, { passive: false });
+  // Safari desktop trackpad pinch (non-standard gesture events).
+  let gScale = 1;
+  wrap.addEventListener('gesturestart', e => { e.preventDefault(); gScale = scale; }, { passive: false });
+  wrap.addEventListener('gesturechange', e => { e.preventDefault(); zoomAt((gScale * e.scale) / scale, e.clientX, e.clientY); }, { passive: false });
+  wrap.addEventListener('dblclick', e => { e.preventDefault(); scale > 1 ? reset() : zoomAt(2.5 / scale, e.clientX, e.clientY); });
+  // Touch: pinch to zoom, drag to pan when zoomed, double-tap to toggle.
+  let lastDist = 0, lastMid = null, panStart = null, lastTap = 0;
+  const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  const mid = (a, b) => ({ x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 });
+  wrap.addEventListener('touchstart', e => {
+    if (e.touches.length === 2) { lastDist = dist(e.touches[0], e.touches[1]); lastMid = mid(e.touches[0], e.touches[1]); panStart = null; }
+    else if (e.touches.length === 1) {
+      const now = Date.now();
+      if (now - lastTap < 300) { e.preventDefault(); scale > 1 ? reset() : zoomAt(2.5 / scale, e.touches[0].clientX, e.touches[0].clientY); lastTap = 0; }
+      else { lastTap = now; panStart = scale > 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null; }
+    }
+  }, { passive: false });
+  wrap.addEventListener('touchmove', e => {
+    if (e.touches.length === 2) {
+      e.preventDefault(); e.stopPropagation();
+      const d = dist(e.touches[0], e.touches[1]), m = mid(e.touches[0], e.touches[1]);
+      if (lastMid) { tx += m.x - lastMid.x; ty += m.y - lastMid.y; }
+      if (lastDist) zoomAt(d / lastDist, m.x, m.y);
+      lastDist = d; lastMid = m;
+    } else if (e.touches.length === 1 && panStart && scale > 1) {
+      e.preventDefault(); e.stopPropagation();
+      tx += e.touches[0].clientX - panStart.x; ty += e.touches[0].clientY - panStart.y;
+      panStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      clampPan(); apply();
+    }
+  }, { passive: false });
+  wrap.addEventListener('touchend', e => { if (e.touches.length < 2) { lastDist = 0; lastMid = null; } });
+}
+
+// Mobile file-preview header: collapse all actions into a ⋮ dropdown so the title
+// gets the full width. Closes on outside click or after any action is tapped.
+function _toggleFileMenu(e) {
+  if (e) e.stopPropagation();
+  const m = document.getElementById('file-actions');
+  if (!m) return;
+  const open = m.classList.toggle('open');
+  document.removeEventListener('click', _fileMenuOutside);
+  if (open) setTimeout(() => document.addEventListener('click', _fileMenuOutside), 0);
+}
+function _fileMenuOutside(e) {
+  const m = document.getElementById('file-actions'), b = document.getElementById('file-menu-btn');
+  if (!m) return;
+  const insideBtn = m.contains(e.target) && e.target.closest('button');
+  if (insideBtn || (!m.contains(e.target) && e.target !== b)) {
+    m.classList.remove('open');
+    document.removeEventListener('click', _fileMenuOutside);
+  }
+}
+
 function _renderFileBody(data, mode) {
   // Tear down any active markdown-search highlights before re-rendering
   if (_mdSearchHits && _mdSearchHits.length) { _mdSearchHits = []; _mdSearchIdx = -1; }
@@ -25049,11 +25147,16 @@ function _renderFileBody(data, mode) {
   // Binary — no tabs, just render
   if (data.is_image) {
     body.className = 'file-overlay-body file-image';
+    body.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'img-zoom-wrap';
     const img = document.createElement('img');
     img.src = data.data_url;
     img.alt = data.path ? data.path.split('/').pop() : '';
-    img.style.cssText = 'max-width:100%;height:auto;border-radius:4px;display:block;margin:auto;';
-    body.innerHTML = ''; body.appendChild(img);
+    img.className = 'img-zoomable';
+    wrap.appendChild(img);
+    body.appendChild(wrap);
+    _attachImageZoom(wrap, img);
     return;
   }
   if (data.is_pdf) {
@@ -37971,7 +38074,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.48';
+const CACHE = 'amux-v0.9.49';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
