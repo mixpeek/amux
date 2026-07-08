@@ -36,3 +36,5 @@ ios/*.dSYM.zip
 # runtime database — never commit (user data)
 amux.db
 amux.db-*
+
+.gstack/
