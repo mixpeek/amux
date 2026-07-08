@@ -25010,8 +25010,11 @@ function _geoRuler() {
     const t = e.changedTouches && e.changedTouches[0];
     if (!t || t.clientY > 120) return;   // only the top strip
     const now = performance.now();
-    taps = taps.filter(function(x) { return now - x < 1400; });
-    taps.push(now);
+    // Require each tap to land near the SAME spot, not just anywhere in the top
+    // strip — otherwise ordinary taps on the title/badges/task line within 1.4s
+    // of each other accidentally rack up "4 taps" and pop this debug overlay.
+    taps = taps.filter(function(x) { return now - x.time < 1400 && Math.abs(x.x - t.clientX) < 40 && Math.abs(x.y - t.clientY) < 40; });
+    taps.push({ time: now, x: t.clientX, y: t.clientY });
     if (taps.length >= 4) { taps = []; _geoRuler(); }
   }, { passive: true });
 })();
