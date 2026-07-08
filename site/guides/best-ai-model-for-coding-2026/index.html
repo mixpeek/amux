@@ -79,6 +79,35 @@
     .routing-box h3 { margin: 0 0 0.5rem; font-size: 1rem; color: #6ee7b7; }
     .routing-box code { background: rgba(0,0,0,0.3); padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.82rem; }
     .updated-badge { display: inline-block; font-size: 0.75rem; font-weight: 600; color: var(--green, #6ee7b7); background: rgba(110,231,183,0.1); border: 1px solid rgba(110,231,183,0.2); border-radius: 4px; padding: 0.15rem 0.5rem; margin-bottom: 0.5rem; }
+  [data-theme="light"] .lb-bar-wrap { background: var(--bg-3); }
+  [data-theme="light"] .lb-bar { background: linear-gradient(90deg, oklch(0.36 0.18 145 / .5), oklch(0.36 0.18 145 / .8)); }
+  [data-theme="light"] .lb-bar.tier-frontier { background: linear-gradient(90deg, oklch(0.36 0.18 145 / .5), oklch(0.36 0.18 145 / .85)); }
+  [data-theme="light"] .lb-bar.tier-premium  { background: linear-gradient(90deg, oklch(0.38 0.18 240 / .5), oklch(0.38 0.18 240 / .8)); }
+  [data-theme="light"] .lb-bar.tier-budget   { background: linear-gradient(90deg, oklch(0.44 0.18 65 / .45), oklch(0.44 0.18 65 / .75)); }
+  [data-theme="light"] .lb-bar.tier-open     { background: linear-gradient(90deg, oklch(0.38 0.15 300 / .45), oklch(0.38 0.15 300 / .7)); }
+  [data-theme="light"] .lb-score             { color: var(--ok); }
+  [data-theme="light"] .lb-score.tier-premium{ color: var(--blue); }
+  [data-theme="light"] .lb-score.tier-budget { color: var(--warn); }
+  [data-theme="light"] .lb-score.tier-open   { color: oklch(0.38 0.15 300); }
+  [data-theme="light"] .lb-name a            { color: var(--fg); }
+  [data-theme="light"] .tier-label.frontier  { background: oklch(0.36 0.18 145 / .12); color: var(--ok); }
+  [data-theme="light"] .tier-label.premium   { background: oklch(0.38 0.18 240 / .12); color: var(--blue); }
+  [data-theme="light"] .tier-label.budget    { background: oklch(0.44 0.18 65 / .12);  color: var(--warn); }
+  [data-theme="light"] .tier-label.openw     { background: oklch(0.38 0.15 300 / .12); color: oklch(0.38 0.15 300); }
+  [data-theme="light"] .model-card           { border-color: var(--border); }
+  [data-theme="light"] .model-card h4 a      { color: var(--fg); }
+  [data-theme="light"] .model-card .mc-stat  { background: var(--bg-3); }
+  [data-theme="light"] .task-card            { border-color: var(--border); }
+  [data-theme="light"] .task-card .tc-model  { color: var(--ok); }
+  [data-theme="light"] .weakness-card h4     { color: var(--err); }
+  [data-theme="light"] .key-stat             { background: oklch(0.36 0.18 145 / .10); border-color: oklch(0.36 0.18 145 / .3); color: var(--ok); }
+  [data-theme="light"] .routing-box          { border-color: oklch(0.36 0.18 145 / .4); background: oklch(0.36 0.18 145 / .06); }
+  [data-theme="light"] .routing-box h3       { color: var(--ok); }
+  [data-theme="light"] .routing-box code     { background: var(--bg-3); }
+  [data-theme="light"] .updated-badge        { color: var(--ok); background: oklch(0.36 0.18 145 / .10); border-color: oklch(0.36 0.18 145 / .25); }
+  [data-theme="light"] .bench-note           { border-color: oklch(0.36 0.18 145 / .2); background: oklch(0.36 0.18 145 / .06); }
+  [data-theme="light"] .cmp-table th,
+  [data-theme="light"] .cmp-table td         { border-bottom-color: var(--border); }
   </style>
 </head>
 <body>

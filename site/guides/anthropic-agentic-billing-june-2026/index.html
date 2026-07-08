@@ -57,6 +57,15 @@
     .stat-box .stat-num { font-size: 1.8rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: #6ee7b7; }
     .stat-box .stat-label { font-size: 0.8rem; color: var(--muted); margin-top: 0.3rem; }
     @media (max-width: 600px) { .stat-row { grid-template-columns: 1fr; } .tier-table { font-size: 0.78rem; } .tier-table th, .tier-table td { padding: 0.45rem 0.4rem; } }
+  [data-theme="light"] .deadline-alert strong { color: var(--err); }
+  [data-theme="light"] .deadline-alert { border-color: oklch(0.44 0.20 25 / .35); }
+  [data-theme="light"] .cost-card  { border-color: var(--border); }
+  [data-theme="light"] .tier-row   { border-color: var(--border); }
+  [data-theme="light"] .updated-badge { background: oklch(0.36 0.18 145 / .12); color: var(--ok); border-color: oklch(0.36 0.18 145 / .3); }
+  [data-theme="light"] .key-insight   { background: oklch(0.36 0.18 145 / .07); border-color: oklch(0.36 0.18 145 / .25); }
+  [data-theme="light"] .key-insight strong { color: var(--ok); }
+  [data-theme="light"] .cmp-table th,
+  [data-theme="light"] .cmp-table td { border-bottom-color: var(--border); }
   </style>
 </head>
 <body>

@@ -74,6 +74,18 @@
     .checklist { list-style: none; padding: 0; margin: 1rem 0; }
     .checklist li { padding: 0.4rem 0 0.4rem 1.75rem; position: relative; font-size: 0.9rem; }
     .checklist li::before { content: ''; position: absolute; left: 0; top: 0.65rem; width: 14px; height: 14px; border-radius: 3px; border: 2px solid rgba(110,231,183,0.4); }
+  [data-theme="light"] .week-card { border-color: var(--border); }
+  [data-theme="light"] .week-card .week-label.w1 { color: var(--blue); }
+  [data-theme="light"] .week-card .week-label.w2 { color: oklch(0.38 0.15 300); }
+  [data-theme="light"] .week-card .week-label.w3 { color: var(--ok); }
+  [data-theme="light"] .week-card .week-label.w4 { color: var(--warn); }
+  [data-theme="light"] .week-card .agents        { border-top-color: var(--border); }
+  [data-theme="light"] .stat-grid .stat-card     { border-color: var(--border); }
+  [data-theme="light"] .updated-badge { background: oklch(0.36 0.18 145 / .12); color: var(--ok); border-color: oklch(0.36 0.18 145 / .3); }
+  [data-theme="light"] .key-insight   { background: oklch(0.36 0.18 145 / .07); border-color: oklch(0.36 0.18 145 / .25); }
+  [data-theme="light"] .key-insight strong { color: var(--ok); }
+  [data-theme="light"] .cmp-table th,
+  [data-theme="light"] .cmp-table td { border-bottom-color: var(--border); }
   </style>
 </head>
 <body>

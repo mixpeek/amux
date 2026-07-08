@@ -66,6 +66,19 @@
     .cost-grid .cost-card .cost-label.visible { color: #6ee7b7; }
     .cost-grid .cost-card .cost-label.hidden { color: #f87171; }
     @media (max-width: 600px) { .cost-grid { grid-template-columns: 1fr; } }
+  [data-theme="light"] .stat-num.red    { color: var(--err); }
+  [data-theme="light"] .stat-num.amber  { color: var(--warn); }
+  [data-theme="light"] .stat-num.green  { color: var(--ok); }
+  [data-theme="light"] .stat-card       { border-color: var(--border); }
+  [data-theme="light"] .key-insight     { background: oklch(0.36 0.18 145 / .07); border-color: oklch(0.36 0.18 145 / .25); }
+  [data-theme="light"] .key-insight strong { color: var(--ok); }
+  [data-theme="light"] .warning-box     { background: oklch(0.44 0.20 25 / .05);  border-color: oklch(0.44 0.20 25 / .2); }
+  [data-theme="light"] .warning-box strong { color: var(--err); }
+  [data-theme="light"] .updated-badge   { background: oklch(0.36 0.18 145 / .12); color: var(--ok); border-color: oklch(0.36 0.18 145 / .3); }
+  [data-theme="light"] .metric-card     { border-color: var(--border); }
+  [data-theme="light"] .vanity-card     { border-color: var(--border); }
+  [data-theme="light"] .cmp-table th,
+  [data-theme="light"] .cmp-table td   { border-bottom-color: var(--border); }
   </style>
 </head>
 <body>

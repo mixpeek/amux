@@ -57,6 +57,15 @@
     .info-box { background: rgba(96,165,250,0.08); border: 1px solid rgba(96,165,250,0.2); border-radius: 8px; padding: 1rem 1.25rem; margin: 1.25rem 0; font-size: 0.9rem; }
     .info-box strong { color: #60a5fa; }
     @media (max-width: 600px) { .cmp-table { font-size: 0.76rem; } .cmp-table th, .cmp-table td { padding: 0.5rem 0.4rem; } }
+  [data-theme="light"] .deadline-alert strong { color: var(--err); }
+  [data-theme="light"] .deadline-alert { border-color: oklch(0.44 0.20 25 / .35); }
+  [data-theme="light"] .step-card { border-color: var(--border); }
+  [data-theme="light"] .step-num  { background: oklch(0.36 0.18 145 / .15); color: var(--ok); }
+  [data-theme="light"] .updated-badge { background: oklch(0.36 0.18 145 / .12); color: var(--ok); border-color: oklch(0.36 0.18 145 / .3); }
+  [data-theme="light"] .key-insight   { background: oklch(0.36 0.18 145 / .07); border-color: oklch(0.36 0.18 145 / .25); }
+  [data-theme="light"] .key-insight strong { color: var(--ok); }
+  [data-theme="light"] .cmp-table th,
+  [data-theme="light"] .cmp-table td { border-bottom-color: var(--border); }
   </style>
 </head>
 <body>

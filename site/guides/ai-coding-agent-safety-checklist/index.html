@@ -60,6 +60,24 @@
     .sc-red .num { color: #f87171; }
     .sc-amber .num { color: #fbbf24; }
     .sc-green .num { color: #6ee7b7; }
+  [data-theme="light"] .incident-box { background: oklch(0.44 0.20 25 / .05); border-color: oklch(0.44 0.20 25 / .25); }
+  [data-theme="light"] .incident-box strong { color: var(--err); }
+  [data-theme="light"] .incident-box a { color: var(--err); }
+  [data-theme="light"] .rule { border-color: var(--border); }
+  [data-theme="light"] .rule .enforce { background: var(--bg-2); }
+  [data-theme="light"] .enforce-label { color: var(--ok); }
+  [data-theme="light"] .key-insight   { background: oklch(0.36 0.18 145 / .07); border-color: oklch(0.36 0.18 145 / .25); }
+  [data-theme="light"] .key-insight strong { color: var(--ok); }
+  [data-theme="light"] .updated-badge { background: oklch(0.36 0.18 145 / .12); color: var(--ok); border-color: oklch(0.36 0.18 145 / .3); }
+  [data-theme="light"] .check   { color: var(--ok); }
+  [data-theme="light"] .cross   { color: var(--err); }
+  [data-theme="light"] .partial { color: var(--warn); }
+  [data-theme="light"] .sc-red .num   { color: var(--err); }
+  [data-theme="light"] .sc-amber .num { color: var(--warn); }
+  [data-theme="light"] .sc-green .num { color: var(--ok); }
+  [data-theme="light"] .score-card .sc { border-color: var(--border); }
+  [data-theme="light"] .cmp-table th,
+  [data-theme="light"] .cmp-table td  { border-bottom-color: var(--border); }
   </style>
 </head>
 <body>

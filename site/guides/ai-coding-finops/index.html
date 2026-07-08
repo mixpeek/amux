@@ -80,6 +80,18 @@
     .price-grid .price-card .price-amount { font-family: 'JetBrains Mono', monospace; font-size: 1.4rem; font-weight: 700; color: #6ee7b7; }
     .price-grid .price-card .price-tier { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted, #8892a4); margin-bottom: 0.25rem; }
     @media (max-width: 600px) { .price-grid { grid-template-columns: 1fr; } }
+  [data-theme="light"] .tag-cost  { background: oklch(0.44 0.20 25 / .10); color: var(--err); }
+  [data-theme="light"] .tag-date  { background: oklch(0.38 0.18 240 / .12); color: var(--blue); }
+  [data-theme="light"] .lesson    { background: oklch(0.36 0.18 145 / .07); border-color: oklch(0.36 0.18 145 / .25); }
+  [data-theme="light"] .lesson strong { color: var(--ok); }
+  [data-theme="light"] .pillar-card { border-color: var(--border); }
+  [data-theme="light"] .pillar-num { background: oklch(0.36 0.18 145 / .15); color: var(--ok); }
+  [data-theme="light"] .incident-card { border-color: var(--border); }
+  [data-theme="light"] .updated-badge { background: oklch(0.36 0.18 145 / .12); color: var(--ok); border-color: oklch(0.36 0.18 145 / .3); }
+  [data-theme="light"] .key-insight  { background: oklch(0.36 0.18 145 / .07); border-color: oklch(0.36 0.18 145 / .25); }
+  [data-theme="light"] .key-insight strong { color: var(--ok); }
+  [data-theme="light"] .cmp-table th,
+  [data-theme="light"] .cmp-table td { border-bottom-color: var(--border); }
   </style>
 </head>
 <body>
