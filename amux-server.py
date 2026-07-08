@@ -19296,6 +19296,11 @@ function esc(s) {
   d.textContent = s;
   return d.innerHTML;
 }
+function _cssRect(el) {
+  const r = el.getBoundingClientRect();
+  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  return { top: r.top / z, right: r.right / z, bottom: r.bottom / z, left: r.left / z, width: r.width / z, height: r.height / z };
+}
 
 function timeAgo(epoch) {
   if (!epoch) return '';
@@ -19409,8 +19414,8 @@ function showBranchPopover(name, e) {
   }
   // Append to body to escape card's overflow:hidden
   document.body.appendChild(pop);
-  const rect = e.target.getBoundingClientRect();
-  const vw = window.innerWidth;
+  const rect = _cssRect(e.target);
+  const vw = document.documentElement.clientWidth || window.innerWidth;
   let left = rect.left;
   if (left + 240 > vw - 8) left = vw - 248;
   pop.style.top = (rect.bottom + 6) + 'px';
@@ -19507,9 +19512,10 @@ function toggleMenu(name) {
   // The trigger button is the previousElementSibling of the menu in the card DOM
   const btn = el.previousElementSibling;
   if (!btn) { el.classList.add('open'); openMenu = name; return; }
-  const r = btn.getBoundingClientRect();
+  const r = _cssRect(btn);
   const vw = document.documentElement.clientWidth || window.innerWidth;
-  const vh = window.innerHeight;
+  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const vh = window.innerHeight / z;
   // Portal to body — escapes overflow:hidden on .card (iOS Safari clips fixed children)
   if (el.parentElement !== document.body) {
     el._menuOrigParent = el.parentElement;
@@ -19979,7 +19985,7 @@ function toggleActiveDropdown() {
   // Position below the button
   const btn = document.getElementById('active-btn');
   if (btn) {
-    const rect = btn.getBoundingClientRect();
+    const rect = _cssRect(btn);
     dd.style.top = (rect.bottom + 6) + 'px';
   }
   dd.classList.add('open');
@@ -23077,7 +23083,7 @@ function togglePeekMenu() {
   const wasOpen = m.classList.contains('open');
   closeAllMenus();
   if (wasOpen) return;
-  const r = btn.getBoundingClientRect();
+  const r = _cssRect(btn);
   const vw = document.documentElement.clientWidth || window.innerWidth;
   let left = r.right - 200;
   if (left < 8) left = 8;
