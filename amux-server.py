@@ -17287,7 +17287,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div id="md-search-row">
     <input id="md-search-input" type="search" placeholder="Find in document…" autocomplete="off"
       oninput="_mdSearchApply(this.value)"
-      onkeydown="if(event.key==='Enter'){event.preventDefault();_mdSearchStep(event.shiftKey?-1:1);}else if(event.key==='Escape'){event.preventDefault();_mdSearchClose();}">
+      onkeydown="if(event.key==='Enter'){event.preventDefault();_mdSearchStep(event.shiftKey?-1:1);}else if(event.key==='Escape'){event.preventDefault();event.stopPropagation();_mdSearchClose();}">
     <span id="md-search-count"></span>
     <button class="btn" onclick="_mdSearchStep(-1)" title="Previous match">&#x2191;</button>
     <button class="btn" onclick="_mdSearchStep(1)" title="Next match">&#x2193;</button>
@@ -21835,7 +21835,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.53';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.54';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -27267,6 +27267,22 @@ function _pwaCb(e) {
 document.addEventListener('keydown', (e) => {
   // Clipboard shortcuts work everywhere — run before any context-specific early returns
   if (_pwaCb(e)) return;
+
+  // File preview / markdown overlay is the topmost modal (can open over peek OR
+  // standalone from the file explorer) — Escape exits it, closing the find bar or
+  // the mobile actions menu first if either is open.
+  const _fo = document.getElementById('file-overlay');
+  if (_fo && _fo.classList.contains('active')) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      const sr = document.getElementById('md-search-row');
+      if (sr && sr.classList.contains('active')) { _mdSearchClose(); return; }
+      const fa = document.getElementById('file-actions');
+      if (fa && fa.classList.contains('open')) { fa.classList.remove('open'); return; }
+      closeFilePreview();
+    }
+    return;
+  }
 
   if (document.getElementById('grid-view').classList.contains('active')) {
     if (e.key === 'Escape') { e.preventDefault(); exitGridMode(); return; }
@@ -38162,7 +38178,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.53';
+const CACHE = 'amux-v0.9.54';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
