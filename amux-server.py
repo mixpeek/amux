@@ -16984,8 +16984,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <h3 id="edit-title">Edit</h3>
     <div class="ac-wrap" id="edit-input-wrap">
       <input id="edit-input" type="text" autocomplete="off" autocorrect="off"
-        oninput="if(editState&&editState.field==='dir')editAcFetch(this.value);if(editState&&editState.field==='tags')tagAcUpdate(this.value)"
-        onfocus="if(editState&&editState.field==='dir')editAcFetch(this.value);if(editState&&editState.field==='tags')tagAcUpdate(this.value)"
+        oninput="if(editState&&editState.field==='dir')editAcFetch(this.value);if(editState&&editState.field==='tags')tagAcType(this.value)"
+        onfocus="if(editState&&editState.field==='dir')editAcFetch(this.value);if(editState&&editState.field==='tags')tagAcFocus(this.value)"
         onkeydown="editAcKeydown(event)">
       <div id="edit-ac-list" class="ac-list"></div>
     </div>
@@ -20126,14 +20126,21 @@ function editAcHighlight() {
 // ── Tag autocomplete ──
 let tagAcItems = [];
 let tagAcSelected = -1;
+let _tagBrowse = false;
+// Focus/click → browse mode: show every unused tag right away so you can just
+// click one (no typing needed). Typing → filter by the token.
+function tagAcFocus(val) { _tagBrowse = true; tagAcUpdate(val); }
+function tagAcType(val) { _tagBrowse = false; tagAcUpdate(val); }
 function tagAcUpdate(val) {
   const el = document.getElementById('edit-ac-list');
   const parts = val.split(',');
-  const token = parts[parts.length - 1].trim().toLowerCase();
-  if (!token) { el.classList.remove('open'); tagAcItems = []; return; }
-  const used = parts.slice(0, -1).map(p => p.trim().toLowerCase());
-  const allTags = [...new Set(sessions.flatMap(s => s.tags || []))];
-  tagAcItems = allTags.filter(t => t.toLowerCase().startsWith(token) && !used.includes(t.toLowerCase()));
+  // Browse mode (just focused): treat ALL non-empty parts as already-chosen and
+  // show the rest; typing mode: the last part is the token being filtered on.
+  const token = _tagBrowse ? '' : parts[parts.length - 1].trim().toLowerCase();
+  const usedParts = _tagBrowse ? parts : parts.slice(0, -1);
+  const used = usedParts.map(p => p.trim().toLowerCase()).filter(Boolean);
+  const allTags = [...new Set(sessions.flatMap(s => s.tags || []))].sort();
+  tagAcItems = allTags.filter(t => { const tl = t.toLowerCase(); return !used.includes(tl) && (!token || tl.startsWith(token)); });
   tagAcSelected = -1;
   if (!tagAcItems.length) { el.classList.remove('open'); return; }
   el.innerHTML = tagAcItems.map((t, i) =>
@@ -20143,12 +20150,19 @@ function tagAcUpdate(val) {
 }
 function tagAcPick(i) {
   const inp = document.getElementById('edit-input');
-  const parts = inp.value.split(',');
-  const prefix = parts.length > 1 ? ' ' : '';
-  parts[parts.length - 1] = prefix + tagAcItems[i];
-  inp.value = parts.join(',');
-  document.getElementById('edit-ac-list').classList.remove('open');
-  tagAcItems = [];
+  const tag = tagAcItems[i];
+  if (_tagBrowse) {
+    // Append as a new tag; keep browsing so you can click several in a row.
+    const cur = inp.value.replace(/,\s*$/, '').trim();
+    inp.value = cur ? (cur + ', ' + tag) : tag;
+    tagAcUpdate(inp.value);
+  } else {
+    const parts = inp.value.split(',');
+    parts[parts.length - 1] = (parts.length > 1 ? ' ' : '') + tag;
+    inp.value = parts.join(',');
+    document.getElementById('edit-ac-list').classList.remove('open');
+    tagAcItems = [];
+  }
   inp.focus({ preventScroll: true });
 }
 
@@ -21816,7 +21830,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.50';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.51';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   if (peekTimer) { clearInterval(peekTimer); peekTimer = null; }
@@ -38111,7 +38125,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.50';
+const CACHE = 'amux-v0.9.51';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
