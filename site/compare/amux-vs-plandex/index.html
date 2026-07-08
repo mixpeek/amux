@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs Plandex — AI Coding Agent Fleet vs Single-Task Engine (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs Plandex: compare the open-source multi-agent control plane with Plandex's single-task AI coding engine. Parallel fleet vs sequential execution, mobile-first vs CLI-only, self-healing vs manual restart.">
+  <meta name="keywords" content="amux vs plandex, plandex alternative, plandex ai coding, plandex vs claude code, open source ai coding agent comparison, ai coding agent fleet vs single task, plandex 2026">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-plandex/">
+  <meta property="og:title" content="amux vs Plandex — AI Coding Agent Fleet vs Single-Task Engine (2026)">
+  <meta property="og:description" content="amux runs a fleet of 10-50 parallel coding agents. Plandex manages one long-running task at a time. Both are open source. Here's when to use each.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-plandex/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux vs Plandex — AI Coding Agent Fleet vs Single-Task Engine (2026)">
+  <meta name="twitter:description" content="amux runs a fleet of 10-50 parallel coding agents with self-healing, mobile monitoring, and built-in CRM. Plandex manages long-running single tasks. Compare.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"},
+      {"@type": "ListItem", "position": 3, "name": "amux vs Plandex", "item": "https://amux.io/compare/amux-vs-plandex/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux vs Plandex — AI Coding Agent Fleet vs Single-Task Engine (2026)",
+    "description": "Compare amux's open-source multi-agent control plane with Plandex's long-running single-task AI coding engine. Parallel fleet vs sequential execution, mobile-first vs CLI-only.",
+    "url": "https://amux.io/compare/amux-vs-plandex/",
+    "datePublished": "2026-07-08",
+    "dateModified": "2026-07-08",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
+    "image": "https://amux.io/og-image.png"
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is Plandex?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Plandex is an open-source AI coding engine designed to manage long-running, multi-file coding tasks from the terminal. It stages changes in a protected sandbox, lets you review before applying, and supports multiple AI models. Plandex focuses on single-task reliability: one complex job done carefully and incrementally."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the main difference between amux and Plandex?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Scale and scope. Plandex manages one long-running coding task at a time with careful staged review. amux manages a fleet of 10-50 parallel Claude Code, Codex, or Gemini CLI agents, each working on a separate task simultaneously. amux adds a self-healing watchdog, built-in kanban board, CRM, Gmail API email, browser automation, scheduler, and a native iOS app for phone-first monitoring. Plandex is a task engine; amux is a team control plane."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I use Plandex and amux together?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes — they serve different layers. Use Plandex for a single complex refactor that needs careful incremental review and rollback. Use amux when you want to run 10+ tasks in parallel overnight and check results from your phone in the morning. Some teams use Plandex for high-risk single jobs and amux for fleet-parallel feature work."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does Plandex have a mobile app?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. Plandex is a terminal CLI tool — you must be at your machine to use it. amux has a native iOS app on the App Store and a full Progressive Web App (PWA) installable on any phone, so you can monitor and control your agent fleet from anywhere."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is amux a Plandex alternative?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "For parallel multi-agent workloads, yes. If you want to run multiple coding tasks simultaneously overnight and review results in the morning, amux is the better fit. If you want deep, careful review of one complex multi-file refactor with staged diffs and rollback, Plandex's approach is stronger. They address different problems."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the cost of amux vs Plandex?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Both are open-source and free to self-host. With amux you pay only for the AI API calls your agents make (Anthropic, OpenAI, or Google). With Plandex you similarly pay only for LLM API usage. The difference is that amux's parallel fleet model can process many tasks per hour, while Plandex's sequential model processes one deep task at a time."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Plandex</span></div>
+
+    <h1>amux vs Plandex</h1>
+    <p class="subtitle">AI coding agent fleet vs. single-task coding engine — two different problems, two different tools. <em>Updated July 2026.</em></p>
+
+    <p>If you want to run <strong>one complex, multi-file coding task carefully</strong> with staged review and rollback, Plandex is purpose-built for that. If you want to run <strong>10-50 coding tasks in parallel overnight</strong>, check results from your phone in the morning, and manage agents alongside CRM and email — that's amux. Both are open source. They are not direct competitors; they solve different layers of the AI coding problem.</p>
+
+    <h2>Quick comparison</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Capability</th>
+          <th>amux</th>
+          <th>Plandex</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Parallel agents</td><td>10-50 simultaneous sessions</td><td>1 session at a time</td></tr>
+        <tr><td>Execution model</td><td>Parallel fleet (tmux sessions)</td><td>Sequential long-running task</td></tr>
+        <tr><td>AI models supported</td><td>Claude Code, Codex CLI, Gemini CLI</td><td>Claude, GPT-4, Gemini, Llama (API)</td></tr>
+        <tr><td>Self-healing watchdog</td><td>Yes — auto-compact, restart, replay</td><td>No — manual restart required</td></tr>
+        <tr><td>YOLO mode (unattended)</td><td>Yes — default for new sessions</td><td>Not applicable (interactive review)</td></tr>
+        <tr><td>Mobile app</td><td>iOS App Store + PWA</td><td>No</td></tr>
+        <tr><td>Kanban board</td><td>Built-in SQLite board with atomic claiming</td><td>No</td></tr>
+        <tr><td>CRM</td><td>Built-in contact + interaction tracking</td><td>No</td></tr>
+        <tr><td>Email</td><td>Gmail API integration</td><td>No</td></tr>
+        <tr><td>Browser automation</td><td>Shared Playwright + Inspect panel</td><td>No</td></tr>
+        <tr><td>Scheduler</td><td>Cron-style recurring tasks</td><td>No</td></tr>
+        <tr><td>Staged diff review</td><td>No (agents push directly)</td><td>Yes — sandbox + review before apply</td></tr>
+        <tr><td>Rollback</td><td>Git-based (agent opens PRs)</td><td>Built-in undo/rewind</td></tr>
+        <tr><td>Overnight runs</td><td>Primary use case (self-healing)</td><td>Possible but requires staying at terminal</td></tr>
+        <tr><td>License</td><td>MIT + Commons Clause</td><td>MIT</td></tr>
+        <tr><td>Infrastructure</td><td>Single Python file, self-hosted</td><td>CLI binary, optional server mode</td></tr>
+        <tr><td>Cost</td><td>LLM API costs only</td><td>LLM API costs only</td></tr>
+      </tbody>
+    </table>
+
+    <h2>What is Plandex?</h2>
+    <p>Plandex is an open-source AI coding engine designed for long-running, complex coding tasks. You give it a goal — "refactor the auth module to use JWT instead of sessions" — and it breaks the task into steps, writes code incrementally into a protected sandbox, and shows you a staged diff before applying any changes. If something looks wrong, you can rewind.</p>
+    <p>Plandex's key strength is <strong>careful, reviewable, single-task execution</strong>. It supports multiple LLM backends (Anthropic Claude, OpenAI GPT-4, Google Gemini, local Llama models) and works entirely from the terminal. There is no web dashboard, no mobile app, and no concept of running multiple agents in parallel.</p>
+    <p>Plandex is well-suited for high-risk tasks where you want to review every file change before it lands: large refactors, schema migrations, security-sensitive code changes.</p>
+
+    <h2>What is amux?</h2>
+    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Self-healing, single Python file, zero external dependencies, MIT licensed.</p>
+    <p>amux's primary use case is <strong>parallel fleet management for overnight autonomous work</strong>. You queue up 10-20 tasks before bed, assign one agent per task, and wake up to pull requests. The self-healing watchdog handles context overflow, process crashes, stuck tool-approval prompts, and silent hangs — all without you being present.</p>
+
+    <h2>Where Plandex beats amux</h2>
+    <p>If you have a single, complex, high-risk coding job that touches many files and needs careful incremental review, Plandex is stronger. Its sandbox model means no change lands in your working tree until you approve it. The rewind feature lets you backtrack without hunting through git history. And because Plandex supports local models (Llama via Ollama), you can run it fully air-gapped at zero API cost.</p>
+    <ul>
+      <li><strong>Staged diff review</strong> — see exactly what will change before it applies</li>
+      <li><strong>Built-in undo/rewind</strong> — step backward through task history</li>
+      <li><strong>Broad model support</strong> — Claude, GPT, Gemini, local models via API</li>
+      <li><strong>Sandbox isolation</strong> — changes stay in a protected context, not your working directory</li>
+      <li><strong>Interactive refinement</strong> — conversation-style mid-task corrections</li>
+    </ul>
+
+    <h2>Where amux beats Plandex</h2>
+    <p>If your goal is to maximize throughput — running many tasks in parallel, overnight, without supervision — amux is the right tool. The gap widens when you need business-layer features (CRM, email, browser automation) that Plandex doesn't have, or when you want to manage your agents from your phone while away from your desk.</p>
+    <ul>
+      <li><strong>Parallel fleet</strong> — 10-50 agents running simultaneously, not sequentially</li>
+      <li><strong>Self-healing watchdog</strong> — auto-compact on context overflow, restart on crash, replay last message</li>
+      <li><strong>YOLO mode (default)</strong> — auto-approves tool prompts so agents never block overnight</li>
+      <li><strong>Plan strip visibility</strong> — read Claude Code's native task list in real time from the dashboard</li>
+      <li><strong>Mobile-first</strong> — native iOS app + PWA for phone management, Plandex has neither</li>
+      <li><strong>Kanban board</strong> — shared SQLite board with atomic task claiming (no duplicated work)</li>
+      <li><strong>Built-in CRM</strong> — manage client relationships alongside your agent fleet</li>
+      <li><strong>Gmail API email</strong> — send updates from within amux</li>
+      <li><strong>Browser automation</strong> — Playwright-based with Inspect panel (console, network, errors)</li>
+      <li><strong>Scheduler</strong> — cron-style recurring tasks that trigger agent sessions</li>
+    </ul>
+
+    <h2>Execution model: parallel vs. sequential</h2>
+    <p>This is the fundamental architectural difference. Plandex is sequential by design: it handles one task per session, builds up a coherent context for that task, and applies changes in a controlled sequence. This makes it excellent for tasks where order matters and you want fine-grained control at every step.</p>
+    <p>amux is parallel by design: each tmux session is an isolated Claude Code (or Codex/Gemini) process working on its own task in its own git worktree. Ten agents run ten tasks simultaneously. The shared kanban board uses SQLite compare-and-swap to prevent two agents from claiming the same task. A completed task opens a PR; a failed task stays in "todo" for the next run.</p>
+    <p>The practical consequence: in one night, amux can complete 10-50 tasks; Plandex completes 1-3 (sequentially, with review pauses). If throughput is the bottleneck, amux wins. If quality-of-review on a single critical task is the bottleneck, Plandex wins.</p>
+
+    <h2>Overnight autonomy</h2>
+    <p>Plandex is designed for interactive use — you guide it, review its diffs, and approve changes. Running it unattended overnight is technically possible but not its intended use: it will pause waiting for your review and there is no watchdog to restart it if something goes wrong.</p>
+    <p>amux is purpose-built for overnight autonomy. YOLO mode (now the default for new sessions in July 2026) auto-approves all tool-approval prompts. The watchdog monitors every session for idle hangs, context overflow, thinking-block corruption, and process crashes. If any occur, it handles them automatically. You can queue work at 11pm and wake up at 7am to 10 completed PRs.</p>
+    <p>From your phone — via the amux iOS app or PWA — you can check which tasks each agent completed, peek at the last 100 lines of any session's output, and send one-tap canned messages to redirect agents without touching your laptop.</p>
+
+    <h2>Business tooling</h2>
+    <p>Plandex is a coding tool only. amux goes beyond coding agents: it includes a contact CRM (add clients, log interactions, set follow-up reminders), Gmail API email integration (send updates from within amux, threading preserved), shared Playwright browser automation (run SaaS dashboard tasks via browser agents), a cron-style scheduler, and markdown notes. These features are particularly relevant for freelancers, solopreneurs, and startup founders who manage client relationships in the same tool they use to ship code.</p>
+
+    <h2>Which should you use?</h2>
+    <p><strong>Choose Plandex if:</strong></p>
+    <ul>
+      <li>You have one large, risky refactor that touches 20+ files</li>
+      <li>You want staged diff review before any change lands</li>
+      <li>You want built-in undo/rewind</li>
+      <li>You need local model support (air-gapped, zero API cost)</li>
+      <li>You are doing interactive, supervised coding — not overnight autonomous runs</li>
+    </ul>
+    <p><strong>Choose amux if:</strong></p>
+    <ul>
+      <li>You want 10-50 parallel agents running overnight</li>
+      <li>You need self-healing autonomy (no babysitting)</li>
+      <li>You manage your agents from your phone</li>
+      <li>You need CRM, email, browser automation, or a scheduler alongside your coding agents</li>
+      <li>You want a shared kanban board with atomic task claiming for a team of agents</li>
+      <li>You run Claude Code, Codex CLI, or Gemini CLI as your agent runtime</li>
+    </ul>
+    <p><strong>Use both if:</strong> You want Plandex for high-risk single jobs and amux for fleet-parallel feature work. They are complementary, not mutually exclusive.</p>
+
+    <h2>Frequently asked questions</h2>
+    <details>
+      <summary><strong>Is Plandex still actively maintained in 2026?</strong></summary>
+      <p>Yes. Plandex (github.com/plandex-ai/plandex) receives regular updates. It is MIT licensed and has an active community. Check the GitHub repo for the latest release cadence.</p>
+    </details>
+    <details>
+      <summary><strong>Can amux run Plandex sessions?</strong></summary>
+      <p>Not directly. amux manages Claude Code, Codex CLI, and Gemini CLI sessions via tmux. Plandex has its own execution environment. You could run a Plandex CLI session inside a tmux pane and observe it via amux's terminal peek, but amux's watchdog and task-claiming logic won't integrate with Plandex's internal state.</p>
+    </details>
+    <details>
+      <summary><strong>Does amux support local models like Ollama?</strong></summary>
+      <p>Not natively — amux manages Claude Code (Anthropic), Codex CLI (OpenAI), and Gemini CLI (Google) sessions. Plandex supports local models via Ollama or any OpenAI-compatible API endpoint, which gives it an advantage for air-gapped or cost-constrained setups.</p>
+    </details>
+    <details>
+      <summary><strong>What is the quickest way to get started with amux?</strong></summary>
+      <p>Clone the repo, run the install script (requires Python 3 and tmux), register a project, and start a session. The whole process takes under 5 minutes. See the <a href="/guides/getting-started/">getting started guide</a>.</p>
+    </details>
+
+    <div class="cta-box">
+      <h3>Try amux — run your AI engineering team tonight</h3>
+      <p>Open source, MIT licensed, single Python file, zero external dependencies. Runs on any Mac or Linux machine with Python 3 and tmux.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:16px">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">⭐ Star on GitHub</a>
+        <a class="btn" href="/guides/getting-started/">Getting started guide</a>
+        <a class="btn" href="/compare/">All comparisons</a>
+      </div>
+    </div>
+
+    <p style="margin-top:32px;color:var(--muted);font-size:.85rem">Related: <a href="/compare/amux-vs-codex/">amux vs Codex CLI</a> · <a href="/compare/amux-vs-aider/">amux vs Aider</a> · <a href="/compare/amux-vs-devin/">amux vs Devin</a> · <a href="/compare/amux-vs-openhands/">amux vs OpenHands</a> · <a href="/compare/">All comparisons</a></p>
+  </main>
+
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
