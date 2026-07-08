@@ -161,6 +161,13 @@ Claude Code runs one agent per terminal. amux runs dozens — with live monitori
 - [amux vs Claude Desktop](https://amux.io/compare/amux-vs-claude-desktop/)
 - [amux vs Antigravity CLI (agy)](https://amux.io/compare/amux-vs-antigravity-cli/): Antigravity CLI replaced Gemini CLI on June 18, 2026. amux runs and manages multiple agy sessions in parallel — self-healing, kanban, and mobile monitoring built in.
 
+## For Specific Audiences
+
+- [amux for Freelancers](https://amux.io/for/freelancers/): How freelance developers use amux to run one coding agent per client project in parallel — billing more hours while working fewer, managing clients with the built-in CRM, and delivering overnight. Updated July 2026.
+- [amux vs Plandex](https://amux.io/compare/amux-vs-plandex/): Comparison of amux (multi-agent fleet control plane) and Plandex (single-task long-running coding engine). Parallel fleet vs sequential execution, mobile-first vs CLI-only. Updated July 2026.
+- [Monitor Your Claude Code Agents (Plan Strip Guide)](https://amux.io/guides/claude-code-plan-monitoring/): How to use amux's Plan strip, peek panel, and dashboard board to see exactly what your Claude Code agents are doing in real time. Covers v0.9.44 Plan strip, saved messages, quick-action chips. Updated July 2026.
+- [AI Coding While You Sleep](https://amux.io/use-cases/ai-coding-while-you-sleep/): Complete guide to running 10-50 Claude Code agents overnight with amux — self-healing watchdog, YOLO mode, morning board review from your phone. Full FAQ and how-to. Updated July 2026.
+
 ## Press
 
 - [Press Kit](https://amux.io/press/): Official press kit — product description, boilerplate copy, key stats (MIT+CC, ~30k LOC single Python file, iOS App Store, 2025 launch), screenshots, and media contact (ethan@mixpeek.com). FAQ for journalists: what problem amux solves, who built it, pricing, and how it differs from Cursor and Devin.

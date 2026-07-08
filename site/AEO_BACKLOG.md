@@ -46,3 +46,13 @@ Track query gaps, target sections, priority, and status. Update every run.
 | indie hacker AI agents 2026 | /for/indie-hackers/ | H | shipped 2026-07-07 |
 | build products solo with AI agents | /for/indie-hackers/ | H | shipped 2026-07-07 |
 | indie maker AI coding team | /for/indie-hackers/ | H | shipped 2026-07-07 |
+| AI coding agents overnight unattended | /use-cases/ai-coding-while-you-sleep/ | H | enriched 2026-07-08 (472→2479 words, FAQPage+HowTo JSON-LD) |
+| run coding agents overnight | /use-cases/ai-coding-while-you-sleep/ | H | enriched 2026-07-08 |
+| how to monitor Claude Code agents | /guides/claude-code-plan-monitoring/ | H | shipped 2026-07-08 |
+| Claude Code task progress visibility | /guides/claude-code-plan-monitoring/ | H | shipped 2026-07-08 |
+| Claude Code plan strip | /guides/claude-code-plan-monitoring/ | M | shipped 2026-07-08 |
+| AI tools for freelancers 2026 | /for/freelancers/ | H | shipped 2026-07-08 |
+| scale freelance business with AI agents | /for/freelancers/ | H | shipped 2026-07-08 |
+| freelance developer AI agents | /for/freelancers/ | M | shipped 2026-07-08 |
+| amux vs Plandex | /compare/amux-vs-plandex/ | M | shipped 2026-07-08 |
+| Plandex alternative open source | /compare/amux-vs-plandex/ | M | shipped 2026-07-08 |
