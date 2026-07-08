@@ -3560,7 +3560,98 @@ _ALERT_TYPE_LABELS = {
     "scheduler": "schedule", "auto_restart": "auto-restart", "auto_continue": "auto-continue",
     "auto_compact": "compact", "rate_limit_manual": "rate limit", "task_pickup": "task",
     "steering_delivered": "steering", "uncommitted": "uncommitted", "thinking_reset": "thinking reset",
+    "urgent": "URGENT",
 }
+
+
+def _env_set(key: str, value: str):
+    """Upsert KEY=value in ~/.amux/server.env and apply it live to os.environ."""
+    lines = _server_env_file.read_text().splitlines() if _server_env_file.exists() else []
+    found = False
+    for i, l in enumerate(lines):
+        if l.startswith(key + "=") or l.startswith(key + " ="):
+            lines[i] = f"{key}={value}"; found = True; break
+    if not found:
+        lines.append(f"{key}={value}")
+    _server_env_file.parent.mkdir(parents=True, exist_ok=True)
+    _server_env_file.write_text("\n".join(lines) + "\n")
+    if value:
+        os.environ[key] = value
+    else:
+        os.environ.pop(key, None)
+
+
+def _send_sms(phone: str, text: str):
+    """Best-effort SMS to the owner. Twilio if TWILIO_* configured, else macOS
+    Messages (timeout-guarded so a permission/TCC wall can't hang the server).
+    Returns (ok, detail)."""
+    if not phone:
+        return False, "no phone configured"
+    sid = os.environ.get("TWILIO_ACCOUNT_SID", ""); tok = os.environ.get("TWILIO_AUTH_TOKEN", "")
+    frm = os.environ.get("TWILIO_FROM", "")
+    if sid and tok and frm:
+        try:
+            import urllib.request, urllib.parse
+            data = urllib.parse.urlencode({"From": frm, "To": phone, "Body": text}).encode()
+            req = urllib.request.Request(
+                f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
+                data=data, method="POST",
+                headers={"Authorization": "Basic " + base64.b64encode(f"{sid}:{tok}".encode()).decode()})
+            urllib.request.urlopen(req, timeout=15).read()
+            return True, "twilio"
+        except Exception as e:
+            return False, f"twilio error: {str(e)[:120]}"
+    # macOS Messages fallback — guarded by a hard timeout (Messages scripting can
+    # block on an Automation-permission prompt).
+    try:
+        r = subprocess.run([
+            "osascript",
+            "-e", "on run {msg, ph}",
+            "-e", 'tell application "Messages"',
+            "-e", "set svc to 1st service whose service type = iMessage",
+            "-e", "send msg to participant ph of svc",
+            "-e", "end tell",
+            "-e", "end run",
+            "--", text, phone,
+        ], capture_output=True, text=True, timeout=12)
+        if r.returncode == 0:
+            return True, "imessage"
+        return False, f"imessage error: {(r.stderr or '').strip()[:100]}"
+    except subprocess.TimeoutExpired:
+        return False, "imessage timed out — grant Automation permission for Messages, or set TWILIO_* creds"
+    except Exception as e:
+        return False, f"imessage error: {str(e)[:100]}"
+
+
+_urgent_alert_last = {}  # message-hash → ts, for a light flood guard
+
+
+def _send_urgent_alert(message: str, session: str = "", reason: str = ""):
+    """Owner URGENT alert — fan out to enabled channels (in-app push + SMS).
+    Meant to be used *sparingly*; a soft 60s dedupe blocks accidental repeats."""
+    msg = (message or "").strip()
+    if not msg:
+        return {"ok": False, "error": "empty message"}
+    if reason:
+        msg = f"{msg}\n({reason})"
+    key = _hashlib.sha256((session + "|" + msg).encode()).hexdigest()[:16]
+    now = time.time()
+    if now - _urgent_alert_last.get(key, 0) < 60:
+        return {"ok": True, "deduped": True, "channels": {}, "message": msg}
+    _urgent_alert_last[key] = now
+    channels = {}
+    if os.environ.get("AMUX_URGENT_PUSH", "1") != "0":
+        try:
+            _push_alert("urgent", session or "amux", msg)
+            channels["push"] = "sent"
+        except Exception as e:
+            channels["push"] = f"error: {str(e)[:80]}"
+    phone = os.environ.get("AMUX_OWNER_PHONE", "")
+    if os.environ.get("AMUX_URGENT_SMS", "1") != "0" and phone:
+        ok, detail = _send_sms(phone, "amux URGENT: " + msg.replace("\n", " — "))
+        channels["sms"] = detail if ok else ("failed: " + detail)
+    slog(f"[urgent-alert] session={session!r} reason={reason!r} channels={channels} msg={message[:120]!r}")
+    return {"ok": True, "channels": channels, "message": msg}
 _VAPID_CACHE = None
 _VAPID_PATH = CC_HOME / "vapid_private.pem"
 _PUSH_SUBS_PRESENT = None  # None=unknown, False=confirmed empty (skip), True=have subs
@@ -15541,6 +15632,24 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         </div>
         <div class="settings-sep"></div>
         <div class="settings-section">
+          <div class="settings-section-label">Alerts</div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-bottom:8px;line-height:1.4;">Routine notifications use in-app amux Alerts. <b>Urgent alerts</b> are reserved for things that need your attention immediately — sessions are told to use them sparingly.</div>
+          <div style="font-weight:600;font-size:0.8rem;margin-bottom:6px;">&#x1F6A8; Urgent alerts</div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;">
+            <span style="font-size:0.85rem;">In-app push</span>
+            <label class="theme-toggle"><input type="checkbox" id="alert-push-cb" onchange="saveAlertConfig()"><span class="theme-track"><span class="theme-thumb"></span></span></label>
+          </div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:4px;">
+            <span style="font-size:0.85rem;">Text my phone <span id="alert-sms-provider" style="color:var(--dim);font-size:0.7rem;"></span></span>
+            <label class="theme-toggle"><input type="checkbox" id="alert-sms-cb" onchange="saveAlertConfig()"><span class="theme-track"><span class="theme-thumb"></span></span></label>
+          </div>
+          <input id="alert-phone" type="tel" placeholder="+1 410 790 5624" onchange="saveAlertConfig()"
+            style="width:100%;margin-top:6px;font-size:0.82rem;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--fg);box-sizing:border-box;">
+          <button onclick="sendTestAlert(this)" class="btn" style="width:100%;margin-top:6px;font-size:0.78rem;">Send test alert</button>
+          <div id="alert-test-status" style="font-size:0.7rem;color:var(--dim);margin-top:4px;min-height:1em;"></div>
+        </div>
+        <div class="settings-sep"></div>
+        <div class="settings-section">
           <div class="settings-section-label">Default Model</div>
           <div style="font-size:0.72rem;color:var(--dim);margin-bottom:6px;">Applied to new sessions without an explicit model</div>
           <select id="settings-default-model" onchange="saveDefaultModel(this.value)"
@@ -22009,7 +22118,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.59';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.60';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -33107,7 +33216,37 @@ function toggleSettings() {
     _notesLoadSource();
     loadCommitGuard();
     loadTaskGuard();
+    loadAlertConfig();
   }
+}
+async function loadAlertConfig() {
+  try {
+    const r = await fetch(API + '/api/alert/config'); const d = await r.json();
+    const p = document.getElementById('alert-push-cb'); if (p) p.checked = !!d.push;
+    const s = document.getElementById('alert-sms-cb'); if (s) s.checked = !!d.sms;
+    const ph = document.getElementById('alert-phone'); if (ph && document.activeElement !== ph) ph.value = d.phone || '';
+    const pv = document.getElementById('alert-sms-provider'); if (pv) pv.textContent = d.sms_provider ? '(' + d.sms_provider + ')' : '';
+  } catch(e) {}
+}
+async function saveAlertConfig() {
+  const body = {
+    push: !!document.getElementById('alert-push-cb')?.checked,
+    sms: !!document.getElementById('alert-sms-cb')?.checked,
+    phone: document.getElementById('alert-phone')?.value || '',
+  };
+  try { await fetch(API + '/api/alert/config', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); } catch(e) {}
+}
+async function sendTestAlert(btn) {
+  const st = document.getElementById('alert-test-status'); if (st) st.textContent = 'Sending…';
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch(API + '/api/alert/owner', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Test urgent alert from Settings', session: 'amux', reason: 'settings test' }) });
+    const d = await r.json();
+    if (st) st.textContent = d.deduped ? 'Deduped (sent in the last 60s)'
+      : (d.channels ? ('Sent → ' + Object.entries(d.channels).map(([k, v]) => k + ': ' + v).join('; ')) : 'Sent');
+  } catch(e) { if (st) st.textContent = 'Error: ' + e.message; }
+  if (btn) btn.disabled = false;
 }
 
 function closeSettings() {
@@ -38434,7 +38573,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.59';
+const CACHE = 'amux-v0.9.60';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -39083,6 +39222,29 @@ class CCHandler(BaseHTTPRequestHandler):
             return self._json(_tunnel_start(token=body.get("token"), target_port=body.get("port")))
         if path == "/api/tunnel/stop" and method == "POST":
             return self._json(_tunnel_stop())
+
+        # ── Urgent owner alert (use sparingly) + its config ──
+        if path == "/api/alert/owner" and method == "POST":
+            body = self._read_body()
+            return self._json(_send_urgent_alert(
+                body.get("message", ""), body.get("session", ""), body.get("reason", "")))
+        if path == "/api/alert/config":
+            if method == "GET":
+                return self._json({
+                    "phone": os.environ.get("AMUX_OWNER_PHONE", ""),
+                    "push": os.environ.get("AMUX_URGENT_PUSH", "1") != "0",
+                    "sms": os.environ.get("AMUX_URGENT_SMS", "1") != "0",
+                    "sms_provider": "twilio" if os.environ.get("TWILIO_ACCOUNT_SID") else "imessage",
+                })
+            if method == "PATCH":
+                body = self._read_body()
+                if "phone" in body:
+                    _env_set("AMUX_OWNER_PHONE", (body.get("phone") or "").strip())
+                if "push" in body:
+                    _env_set("AMUX_URGENT_PUSH", "1" if body.get("push") else "0")
+                if "sms" in body:
+                    _env_set("AMUX_URGENT_SMS", "1" if body.get("sms") else "0")
+                return self._json({"ok": True})
 
         # GET /
         if method == "GET" and path == "/":
