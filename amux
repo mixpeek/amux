@@ -1054,6 +1054,12 @@ ${BOLD}Board:${RESET}
   amux board todo <ID>           Mark issue as todo
   amux board status <ID> <s>     Set any status
 
+${BOLD}Tunnel (public HTTPS URL for any localhost port — needs amux cloud):${RESET}
+  amux tunnel status             Show tunnel state and public URL
+  amux tunnel url                Print just the public URL
+  amux tunnel start [PORT]       Expose a port (default: the amux server)
+  amux tunnel stop               Stop the tunnel
+
 ${BOLD}Claude Code flags (on register/exec):${RESET}
   --model <model>              Model: opus, sonnet, haiku, or full ID
   --yolo                       Alias for --dangerously-skip-permissions
@@ -1084,6 +1090,69 @@ ${BOLD}Examples:${RESET}
 EOF
 }
 
+cmd_tunnel() {
+  local AMUX_API="${AMUX_API:-https://localhost:8822}"
+  local subcmd="${1:-status}"; shift 2>/dev/null || true
+
+  case "$subcmd" in
+    start)
+      local port="${1:-}"
+      local payload='{}'
+      [[ -n "$port" ]] && payload="{\"port\":$port}"
+      curl -sk -X POST -H 'Content-Type: application/json' -d "$payload" \
+        "$AMUX_API/api/tunnel/start" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if d.get('error'):
+    print('error:', d['error']); sys.exit(1)
+if d.get('already'):
+    print('already running →', d.get('url') or '(registering)')
+else:
+    print('tunnel up →', d.get('url') or '(registering)')
+"
+      ;;
+    stop)
+      curl -sk -X POST "$AMUX_API/api/tunnel/stop" >/dev/null && echo "tunnel stopped"
+      ;;
+    status|"")
+      curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if not d.get('configured'):
+    print('not configured — set AMUX_TUNNEL_TOKEN in ~/.amux/server.env')
+    print('(the tunnel needs an active amux cloud subscription)')
+    sys.exit(0)
+print('running :', d.get('running'))
+print('url     :', d.get('url') or '-')
+print('target  :', d.get('target') or '-')
+print('requests:', d.get('requests', 0))
+if d.get('error'): print('error   :', d['error'])
+"
+      ;;
+    url)
+      curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
+import sys, json
+u = json.load(sys.stdin).get('url')
+print(u) if u else sys.exit('tunnel not running')
+"
+      ;;
+    *)
+      cat <<EOF
+${BOLD}amux tunnel${RESET} — expose a local port at a public HTTPS URL
+
+  amux tunnel status          Show tunnel state and public URL
+  amux tunnel url             Print just the public URL
+  amux tunnel start [PORT]    Start the tunnel (default: the amux server itself)
+  amux tunnel stop            Stop the tunnel
+
+Any localhost port works: ${BOLD}amux tunnel start 3000${RESET} publishes your dev server.
+Requires an active amux cloud subscription; set AMUX_TUNNEL_TOKEN in
+~/.amux/server.env, then \`touch amux-server.py\` to reload.
+EOF
+      ;;
+  esac
+}
+
 # ── Main dispatch ────────────────────────────────────────────────────────────
 #
 # Source guard: when this script is run normally as `amux ...`, BASH_SOURCE[0]
@@ -1110,6 +1179,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     stop-all)         cmd_stop_all ;;
     serve|web)        shift; cmd_serve "$@" ;;
     board|b)          shift; cmd_board "$@" ;;
+    tunnel|t)         shift; cmd_tunnel "$@" ;;
     help|--help|-h)   cmd_help ;;
     version|--version|-v) echo "amux v${CC_VERSION}" ;;
     "")               cmd_dashboard ;;

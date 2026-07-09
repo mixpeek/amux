@@ -39,6 +39,7 @@ amux serve   # → https://localhost:8822
 
 ## What's New
 
+- **[amux tunnel](https://amux.io/features/tunnel/)** — expose any localhost port at a stable public HTTPS URL (`amux tunnel start 3000`). Your machine dials out, so there's no inbound port to open. Requires an amux cloud subscription.
 - **[YOLO mode on by default](https://amux.io/changelog/)** — new sessions auto-approve tool prompts so agents never block during overnight runs. Opt out per-session if you need interactive review.
 - **[Board status gates](https://amux.io/changelog/)** — configurable checklists gate cards from moving to `done`/`verified`, preventing the failure mode of marking work done before it's confirmed in production.
 - **[Saved messages](https://amux.io/changelog/)** — store canned prompts in the DB and trigger them from the ⋮ menu in any session — one tap, no copy-pasting from notes.
@@ -87,6 +88,7 @@ amux serve   # → https://localhost:8822
 - **Skills / slash commands** — project-level custom commands (e.g. `/commit`, `/review-pr`) that agents can invoke
 - **Scheduler** — named recurring jobs with cron expressions and a management UI
 - **File explorer** — browse agent working directories, preview files, edit markdown with in-page search
+- **Tunnel** — publish any localhost port at a stable public HTTPS URL, no inbound firewall hole ([amux cloud](https://amux.io/cloud/))
 
 ### Architecture
 - **Single file** — one Python file with inline HTML/CSS/JS. Edit it; it restarts on save. [Learn more →](https://amux.io/features/single-file-architecture/)
@@ -243,9 +245,54 @@ amux crm add "Name" company=X email=Y role=Z
 amux crm list               # list contacts
 amux crm log PPL-1 "met at conference"
 amux crm fu                 # show pending follow-ups
+
+# Tunnel (amux cloud)
+amux tunnel start 3000      # publish localhost:3000 publicly
+amux tunnel url             # print the public URL
+amux tunnel stop            # take it down
 ```
 
 Session names support prefix matching — `amux attach my` resolves to `myproject` if unambiguous.
+
+---
+
+## Tunnel
+
+Expose any localhost port at a stable public HTTPS URL, without opening an inbound
+port or configuring a firewall. Your machine dials **out** to the amux cloud gateway
+and long-polls it; the gateway relays public requests back down that connection.
+
+```bash
+amux tunnel start 3000                  # publish localhost:3000
+amux tunnel start                       # publish the amux dashboard itself
+amux tunnel status                      # state, public URL, request count
+amux tunnel stop
+```
+
+The URL is derived from your token, so it **stays the same across restarts** — safe to
+paste into a webhook or a calendar subscription.
+
+```
+https://cloud.amux.io/t/<id>/            → your local server's /
+https://cloud.amux.io/t/<id>/api/foo     → your local server's /api/foo
+```
+
+Anything HTTP works: a dev server, a webhook receiver, the amux calendar feed
+(`/api/calendar.ics`). Requests relay with method, headers, query string, body, and
+status code intact, including `HEAD`.
+
+**Setup.** The tunnel is gated on an active [amux cloud](https://amux.io/cloud/)
+subscription (Clerk SSO + billing). Put your token in `~/.amux/server.env`:
+
+```
+AMUX_TUNNEL_TOKEN=<token from your amux cloud account>
+```
+
+Then `touch amux-server.py` to reload. The tunnel auto-starts with the server and
+points at the dashboard unless you give it another port.
+
+> **Anything you tunnel is public.** The URL is unguessable, not authenticated —
+> don't expose a service that assumes it's only reachable from localhost.
 
 ---
 
