@@ -6784,89 +6784,9 @@ def _gcal_service():
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
-def _gcal_sync_schedule(sched_id: str, deleted: bool = False):
-    """Real-time push of a schedule to Google Calendar (if AMUX_GCAL_ID set).
-    Create/update/delete the event and track gcal_event_id on the schedule row.
-    This is the near-instant alternative to Google's slow iCal polling."""
-    if not _GCAL_ID:
-        return
-    try:
-        db = get_db()
-        cols = [d[1] for d in db.execute("PRAGMA table_info(schedules)").fetchall()]
-        row = db.execute("SELECT * FROM schedules WHERE id=?", (sched_id,)).fetchone()
-        sched = dict(zip(cols, row)) if row else None
-        event_id = sched.get("gcal_event_id") if sched else None
-        service = _gcal_service()
-        # Delete when removed / disabled / no next_run
-        if (not sched) or deleted or sched.get("deleted") or not sched.get("enabled") or not sched.get("next_run"):
-            if event_id:
-                try:
-                    service.events().delete(calendarId=_GCAL_ID, eventId=event_id).execute()
-                except Exception:
-                    pass
-                db.execute("UPDATE schedules SET gcal_event_id=NULL WHERE id=?", (sched_id,))
-                db.commit()
-                slog(f"[gcal] deleted schedule event for {sched_id}")
-            return
-        dtstart = _ical_dtstart(sched.get("next_run"))
-        if not dtstart:
-            return
-        from datetime import datetime as _dt, timedelta as _td
-        start = _dt.strptime(dtstart, "%Y%m%dT%H%M%S")
-        end = start + _td(minutes=30)
-        parts = []
-        if sched.get("session"):
-            parts.append("Session: " + str(sched["session"]))
-        if sched.get("command"):
-            parts.append("Command: " + str(sched["command"])[:400])
-        if sched.get("schedule_expr"):
-            parts.append("Schedule: " + str(sched["schedule_expr"]))
-        body = {
-            "summary": "⏰ " + (sched.get("title") or "Scheduled task"),
-            "description": "\n".join(parts) + f"\n\namux schedule {sched_id}",
-            "start": {"dateTime": start.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": _GCAL_TZ},
-            "end": {"dateTime": end.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": _GCAL_TZ},
-        }
-        rrule = _schedule_rrule(sched)
-        if rrule:
-            body["recurrence"] = ["RRULE:" + rrule]
-        if event_id:
-            try:
-                service.events().update(calendarId=_GCAL_ID, eventId=event_id, body=body).execute()
-                slog(f"[gcal] updated schedule event for {sched_id}")
-                return
-            except Exception:
-                pass   # event vanished — fall through to recreate
-        ev = service.events().insert(calendarId=_GCAL_ID, body=body).execute()
-        db.execute("UPDATE schedules SET gcal_event_id=? WHERE id=?", (ev["id"], sched_id))
-        db.commit()
-        slog(f"[gcal] created schedule event {ev['id']} for {sched_id}")
-    except Exception as e:
-        slog(f"[gcal] schedule sync failed for {sched_id}: {e}")
-
-
-def _gcal_sync_schedule_bg(sched_id: str, deleted: bool = False):
-    """Fire-and-forget schedule→GCal sync (skips entirely when GCal isn't configured)."""
-    if not _GCAL_ID or not sched_id:
-        return
-    threading.Thread(target=_gcal_sync_schedule, args=(sched_id,),
-                     kwargs={"deleted": deleted}, daemon=True).start()
-
-
-def _gcal_backfill():
-    """Push every enabled schedule into the configured Google Calendar. Returns count."""
-    if not _GCAL_ID:
-        return 0
-    db = get_db()
-    rows = db.execute("SELECT id FROM schedules WHERE deleted IS NULL AND enabled=1").fetchall()
-    n = 0
-    for r in rows:
-        try:
-            _gcal_sync_schedule(r[0]); n += 1
-        except Exception:
-            pass
-    slog(f"[gcal] backfilled {n} schedules")
-    return n
+# NOTE: amux schedules deliberately do NOT sync to Google Calendar. They are an
+# in-app-only layer on the amux calendar (toggleable via 'Scheduled tasks').
+# The OAuth plumbing below is retained for future calendar work.
 
 
 def _gcal_set_id(cal_id: str):
@@ -12881,6 +12801,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   #fc-container .fc .fc-scrollgrid td { border-color: var(--border); }
   #fc-container .fc .fc-daygrid-day-frame { min-height: 80px; }
   #fc-container .fc-subscribe-button { font-size: 0.78rem !important; padding: 4px 10px !important; }
+  #fc-container .fc-schedToggle-button { font-size: 0.78rem !important; padding: 4px 10px !important; }
+  #fc-container .fc-schedToggle-button[aria-pressed="false"] { opacity: 0.55; }
+  #fc-container .fc .fc-footer-toolbar { padding: 6px 4px; margin-top: 6px !important; }
   @media (max-width: 600px) {
     #calendar-view { height: calc(100dvh - 60px); }
     #fc-container { padding: 0 !important; }
@@ -12892,6 +12815,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     #fc-container .fc .fc-toolbar-title { font-size: 1.05rem; font-weight: 700; }
     #fc-container .fc .fc-button { font-size: 0.78rem; padding: 8px 12px; min-height: 38px; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
     #fc-container .fc .fc-button-group { flex-wrap: nowrap; }
+    /* The chunk reorder rules above are written for the 3-chunk header; the footer
+       has 2 chunks and must keep its natural left/right layout. */
+    #fc-container .fc .fc-footer-toolbar { flex-wrap: nowrap; padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
+    #fc-container .fc .fc-footer-toolbar .fc-toolbar-chunk { order: 0 !important; width: auto !important; }
+    #fc-container .fc .fc-footer-toolbar .fc-button { min-height: 44px; }
     #fc-container .fc .fc-daygrid-day-frame { min-height: 52px; }
     #fc-container .fc .fc-daygrid-day-number { font-size: 0.78rem; padding: 4px 6px; }
     #fc-container .fc .fc-event { font-size: 0.75rem; padding: 3px 6px; min-height: 26px; line-height: 1.4; border-radius: 5px; }
@@ -22307,7 +22235,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.61';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.62';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -31253,10 +31181,29 @@ async function deleteBoardStatus(id) {
 // ═══════ CALENDAR (FullCalendar) ═══════
 let _fcInstance = null;
 
+// Scheduled tasks are a toggleable layer. They render in-app only and never
+// reach the iCal feed / Google Calendar.
+let _calShowSched = localStorage.getItem('amux_cal_show_sched') !== '0';
+
+function _fcSchedBtnLabel() {
+  return (_calShowSched ? '☑' : '☐') + ' Scheduled tasks';
+}
+
+function _fcToggleSched() {
+  _calShowSched = !_calShowSched;
+  localStorage.setItem('amux_cal_show_sched', _calShowSched ? '1' : '0');
+  document.querySelectorAll('.fc-schedToggle-button').forEach(b => {
+    b.textContent = _fcSchedBtnLabel();
+    b.setAttribute('aria-pressed', String(_calShowSched));
+  });
+  if (_fcInstance) _fcInstance.refetchEvents();
+}
+
 function _fcGetEvents() {
   const events = [];
   // Board issues are intentionally excluded — the calendar reflects schedules
   // (when things actually run), not every board due date (too noisy).
+  if (!_calShowSched) return events;
   (schedules || []).forEach(s => {
     if (s.deleted || !s.enabled || !s.next_run) return;
     events.push({
@@ -31295,13 +31242,19 @@ function _fcInit() {
     } : {
       left: 'prev,today,next',
       center: 'title',
-      right: 'dayGridMonth,timeGridWeek,timeGridDay subscribe',
+      right: 'schedToggle dayGridMonth,timeGridWeek,timeGridDay subscribe',
     },
+    // Mobile's header row is already full — give the toggle its own footer bar.
+    footerToolbar: isMobile ? { left: 'schedToggle', right: 'subscribe' } : false,
     buttonText: isMobile ? { listWeek: 'List', dayGridMonth: 'Month', timeGridDay: 'Day', today: 'Today' } : {},
     customButtons: {
       subscribe: {
         text: 'Subscribe',
         click: showIcalInfo,
+      },
+      schedToggle: {
+        text: _fcSchedBtnLabel(),
+        click: _fcToggleSched,
       },
     },
     events: function(info, successCallback) { successCallback(_fcGetEvents()); },
@@ -31334,6 +31287,10 @@ function _fcInit() {
     },
   });
   _fcInstance.render();
+  document.querySelectorAll('.fc-schedToggle-button').forEach(b => {
+    b.setAttribute('aria-pressed', String(_calShowSched));
+    b.setAttribute('title', 'Show/hide amux scheduled tasks (in-app only — never synced to Google Calendar)');
+  });
   // updateSize after layout settles (container was display:none → flex)
   setTimeout(() => { if (_fcInstance) _fcInstance.updateSize(); }, 50);
   // Resize handler
@@ -38776,7 +38733,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.61';
+const CACHE = 'amux-v0.9.62';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -39462,23 +39419,6 @@ class CCHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             return self._json({"enabled": bool(_GCAL_ID), "calendar_id": _GCAL_ID, "adc_ok": adc_ok, "tz": _GCAL_TZ})
-        if path == "/api/gcal/enable" and method == "POST":
-            body = self._read_body()
-            try:
-                service = _gcal_service()
-                service.calendarList().list(maxResults=1).execute()   # verify calendar scope
-            except Exception as e:
-                return self._json({"error": "calendar auth unavailable — run: gcloud auth application-default "
-                                   "login --scopes=openid,https://www.googleapis.com/auth/userinfo.email,"
-                                   "https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive,"
-                                   "https://www.googleapis.com/auth/calendar", "detail": str(e)[:150]}, 400)
-            cal_id = (body.get("calendar_id") or "").strip()
-            if not cal_id:
-                cal = service.calendars().insert(body={"summary": "amux Schedules", "timeZone": _GCAL_TZ}).execute()
-                cal_id = cal["id"]
-            _gcal_set_id(cal_id)
-            threading.Thread(target=_gcal_backfill, daemon=True).start()
-            return self._json({"ok": True, "calendar_id": cal_id, "backfill": "started"})
         if path == "/api/gcal/disable" and method == "POST":
             _gcal_set_id("")
             return self._json({"ok": True})
@@ -41867,7 +41807,6 @@ class CCHandler(BaseHTTPRequestHandler):
                 )
                 db.commit()
                 _push_ical_bg()   # schedules drive the calendar feed now
-                _gcal_sync_schedule_bg(sched["id"])   # real-time push to Google Calendar
                 self._json(sched, 201)
                 return
 
@@ -41919,7 +41858,6 @@ class CCHandler(BaseHTTPRequestHandler):
                            (new_next, int(_time.time()), sid))
                 db.commit()
                 _push_ical_bg()                 # refresh iCal feed
-                _gcal_sync_schedule_bg(sid)      # push the new time to Google Calendar
                 self._json({"ok": True, "next_run": new_next})
                 return
 
@@ -41970,7 +41908,6 @@ class CCHandler(BaseHTTPRequestHandler):
                 )
                 db.commit()
                 _push_ical_bg()   # schedule changed → refresh calendar feed
-                _gcal_sync_schedule_bg(sched_id)   # real-time push to Google Calendar
                 self._json(sched)
                 return
 
@@ -41981,7 +41918,6 @@ class CCHandler(BaseHTTPRequestHandler):
                            (int(_time.time()), int(_time.time()), sched_id))
                 db.commit()
                 _push_ical_bg()   # schedule removed → refresh calendar feed
-                _gcal_sync_schedule_bg(sched_id, deleted=True)   # remove from Google Calendar
                 self._json({"deleted": sched_id})
                 return
 
