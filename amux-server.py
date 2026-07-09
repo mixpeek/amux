@@ -218,7 +218,7 @@ CC_GMAIL.mkdir(parents=True, exist_ok=True)
 CC_BRANDING.mkdir(parents=True, exist_ok=True)
 CC_JOURNAL_MEDIA.mkdir(parents=True, exist_ok=True)
 
-UPLOAD_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
+UPLOAD_MAX_BYTES = 0  # no limit
 CLAUDE_HOME = Path.home() / ".claude"
 
 # S3 iCal public sync (optional — set AMUX_S3_BUCKET to enable)
@@ -22256,7 +22256,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.64';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.65';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -23576,7 +23576,7 @@ function clearPeekFiles() {
 }
 
 async function uploadAndAttach(file) {
-  if (file.size > 20 * 1024 * 1024) { showToast('File too large (max 20 MB)'); return; }
+  // No file size limit — browser memory is the natural constraint
   const isImage = file.type.startsWith('image/');
   let previewUrl = null;
   if (isImage) previewUrl = URL.createObjectURL(file);
@@ -41275,8 +41275,7 @@ class CCHandler(BaseHTTPRequestHandler):
             if "multipart/form-data" not in ctype:
                 return self._json({"error": "expected multipart/form-data"}, 400)
             length = int(self.headers.get("Content-Length", 0))
-            if length > 200 * 1024 * 1024:
-                return self._json({"error": "request too large (max 200 MB)"}, 413)
+            # No size limit on file uploads
             raw = self.rfile.read(length)
             from email import message_from_bytes
             from email.policy import compat32 as _compat32
@@ -41347,23 +41346,8 @@ class CCHandler(BaseHTTPRequestHandler):
                 data = base64.b64decode(raw_b64)
             except Exception:
                 return self._json({"error": "invalid base64"}, 400)
-            if len(data) > UPLOAD_MAX_BYTES:
-                return self._json({"error": "file too large (max 20 MB)"}, 400)
-            # Validate image files are real images (not corrupt/truncated)
-            IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
-            if ext in IMAGE_EXTS:
-                if len(data) < 100:
-                    return self._json({"error": "image too small — likely corrupt"}, 400)
-                # Check magic bytes
-                magic_ok = (
-                    data[:8] == b'\x89PNG\r\n\x1a\n' or           # PNG
-                    data[:2] == b'\xff\xd8' or                      # JPEG
-                    data[:6] in (b'GIF87a', b'GIF89a') or          # GIF
-                    data[:4] == b'RIFF' and data[8:12] == b'WEBP' or  # WebP
-                    data[:2] == b'BM'                               # BMP
-                )
-                if not magic_ok:
-                    return self._json({"error": "file does not appear to be a valid image"}, 400)
+            if UPLOAD_MAX_BYTES and len(data) > UPLOAD_MAX_BYTES:
+                return self._json({"error": f"file too large (max {UPLOAD_MAX_BYTES // (1024*1024)} MB)"}, 400)
             uid = uuid.uuid4().hex[:8]
             save_name = f"{uid}-{filename}"
             save_path = CC_UPLOADS / save_name
