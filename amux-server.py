@@ -25648,14 +25648,14 @@ function _csvInitCellTap() {
     const pop = document.createElement('div');
     pop.className = 'csv-cell-pop';
     pop.textContent = text;
-    const rect = td.getBoundingClientRect();
-    pop.style.left = Math.min(rect.left, window.innerWidth - 320) + 'px';
+    const rect = _cssRect(td);
+    const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+    pop.style.left = Math.min(rect.left, window.innerWidth / z - 320) + 'px';
     pop.style.top = (rect.bottom + 4) + 'px';
     document.body.appendChild(pop);
     _csvPopEl = pop;
-    // Ensure it doesn't overflow screen
-    const popRect = pop.getBoundingClientRect();
-    if (popRect.bottom > window.innerHeight - 20) pop.style.top = (rect.top - popRect.height - 4) + 'px';
+    const popRect = _cssRect(pop);
+    if (popRect.bottom > window.innerHeight / z - 20) pop.style.top = (rect.top - popRect.height - 4) + 'px';
   });
   document.addEventListener('click', (e) => { if (_csvPopEl && !e.target.closest('.csv-cell-pop') && !e.target.closest('td[data-ci]')) dismiss(); });
 }
@@ -26769,16 +26769,16 @@ function _showExploreMenu(path, btn, type) {
   };
   popup.appendChild(delItem);
   document.body.appendChild(popup);
-  // Position near button
-  const r = btn.getBoundingClientRect();
+  const r = _cssRect(btn);
   const pw = popup.offsetWidth || 140;
+  const ph = popup.offsetHeight || 80;
+  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
   let left = r.right - pw;
   if (left < 8) left = 8;
   let top = r.bottom + 4;
-  if (top + 80 > window.innerHeight) top = r.top - 80;
+  if (top + ph > window.innerHeight / z) top = r.top - ph - 4;
   popup.style.left = left + 'px';
   popup.style.top = top + 'px';
-  // Dismiss on outside tap
   setTimeout(() => {
     const dismiss = e => { if (!popup.contains(e.target)) { popup.remove(); document.removeEventListener('pointerdown', dismiss, true); } };
     document.addEventListener('pointerdown', dismiss, true);
@@ -26834,12 +26834,14 @@ function _showFilesMenu(path, btn, type) {
   };
   popup.appendChild(delItem);
   document.body.appendChild(popup);
-  const r = btn.getBoundingClientRect();
+  const r = _cssRect(btn);
   const pw = popup.offsetWidth || 160;
+  const ph = popup.offsetHeight || 140;
+  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
   let left = r.right - pw;
   if (left < 8) left = 8;
   let top = r.bottom + 4;
-  if (top + 100 > window.innerHeight) top = r.top - 100;
+  if (top + ph > window.innerHeight / z) top = r.top - ph - 4;
   popup.style.left = left + 'px';
   popup.style.top = top + 'px';
   setTimeout(() => {
@@ -31719,9 +31721,7 @@ function enterGridMode() {
   const tabBar = document.querySelector('.tab-bar-outer');
   const ref = tabBar || document.querySelector('.header-row');
   if (ref) {
-    const rect = ref.getBoundingClientRect();
-    // Flush under the tab bar — adding the ref's marginBottom here left a
-    // visible strip of page background above the workspace toolbar.
+    const rect = _cssRect(ref);
     view.style.top = rect.bottom + 'px';
   }
   view.classList.add('active');
@@ -31773,7 +31773,7 @@ function wsToggleFullscreen() {
     const ref = tabBar || document.querySelector('.header-row');
     if (ref) { ref.style.display = ''; document.querySelector('.header-row')?.style.setProperty('display', ''); }
     if (tabBar) tabBar.style.display = '';
-    const rect = (tabBar || ref)?.getBoundingClientRect();
+    const rect = (tabBar || ref) ? _cssRect(tabBar || ref) : null;
     if (rect) view.style.top = rect.bottom + 'px';
   }
   // Trigger gridstack relayout
@@ -34549,7 +34549,7 @@ async function pullFromRemote(btn) {
     var tooltip = document.getElementById('wt-tooltip');
     if (!el) { spotlight.style.display = 'none'; return; }
 
-    var r = el.getBoundingClientRect();
+    var r = _cssRect(el);
     var pad = 8;
     var padX = s.padX || pad;
     var padY = s.padY || pad;
