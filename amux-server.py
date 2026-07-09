@@ -430,8 +430,10 @@ def _install_signal_handlers():
             pass
         slog(f"[SIGNAL] exiting due to {sig_name}")
         os._exit(128 + signum)
-    for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, _sig_handler)
+    signal.signal(signal.SIGTERM, _sig_handler)
+    # Ignore SIGHUP so the server survives terminal disconnects and
+    # os.execv auto-restarts (where nohup protection is lost).
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
 # ── Torrent (aria2c RPC) helpers ──────────────────────────────────────────────
 _ARIA2_RPC_PORT = 6800
