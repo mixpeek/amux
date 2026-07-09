@@ -10530,9 +10530,14 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
                     pass
                 if not text:
                     return True, "no suggestion found"
-                # Clear any ghost text in the input before typing
-                subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "C-u"], capture_output=True, timeout=5)
-                time.sleep(0.05)
+            # Type into a clean input line. A mid-render send can paint characters
+            # onto the terminal without them entering Claude's input buffer ("ghost
+            # text") — Enter then submits an empty buffer and the message is lost.
+            # Clearing first (C-u wipes the buffer; the following keystrokes force a
+            # fresh render over any ghost) means a steering re-delivery types clean
+            # instead of accumulating.
+            subprocess.run(["tmux", "send-keys", "-t", t, "C-u"], capture_output=True, timeout=5)
+            time.sleep(0.04)
             if len(text) > 400:
                 import tempfile, os as _os
                 # Use a named buffer to avoid races between concurrent sends
