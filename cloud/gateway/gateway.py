@@ -1399,6 +1399,20 @@ def proxy(handler, port, path, qs, user_email="", user_id=None):
             pass
 
 # ── Request handler ────────────────────────────────────────────────────────────
+class _HeadSink:
+    """Passes the status line + headers through, then swallows the body (HEAD)."""
+    def __init__(self, real):
+        self.real = real
+        self.drop = False
+
+    def write(self, b):
+        if not self.drop:
+            return self.real.write(b)
+
+    def flush(self):
+        return self.real.flush()
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         import sys
@@ -2471,6 +2485,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "starting", "retry_after": 3}, 503)
 
         proxy(self, target_port, path, qs, user_email=user_email, user_id=target_org_id)
+
+    def end_headers(self):
+        BaseHTTPRequestHandler.end_headers(self)
+        sink = getattr(self, "_head_sink", None)
+        if sink:
+            sink.drop = True   # headers are out; suppress the body for HEAD
+
+    def do_HEAD(self):
+        # BaseHTTPRequestHandler has no do_HEAD, so every HEAD was answered with
+        # 501 and never relayed down a tunnel. Run the normal GET path but drop
+        # the body once headers are sent, keeping Content-Length accurate.
+        real = self.wfile
+        sink = _HeadSink(real)
+        self._head_sink = sink
+        self.wfile = sink
+        try:
+            self._handle()
+        finally:
+            self.wfile = real
+            self._head_sink = None
 
     def do_GET(self):    self._handle()
     def do_POST(self):   self._handle()
