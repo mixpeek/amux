@@ -44,16 +44,21 @@ After creating/editing server.env, `touch amux-server.py` to trigger a reload.
 
 ## iCal / Google Calendar sync
 
-Board items with `due` dates are exported as an iCal feed:
+The iCal feed exports amux **calendar events** only (`cal_events` table) — NOT
+schedules or board issues. Those are in-app-only calendar layers. Timed events are
+emitted as UTC (`DTSTART:...Z`) so Google shows the correct local time; all-day use
+`VALUE=DATE`.
 - Local: `GET /api/calendar.ics`
 - Public S3 (for Google/Apple Calendar subscriptions): set `AMUX_S3_BUCKET` in `server.env`
 
-S3 bucket config (one-time, already done on `ethan-personal`):
+S3 bucket config (on `ethan-personal`):
 - Public access block: `BlockPublicAcls=true, IgnorePublicAcls=true, BlockPublicPolicy=false, RestrictPublicBuckets=false`
-- Bucket policy grants `s3:GetObject` on `arn:aws:s3:::ethan-personal/amux/calendar.ics` only
-- Public URL: `https://ethan-personal.s3.us-east-2.amazonaws.com/amux/calendar.ics`
+- Bucket policy grants public `s3:GetObject` on `arn:aws:s3:::ethan-personal/amux/*.ics` (widened from the single `calendar.ics` key so cache-busting keys work).
+- Current key: `AMUX_S3_KEY=amux/calendar-v2.ics` → `https://ethan-personal.s3.us-east-2.amazonaws.com/amux/calendar-v2.ics`
 
-The feed auto-uploads to S3 on every board write (POST/PATCH/DELETE). The dashboard's calendar subscription button shows the S3 URL directly when configured.
+**Google caches ICS feeds by URL, hard.** There is no reliable way to force a refresh — Google refetches on its own cadence (hours). If you edit the feed's *content shape* and need Google to see it now, publish to a NEW key (bump `-v2`→`-v3`) and re-subscribe; the old URL keeps serving Google's stale cache. `AMUX_S3_KEY` is read at startup via `os.environ.setdefault`, and execv reloads inherit the env, so changing it needs a real restart: `launchctl kickstart -k gui/$(id -u)/com.amux.server`.
+
+The feed auto-uploads to S3 on every event write. The dashboard's calendar subscription button shows the S3 URL directly when configured.
 
 ## Browser Automation
 
