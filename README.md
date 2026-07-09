@@ -279,14 +279,22 @@ Only **events** leave amux; tasks and issues would be noise on your real calenda
 slot). Set a title, all-day or a start/end time, and an optional location — Save.
 Click an event to edit or delete it.
 
-**Sync to Google/Apple Calendar:** amux publishes your events as an RFC 5545 iCal
-feed. Click **Subscribe** in the calendar and add the URL to Google Calendar
-(*Settings → Add calendar → From URL*) or Apple Calendar. Timed events are emitted
-in UTC so they show at the correct local time; all-day events use `VALUE=DATE`.
+**Sync to Google/Apple Calendar:** amux serves your events as an RFC 5545 iCal feed
+at `/api/calendar.ics`. Click **Subscribe** in the calendar; it hands you a public
+URL and buttons to add it to Google (*Settings → Add calendar → From URL*) or Apple
+Calendar. Timed events are emitted in UTC so they show at the correct local time.
+
+The public URL comes from whichever exposure you have, in order:
+
+1. **[Tunnel](#tunnel)** — `https://<id>.t.amux.io/api/calendar.ics`. This is the
+   intended path: no S3, no port forwarding, works from a laptop.
+2. **S3** — set `AMUX_S3_BUCKET`; the feed auto-uploads there (always-up, even when
+   your machine is off).
+3. **Download .ics** — a static import with no live sync; zero infra, works anywhere.
 
 > Google refreshes external iCal feeds on its own slow cadence (hours) and caches
-> them **by URL**. If you need it to pick up a change immediately, publish to a new
-> key and re-subscribe — see `CLAUDE.md` § iCal / Google Calendar sync.
+> them **by URL**. A tunnel URL is only reachable while your machine + tunnel are up;
+> Google keeps the last snapshot otherwise. See `CLAUDE.md` § iCal / Google Calendar sync.
 
 ---
 
@@ -357,16 +365,32 @@ status code intact, including `HEAD`.
 > over a tunnel — it detects the dead SSE stream and falls back to polling — but it
 > takes ~2 minutes to fall back, and it stays in "Polling" mode.
 
-**Setup.** The tunnel is gated on an active [amux cloud](https://amux.io/cloud/)
-subscription (Clerk SSO + billing). Put your token in `~/.amux/server.env`:
+**Setup.** Put a tunnel token in `~/.amux/server.env`, then `touch amux-server.py`
+to reload:
 
 ```
-AMUX_TUNNEL_TOKEN=<token from your amux cloud account>
+AMUX_TUNNEL_TOKEN=<token>
 ```
 
-Then `touch amux-server.py` to reload. The tunnel auto-starts with the server and
-points at the dashboard unless you give it another port. To auto-target a fixed
-local port that survives restarts, add `AMUX_TUNNEL_PORT=<port>` to `server.env`.
+The tunnel auto-starts with the server and points at the dashboard (so
+`/api/calendar.ics` is exposed) unless you give it another port. To auto-target a
+fixed local port that survives restarts, add `AMUX_TUNNEL_PORT=<port>`.
+
+### Hosted vs. self-hosted (OSS)
+
+The tunnel client is open source; the **gateway** is the piece that needs a public
+address. You have two ways to get a token that works:
+
+- **amux cloud (paid, easiest).** `cloud.amux.io` runs the gateway for you; a token
+  is included with an active [amux cloud](https://amux.io/cloud/) subscription (Clerk
+  SSO + billing). This is how the project is funded.
+- **Self-host (free).** The gateway is in [`cloud/gateway/`](cloud/gateway/) — run it
+  on your own box + domain, mint your own tokens, and point the client at it with
+  `AMUX_TUNNEL_GATEWAY=https://your-gateway`. No amux account required.
+
+Either way, only one tunnel is active per token (one public URL → one local target).
+And if you don't want a tunnel at all, the calendar still works via **S3** or a
+**downloaded .ics** (see [Calendar & events](#calendar--events)).
 
 **Worked example:** [`examples/flask-tunnel-demo/`](examples/flask-tunnel-demo/) is a
 tiny Flask app you can publish in one command (`amux tunnel start 8940`), with a
