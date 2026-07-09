@@ -10416,6 +10416,51 @@ def _get_send_lock(name: str) -> threading.Lock:
 
 _auto_waking = set()
 
+def _verify_submitted(name: str, target: str, text: str) -> bool:
+    """Confirm a just-sent message actually submitted. `send-keys` succeeding only
+    means the keystrokes reached the pane — an autocomplete picker (opened by an
+    @mention) can swallow the Enter, leaving the message unsent in the input box.
+    That is the 'steering queue clears without delivering' bug: the queue dequeues
+    on send_text's optimistic success while nothing was transmitted.
+
+    Returns True once the input prompt no longer holds our text. If it still does
+    AND the session is idle, a picker likely ate the Enter → press Enter again to
+    submit. If the session is generating, the text is queued input that auto-submits
+    at turn end — leave it alone (pressing Enter again would duplicate). Biased to
+    report True when uncertain so we never double-send."""
+    tail = text.strip()[-16:]
+    if not tail:
+        return True
+
+    def _pending_from(clean):
+        for l in reversed(clean.splitlines()):
+            s = l.strip()
+            if s[:1] in ("❯", "›"):
+                return s.lstrip("❯› \xa0\t").strip()
+        return None
+
+    for _ in range(3):
+        time.sleep(0.3)
+        raw = tmux_capture(name, 12) or ""
+        clean = _STRIP_ANSI.sub("", raw)
+        pend = _pending_from(clean)
+        if pend is None or tail not in pend:
+            return True   # input cleared → the message went through
+        # Text still in the box. If Claude is generating, it's queued and will
+        # submit when the turn ends — don't re-Enter (would duplicate).
+        if _detect_claude_status(raw) == "active":
+            return True
+        # Idle with our text stuck → a picker likely ate the Enter. Submit it.
+        try:
+            subprocess.run(["tmux", "send-keys", "-t", target, "Enter"],
+                           capture_output=True, timeout=5)
+        except Exception:
+            break
+    raw = tmux_capture(name, 12) or ""
+    pend = _pending_from(_STRIP_ANSI.sub("", raw))
+    return pend is None or tail not in pend or _detect_claude_status(raw) == "active"
+
+
 def send_text(name: str, text: str) -> tuple[bool, str]:
     iterm2_id = _session_iterm2_id(name)
     if iterm2_id:
@@ -10516,20 +10561,16 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
                 ["tmux", "send-keys", "-t", t, "Enter"],
                 check=True, capture_output=True, timeout=5,
             )
-            # A message containing an @file-path mention (e.g. an attached image
-            # at @/Users/.../uploads/x.png) opens Claude Code's file-autocomplete
-            # popup; the Enter above commits/closes that popup instead of
-            # submitting, leaving the message unsent. Send a second Enter to
-            # actually submit. Targeted to path mentions (they contain '/');
-            # @session mentions have no '/'. Safe when no popup was open — Enter
-            # on an empty input is a no-op.
-            if re.search(r'@\S*/\S', text):
-                time.sleep(0.2)
-                subprocess.run(
-                    ["tmux", "send-keys", "-t", t, "Enter"],
-                    capture_output=True, timeout=5,
-                )
-            return True, "sent"
+            # send-keys succeeding only means the keystrokes reached the pane. An
+            # @mention (@path OR @session) opens Claude's autocomplete picker, and
+            # the Enter above selects/closes the picker instead of submitting —
+            # leaving the message unsent. Previously this made the steering queue
+            # clear a message it never delivered. Verify the input actually cleared
+            # (re-submitting if a picker ate the Enter); report failure otherwise so
+            # the caller doesn't treat a dropped message as sent.
+            if _verify_submitted(name, t, text):
+                return True, "sent"
+            return False, "not submitted (autocomplete popup ate the Enter?)"
         except subprocess.CalledProcessError as e:
             return False, e.stderr.decode(errors="replace")
         except subprocess.TimeoutExpired:
