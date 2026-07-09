@@ -1060,6 +1060,10 @@ ${BOLD}Tunnel (public HTTPS URL for any localhost port — needs amux cloud):${R
   amux tunnel start [PORT]       Expose a port (default: the amux server)
   amux tunnel stop               Stop the tunnel
 
+${BOLD}Urgent owner alert (USE SPARINGLY — push + iMessage to the owner):${RESET}
+  amux alert "message" [reason]  Fire an immediate alert to the amux owner
+                                 Only for things needing attention NOW.
+
 ${BOLD}Claude Code flags (on register/exec):${RESET}
   --model <model>              Model: opus, sonnet, haiku, or full ID
   --yolo                       Alias for --dangerously-skip-permissions
@@ -1163,6 +1167,30 @@ EOF
   esac
 }
 
+cmd_alert() {
+  # Urgent owner alert — USE SPARINGLY. Fires an in-app push + iMessage to the
+  # amux owner (Ethan). For anything a session needs the owner to see NOW.
+  local AMUX_API="${AMUX_API:-https://localhost:8822}"
+  local msg="${1:-}"
+  [[ -n "$msg" ]] || die "Usage: amux alert \"<message>\" [reason]
+This is a FIRE ALARM — only for things that need the owner immediately
+(prod down, data at risk, a go/no-go only they can make). Not for status updates."
+  local reason="${2:-}"
+  local sess="${AMUX_SESSION:-cli}"
+  curl -sk -X POST -H 'Content-Type: application/json' \
+    -d "$(python3 -c 'import json,sys; print(json.dumps({"message":sys.argv[1],"reason":sys.argv[2],"session":sys.argv[3]}))' "$msg" "$reason" "$sess")" \
+    "$AMUX_API/api/alert/owner" | python3 -c "
+import sys, json
+raw = sys.stdin.read()
+try: d = json.loads(raw)
+except ValueError: sys.exit('amux server not responding')
+if d.get('error'): sys.exit('alert failed: ' + str(d['error']))
+if d.get('deduped'): print('(deduped — an identical alert fired <60s ago)'); sys.exit(0)
+ch = d.get('channels', {})
+print('alert sent →', ', '.join('%s: %s' % (k, v) for k, v in ch.items()) or '(no channels)')
+"
+}
+
 # ── Main dispatch ────────────────────────────────────────────────────────────
 #
 # Source guard: when this script is run normally as `amux ...`, BASH_SOURCE[0]
@@ -1190,6 +1218,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     serve|web)        shift; cmd_serve "$@" ;;
     board|b)          shift; cmd_board "$@" ;;
     tunnel|t)         shift; cmd_tunnel "$@" ;;
+    alert)            shift; cmd_alert "$@" ;;
     help|--help|-h)   cmd_help ;;
     version|--version|-v) echo "amux v${CC_VERSION}" ;;
     "")               cmd_dashboard ;;
