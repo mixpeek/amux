@@ -228,6 +228,15 @@
     margin-bottom: 30px;
   }
   .lede b { color: var(--fg); font-weight: 600; }
+  .social-proof {
+    font-size: 13.5px;
+    color: var(--fg-3);
+    margin: -16px 0 24px;
+    max-width: 60ch;
+  }
+  .social-proof a { color: var(--fg-2); }
+  .social-proof a:hover { color: var(--accent); }
+  [data-theme="light"] .social-proof { color: var(--fg-3); }
 
   .hero-cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
   .hero-cta .btn { padding: 13px 20px; font-size: 14.5px; }
@@ -971,6 +980,8 @@
       &mdash; with self-healing built in, so you wake up to finished work instead of crashed
       sessions.
     </p>
+
+    <p class="social-proof">Trusted by 288+ developers shipping overnight with AI agents &mdash; <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">open source on GitHub</a></p>
 
     <div class="hero-cta">
       <a class="btn btn-primary" href="/pricing/">

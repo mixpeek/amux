@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux for Engineering Managers — Give Your Dev Team AI Teammates (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Engineering managers use amux to give each developer a parallel AI teammate. Run dozens of Claude Code, Codex, or Gemini CLI agents from a shared dashboard — built-in kanban, real-time output, phone monitoring, and self-healing overnight runs. MIT open source.">
+  <meta name="keywords" content="AI tools for engineering managers 2026, how to give your dev team AI agents, engineering manager AI coding tools, deploy AI coding agents for your team, AI team productivity tools for engineering leads, how to manage developers using AI agents, Claude Code for engineering teams">
+  <link rel="canonical" href="https://amux.io/for/engineering-managers/">
+  <meta property="og:title" content="amux for Engineering Managers — Give Your Dev Team AI Teammates (2026)">
+  <meta property="og:description" content="Engineering managers use amux to give each developer a parallel AI teammate. Run dozens of coding agents from a shared dashboard, monitor from your phone, and wake up to completed PRs.">
+  <meta property="og:url" content="https://amux.io/for/engineering-managers/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux for Engineering Managers — Give Your Dev Team AI Teammates (2026)">
+  <meta name="twitter:description" content="Engineering managers use amux to give each developer a parallel AI teammate. Run dozens of coding agents from a shared dashboard, monitor from your phone, and wake up to completed PRs.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "For Developers", "item": "https://amux.io/for/"},
+      {"@type": "ListItem", "position": 3, "name": "Engineering Managers", "item": "https://amux.io/for/engineering-managers/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux for Engineering Managers — Give Your Dev Team AI Teammates",
+    "description": "Engineering managers use amux to give each developer a parallel AI teammate. Run dozens of Claude Code, Codex, or Gemini CLI agents from a shared dashboard with built-in kanban, real-time output, phone monitoring, and self-healing overnight runs.",
+    "url": "https://amux.io/for/engineering-managers/",
+    "datePublished": "2026-07-09",
+    "dateModified": "2026-07-09",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["AI tools for engineering managers", "Claude Code for engineering teams", "deploy AI coding agents for your team", "AI team productivity tools 2026"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Do engineers need to learn new workflows to use amux?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. Developers keep using their existing editors, git workflows, and review processes. amux operates alongside their normal environment — it manages tmux sessions in the background and surfaces agent output through a shared dashboard. Engineers who already use Claude Code or Codex CLI will feel at home immediately. For those new to AI coding agents, the amux board provides a familiar kanban interface for assigning tasks without requiring any terminal interaction."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is amux safe to run in production repositories?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux itself does not touch your repository — it manages the terminal sessions that your agents run in. Safety is determined by how you configure those agent sessions. For production codebases, most teams run agents on feature branches only, require PR review before merging, and use CLAUDE.md to restrict what the agent is allowed to modify. The --yolo flag (which disables per-command approval prompts) is appropriate for sandboxed feature branches; for production-critical paths, run without it so agents pause for human confirmation on destructive commands."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does amux handle multiple engineers working on the same codebase?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Each engineer runs their own amux instance and their own agent sessions — each on a separate git branch. The shared amux board acts as the coordination layer: everyone can see which tasks are in-progress, who owns what, and what agents have completed. Since agents work on isolated branches, there is no conflict at the file level. Conflicts happen at merge time, just like with any parallel development — standard git PR review handles them. For very large teams, the amux Concierge can set up a shared server deployment where all engineers' sessions are visible in one dashboard."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What does amux cost for a team?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux is MIT licensed and free to self-host. Your costs are AI API tokens billed directly by Anthropic, OpenAI, or Google at standard rates. For a team of 5 engineers each running 2–3 parallel agent sessions during business hours, expect $200–800/month in total API costs — equivalent to a fraction of one engineer-day per month. There is no per-seat fee, no SaaS subscription, and no vendor lock-in. Use the amux cost calculator to model your team's specific scenario."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can the engineering manager see what all agents across the team are doing?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. The shared amux board gives the EM a cross-team view of every active task and its status. For session-level output (the live terminal stream of what an agent is doing), the EM can peek at any session from the dashboard without logging into the developer's machine. This is available on mobile too — check agent progress from your phone during standup or from anywhere via Tailscale."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What happens when an agent crashes or runs out of context overnight?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux's self-healing watchdog detects crashes within seconds and restarts the session, replaying the last steering message so the agent resumes where it left off. Context overflow — when the conversation gets too long — triggers automatic compaction: the agent summarizes earlier context and continues without losing the thread of work. You can queue overnight runs before leaving the office and review completed pull requests the next morning."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For Developers</a> <span class="sep">›</span> <span>Engineering Managers</span></div>
+
+    <h1>Give Your Dev Team AI Teammates</h1>
+    <p class="subtitle">Engineering managers use amux to deploy a fleet of Claude Code, Codex, or Gemini CLI agents alongside their engineers — each developer gains a parallel AI teammate that handles the backlog while they focus on architecture and review. Monitored from one dashboard or your phone. Updated July 2026.</p>
+
+    <p>Engineering managers use amux to multiply team velocity without adding headcount. Instead of each developer working on one task at a time, amux lets every engineer run 3–5 parallel AI agent sessions — tackling the backlog, writing tests, fixing bugs, and drafting docs simultaneously. <strong>amux is the open-source control plane that makes running an AI-augmented engineering team possible at the team level, not just the individual level.</strong></p>
+
+    <p>The result: your developers spend their time on the work that requires human judgment — architecture decisions, code review, customer conversations — while agents handle the parallel execution work that currently creates context-switching bottlenecks.</p>
+
+    <h2>What Does the Team Look Like When Running amux?</h2>
+    <p>Here is a snapshot of what a 4-person engineering team might have active on a given sprint day:</p>
+
+    <table style="width:100%;border-collapse:collapse;margin:1.5rem 0;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left;padding:0.75rem 1rem;">Session</th>
+          <th style="text-align:left;padding:0.75rem;">Assigned To</th>
+          <th style="text-align:left;padding:0.75rem;">Task</th>
+          <th style="text-align:left;padding:0.75rem;">Agent</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem 1rem;font-family:monospace;">feat-auth-mfa</td>
+          <td style="padding:0.75rem;">Dev A (agent)</td>
+          <td style="padding:0.75rem;">Implement TOTP MFA flow + migration</td>
+          <td style="padding:0.75rem;">Claude Code</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem 1rem;font-family:monospace;">fix-perf-dashboard</td>
+          <td style="padding:0.75rem;">Dev A (agent)</td>
+          <td style="padding:0.75rem;">Profile and fix slow dashboard queries (N+1)</td>
+          <td style="padding:0.75rem;">Claude Code</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem 1rem;font-family:monospace;">test-payments</td>
+          <td style="padding:0.75rem;">Dev B (agent)</td>
+          <td style="padding:0.75rem;">Add integration tests for the billing module</td>
+          <td style="padding:0.75rem;">Codex</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem 1rem;font-family:monospace;">docs-api-v2</td>
+          <td style="padding:0.75rem;">Dev B (agent)</td>
+          <td style="padding:0.75rem;">Generate OpenAPI spec + usage examples for v2 endpoints</td>
+          <td style="padding:0.75rem;">Claude Code</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem 1rem;font-family:monospace;">refactor-event-bus</td>
+          <td style="padding:0.75rem;">Dev C (agent)</td>
+          <td style="padding:0.75rem;">Migrate event handlers to the new async queue</td>
+          <td style="padding:0.75rem;">Claude Code</td>
+        </tr>
+        <tr>
+          <td style="padding:0.75rem 1rem;font-family:monospace;">triage-bug-queue</td>
+          <td style="padding:0.75rem;">Dev D (agent)</td>
+          <td style="padding:0.75rem;">Reproduce top-5 open bugs, write failing tests, tag severity</td>
+          <td style="padding:0.75rem;">Claude Code</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>All six sessions run simultaneously. The EM sees all statuses in one dashboard view. Developers review agent output in the afternoon and queue the next batch. The sprint throughput multiplies — without adding to the payroll.</p>
+
+    <h2>How Does amux Actually Speed Up a Sprint?</h2>
+    <p>The bottleneck in most sprints is not developer skill — it is context-switching. Developers jump between tasks, get blocked waiting on review, and lose flow state constantly. amux attacks this directly:</p>
+    <ul>
+      <li><strong>Parallel execution:</strong> While a developer works on the hard problem that needs their full attention, agents handle the adjacent tasks — tests, docs, small fixes — in parallel. Nothing waits in queue.</li>
+      <li><strong>Overnight throughput:</strong> Queue a batch of well-defined tasks before end of day. Agents run with self-healing while the team sleeps. The morning standup starts from completed pull requests, not from "still in progress."</li>
+      <li><strong>Backlog drain:</strong> Those low-priority "we'll get to it" tasks — test coverage gaps, stale docs, deprecated API migrations — can run as background agent work without displacing sprint priorities.</li>
+      <li><strong>No babysitting:</strong> amux's self-healing watchdog restarts crashed sessions and handles context overflow automatically. The EM does not need to monitor terminals — the dashboard surfaces status, and alerts go to your phone only when something needs attention.</li>
+    </ul>
+
+    <h2>Without amux vs. With amux — Team Velocity Comparison</h2>
+    <table style="width:100%;border-collapse:collapse;margin:1.5rem 0;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left;padding:0.75rem 1rem;">Scenario</th>
+          <th style="text-align:center;padding:0.75rem;">Without amux</th>
+          <th style="text-align:center;padding:0.75rem;">With amux</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem 1rem;">Parallel tasks per developer</td>
+          <td style="text-align:center;padding:0.75rem;">1–2</td>
+          <td style="text-align:center;padding:0.75rem;">4–8 (developer + agents)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem 1rem;">Overnight throughput</td>
+          <td style="text-align:center;padding:0.75rem;">Zero</td>
+          <td style="text-align:center;padding:0.75rem;">Full agent fleet running</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem 1rem;">Backlog visibility (cross-team)</td>
+          <td style="text-align:center;padding:0.75rem;">Jira / Linear board</td>
+          <td style="text-align:center;padding:0.75rem;">Live amux board + session status</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem 1rem;">Test coverage gaps</td>
+          <td style="text-align:center;padding:0.75rem;">Accumulate sprint over sprint</td>
+          <td style="text-align:center;padding:0.75rem;">Addressed as background agent work</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem 1rem;">Agent crash recovery</td>
+          <td style="text-align:center;padding:0.75rem;">Manual restart needed</td>
+          <td style="text-align:center;padding:0.75rem;">Auto-restart in seconds</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem 1rem;">EM visibility into agent work</td>
+          <td style="text-align:center;padding:0.75rem;">None</td>
+          <td style="text-align:center;padding:0.75rem;">Live output peek from phone or desktop</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem 1rem;">Developer context-switching</td>
+          <td style="text-align:center;padding:0.75rem;">High — blocked tasks stall progress</td>
+          <td style="text-align:center;padding:0.75rem;">Low — agents handle adjacent work</td>
+        </tr>
+        <tr>
+          <td style="padding:0.75rem 1rem;">Time from task definition to PR</td>
+          <td style="text-align:center;padding:0.75rem;">1–3 days</td>
+          <td style="text-align:center;padding:0.75rem;">Hours (agent) + review time</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>How Do I Roll This Out to My Team?</h2>
+    <p>A practical rollout for a 3–8 person engineering team takes less than a day:</p>
+    <ol>
+      <li><strong>Install amux per developer</strong> (5 minutes each):
+        <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh</code></pre>
+        Each engineer runs their own amux instance. No shared server required for the initial rollout.
+      </li>
+      <li><strong>Register the shared project</strong> on each machine:
+        <pre><code>amux register myapp --dir ~/Dev/myapp --yolo</code></pre>
+        The <code>--yolo</code> flag disables per-command approval prompts — appropriate for feature branches where developers review at the PR level. For production-critical paths, omit it.
+      </li>
+      <li><strong>Write a team CLAUDE.md</strong> in the project root. Check it into version control so every agent session on every machine reads the same context: project architecture, branch conventions, test commands, what to avoid. This is the single highest-leverage thing you can do to ensure consistent agent output quality across the team.</li>
+      <li><strong>Define sprint tasks as amux board cards.</strong> The shared board is the coordination layer — everyone can see what is in-progress, who owns what, and what agents have completed. Map existing sprint issues from Jira or Linear into the amux board at the start of each sprint, or run both in parallel during an evaluation period.</li>
+      <li><strong>Launch agents from the dashboard or CLI.</strong> Each developer starts their agent sessions at the beginning of the day. The EM sees cross-team status from their own dashboard instance (or via the <a href="/guides/team-workflow-setup/">shared server setup</a> for full cross-team visibility in one view).</li>
+      <li><strong>Queue overnight runs</strong> before end of day. Developers define the next batch of tasks on the board before they sign off. Agents run with self-healing. Morning standup reviews completed PRs.</li>
+    </ol>
+    <p>For a guided setup, <a href="/concierge/">amux Concierge</a> installs and configures the full team workflow for you, including CLAUDE.md templates, board structure, and overnight run scheduling.</p>
+
+    <h2>Can I Run Agents Myself as the Engineering Manager?</h2>
+    <p>Yes — and many EMs use amux this way even before rolling it out to their team. The EM use case is slightly different from the developer use case:</p>
+    <ul>
+      <li><strong>Late-night batch work:</strong> You define 5–10 well-scoped tasks in the board before you go to sleep. Agents run overnight. You wake up to pull requests waiting for developer review — your team's morning is unblocked before they start.</li>
+      <li><strong>Backlog processing:</strong> Long-tail issues that never make a sprint — outdated tests, deprecated dependency migrations, doc gaps — can be batched into an agent run over a weekend without displacing sprint priorities.</li>
+      <li><strong>Spec-to-skeleton acceleration:</strong> Write the design doc, give it to an agent to generate the initial scaffold — routes, models, test structure — so developers start from a working skeleton rather than a blank file.</li>
+      <li><strong>On-call triage support:</strong> While on call, redirect an agent to investigate a failure mode — reproduce the error, trace the stack, write a failing test — so you have a head start before routing to the right developer.</li>
+    </ul>
+
+    <h2>Phone-First Monitoring — No Need to Be at a Desk</h2>
+    <p>amux is designed for asynchronous management. You do not need to babysit a terminal to know what your agents are doing. From the amux mobile app (iOS PWA or native iOS app from the App Store):</p>
+    <ul>
+      <li>See every session's live status (working / waiting / idle) across the team</li>
+      <li>Peek at any agent's live terminal output</li>
+      <li>Send a steering instruction to redirect an agent that's going off-track</li>
+      <li>Move board cards between todo / doing / done</li>
+      <li>Check token spend across all sessions</li>
+    </ul>
+    <p>For remote access from outside your local network, set up Tailscale on the amux server. See the <a href="/guides/team-workflow-setup/">team workflow setup guide</a> for full configuration instructions.</p>
+
+    <h2>How Does amux Scale Beyond 10 Agents?</h2>
+    <p>A single amux instance on a modest VM can comfortably manage 10–20 concurrent agent sessions. Scaling beyond that follows two patterns:</p>
+    <ul>
+      <li><strong>Vertical scaling (10–50 agents):</strong> Move amux to a larger VM — 8–16 vCPU, 32–64 GB RAM. tmux sessions are lightweight; the bottleneck is typically API throughput and disk I/O from simultaneous git operations, not CPU. See the <a href="/guides/running-10-plus-agents/">running 10+ agents guide</a> for tuning recommendations.</li>
+      <li><strong>Horizontal scaling (50+ agents):</strong> Run multiple amux instances with separate project registrations, or use the shared board as a coordination layer across instances. The <a href="/guides/scaling-to-50-agents/">scaling to 50 agents guide</a> covers multi-instance coordination and task partitioning strategies.</li>
+    </ul>
+
+    <h2>Self-Healing Means Agents Run Overnight Without a Babysitter</h2>
+    <p>The single most common concern EMs raise is: "what happens when something crashes at 2 AM and nobody's watching?" amux handles this automatically:</p>
+    <ul>
+      <li><strong>Crash recovery:</strong> The watchdog detects a dead session within seconds, restarts it, and replays the last steering message. The agent resumes from the last checkpoint without manual intervention.</li>
+      <li><strong>Context overflow:</strong> When a long session fills the model's context window, amux triggers automatic compaction — the agent summarizes earlier context and continues. No session hangs waiting for a human to clear it.</li>
+      <li><strong>Stuck detection:</strong> Sessions that have produced no output for a configurable timeout are flagged as stale and restarted. Agents that get into a loop or wait forever for a tool response are recovered automatically.</li>
+    </ul>
+    <p>Queue your overnight batch at end of day. The agents run. You review pull requests at standup.</p>
+
+    <h2>Want the Team Set Up by the amux Team?</h2>
+    <p>If you want to skip the setup and go straight to results, <a href="/concierge/">amux Concierge</a> is a managed onboarding service. The amux team installs and configures the full team workflow — CLAUDE.md templates for your codebase, board structure mapped to your sprint process, overnight batch scheduling, and mobile access for the EM. The team hands it off to you running and walks your developers through the new workflow. It is the fastest path from "we want this" to "our team is shipping with it."</p>
+
+    <div class="cta-box">
+      <h3>Start multiplying your team's velocity today</h3>
+      <p>amux is open-source, free to self-host, and installs in minutes per developer. No per-seat fees, no vendor lock-in. Your engineers keep their existing workflows — amux adds the agent layer on top.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myapp --dir ~/Dev/myapp --yolo
+amux serve  # → https://localhost:8822</code></pre>
+      <div style="display:flex;gap:1rem;flex-wrap:wrap;">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>
+        <a class="btn" href="/concierge/">Set Up My Team →</a>
+        <a class="btn" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+      </div>
+    </div>
+
+    <h2>Frequently Asked Questions</h2>
+
+    <h3>Do engineers need to learn new workflows to use amux?</h3>
+    <p>No. Developers keep using their existing editors, git workflows, and PR review processes. amux manages tmux sessions in the background and surfaces agent output through a shared dashboard. Engineers who already use Claude Code or Codex CLI will feel at home immediately. For those new to AI coding agents, the amux board provides a familiar kanban interface for assigning tasks without requiring any terminal interaction.</p>
+
+    <h3>Is amux safe to run in production repositories?</h3>
+    <p>amux itself does not touch your repository — it manages the terminal sessions that agents run in. Safety is determined by how you configure those sessions. For production codebases, most teams run agents on feature branches only, require PR review before merging, and use CLAUDE.md to restrict what the agent is allowed to modify. The <code>--yolo</code> flag is appropriate for sandboxed feature branches; for production-critical paths, omit it so agents pause for human confirmation on destructive commands.</p>
+
+    <h3>How does amux handle multiple engineers working on the same codebase?</h3>
+    <p>Each engineer runs agents on their own git branches. The shared amux board acts as the coordination layer — everyone can see which tasks are in-progress, who owns what, and what agents have completed. Since agents work on isolated branches, there is no conflict at the file level. Conflicts happen at merge time, just like with any parallel development. For full cross-team visibility in a single dashboard, set up a <a href="/guides/team-workflow-setup/">shared amux server</a> — all engineers' sessions appear in one view for the EM.</p>
+
+    <h3>What does amux cost for a team?</h3>
+    <p>amux is MIT licensed and free to self-host. Your costs are AI API tokens billed directly by Anthropic, OpenAI, or Google at standard rates. For a team of 5 engineers each running 2–3 parallel agent sessions during business hours, expect $200–800/month in total API costs — a fraction of one engineer-day per month. There is no per-seat fee, no SaaS subscription, no vendor lock-in. Use the <a href="/tools/ai-agent-cost-calculator/">cost calculator</a> to model your team's specific scenario.</p>
+
+    <h3>Can I see what all agents across the team are doing from my phone?</h3>
+    <p>Yes. The shared amux board gives the EM a cross-team view of every active task and its status. For session-level output — the live terminal stream of what an agent is actually doing — you can peek at any session from the dashboard without logging into the developer's machine. Available on mobile from anywhere via Tailscale.</p>
+
+    <h3>What happens when an agent crashes or runs out of context overnight?</h3>
+    <p>amux's self-healing watchdog detects crashes within seconds and restarts the session, replaying the last steering message so the agent resumes where it left off. Context overflow triggers automatic compaction — the agent summarizes earlier context and continues without losing the thread of work. Queue overnight runs before leaving the office. Review completed pull requests at standup.</p>
+
+    <h2>Related Resources</h2>
+    <ul>
+      <li><a href="/guides/team-workflow-setup/">How to Run an AI Engineering Team — Team Setup Guide</a></li>
+      <li><a href="/guides/running-10-plus-agents/">Running 10+ Agents in Parallel — Performance Tuning</a></li>
+      <li><a href="/guides/scaling-to-50-agents/">Scaling to 50 Agents — Multi-Instance Coordination</a></li>
+      <li><a href="/concierge/">amux Concierge — Managed Team Setup</a></li>
+      <li><a href="/for/startup-founders/">amux for Startup Founders</a></li>
+      <li><a href="/tools/ai-agent-cost-calculator/">AI Agent Cost Calculator</a></li>
+    </ul>
+  </main>
+
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/concierge/">Concierge</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

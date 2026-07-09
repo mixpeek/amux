@@ -4,26 +4,153 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Conversation Forking — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Clone a Claude Code session's context into multiple new agents to explore different approaches.">
-  <meta name="keywords" content="conversation fork, clone AI session, branch AI agent, parallel exploration AI">
+  <title>Conversation Forking: Branch a Claude Code Session into Parallel Agents — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Conversation forking clones a Claude Code session's full JSONL context into N independent agents on separate git branches. Each fork explores a different implementation — you pick the winner. Learn how with amux.">
+  <meta name="keywords" content="conversation forking, branch Claude Code session, fork AI agent context, parallel AI agent exploration, clone AI session, parallel implementation AI, explore multiple approaches AI agents, amux fork">
   <link rel="canonical" href="https://amux.io/guides/conversation-forking/">
-  <meta property="og:title" content="Conversation Forking — amux">
-  <meta property="og:description" content="Clone a Claude Code session's context into multiple new agents to explore different approaches.">
+  <meta property="og:title" content="Conversation Forking: Branch a Claude Code Session into Parallel Agents — amux">
+  <meta property="og:description" content="Fork a Claude Code session's conversation history into multiple independent agents. Each explores a different approach from the same starting point — no repeated context, no wasted work.">
   <meta property="og:url" content="https://amux.io/guides/conversation-forking/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Conversation Forking: Branch a Claude Code Session into Parallel Agents">
+  <meta name="twitter:description" content="Fork a Claude Code session's full context into multiple agents. Each explores a different approach — you pick the winner. Open-source, self-hosted, zero external dependencies.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
   <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Conversation Forking","item":"https://amux.io/guides/conversation-forking/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Conversation Forking","description":"Clone a Claude Code session's context into multiple new agents to explore different approaches.","url":"https://amux.io/guides/conversation-forking/","datePublished":"2026-02-26","dateModified":"2026-02-26","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
-  </head>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/"},
+      {"@type": "ListItem", "position": 3, "name": "Conversation Forking", "item": "https://amux.io/guides/conversation-forking/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Conversation Forking: Branch a Claude Code Session into Parallel Agents",
+    "description": "Conversation forking clones a Claude Code session's full JSONL history into multiple independent agents, each on its own git branch. They explore different approaches simultaneously — you review and merge the winner.",
+    "url": "https://amux.io/guides/conversation-forking/",
+    "datePublished": "2026-02-26",
+    "dateModified": "2026-07-09",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["conversation forking", "branch Claude Code session", "fork AI agent context", "parallel AI agent exploration", "clone AI session to multiple agents"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "How to Fork a Claude Code Session into Parallel Agents with amux",
+    "description": "Step-by-step guide to cloning a Claude Code session's conversation history into multiple independent agents that explore different approaches in parallel.",
+    "step": [
+      {
+        "@type": "HowToStep",
+        "position": 1,
+        "name": "Reach an architectural decision point",
+        "text": "Run a planning session with your agent until you have full context about the problem. Stop before committing to a single implementation approach."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 2,
+        "name": "Fork the session",
+        "text": "Run: amux fork <session-id> --count 3. amux copies the JSONL conversation history into three new sessions, each on its own git branch (feature-a, feature-b, feature-c by default)."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 3,
+        "name": "Direct each fork to a different approach",
+        "text": "Send each forked session a different implementation directive. For example: 'Implement the caching layer using Redis' vs 'Implement the caching layer in-process with an LRU map'."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 4,
+        "name": "Monitor all forks from the dashboard",
+        "text": "Watch all forked sessions from the amux dashboard or iOS app. Each runs independently and posts updates to the shared board."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 5,
+        "name": "Review and merge the winning branch",
+        "text": "When forks complete, compare their output in the board. Pick the best implementation and merge its git branch into main. Discard the others."
+      }
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Does forking preserve the agent's memory and conversation context?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux copies the entire JSONL conversation history file into each forked session. Every fork starts with the same complete context — the problem description, constraints, previous decisions, and any code or files discussed. It is identical to the moment of the fork; the forks then diverge from that point forward."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I merge results from forked sessions?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes — through standard git. Each fork runs on its own git branch. Once the forks complete, you review the branches, pick the best implementation, and merge it to main. If you want to combine parts of two forks, you can cherry-pick commits between branches just as you would in any git workflow."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How many forks can I run at once?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "There is no hard limit — amux creates as many sessions as you specify. In practice, 2-5 forks covers most architectural decision points. Running more than 5 from the same source context is unusual; at that scale you are usually better served by a dedicated agent fleet with a task queue. Your API rate limits and available RAM are the practical ceiling."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the difference between forking and just starting fresh sessions?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Fresh sessions start with zero context. Each fresh agent must be re-briefed from scratch — the problem, constraints, prior decisions, existing code patterns — which costs tokens, time, and risks the agent missing subtle requirements you worked out in the original session. Forked sessions start with the complete conversation history already loaded, so they can proceed directly to implementation without re-establishing context."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "When should I fork versus using subagents?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Fork when you want two or more agents to each produce a complete independent implementation of the same thing, and you will choose one. Use subagents (spawning child agents from within a session) when you want one parent to decompose a task and coordinate multiple workers toward a single combined result. Forking is for A/B exploration; subagents are for parallel execution under a coordinator."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Do forked sessions share git history?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Each fork starts from the same git commit — the HEAD of main at the time of the fork. amux creates a new git branch for each fork from that commit, so they share the same ancestor but diverge independently. This means you can diff any fork against main to see exactly what it changed, and merging is a clean branch merge."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -39,19 +166,372 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Conversation Forking</span></div>
-    <h1>Conversation Forking</h1>
-<p class="subtitle">Clone one session into many. Explore branches in parallel.</p>
-<p>Fork a session's JSONL history into new sessions on separate branches. Each fork inherits the full conversation context and can take it in a different direction.</p>
-<h2>Use cases</h2>
-<ul>
-<li>Try three different implementation approaches from the same starting point</li>
-<li>A/B test different architectures</li>
-<li>Branch a working prototype into feature-specific development sessions</li>
-</ul>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+
+    <h1>Conversation Forking: Branch a Session into Parallel Agents</h1>
+    <p class="subtitle">Get a decision in hours instead of days. Fork a Claude Code session at any architectural crossroads and let two or three independent agents each explore a different path — all starting from the same full conversation context. Review the results, pick the winner, merge. <em>Updated July 2026.</em></p>
+
+    <p><strong>Conversation forking</strong> is the technique of cloning a running AI agent session — its entire JSONL conversation history, all accumulated context, and its working git state — into multiple new sessions that each proceed independently. Unlike starting fresh agents, forked sessions inherit everything the original session learned: the problem statement, constraints, prior decisions, code patterns, and any files already discussed. Each fork then takes that shared context in a different direction.</p>
+
+    <p>amux is an open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with self-healing, kanban, CRM, and email built in. Conversation forking is one of its core workflow primitives for engineering teams that need to evaluate multiple implementation options without wasting time re-briefing agents from scratch.</p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#what-is-forking" style="color:var(--dim);text-decoration:none;">What is conversation forking?</a></li>
+        <li><a href="#why-fork" style="color:var(--dim);text-decoration:none;">Why fork instead of starting fresh?</a></li>
+        <li><a href="#when-to-fork" style="color:var(--dim);text-decoration:none;">When should you fork a session?</a></li>
+        <li><a href="#how-to-fork" style="color:var(--dim);text-decoration:none;">How to fork a Claude Code session (step-by-step)</a></li>
+        <li><a href="#directing-forks" style="color:var(--dim);text-decoration:none;">Directing each fork to a different approach</a></li>
+        <li><a href="#monitoring" style="color:var(--dim);text-decoration:none;">Monitoring forked sessions</a></li>
+        <li><a href="#reviewing-merging" style="color:var(--dim);text-decoration:none;">Reviewing and merging results</a></li>
+        <li><a href="#comparison" style="color:var(--dim);text-decoration:none;">Forking vs. fresh sessions vs. subagents</a></li>
+        <li><a href="#advanced" style="color:var(--dim);text-decoration:none;">Advanced patterns</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="what-is-forking">What is conversation forking?</h2>
+    <p>When you work with a Claude Code session, the agent's "memory" lives in a JSONL file — a log of every message, tool call, and result in the conversation. This is what lets the agent remember decisions made an hour ago, understand the codebase it has been exploring, and maintain coherent long-running work.</p>
+    <p>Conversation forking copies that JSONL history into one or more new sessions. Each new session is an independent copy of the original: same context, same accumulated knowledge, but now running in its own tmux session and on its own git branch. From the moment of the fork, they diverge. You send each fork a different implementation directive and they proceed in parallel.</p>
+    <p>The result: in the time it would take one agent to try approach A, evaluate it, abandon it, and try approach B, you get a complete implementation of A and a complete implementation of B side by side. You review both and merge the winner.</p>
+
+    <h2 id="why-fork">Why fork instead of starting fresh sessions?</h2>
+    <p>The most common alternative to forking is starting new sessions and re-briefing each from scratch. This works at small scale, but it has three compounding costs:</p>
+
+    <ul>
+      <li><strong>Token cost.</strong> Re-pasting the problem description, constraints, codebase context, and prior decisions into each new session costs thousands of tokens per fork. With the full JSONL history copied, forks pay none of this overhead — they already know everything.</li>
+      <li><strong>Drift risk.</strong> When you manually re-brief multiple agents, subtle differences in how you phrase things can lead to agents solving slightly different problems. Forked sessions have identical starting context, so they are directly comparable.</li>
+      <li><strong>Time cost.</strong> A planning session where an agent reads files, understands the architecture, and establishes the problem space might take 10-15 minutes. Forking reuses that work; fresh sessions repeat it for every branch.</li>
+    </ul>
+
+    <p>There is also a cognitive cost to you: briefing three agents from scratch requires you to maintain a coherent mental model and reproduce it three times. With forking, you brief once, fork, then give each fork one focused directive.</p>
+
+    <h2 id="when-to-fork">When should you fork a Claude Code session?</h2>
+    <p>Forking is most valuable at <strong>decision points</strong> — moments in a project where multiple viable paths exist and the cost of exploring the wrong one is high. The right time to fork is after you have enough context to know the paths, but before committing to one.</p>
+
+    <p>Common triggers:</p>
+
+    <ul>
+      <li><strong>After a planning or design session.</strong> You have spent time with an agent analyzing the codebase and problem space. The agent has proposed two or three plausible architectures. Rather than picking one now, fork and let each explore its path in parallel. See which is cleaner, faster, or more maintainable before committing.</li>
+      <li><strong>At an architectural decision point.</strong> "Should this be server-side rendered or client-side?" "Should we use Postgres or SQLite for this workload?" "Should the cache be Redis or in-process?" These are classic fork moments — diverging implementations that will produce genuinely different code.</li>
+      <li><strong>Before a risky refactor.</strong> If you are about to change something fundamental — a database schema, a core abstraction, an authentication system — fork first. One fork attempts the planned approach; another tries a more conservative path. You can compare diffs before merging anything.</li>
+      <li><strong>When you want a second opinion on implementation quality.</strong> Fork the session and give each fork the same task with different quality constraints: "optimize for readability" vs "optimize for performance." Review both and pick the characteristics you want.</li>
+      <li><strong>A/B testing prompting strategies.</strong> Fork the same session and give each fork slightly different instructions. This is useful for calibrating how prompt phrasing affects implementation choices at the team level.</li>
+    </ul>
+
+    <p>Forking is <em>not</em> the right tool when you want a single agent to do multiple independent tasks in parallel — for that, use a fleet with a shared task queue. See the <a href="/guides/running-10-plus-agents/">running 10+ agents guide</a> for that pattern.</p>
+
+    <h2 id="how-to-fork">How to fork a Claude Code session (step-by-step)</h2>
+    <p>Here is the complete workflow from first session to merged result.</p>
+
+    <h3>Step 1: Run a planning session to build context</h3>
+    <p>Start a normal Claude Code session on your project. Let it explore the codebase, understand the problem, and surface the key design decisions. The goal is to get the agent to a point of deep context — it understands the constraints, has read the relevant files, and can articulate the tradeoffs of different approaches.</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+# Send the session your planning prompt:
+amux send myproject "Read the codebase. We need to add a caching layer to the
+API. Understand the current request flow, identify the hot paths, and outline
+two or three viable implementation approaches with their tradeoffs. Do not
+implement anything yet."</code></pre>
+    <p>Wait for the planning session to finish. Check its output in the dashboard or via:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>amux peek myproject --lines 80</code></pre>
+
+    <h3>Step 2: Fork the session</h3>
+    <p>Once planning is complete and the session has established full context, create forks:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Create 3 forks, each on its own git branch
+amux fork myproject --count 3
+
+# Or name the branches explicitly:
+amux fork myproject --branches cache-redis cache-lru cache-memcached</code></pre>
+    <p>amux does the following for each fork:</p>
+    <ol style="line-height:2;">
+      <li>Copies the JSONL conversation history to a new session directory</li>
+      <li>Creates a new git branch from the current HEAD of your project</li>
+      <li>Registers a new amux session (e.g. <code>myproject-fork-1</code>, <code>myproject-fork-2</code>, <code>myproject-fork-3</code>)</li>
+      <li>Starts each new session in tmux with the copied history loaded</li>
+    </ol>
+    <p>After this command, three new sessions appear in your amux dashboard, all ready to receive directives. The original session is untouched — it continues running as before.</p>
+
+    <h3>Step 3: Send each fork a different directive</h3>
+    <p>Each fork is a separate session you can message independently:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>amux send myproject-fork-1 "Implement the caching layer using Redis.
+Use ioredis. Cache at the route handler level. TTL 60s for GET /api/items,
+30s for /api/user/:id. Write tests. Open a PR draft when done."
+
+amux send myproject-fork-2 "Implement the caching layer in-process using
+an LRU map (no external dependencies). Same cache keys and TTLs as the
+Redis approach. Write tests. Open a PR draft when done."
+
+amux send myproject-fork-3 "Implement the caching layer using the HTTP
+Cache-Control headers only — no server-side caching. Evaluate whether the
+CDN layer is sufficient. Write a brief analysis and a test suite. PR draft."</code></pre>
+
+    <h3>Step 4: Monitor from the dashboard</h3>
+    <p>All three forks post updates to the amux board. Open the dashboard to see their progress in the kanban view:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>amux serve  # → https://localhost:8822</code></pre>
+    <p>Each fork's status is visible under its session name. You can peek at any fork's output without switching terminals:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>amux peek myproject-fork-1 --lines 50
+amux peek myproject-fork-2 --lines 50</code></pre>
+
+    <h3>Step 5: Review and merge the winning branch</h3>
+    <p>When all forks complete (or when you have seen enough to decide), compare their branches:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># See what each fork changed vs main
+git diff main...cache-redis --stat
+git diff main...cache-lru --stat
+git diff main...cache-memcached --stat
+
+# Review the full diff of the winner
+git diff main...cache-lru
+
+# Merge the winning branch
+git checkout main
+git merge cache-lru
+
+# Clean up the others
+git branch -d cache-redis
+git branch -d cache-memcached</code></pre>
+
+    <h2 id="directing-forks">Directing each fork to a different approach</h2>
+    <p>The quality of your fork directives determines the quality of the comparison. A few patterns that work well:</p>
+
+    <p><strong>Approach-specific directives:</strong> Give each fork a clear implementation strategy. Be specific about the mechanism (Redis vs LRU map vs HTTP headers) rather than repeating the problem statement — the forks already know the problem from the shared history.</p>
+
+    <p><strong>Constraint-specific directives:</strong> Give forks the same task with different constraints. "Implement with zero new dependencies" vs "Implement with best-in-class libraries for each concern" vs "Implement the simplest possible version." This produces comparable implementations along a real tradeoff axis you care about.</p>
+
+    <p><strong>Quality-axis directives:</strong> "Optimize this for readability and maintainability" vs "Optimize this for runtime performance" vs "Optimize this for minimal bundle size." Useful when you know what you are building but want to understand the shape of tradeoffs before deciding.</p>
+
+    <p>After sending the initial directive, you can continue a conversation with any fork independently:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Ask fork 1 a follow-up question without affecting fork 2:
+amux send myproject-fork-1 "What's the memory overhead of the Redis client
+at idle? Is there a connection pooling concern we should address?"</code></pre>
+
+    <h2 id="monitoring">Monitoring forked sessions</h2>
+    <p>Forked sessions appear as first-class sessions in the amux dashboard. The board view shows all their status updates in the kanban. The workspace tiled view lets you watch multiple fork output panels side by side.</p>
+
+    <p>To watch all forks simultaneously from the command line:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># List all sessions from the forked parent:
+curl -sk $AMUX_URL/api/sessions | python3 -c "
+import json, sys
+sessions = json.load(sys.stdin)
+forks = [s for s in sessions if 'fork' in s['name']]
+for s in forks:
+    print(s['name'], '|', s.get('status',''), '|', s.get('desc',''))
+"</code></pre>
+
+    <p>From the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">iOS app</a>, you can swipe between fork sessions and read their output from anywhere — useful when you kick off forks before leaving for a meeting and want to check in on results an hour later.</p>
+
+    <p>For longer-running forks, set up a simple completion check on the board. Each fork should be posting a board item as it completes:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Each fork's CLAUDE.md should include:
+# "When you finish, mark your board task done with a one-line summary
+# of what you built and where to find the PR draft."
+
+# Check completion status:
+curl -sk $AMUX_URL/api/board | python3 -c "
+import json, sys
+items = json.load(sys.stdin)
+for i in items:
+    if 'fork' in i.get('session',''):
+        print(i['status'], '|', i.get('session'), '|', i['title'])
+"</code></pre>
+
+    <h2 id="reviewing-merging">Reviewing and merging results from forked sessions</h2>
+    <p>Once forks complete, you have three independent implementations on three git branches. The review process is a standard engineering code review, not an AI-specific one:</p>
+
+    <h3>Diff-based comparison</h3>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Files changed by each fork:
+git diff main...cache-redis --name-only
+git diff main...cache-lru --name-only
+
+# Complexity proxy: lines changed
+git diff main...cache-redis --stat | tail -1
+git diff main...cache-lru --stat | tail -1
+
+# Test coverage (if each fork wrote tests):
+cd /tmp/fork-redis && npx jest --coverage --silent 2>&amp;1 | tail -5
+cd /tmp/fork-lru   &amp;&amp; npx jest --coverage --silent 2>&amp;1 | tail -5</code></pre>
+
+    <h3>Asking an agent to summarize the comparison</h3>
+    <p>You can use a fresh amux session to act as a reviewer — giving it the diffs and asking for a structured comparison:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>amux start reviewer
+amux send reviewer "Compare these three git branches: cache-redis, cache-lru,
+cache-memcached — all branched from main. For each, produce: (1) a one-paragraph
+summary of the approach, (2) lines changed, (3) new dependencies added,
+(4) test coverage percentage, (5) any obvious concerns. Format as a comparison
+table followed by your recommendation."</code></pre>
+
+    <h3>Cherry-picking across forks</h3>
+    <p>If you want the caching logic from fork-1 but the test structure from fork-2, you are not forced to pick one wholesale. Standard git cherry-pick works across fork branches since they share a common ancestor:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Cherry-pick specific commits from fork-2 onto fork-1's branch
+git checkout cache-lru
+git cherry-pick &lt;commit-hash-from-cache-redis&gt;</code></pre>
+
+    <h2 id="comparison">Forking vs. fresh sessions vs. subagents</h2>
+    <p>Three patterns exist for parallel agent work. They solve different problems:</p>
+
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Dimension</th>
+            <th style="padding:10px 16px;text-align:center;">Conversation Forking</th>
+            <th style="padding:10px 16px;text-align:center;">Fresh Sessions</th>
+            <th style="padding:10px 16px;text-align:center;">Subagents</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600;">Starting context</td>
+            <td style="padding:10px 16px;text-align:center;">Full copy of parent history</td>
+            <td style="padding:10px 16px;text-align:center;">Zero — must re-brief</td>
+            <td style="padding:10px 16px;text-align:center;">Depends on parent prompt</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600;">Token overhead to start</td>
+            <td style="padding:10px 16px;text-align:center;">None (history copied)</td>
+            <td style="padding:10px 16px;text-align:center;">High (full re-brief)</td>
+            <td style="padding:10px 16px;text-align:center;">Medium (summary injected)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600;">Independence</td>
+            <td style="padding:10px 16px;text-align:center;">Fully independent</td>
+            <td style="padding:10px 16px;text-align:center;">Fully independent</td>
+            <td style="padding:10px 16px;text-align:center;">Coordinated by parent</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600;">Git isolation</td>
+            <td style="padding:10px 16px;text-align:center;">Separate branch per fork</td>
+            <td style="padding:10px 16px;text-align:center;">As configured manually</td>
+            <td style="padding:10px 16px;text-align:center;">Usually same branch</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600;">Best use case</td>
+            <td style="padding:10px 16px;text-align:center;">A/B exploring N approaches</td>
+            <td style="padding:10px 16px;text-align:center;">Truly unrelated tasks</td>
+            <td style="padding:10px 16px;text-align:center;">Coordinated parallel work</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;font-weight:600;">Result combining</td>
+            <td style="padding:10px 16px;text-align:center;">Pick one (or cherry-pick)</td>
+            <td style="padding:10px 16px;text-align:center;">Manual</td>
+            <td style="padding:10px 16px;text-align:center;">Parent synthesizes</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;font-weight:600;">Context drift risk</td>
+            <td style="padding:10px 16px;text-align:center;">None — same starting point</td>
+            <td style="padding:10px 16px;text-align:center;">High — re-briefing varies</td>
+            <td style="padding:10px 16px;text-align:center;">Low — same parent</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The decision rule is simple:</p>
+    <ul>
+      <li>Use <strong>forking</strong> when you want to compare N complete implementations of the same problem, starting from shared context.</li>
+      <li>Use <strong>fresh sessions</strong> when the tasks are genuinely unrelated and re-briefing cost is acceptable.</li>
+      <li>Use <strong>subagents</strong> when a parent agent needs to decompose a task and coordinate workers toward a single result — the parent synthesizes, not you.</li>
+    </ul>
+
+    <h2 id="advanced">Advanced patterns</h2>
+
+    <h3>Forking at multiple depths</h3>
+    <p>You can fork a fork. After the first round of exploration reveals that approach A is promising but has two sub-variants worth exploring, fork the fork-A session into fork-A1 and fork-A2. This creates a tree of explorations, all rooted in the original planning session's context.</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Fork from a fork:
+amux fork myproject-fork-1 --count 2 --branches cache-lru-v1 cache-lru-v2</code></pre>
+
+    <h3>Using forking for code review</h3>
+    <p>Fork an existing session and send each fork to review the same pull request from a different angle. One reviews for correctness, one for performance, one for security. Then merge their findings in a review summary:</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>amux fork pr-review-session --count 3
+
+amux send pr-review-session-fork-1 "Review this PR for correctness only.
+Find logical errors, edge cases, and incorrect assumptions."
+
+amux send pr-review-session-fork-2 "Review this PR for performance only.
+Identify any O(n²) operations, unnecessary allocations, or hot paths that
+could be optimized."
+
+amux send pr-review-session-fork-3 "Review this PR for security only.
+Look for injection vectors, auth bypass, sensitive data exposure, or
+dependency vulnerabilities."</code></pre>
+    <p>See the <a href="/guides/claude-code-plan-monitoring/">plan monitoring guide</a> for how to track review sessions on the board.</p>
+
+    <h3>Forking before a risky deployment</h3>
+    <p>Before a high-stakes change (database migration, infrastructure teardown, public API change), fork your planning session into a "go" fork and a "rollback" fork. The go fork proceeds with the plan; the rollback fork prepares a complete undo script in parallel. You have both ready before you start the real deployment.</p>
+
+    <h3>Scheduled forks for nightly exploration</h3>
+    <p>Use amux's scheduler to fork a known session each night and send forks in different directions — one exploring performance improvements, one exploring new feature prototypes. Review results each morning. This is how small teams run a continuous exploration process without dedicated research engineering time.</p>
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code>curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Nightly exploration fork",
+    "session": "baseline",
+    "command": "Fork this session into two: one exploring performance wins in
+the hot path, one prototyping the new search feature. Post results to board.",
+    "schedule_expr": "daily at 23:00"
+  }' \
+  $AMUX_URL/api/schedules</code></pre>
+
+    <p>For large-scale parallel exploration across many sessions, see the <a href="/guides/scaling-to-50-agents/">scaling to 50+ agents guide</a>. For setting up your team to work with shared sessions, see the <a href="/guides/team-workflow-setup/">team workflow setup guide</a>.</p>
+
+    <h2 id="faq">Frequently asked questions</h2>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Does forking preserve the agent's memory and conversation context?</summary>
+      <p style="margin:0.8rem 0 0;">Yes. amux copies the entire JSONL conversation history into each forked session. Every fork starts with the same complete context — the problem description, constraints, previous decisions, and any code or files discussed. It is identical to the moment of the fork; the forks then diverge from that point forward.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Can I merge results from forked sessions?</summary>
+      <p style="margin:0.8rem 0 0;">Yes — through standard git. Each fork runs on its own git branch. Once the forks complete, you review the branches, pick the best implementation, and merge it to main. If you want to combine parts of two forks, cherry-pick commits between branches just as you would in any git workflow. There is no amux-specific merge command — forks are regular git branches under the hood.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">How many forks can I run at once?</summary>
+      <p style="margin:0.8rem 0 0;">There is no hard limit in amux — it creates as many sessions as you specify. In practice, 2-5 forks covers most architectural decision points. Your practical ceiling is API rate limits (each fork makes independent API calls) and available RAM (each session needs roughly 300-500MB). For high-count parallel work, see the <a href="/guides/running-10-plus-agents/">10+ agents guide</a> instead of forking, since that use case calls for a task queue rather than N copies of the same context.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What is the difference between forking and just starting fresh sessions?</summary>
+      <p style="margin:0.8rem 0 0;">Fresh sessions start with zero context. Each fresh agent must be re-briefed from scratch — the problem, constraints, prior decisions, existing code patterns — which costs tokens, time, and risks the agent missing subtle requirements you worked out in the original session. Forked sessions start with the complete conversation history already loaded, so they can proceed directly to implementation without re-establishing context. The comparison is also cleaner: forked sessions start from an identical baseline, so differences in their output are attributable to the different directive, not to drift in how you re-briefed them.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">When should I fork versus using subagents?</summary>
+      <p style="margin:0.8rem 0 0;">Fork when you want two or more agents to each produce a complete independent implementation of the same thing, and you will choose one. Use subagents (spawning child agents from within a session) when you want one parent agent to decompose a task and coordinate multiple workers toward a single combined result. Forking is for A/B exploration where you review and pick a winner. Subagents are for parallel execution under a coordinator that synthesizes results.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Do forked sessions share git history?</summary>
+      <p style="margin:0.8rem 0 0;">Each fork starts from the same git commit — the HEAD of your project at the time of the fork. amux creates a new git branch for each fork from that commit, so they share the same ancestor but diverge independently. This means you can diff any fork against main to see exactly what it changed, and merging is a clean branch merge with no unusual history to resolve.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Can I fork from any point in a session's history, not just the current end?</summary>
+      <p style="margin:0.8rem 0 0;">By default, <code>amux fork</code> copies the complete current history up to the moment you run the command. To fork from an earlier point (before a decision was made, for example), you can manually truncate the JSONL history file to the turn you want and then fork. The JSONL format is one JSON object per line, so this is a simple head command on the history file. This advanced use case lets you re-explore a decision that was made several turns ago without re-running the entire planning phase.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What happens to forked sessions if I stop amux?</summary>
+      <p style="margin:0.8rem 0 0;">Forked sessions are registered amux sessions with their own entries in the session registry. When amux restarts, they appear in the dashboard and can be resumed. Their JSONL history is preserved on disk. Any work they committed to their git branches is persisted in git. Work that was in progress but not yet committed when amux stopped may need to be replayed — same behavior as any other session.</p>
+    </details>
+
+    <div class="cta-box">
+      <h3>Get started with amux</h3>
+      <p>Open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with self-healing, kanban, CRM, and email built in. Single Python file, zero external dependencies, MIT licensed.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <a class="btn" href="/guides/running-10-plus-agents/" style="margin-left:0.75rem;">Running 10+ agents →</a>
+    </div>
+
+    <p style="margin-top:2rem;"><strong>Related guides:</strong>
+      <a href="/guides/running-10-plus-agents/">Running 10+ Agents</a> ·
+      <a href="/guides/scaling-to-50-agents/">Scaling to 50+ Agents</a> ·
+      <a href="/guides/multi-runtime-agent-setup/">Multi-Runtime Agent Setup</a> ·
+      <a href="/guides/claude-code-plan-monitoring/">Claude Code Plan Monitoring</a> ·
+      <a href="/guides/team-workflow-setup/">Team Workflow Setup</a>
+    </p>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -99,6 +579,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
     </div>
   </footer>
 
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

@@ -49,13 +49,15 @@
 - **Implementation:** site.js injects CSS (fixed bottom bar, body padding-bottom, hide nav iOS link on ≤600px) and appends DOM element. PostHog custom event `exp002_ios_sticky_tap` on tap. Respects `env(safe-area-inset-bottom)` for iOS notch.
 - **Effort:** S (site.js injection)
 
-### EXP-003 — Homepage hero subheadline
-- **Hypothesis:** Adding a concrete social proof line ("Join 2,000+ developers running AI teams overnight") under the H1 increases GitHub clicks and concierge signups
+### EXP-003 — Homepage hero social proof line
+- **Hypothesis:** Adding a concrete social proof line under the lede increases GitHub clicks and concierge signups by anchoring the "288+ developers" stat
 - **Page:** `/` (index.html hero)
 - **KPI:** GitHub stars + cloud signups
-- **Status:** `queued`
-- **Implementation:** Add `<p class="social-proof">` line below H1
-- **Effort:** XS
+- **Status:** `running`
+- **Started:** 2026-07-09
+- **Change:** Added `<p class="social-proof">Trusted by 288+ developers shipping overnight with AI agents — open source on GitHub</p>` below the .lede paragraph. Star count is hardcoded to 288 (current as of 2026-07-09). Text links to GitHub repo.
+- **Implementation:** Added social-proof paragraph + CSS in index.html
+- **Measure after:** 2026-07-16 (7 days minimum)
 
 ### EXP-004 — Concierge CTA urgency
 - **Hypothesis:** Adding scarcity to the concierge CTA ("3 onboarding slots open this month") increases cloud signup clicks by 25%+
@@ -148,6 +150,7 @@ _Updated by SCHED-149 Job 9 after each run with PostHog data and experiment resu
 | 2026-07-07 | EXP-001 launched: "View on GitHub" → "⭐ Star on GitHub" on both hero CTAs in homepage | Implement complete; measure 2026-07-14 |
 | 2026-07-08 | PostHog still 0 events (Day 1 — accumulating) — EXP-001 cannot be scored yet (< 7 days) | EXP-002 shipped: sticky iOS bottom bar via site.js injection on all pages |
 | 2026-07-08 | EXP-002 launched: sticky mobile bottom bar with App Store CTA, PostHog event exp002_ios_sticky_tap | Measure after 2026-07-15; new hypothesis EXP-009 added (indie hacker language) |
+| 2026-07-09 | PostHog still accumulating — no KPI click data available after 2 days; EXP-001 and EXP-002 cannot be scored yet | EXP-003 shipped: social proof line "Trusted by 288+ developers" under lede in homepage hero; measure after 2026-07-16 |
 
 ---
 

@@ -1,5 +1,50 @@
 [
   {
+    "hash": "7d626af770de3f69ad02db21820082e45dab3693",
+    "short": "7d626af",
+    "title": "Skip next occurrence — pause a single schedule run without disabling the whole schedule",
+    "date": "2026-07-09",
+    "type": "feat",
+    "tags": ["scheduler", "ux", "automation"],
+    "description": "Recurring schedules now have a 'Skip next' button that skips exactly one upcoming occurrence without pausing or disabling the entire schedule. Previously, skipping a single run required disabling the schedule, manually tracking when to re-enable it, and hoping nothing else triggered in between. Now you can skip one run — say, a daily morning agent you don't need today — while leaving every future occurrence intact. The skipped occurrence is shown greyed out in the schedule history."
+  },
+  {
+    "hash": "3248151118d4b25c55f5c5ee4acf457620fc88197",
+    "short": "3248151",
+    "title": "Google Calendar sync — your AI agent schedule now lives in your calendar",
+    "date": "2026-07-09",
+    "type": "feat",
+    "tags": ["calendar", "scheduler", "integration"],
+    "description": "amux schedules now push to Google Calendar in real time. When a recurring agent task is created or updated, the corresponding event appears in your Google Calendar — so your AI engineering team's schedule shows up right next to your human team's sprints and standups. Connect your Google account once via OAuth (Settings → Calendar → Connect Google), and every scheduled agent run becomes a calendar event. Calendar controls (subscribe, connect, disconnect) are also accessible directly from the scheduler modal. Uses Google Calendar API via amux's own OAuth client — no ADC scopes required."
+  },
+  {
+    "hash": "9df18402e971d116646650c51fd5ca03e933c866",
+    "short": "9df1840",
+    "title": "Cloud tunnel — public HTTPS URL for your local amux instance",
+    "date": "2026-07-09",
+    "type": "feat",
+    "tags": ["tunnel", "remote-access", "cloud"],
+    "description": "amux now ships a built-in ngrok-style cloud reverse proxy. Enable the tunnel from Settings → Tunnel, and your local amux instance gets a stable public HTTPS URL — valid from any network, no port forwarding, no VPN. The tunnel ID is derived from your auth token so the URL is stable across restarts. Share your dashboard with a teammate or access your local agents from your phone on mobile data without setting up Tailscale. The gateway relay handles TLS termination; your local instance stays fully self-hosted."
+  },
+  {
+    "hash": "4d36b2331318cfead96108ae1abb0c39a0d275c2",
+    "short": "4d36b23",
+    "title": "Urgent owner alert — push notification + SMS escalation for blocking situations",
+    "date": "2026-07-09",
+    "type": "feat",
+    "tags": ["alerts", "notifications", "escalation"],
+    "description": "amux agents can now trigger an urgent owner alert that escalates beyond standard push notifications: it fires an in-app push (delivered to your phone immediately) plus an optional SMS to the configured phone number. Designed for situations where an agent is blocked on a decision only you can make — production down, a destructive action needing approval, or a time-critical branch point. The alert includes the message, reason, and which session sent it. A 60-second dedup prevents spam. Use the POST /api/alert/owner endpoint to trigger from any agent."
+  },
+  {
+    "hash": "5b119616b85c298686fb0533ca0f894721566d11",
+    "short": "5b11961",
+    "title": "File tree accordion — expand directories inline without navigating away",
+    "date": "2026-07-09",
+    "type": "feat",
+    "tags": ["files", "ux", "navigation"],
+    "description": "Directories in the Files tab now expand inline as an accordion — click the arrow to reveal contents without navigating into the folder and losing your place. File contents are pre-cached for small text files on first expand (skipping large binaries) so browsing is instant on subsequent opens. The Escape key closes any open file preview, and the preview overlay now renders markdown. Together these changes make the Files tab a usable read-only code browser for your agent's working directory from your phone."
+  },
+  {
     "hash": "1d431a498b3167dec22b28dfe29926d44969de94",
     "short": "1d431a4",
     "title": "Long task names scroll horizontally in peek panel — no more truncation",

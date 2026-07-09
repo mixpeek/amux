@@ -56,3 +56,13 @@ Track query gaps, target sections, priority, and status. Update every run.
 | freelance developer AI agents | /for/freelancers/ | M | shipped 2026-07-08 |
 | amux vs Plandex | /compare/amux-vs-plandex/ | M | shipped 2026-07-08 |
 | Plandex alternative open source | /compare/amux-vs-plandex/ | M | shipped 2026-07-08 |
+| branch Claude Code session | /guides/conversation-forking/ | H | enriched 2026-07-09 (103→584 lines, FAQPage+HowTo JSON-LD) |
+| fork AI agent context parallel exploration | /guides/conversation-forking/ | H | enriched 2026-07-09 |
+| AI tools for engineering managers 2026 | /for/engineering-managers/ | H | shipped 2026-07-09 |
+| deploy AI agents for your dev team | /for/engineering-managers/ | H | shipped 2026-07-09 |
+| how to give your team AI coding agents | /for/engineering-managers/ | H | shipped 2026-07-09 |
+| amux vs Zed | /compare/amux-vs-zed/ | M | shipped 2026-07-09 |
+| Zed vs agent orchestrator | /compare/amux-vs-zed/ | M | shipped 2026-07-09 |
+| AI agent Google Calendar integration | /use-cases/ai-agent-google-calendar/ | H | shipped 2026-07-09 |
+| schedule AI agents with Google Calendar | /use-cases/ai-agent-google-calendar/ | H | shipped 2026-07-09 |
+| amux Google Calendar sync | /use-cases/ai-agent-google-calendar/ | H | shipped 2026-07-09 |
