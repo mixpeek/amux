@@ -23594,7 +23594,7 @@ function renderPeekFiles() {
     return `<div class="peek-attach-chip${isUploading ? ' uploading' : ''}">
       ${thumb}
       <span class="chip-name">${esc(f.name)}</span>
-      ${isUploading ? uploading_label : `<span class="chip-remove" onclick="removePeekFile(${i})">×</span>`}
+      ${isUploading ? uploading_label : `<span style="color:var(--green);font-size:0.75rem;margin-right:2px;">✓</span><span class="chip-remove" onclick="removePeekFile(${i})">×</span>`}
     </div>`;
   }).join('');
 }
@@ -23708,6 +23708,7 @@ setTimeout(_updateSendSplit, 0);
 
 async function sendPeekCmd() {
   if (!peekSession) return;
+  if (peekFiles.some(f => !f.path)) { showToast('Wait for upload to finish'); return; }
   const inp = document.getElementById('peek-cmd-input');
   const text = inp.value.trim();
   const files = peekFiles.filter(f => f.path);
