@@ -5,7 +5,7 @@ Verifies Clerk JWTs, starts/stops Docker containers per user, reverse-proxies re
 """
 
 import os, json, time, sqlite3, subprocess, threading, urllib.request, urllib.error, base64
-import hmac, hashlib, secrets, queue as _queue
+import hmac, hashlib, secrets, re, queue as _queue
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -1226,6 +1226,25 @@ def _tunnel_auth(handler):
     return org if _tunnel_gate_ok(org) else None
 
 
+TUNNEL_DOMAIN = os.environ.get("AMUX_TUNNEL_DOMAIN", "t.amux.io")
+_TUNNEL_HOST_RE = re.compile(r"^([0-9a-f]{6,64})\." + re.escape(TUNNEL_DOMAIN) + r"$", re.I)
+
+
+def _tunnel_tid_from_host(handler):
+    """Return the tid when this request arrived on <tid>.t.amux.io, else None.
+
+    Subdomains (rather than /t/<tid>/ path prefixes) keep a tunneled app's
+    root-absolute paths — fetch("/api/x"), <script src="/app.js"> — inside the
+    tunnel instead of escaping to the gateway. Only the Host header is trusted;
+    nginx routes by server_name, so a spoofed Host can't reach this from the
+    cloud.amux.io vhost. Tunnels are public by design, so there is nothing to
+    escalate to in any case.
+    """
+    host = (handler.headers.get("Host") or "").split(":")[0].strip().lower()
+    m = _TUNNEL_HOST_RE.match(host)
+    return m.group(1).lower() if m else None
+
+
 def _tunnel_serve_public(handler, tid, path, qs):
     """Relay a public /t/<tid>/... request down the tunnel and return the reply."""
     with _tunnel_lock:
@@ -1296,7 +1315,12 @@ def _tunnel_routes(handler, path, qs):
             _tunnels[tid] = {"org_id": org["id"], "q": _queue.Queue(),
                              "last_seen": time.time(), "created": time.time()}
         base = f"https://{handler.headers.get('Host', 'cloud.amux.io')}"
-        handler._json({"tid": tid, "url": f"{base}/t/{tid}/"})
+        # Subdomain is the primary URL — root-absolute paths in the tunneled app
+        # stay inside the tunnel. The /t/<tid>/ path URL keeps working for anything
+        # already pointed at it (e.g. an existing calendar subscription).
+        handler._json({"tid": tid,
+                       "url": f"https://{tid}.{TUNNEL_DOMAIN}/",
+                       "path_url": f"{base}/t/{tid}/"})
         return True
     if path == "/tunnel/poll" and handler.command == "GET":
         org = _tunnel_auth(handler)
@@ -1545,6 +1569,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(404)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
+            return
+
+        # ── amux tunnel: <tid>.t.amux.io/… (public, Host-routed) ──
+        # Checked first: on a tunnel subdomain EVERY path belongs to the tunneled
+        # app, including /t/… and /tunnel/… which must never be intercepted here.
+        _sub_tid = _tunnel_tid_from_host(self)
+        if _sub_tid:
+            _tunnel_serve_public(self, _sub_tid, path, qs)
             return
 
         # ── amux tunnel: /t/<tid>/… (public) + /tunnel/* (token-authed) ──

@@ -22256,7 +22256,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.65';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.66';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -23554,10 +23554,11 @@ function renderPeekFiles() {
     } else {
       thumb = `<span class="chip-icon">${_fileIcon(f.name)}</span>`;
     }
+    const pct = isUploading && f.progress != null ? `<span style="color:var(--dim);font-size:0.65rem;min-width:28px;text-align:right;">${f.progress}%</span>` : '';
     return `<div class="peek-attach-chip${isUploading ? ' uploading' : ''}">
       ${thumb}
       <span class="chip-name">${esc(f.name)}</span>
-      ${isUploading ? '<span style="color:var(--dim);font-size:0.7rem;">↑</span>' : `<span class="chip-remove" onclick="removePeekFile(${i})">×</span>`}
+      ${isUploading ? pct : `<span class="chip-remove" onclick="removePeekFile(${i})">×</span>`}
     </div>`;
   }).join('');
 }
@@ -23576,37 +23577,44 @@ function clearPeekFiles() {
 }
 
 async function uploadAndAttach(file) {
-  // No file size limit — browser memory is the natural constraint
   const isImage = file.type.startsWith('image/');
   let previewUrl = null;
   if (isImage) previewUrl = URL.createObjectURL(file);
 
-  // Add placeholder chip while uploading
-  const placeholder = { name: file.name, path: null, url: null, isImage, previewUrl };
+  const placeholder = { name: file.name, path: null, url: null, isImage, previewUrl, progress: 0 };
   const idx = peekFiles.length;
   peekFiles.push(placeholder);
   renderPeekFiles();
 
   try {
-    const buf = await file.arrayBuffer();
-    // Chunk the conversion to avoid call-stack overflow on large files
-    const bytes = new Uint8Array(buf);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i += 8192) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
-    }
-    const b64 = btoa(binary);
-    const r = await fetch(API + '/api/upload', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ name: file.name, data: b64 })
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+    const xhr = new XMLHttpRequest();
+    const result = await new Promise((resolve, reject) => {
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable && peekFiles[idx]) {
+          peekFiles[idx].progress = Math.round(e.loaded / e.total * 100);
+          renderPeekFiles();
+        }
+      };
+      xhr.onload = () => {
+        try { resolve({ status: xhr.status, data: JSON.parse(xhr.responseText) }); }
+        catch { reject(new Error('invalid response')); }
+      };
+      xhr.onerror = () => reject(new Error('network error'));
+      xhr.open('POST', API + '/api/upload');
+      xhr.send(fd);
     });
-    const d = await r.json();
-    if (!r.ok || d.error) { showToast('Upload failed: ' + (d.error || r.status)); peekFiles.splice(idx, 1); }
-    else { peekFiles[idx] = { name: file.name, path: d.path, url: d.url, isImage, previewUrl }; }
+    if (result.status >= 400 || result.data.error) {
+      showToast('Upload failed: ' + (result.data.error || result.status));
+      peekFiles.splice(idx, 1);
+    } else {
+      peekFiles[idx] = { name: file.name, path: result.data.path, url: result.data.url, isImage, previewUrl };
+    }
   } catch(e) {
     console.error('Upload error:', e);
-    showToast('Upload failed: ' + e.message); peekFiles.splice(idx, 1);
+    showToast('Upload failed: ' + e.message);
+    peekFiles.splice(idx, 1);
   }
   renderPeekFiles();
 }
@@ -41336,23 +41344,46 @@ class CCHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
 
-        # ── File upload ──
+        # ── File upload (multipart or legacy base64 JSON) ──
         if method == "POST" and path == "/api/upload":
-            body = self._read_body()
-            filename = re.sub(r'[^a-zA-Z0-9._\-]', '_', body.get("name", "upload"))[:120]
-            ext = Path(filename).suffix.lower()
-            raw_b64 = body.get("data", "")
-            try:
-                data = base64.b64decode(raw_b64)
-            except Exception:
-                return self._json({"error": "invalid base64"}, 400)
-            if UPLOAD_MAX_BYTES and len(data) > UPLOAD_MAX_BYTES:
-                return self._json({"error": f"file too large (max {UPLOAD_MAX_BYTES // (1024*1024)} MB)"}, 400)
+            ctype = self.headers.get("Content-Type", "")
+            if "multipart/form-data" in ctype:
+                length = int(self.headers.get("Content-Length", 0))
+                raw = self.rfile.read(length)
+                from email import message_from_bytes
+                from email.policy import compat32 as _compat32
+                msg = message_from_bytes(
+                    (f"Content-Type: {ctype}\r\n\r\n").encode() + raw,
+                    policy=_compat32,
+                )
+                parts = msg.get_payload()
+                if not isinstance(parts, list):
+                    parts = [msg]
+                data = None
+                filename = "upload"
+                for part in parts:
+                    disp = part.get("Content-Disposition", "")
+                    if 'name="file"' in disp or "filename=" in disp:
+                        data = part.get_payload(decode=True)
+                        fn_match = re.search(r'filename="([^"]+)"', disp)
+                        if fn_match:
+                            filename = fn_match.group(1)
+                        break
+                if data is None:
+                    return self._json({"error": "no file in upload"}, 400)
+            else:
+                body = self._read_body()
+                filename = body.get("name", "upload")
+                raw_b64 = body.get("data", "")
+                try:
+                    data = base64.b64decode(raw_b64)
+                except Exception:
+                    return self._json({"error": "invalid base64"}, 400)
+            filename = re.sub(r'[^a-zA-Z0-9._\-]', '_', filename)[:120]
             uid = uuid.uuid4().hex[:8]
             save_name = f"{uid}-{filename}"
             save_path = CC_UPLOADS / save_name
             save_path.write_bytes(data)
-            # Purge uploads older than 24h
             cutoff = time.time() - 86400
             for old in CC_UPLOADS.iterdir():
                 try:
