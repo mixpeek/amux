@@ -12856,6 +12856,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   #fc-container .fc-scrollgrid td { border-color: var(--border); }
   #fc-container .fc-daygrid-day-frame { min-height: 80px; }
   #fc-container .fc-subscribe-button { font-size: 0.78rem !important; padding: 4px 10px !important; }
+  /* "+ Event" is the primary action — make it accent-colored so it stands out. */
+  #fc-container .fc-addEvent-button { font-size: 0.8rem !important; padding: 5px 14px !important; font-weight: 600 !important;
+    background: var(--accent) !important; border-color: var(--accent) !important; color: #fff !important; margin-left: 8px; }
+  #fc-container .fc-addEvent-button:hover { filter: brightness(1.08); }
   #fc-container .fc-eventsToggle-button,
   #fc-container .fc-schedToggle-button,
   #fc-container .fc-issuesToggle-button { font-size: 0.78rem !important; padding: 4px 10px !important; }
@@ -15835,6 +15839,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             style="width:100%;margin-top:6px;font-size:0.82rem;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--fg);box-sizing:border-box;">
           <button onclick="sendTestAlert(this)" class="btn" style="width:100%;margin-top:6px;font-size:0.78rem;">Send test alert</button>
           <div id="alert-test-status" style="font-size:0.7rem;color:var(--dim);margin-top:4px;min-height:1em;"></div>
+        </div>
+        <div class="settings-sep"></div>
+        <div class="settings-section" id="settings-tunnel-section">
+          <div class="settings-section-label">Tunnel (public proxy)</div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-bottom:8px;line-height:1.4;">Expose a local port at a public HTTPS URL through amux cloud — no inbound port, no router config. Anything you tunnel is <b>public</b>.</div>
+          <div id="settings-tunnel-body" style="font-size:0.82rem;color:var(--dim);">Loading…</div>
         </div>
         <div class="settings-sep"></div>
         <div class="settings-section">
@@ -22316,7 +22326,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.69';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.70';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -31443,19 +31453,23 @@ function _fcInit() {
   _fcInstance = new FullCalendar.Calendar(el, {
     initialView: isMobile ? mobileDefault : savedView,
     headerToolbar: isMobile ? {
-      left: 'prev,next today',
+      left: 'addEvent',
       center: 'title',
       right: 'listWeek,dayGridMonth,timeGridDay',
     } : {
-      left: 'prev,today,next',
+      left: 'prev,today,next addEvent',
       center: 'title',
       right: 'eventsToggle,schedToggle,issuesToggle dayGridMonth,timeGridWeek,timeGridDay subscribe',
     },
     // Mobile's header row is already full — give the layer toggles their own footer bar.
     // Subscribe stays hidden on mobile (pre-existing `display:none`), so it's not here.
-    footerToolbar: isMobile ? { left: 'eventsToggle,schedToggle,issuesToggle' } : false,
+    footerToolbar: isMobile ? { left: 'prev,next today', right: 'eventsToggle,schedToggle,issuesToggle' } : false,
     buttonText: isMobile ? { listWeek: 'List', dayGridMonth: 'Month', timeGridDay: 'Day', today: 'Today' } : {},
     customButtons: {
+      addEvent: {
+        text: '+ Event',
+        click: () => openEventModal(null),
+      },
       subscribe: {
         text: 'Subscribe',
         click: showIcalInfo,
@@ -31537,6 +31551,11 @@ function _evSplit(iso) {
 }
 function openEventModal(editId, startStr, endStr, allDay) {
   const ev = editId ? (calEvents || []).find(e => e.id === editId) : null;
+  // "+ Event" with no slot → default to today so the date field isn't blank.
+  if (!ev && !startStr) {
+    const now = new Date();
+    startStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+  }
   const s = _evSplit(ev ? ev.start : (startStr || ''));
   const e = _evSplit(ev ? ev.end : (endStr || ''));
   const isAllDay = ev ? !!ev.all_day : (allDay === true || (startStr && !String(startStr).includes('T')));
@@ -31624,6 +31643,47 @@ async function deleteEvent(id) {
 async function _tunnelStatus() {
   try { const r = await fetch(API + '/api/tunnel/status'); return await r.json(); }
   catch(e) { return { error: String(e) }; }
+}
+
+// Tunnel panel in the Settings dropdown (the discoverable home for the proxy).
+async function loadTunnelSettings() {
+  const box = document.getElementById('settings-tunnel-body');
+  if (!box) return;
+  const s = await _tunnelStatus();
+  if (s.error) { box.innerHTML = '<span style="color:var(--dim);">status unavailable</span>'; return; }
+  if (!s.configured) {
+    box.innerHTML = '<span style="color:var(--dim);line-height:1.4;">Not configured. Set <code>AMUX_TUNNEL_TOKEN</code> in <code>~/.amux/server.env</code> (needs an active amux cloud subscription), then reload.</span>';
+    return;
+  }
+  if (s.running && s.url) {
+    const target = (s.target || '').replace(/^https?:\/\//, '');
+    box.innerHTML =
+      '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;"><span style="width:8px;height:8px;border-radius:50%;background:#3fb950;flex-shrink:0;"></span><b style="color:var(--fg);">Live</b><span style="color:var(--dim);margin-left:auto;font-size:0.72rem;">' + (s.requests || 0) + ' reqs</span></div>' +
+      '<div style="font-size:0.72rem;color:var(--dim);margin-bottom:4px;">serving <code>' + target + '</code></div>' +
+      '<a href="' + s.url + '" target="_blank" style="display:block;word-break:break-all;color:var(--accent);font-size:0.8rem;margin-bottom:8px;">' + s.url + '</a>' +
+      '<div style="display:flex;gap:6px;">' +
+      '<button class="btn" style="flex:1;font-size:0.76rem;" onclick="_tunnelCopyURL(this,\'' + s.url.replace(/'/g, "\\'") + '\')">Copy URL</button>' +
+      '<button class="btn" style="flex:1;font-size:0.76rem;" onclick="_tunnelSettingsStop(this)">Stop</button></div>';
+  } else {
+    box.innerHTML =
+      '<div style="color:var(--dim);margin-bottom:8px;">Off — the tunnel serves the amux dashboard when started, or any port via the CLI (<code>amux tunnel start 3000</code>).</div>' +
+      '<button class="btn primary" style="width:100%;font-size:0.78rem;" onclick="_tunnelSettingsStart(this)">Start tunnel</button>';
+  }
+}
+function _tunnelCopyURL(btn, url) {
+  navigator.clipboard.writeText(url).then(() => { const t = btn.textContent; btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = t, 1200); }).catch(() => {});
+}
+async function _tunnelSettingsStart(btn) {
+  btn.disabled = true; btn.textContent = 'Starting…';
+  try { await fetch(API + '/api/tunnel/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch(e) {}
+  for (let i = 0; i < 16; i++) { const s = await _tunnelStatus(); if (s.url || s.error) break; await new Promise(r => setTimeout(r, 500)); }
+  loadTunnelSettings();
+}
+async function _tunnelSettingsStop(btn) {
+  btn.disabled = true; btn.textContent = 'Stopping…';
+  try { await fetch(API + '/api/tunnel/stop', { method: 'POST' }); } catch(e) {}
+  await new Promise(r => setTimeout(r, 600));
+  loadTunnelSettings();
 }
 function _tunnelCopy(btn, url) {
   navigator.clipboard.writeText(url).then(() => {
@@ -33688,6 +33748,7 @@ function toggleSettings() {
     loadCommitGuard();
     loadTaskGuard();
     loadAlertConfig();
+    loadTunnelSettings();
   }
 }
 async function loadAlertConfig() {
@@ -39044,7 +39105,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.68';
+const CACHE = 'amux-v0.9.70';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
