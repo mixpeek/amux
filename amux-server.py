@@ -12782,56 +12782,56 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   /* Connect session list */
   /* FullCalendar theme overrides */
   #fc-container { --fc-border-color: var(--border); --fc-button-bg-color: transparent; --fc-button-border-color: var(--border); --fc-button-text-color: var(--text); --fc-button-hover-bg-color: var(--hover); --fc-button-hover-border-color: var(--border); --fc-button-active-bg-color: var(--accent); --fc-button-active-border-color: var(--accent); --fc-today-bg-color: rgba(56,139,253,0.06); --fc-event-border-color: transparent; --fc-page-bg-color: var(--bg); --fc-neutral-bg-color: var(--bg); --fc-list-event-hover-bg-color: var(--hover); --fc-now-indicator-color: var(--accent); --fc-non-business-color: transparent; }
-  #fc-container .fc { font-family: inherit; font-size: 0.85rem; }
-  #fc-container .fc .fc-toolbar { padding: 8px 4px; gap: 8px; flex-wrap: wrap; }
-  #fc-container .fc .fc-toolbar-title { font-size: 1.05rem; font-weight: 600; }
-  #fc-container .fc .fc-button { font-size: 0.8rem; padding: 5px 12px; border-radius: 6px; font-weight: 500; font-family: inherit; text-transform: none; }
-  #fc-container .fc .fc-button:focus { box-shadow: none; }
-  #fc-container .fc .fc-button-group > .fc-button { border-radius: 0; }
-  #fc-container .fc .fc-button-group > .fc-button:first-child { border-radius: 6px 0 0 6px; }
-  #fc-container .fc .fc-button-group > .fc-button:last-child { border-radius: 0 6px 6px 0; }
-  #fc-container .fc .fc-button-active { background: var(--accent) !important; border-color: var(--accent) !important; color: #fff !important; }
-  #fc-container .fc .fc-col-header-cell { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; padding: 8px 0; }
-  #fc-container .fc .fc-daygrid-day-number { font-size: 0.8rem; padding: 4px 6px; color: var(--dim); }
-  #fc-container .fc .fc-daygrid-day.fc-day-today .fc-daygrid-day-number { background: var(--accent); color: #fff; border-radius: 50%; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
-  #fc-container .fc .fc-event { cursor: pointer; border-radius: 4px; font-size: 0.75rem; padding: 1px 4px; border-left-width: 3px; }
-  #fc-container .fc .fc-timegrid-slot { height: 2.5em; }
-  #fc-container .fc .fc-timegrid-slot-label { font-size: 0.72rem; color: var(--dim); }
-  #fc-container .fc .fc-scrollgrid { border: none; }
-  #fc-container .fc .fc-scrollgrid td { border-color: var(--border); }
-  #fc-container .fc .fc-daygrid-day-frame { min-height: 80px; }
+  #fc-container { font-family: inherit; font-size: 0.85rem; }
+  #fc-container .fc-toolbar { padding: 8px 4px; gap: 8px; flex-wrap: wrap; }
+  #fc-container .fc-toolbar-title { font-size: 1.05rem; font-weight: 600; }
+  #fc-container .fc-button { font-size: 0.8rem; padding: 5px 12px; border-radius: 6px; font-weight: 500; font-family: inherit; text-transform: none; }
+  #fc-container .fc-button:focus { box-shadow: none; }
+  #fc-container .fc-button-group > .fc-button { border-radius: 0; }
+  #fc-container .fc-button-group > .fc-button:first-child { border-radius: 6px 0 0 6px; }
+  #fc-container .fc-button-group > .fc-button:last-child { border-radius: 0 6px 6px 0; }
+  #fc-container .fc-button-active { background: var(--accent) !important; border-color: var(--accent) !important; color: #fff !important; }
+  #fc-container .fc-col-header-cell { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; padding: 8px 0; }
+  #fc-container .fc-daygrid-day-number { font-size: 0.8rem; padding: 4px 6px; color: var(--dim); }
+  #fc-container .fc-daygrid-day.fc-day-today .fc-daygrid-day-number { background: var(--accent); color: #fff; border-radius: 50%; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
+  #fc-container .fc-event { cursor: pointer; border-radius: 4px; font-size: 0.75rem; padding: 1px 4px; border-left-width: 3px; }
+  #fc-container .fc-timegrid-slot { height: 2.5em; }
+  #fc-container .fc-timegrid-slot-label { font-size: 0.72rem; color: var(--dim); }
+  #fc-container .fc-scrollgrid { border: none; }
+  #fc-container .fc-scrollgrid td { border-color: var(--border); }
+  #fc-container .fc-daygrid-day-frame { min-height: 80px; }
   #fc-container .fc-subscribe-button { font-size: 0.78rem !important; padding: 4px 10px !important; }
   #fc-container .fc-schedToggle-button { font-size: 0.78rem !important; padding: 4px 10px !important; }
   #fc-container .fc-schedToggle-button[aria-pressed="false"] { opacity: 0.55; }
-  #fc-container .fc .fc-footer-toolbar { padding: 6px 4px; margin-top: 6px !important; }
+  #fc-container .fc-footer-toolbar { padding: 6px 4px; margin-top: 6px !important; }
   @media (max-width: 600px) {
     #calendar-view { height: calc(100dvh - 60px); }
     #fc-container { padding: 0 !important; }
-    #fc-container .fc .fc-toolbar { padding: 8px 6px; gap: 4px; flex-wrap: wrap; justify-content: space-between; }
-    #fc-container .fc .fc-toolbar-chunk { display: flex; align-items: center; gap: 4px; }
-    #fc-container .fc .fc-toolbar-chunk:first-child { order: 1; }
-    #fc-container .fc .fc-toolbar-chunk:nth-child(2) { order: 0; width: 100%; justify-content: center; }
-    #fc-container .fc .fc-toolbar-chunk:last-child { order: 2; }
-    #fc-container .fc .fc-toolbar-title { font-size: 1.05rem; font-weight: 700; }
-    #fc-container .fc .fc-button { font-size: 0.78rem; padding: 8px 12px; min-height: 38px; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
-    #fc-container .fc .fc-button-group { flex-wrap: nowrap; }
+    #fc-container .fc-toolbar { padding: 8px 6px; gap: 4px; flex-wrap: wrap; justify-content: space-between; }
+    #fc-container .fc-toolbar-chunk { display: flex; align-items: center; gap: 4px; }
+    #fc-container .fc-toolbar-chunk:first-child { order: 1; }
+    #fc-container .fc-toolbar-chunk:nth-child(2) { order: 0; width: 100%; justify-content: center; }
+    #fc-container .fc-toolbar-chunk:last-child { order: 2; }
+    #fc-container .fc-toolbar-title { font-size: 1.05rem; font-weight: 700; }
+    #fc-container .fc-button { font-size: 0.78rem; padding: 8px 12px; min-height: 38px; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+    #fc-container .fc-button-group { flex-wrap: nowrap; }
     /* The chunk reorder rules above are written for the 3-chunk header; the footer
        has 2 chunks and must keep its natural left/right layout. */
-    #fc-container .fc .fc-footer-toolbar { flex-wrap: nowrap; padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
-    #fc-container .fc .fc-footer-toolbar .fc-toolbar-chunk { order: 0 !important; width: auto !important; }
-    #fc-container .fc .fc-footer-toolbar .fc-button { min-height: 44px; }
-    #fc-container .fc .fc-daygrid-day-frame { min-height: 52px; }
-    #fc-container .fc .fc-daygrid-day-number { font-size: 0.78rem; padding: 4px 6px; }
-    #fc-container .fc .fc-event { font-size: 0.75rem; padding: 3px 6px; min-height: 26px; line-height: 1.4; border-radius: 5px; }
-    #fc-container .fc .fc-col-header-cell { font-size: 0.68rem; padding: 6px 0; }
-    #fc-container .fc .fc-timegrid-slot { height: 3.5em; }
-    #fc-container .fc .fc-timegrid-event { min-height: 28px; }
-    #fc-container .fc .fc-scrollgrid { border: none; }
-    #fc-container .fc .fc-subscribe-button { display: none; }
-    #fc-container .fc .fc-list-event { font-size: 0.85rem; }
-    #fc-container .fc .fc-list-event td { padding: 10px 8px; }
-    #fc-container .fc .fc-list-day-cushion { padding: 8px; font-size: 0.82rem; }
-    #fc-container .fc .fc-list-empty-cushion { font-size: 0.85rem; padding: 40px 16px; }
+    #fc-container .fc-footer-toolbar { flex-wrap: nowrap; padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
+    #fc-container .fc-footer-toolbar .fc-toolbar-chunk { order: 0 !important; width: auto !important; }
+    #fc-container .fc-footer-toolbar .fc-button { min-height: 44px; }
+    #fc-container .fc-daygrid-day-frame { min-height: 52px; }
+    #fc-container .fc-daygrid-day-number { font-size: 0.78rem; padding: 4px 6px; }
+    #fc-container .fc-event { font-size: 0.75rem; padding: 3px 6px; min-height: 26px; line-height: 1.4; border-radius: 5px; }
+    #fc-container .fc-col-header-cell { font-size: 0.68rem; padding: 6px 0; }
+    #fc-container .fc-timegrid-slot { height: 3.5em; }
+    #fc-container .fc-timegrid-event { min-height: 28px; }
+    #fc-container .fc-scrollgrid { border: none; }
+    #fc-container .fc-subscribe-button { display: none; }
+    #fc-container .fc-list-event { font-size: 0.85rem; }
+    #fc-container .fc-list-event td { padding: 10px 8px; }
+    #fc-container .fc-list-day-cushion { padding: 8px; font-size: 0.82rem; }
+    #fc-container .fc-list-empty-cushion { font-size: 0.85rem; padding: 40px 16px; }
   }
   /* Board collapse */
   .board-col-collapse { background: none; border: none; cursor: pointer; color: var(--dim);
@@ -22235,7 +22235,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.62';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.63';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -31245,7 +31245,8 @@ function _fcInit() {
       right: 'schedToggle dayGridMonth,timeGridWeek,timeGridDay subscribe',
     },
     // Mobile's header row is already full — give the toggle its own footer bar.
-    footerToolbar: isMobile ? { left: 'schedToggle', right: 'subscribe' } : false,
+    // Subscribe stays hidden on mobile (pre-existing `display:none`), so it's not here.
+    footerToolbar: isMobile ? { left: 'schedToggle' } : false,
     buttonText: isMobile ? { listWeek: 'List', dayGridMonth: 'Month', timeGridDay: 'Day', today: 'Today' } : {},
     customButtons: {
       subscribe: {
@@ -38733,7 +38734,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.62';
+const CACHE = 'amux-v0.9.63';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
