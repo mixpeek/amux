@@ -6576,6 +6576,28 @@ def _ical_date_plus_days(datestr, days):
     return d.strftime("%Y%m%d")
 
 
+def _ical_utc(val, tzname=None):
+    """Convert a stored local datetime (in the calendar's tz) to a UTC DATE-TIME
+    (YYYYMMDDTHHMMSSZ). Real events carry an absolute instant — unlike schedules,
+    which are floating wall-clock. Emitting UTC-with-Z makes Google/Apple display
+    the correct local time instead of mis-reading a floating value as UTC.
+    Falls back to floating (no Z) if zoneinfo is unavailable."""
+    if not val:
+        return None
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?", str(val).strip())
+    if not m:
+        return None
+    y, mo, d, hh, mm, ss = m.groups()
+    from datetime import datetime, timezone
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tzname or _GCAL_TZ)
+        local = datetime(int(y), int(mo), int(d), int(hh), int(mm), int(ss or 0), tzinfo=tz)
+        return local.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    except Exception:
+        return f"{y}{mo}{d}T{hh}{mm}{ss or '00'}"   # floating fallback
+
+
 def _cron_to_rrule(parts):
     """Best-effort 5-field cron -> RRULE (day-or-coarser only; time comes from DTSTART).
     Returns None for sub-daily cadences (hour='*', steps, lists) so they show as a
@@ -6694,11 +6716,11 @@ def _generate_ical() -> str:
             block.append(f"DTSTART;VALUE=DATE:{d0}")
             block.append(f"DTEND;VALUE=DATE:{d1}")
         else:
-            dtstart = _ical_dtstart(ev_row.get("start"))
+            dtstart = _ical_utc(ev_row.get("start"))
             if not dtstart:
                 continue
             block.append(f"DTSTART:{dtstart}")
-            dtend = _ical_dtstart(ev_row.get("end")) if ev_row.get("end") else None
+            dtend = _ical_utc(ev_row.get("end")) if ev_row.get("end") else None
             if dtend:
                 block.append(f"DTEND:{dtend}")
             else:
