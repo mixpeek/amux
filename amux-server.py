@@ -46720,6 +46720,9 @@ def _kill_stale_port(port: int):
 # with no inbound port — gated on an active amux-cloud subscription (the token).
 _TUNNEL_GATEWAY = os.environ.get("AMUX_TUNNEL_GATEWAY", "https://cloud.amux.io")
 _TUNNEL_TOKEN = os.environ.get("AMUX_TUNNEL_TOKEN", "")
+# Optional: auto-target a specific localhost port instead of this server, so a
+# tunneled demo/app survives amux restarts. Empty/0 → tunnel the dashboard itself.
+_TUNNEL_TARGET_PORT = int(os.environ.get("AMUX_TUNNEL_PORT", "0") or 0) or None
 _AMUX_SELF_PORT = 8822
 _AMUX_SELF_SCHEME = "https"
 _tunnel_client = {"running": False, "url": None, "tid": None, "error": None,
@@ -46957,7 +46960,8 @@ def main():
     global _AMUX_SELF_PORT, _AMUX_SELF_SCHEME
     _AMUX_SELF_PORT, _AMUX_SELF_SCHEME = port, scheme
     if _TUNNEL_TOKEN:   # auto-start the cloud tunnel when a subscription token is configured
-        threading.Thread(target=_tunnel_start, daemon=True).start()
+        threading.Thread(target=lambda: _tunnel_start(target_port=_TUNNEL_TARGET_PORT),
+                         daemon=True).start()
     slog(f"[startup] server starting — pid={os.getpid()}, port={port}, scheme={scheme}, python={sys.version.split()[0]}")
     _log_resource_snapshot("startup")
     print("\033[1m\033[34mamux\033[0m web dashboard running")
