@@ -39,6 +39,8 @@ amux serve   # → https://localhost:8822
 
 ## What's New
 
+- **Calendar events** — a real events layer that syncs out to Google/Apple Calendar (via an iCal feed), alongside toggleable task and board-issue layers that stay in-app. Create with **+ Event**.
+- **Urgent alerts** — `amux alert "..."` fires an in-app push **and** an iMessage/SMS to the owner. A fire alarm any session can pull; configured in Settings → Alerts.
 - **[amux tunnel](https://amux.io/features/tunnel/)** — expose any localhost port at a stable public HTTPS URL (`amux tunnel start 3000`). Your machine dials out, so there's no inbound port to open. Requires an amux cloud subscription.
 - **[YOLO mode on by default](https://amux.io/changelog/)** — new sessions auto-approve tool prompts so agents never block during overnight runs. Opt out per-session if you need interactive review.
 - **[Board status gates](https://amux.io/changelog/)** — configurable checklists gate cards from moving to `done`/`verified`, preventing the failure mode of marking work done before it's confirmed in production.
@@ -87,6 +89,8 @@ amux serve   # → https://localhost:8822
 - **Browser automation** — shared Playwright instance with saved auth profiles, screenshots, and an AI agent mode
 - **Skills / slash commands** — project-level custom commands (e.g. `/commit`, `/review-pr`) that agents can invoke
 - **Scheduler** — named recurring jobs with cron expressions and a management UI
+- **Calendar** — three toggleable layers (events, tasks, board issues); real events sync out to Google/Apple Calendar via an iCal feed
+- **Urgent alerts** — a fire-alarm channel any session can use to reach you immediately (in-app push + iMessage/SMS)
 - **File explorer** — browse agent working directories, preview files, edit markdown with in-page search
 - **Tunnel** — publish any localhost port at a stable public HTTPS URL, no inbound firewall hole ([amux cloud](https://amux.io/cloud/))
 
@@ -250,9 +254,68 @@ amux crm fu                 # show pending follow-ups
 amux tunnel start 3000      # publish localhost:3000 publicly
 amux tunnel url             # print the public URL
 amux tunnel stop            # take it down
+
+# Urgent alert to the owner (use sparingly)
+amux alert "prod is down" "customer-facing, need a call"
 ```
 
 Session names support prefix matching — `amux attach my` resolves to `myproject` if unambiguous.
+
+---
+
+## Calendar & events
+
+The **Calendar** tab shows three independently toggleable layers:
+
+| Layer | What it is | Syncs to Google/Apple? |
+|-------|------------|------------------------|
+| **Events** | Real calendar events you create | **Yes** |
+| **Tasks** | Scheduled/recurring jobs (the scheduler) | No — in-app only |
+| **Issues** | Board items with a due date | No — in-app only (off by default) |
+
+Only **events** leave amux; tasks and issues would be noise on your real calendar.
+
+**Create an event:** click **+ Event** in the calendar header (or click any empty
+slot). Set a title, all-day or a start/end time, and an optional location — Save.
+Click an event to edit or delete it.
+
+**Sync to Google/Apple Calendar:** amux publishes your events as an RFC 5545 iCal
+feed. Click **Subscribe** in the calendar and add the URL to Google Calendar
+(*Settings → Add calendar → From URL*) or Apple Calendar. Timed events are emitted
+in UTC so they show at the correct local time; all-day events use `VALUE=DATE`.
+
+> Google refreshes external iCal feeds on its own slow cadence (hours) and caches
+> them **by URL**. If you need it to pick up a change immediately, publish to a new
+> key and re-subscribe — see `CLAUDE.md` § iCal / Google Calendar sync.
+
+---
+
+## Urgent alerts
+
+A deliberately-sparse **fire alarm** to reach the owner immediately — separate from
+routine in-app notifications. It fans out to an **in-app push** and a **real
+iMessage/SMS** to the owner's phone.
+
+```bash
+amux alert "prod is down — search returning 0 results" "customer-facing, need a call"
+```
+
+Or the raw endpoint (what sessions use):
+
+```bash
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"message":"<what happened + what you need>","reason":"<why now>","session":"'$AMUX_SESSION'"}' \
+  $AMUX_URL/api/alert/owner
+# → {"ok":true,"channels":{"push":"sent","sms":"imessage"}}
+```
+
+Configure it in **Settings → Alerts**: toggle in-app push / text, set the phone
+number, and **Send test alert**. The server applies a 60-second dedupe so an
+accidental repeat can't spam you.
+
+**Use it only for things that genuinely can't wait** — production down, data at
+risk, a destructive action needing a go/no-go, a security incident. For everything
+else, use the board. Overuse defeats the purpose.
 
 ---
 
@@ -261,6 +324,9 @@ Session names support prefix matching — `amux attach my` resolves to `myprojec
 Expose any localhost port at a stable public HTTPS URL, without opening an inbound
 port or configuring a firewall. Your machine dials **out** to the amux cloud gateway
 and long-polls it; the gateway relays public requests back down that connection.
+
+Drive it from **Settings → Tunnel (public proxy)** in the dashboard (start/stop, copy
+the URL, see the live target) or from the CLI:
 
 ```bash
 amux tunnel start 3000                  # publish localhost:3000
@@ -299,7 +365,12 @@ AMUX_TUNNEL_TOKEN=<token from your amux cloud account>
 ```
 
 Then `touch amux-server.py` to reload. The tunnel auto-starts with the server and
-points at the dashboard unless you give it another port.
+points at the dashboard unless you give it another port. To auto-target a fixed
+local port that survives restarts, add `AMUX_TUNNEL_PORT=<port>` to `server.env`.
+
+**Worked example:** [`examples/flask-tunnel-demo/`](examples/flask-tunnel-demo/) is a
+tiny Flask app you can publish in one command (`amux tunnel start 8940`), with a
+launchd job to keep it alive across reboots.
 
 > **Anything you tunnel is public.** The URL is unguessable, not authenticated —
 > don't expose a service that assumes it's only reachable from localhost.
