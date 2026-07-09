@@ -22387,7 +22387,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.72';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.73';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -27479,24 +27479,44 @@ async function submitCreate() {
   const branch = branchEnabled ? document.getElementById('create-branch').value.trim() : '';
   const worktreeEnabled = document.getElementById('create-worktree-enabled').checked && _createDirIsGit;
   if (!name) { document.getElementById('create-name').focus({ preventScroll: true }); return; }
-  closeCreate();
 
   if (!online) {
     // Offline: save as draft, will sync when connected
+    closeCreate();
     addDraft(name, dir, prompt);
     showToast('Saved draft — will sync when online');
     render();
     return;
   }
 
-  // Online: create immediately, optionally queue prompt
+  // Online: create immediately, optionally queue prompt. Direct fetch (not
+  // apiCall) so a name clash (409) shows a clear message and keeps the dialog
+  // open to fix — apiCall would pop a generic "Error: 409" with the form gone.
   const createBody = { name, dir, creator: _getDeviceName() };
   if (_createProvider !== 'claude') createBody.provider = _createProvider;
   if (worktreeEnabled) createBody.worktree = true;
-  const r = await apiCall(API + '/api/sessions', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(createBody)
-  });
+  let r;
+  try {
+    r = await fetch(API + '/api/sessions', {
+      method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify(createBody)
+    });
+  } catch(e) {
+    showToast('Create failed — server unreachable');
+    return;
+  }
+  if (r.status === 409) {
+    const nameEl = document.getElementById('create-name');
+    showToast('A session named “' + name + '” already exists — pick another name');
+    if (nameEl) { nameEl.focus({ preventScroll: true }); nameEl.select && nameEl.select(); }
+    return;   // leave the dialog open so the name can be changed
+  }
+  if (!r.ok) {
+    let emsg = ''; try { emsg = (await r.json()).error || ''; } catch(e) {}
+    showToast('Create failed: ' + (emsg || ('error ' + r.status)));
+    return;   // dialog stays open
+  }
+  closeCreate();
   if (r && r.ok) {
     if (dir) _addRecentDir(dir);
     // Apply template if selected (creates dirs + writes CLAUDE.md before session starts)
@@ -39183,7 +39203,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.72';
+const CACHE = 'amux-v0.9.73';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
