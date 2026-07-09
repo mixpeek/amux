@@ -298,13 +298,17 @@ EOF
 }
 
 cmd_start() {
-  local name dry_run=false
+  local name dry_run=false detach=false
   name=$(resolve_session "${1:-}")
   shift 2>/dev/null || true
-  # Strip our own --dry-run flag(s) before inline claude args. Placed before
-  # `--` so `amux start NAME --dry-run -- --some-claude-flag` still works.
-  while [[ "${1:-}" == "--dry-run" ]]; do
-    dry_run=true
+  # Strip our own flags before inline claude args. Placed before `--` so
+  # `amux start NAME --detach -- --some-claude-flag` still works.
+  #   --detach / -d : start the tmux session but don't attach (scripts, CI, boot)
+  while [[ "${1:-}" == "--dry-run" || "${1:-}" == "--detach" || "${1:-}" == "-d" ]]; do
+    case "$1" in
+      --dry-run)    dry_run=true ;;
+      --detach|-d)  detach=true ;;
+    esac
     shift
   done
   # dry-run is a pure command preview — no tmux session is spawned, so the
@@ -317,6 +321,10 @@ cmd_start() {
   tname=$(tmux_name "$name")
 
   if ! $dry_run && is_running "$name"; then
+    if $detach; then
+      echo "${YELLOW}already running:${RESET} $name"
+      return
+    fi
     echo "${YELLOW}already running:${RESET} $name — attaching..."
     tmux attach-session -t "=$tname"
     return
@@ -414,6 +422,12 @@ cmd_start() {
   tmux set-window-option -t "=$tname" automatic-rename off 2>/dev/null
   echo "${GREEN}started${RESET} ${BOLD}$name${RESET} in $dir"
   echo "  ${DIM}$cmd${RESET}"
+  # The session is already created detached (new-session -d). Only attach when
+  # not asked to detach — --detach makes `amux start` script/CI/boot friendly.
+  if $detach; then
+    echo "  ${DIM}detached — attach with: amux attach $name${RESET}"
+    return
+  fi
   tmux attach-session -t "=$tname"
 }
 
@@ -1021,7 +1035,7 @@ ${BOLD}amux${RESET} — phone-friendly Claude Code session manager ${DIM}v${CC_V
 
 ${BOLD}Session management:${RESET}
   amux register <name> [flags]   Register a session with Claude Code flags
-  amux start <name> [--dry-run]  Start a registered session in tmux
+  amux start <name> [--detach]   Start a registered session in tmux (-d = don't attach)
                                 (--dry-run: print the command without spawning)
   amux exec <name> [flags]       Register + start in one step
   amux stop <name>               Stop a running session
