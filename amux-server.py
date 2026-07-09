@@ -12832,8 +12832,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   #fc-container .fc-scrollgrid td { border-color: var(--border); }
   #fc-container .fc-daygrid-day-frame { min-height: 80px; }
   #fc-container .fc-subscribe-button { font-size: 0.78rem !important; padding: 4px 10px !important; }
-  #fc-container .fc-schedToggle-button { font-size: 0.78rem !important; padding: 4px 10px !important; }
-  #fc-container .fc-schedToggle-button[aria-pressed="false"] { opacity: 0.55; }
+  #fc-container .fc-eventsToggle-button,
+  #fc-container .fc-schedToggle-button,
+  #fc-container .fc-issuesToggle-button { font-size: 0.78rem !important; padding: 4px 10px !important; }
+  #fc-container .fc-eventsToggle-button[aria-pressed="false"],
+  #fc-container .fc-schedToggle-button[aria-pressed="false"],
+  #fc-container .fc-issuesToggle-button[aria-pressed="false"] { opacity: 0.55; }
   #fc-container .fc-footer-toolbar { padding: 6px 4px; margin-top: 6px !important; }
   @media (max-width: 600px) {
     #calendar-view { height: calc(100dvh - 60px); }
@@ -22288,7 +22292,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.67';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.68';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -31272,43 +31276,97 @@ async function deleteBoardStatus(id) {
 // ═══════ CALENDAR (FullCalendar) ═══════
 let _fcInstance = null;
 
-// Scheduled tasks are a toggleable layer. They render in-app only and never
-// reach the iCal feed / Google Calendar.
-let _calShowSched = localStorage.getItem('amux_cal_show_sched') !== '0';
+// The calendar has three layers, each independently toggleable:
+//   • events — real calendar events (the ONLY layer that syncs to Google Calendar)
+//   • tasks  — schedules (in-app only)
+//   • issues — board items with a due date (in-app only)
+// Only events reach the iCal feed; tasks/issues never leave amux.
+let calEvents = [];
+let _calShowEvents = localStorage.getItem('amux_cal_show_events') !== '0';   // default on
+let _calShowSched  = localStorage.getItem('amux_cal_show_sched')  !== '0';   // default on
+let _calShowIssues = localStorage.getItem('amux_cal_show_issues') === '1';   // default off (noisy)
 
-function _fcSchedBtnLabel() {
-  return (_calShowSched ? '☑' : '☐') + ' Scheduled tasks';
+const _CAL_LAYERS = {
+  events: { get: () => _calShowEvents, ls: 'amux_cal_show_events', label: 'Events',          btn: 'eventsToggle' },
+  sched:  { get: () => _calShowSched,  ls: 'amux_cal_show_sched',  label: 'Tasks',           btn: 'schedToggle'  },
+  issues: { get: () => _calShowIssues, ls: 'amux_cal_show_issues', label: 'Issues',          btn: 'issuesToggle' },
+};
+
+function _fcLayerLabel(key) {
+  return (_CAL_LAYERS[key].get() ? '☑' : '☐') + ' ' + _CAL_LAYERS[key].label;
 }
 
-function _fcToggleSched() {
-  _calShowSched = !_calShowSched;
-  localStorage.setItem('amux_cal_show_sched', _calShowSched ? '1' : '0');
-  document.querySelectorAll('.fc-schedToggle-button').forEach(b => {
-    b.textContent = _fcSchedBtnLabel();
-    b.setAttribute('aria-pressed', String(_calShowSched));
+function _fcToggleLayer(key) {
+  const on = !_CAL_LAYERS[key].get();
+  if (key === 'events') _calShowEvents = on;
+  else if (key === 'sched') _calShowSched = on;
+  else if (key === 'issues') _calShowIssues = on;
+  localStorage.setItem(_CAL_LAYERS[key].ls, on ? '1' : '0');
+  document.querySelectorAll('.fc-' + _CAL_LAYERS[key].btn + '-button').forEach(b => {
+    b.textContent = _fcLayerLabel(key);
+    b.setAttribute('aria-pressed', String(on));
   });
   if (_fcInstance) _fcInstance.refetchEvents();
 }
 
+async function fetchCalEvents() {
+  try {
+    const r = await fetch(API + '/api/cal-events');
+    calEvents = await r.json();
+    if (!Array.isArray(calEvents)) calEvents = [];
+  } catch (e) { /* keep last */ }
+  if (_fcInstance && activeView === 'calendar') _fcInstance.refetchEvents();
+}
+
 function _fcGetEvents() {
-  const events = [];
-  // Board issues are intentionally excluded — the calendar reflects schedules
-  // (when things actually run), not every board due date (too noisy).
-  if (!_calShowSched) return events;
-  (schedules || []).forEach(s => {
-    if (s.deleted || !s.enabled || !s.next_run) return;
-    events.push({
-      id: 'sched-' + s.id,
-      title: s.title,
-      start: s.next_run,
-      allDay: !s.next_run.includes('T'),
-      backgroundColor: 'rgba(163,113,247,0.15)',
-      borderColor: '#a855f7',
-      textColor: '#c084fc',
-      extendedProps: { _type: 'schedule', schedId: s.id },
+  const out = [];
+  if (_calShowEvents) {
+    (calEvents || []).forEach(e => {
+      if (e.deleted) return;
+      out.push({
+        id: 'evt-' + e.id,
+        title: e.title,
+        start: e.start,
+        end: e.end || undefined,
+        allDay: !!e.all_day || !String(e.start).includes('T'),
+        backgroundColor: 'rgba(56,139,253,0.18)',
+        borderColor: '#388bfd',
+        textColor: '#79c0ff',
+        extendedProps: { _type: 'event', evId: e.id, desc: e.description || '' },
+      });
     });
-  });
-  return events;
+  }
+  if (_calShowSched) {
+    (schedules || []).forEach(s => {
+      if (s.deleted || !s.enabled || !s.next_run) return;
+      out.push({
+        id: 'sched-' + s.id,
+        title: '⏰ ' + s.title,
+        start: s.next_run,
+        allDay: !s.next_run.includes('T'),
+        backgroundColor: 'rgba(163,113,247,0.15)',
+        borderColor: '#a855f7',
+        textColor: '#c084fc',
+        extendedProps: { _type: 'schedule', schedId: s.id },
+      });
+    });
+  }
+  if (_calShowIssues) {
+    (boardItems || []).forEach(i => {
+      if (!i.due) return;
+      out.push({
+        id: 'issue-' + i.id,
+        title: '◪ ' + (i.title || i.id),
+        start: i.due,
+        allDay: !String(i.due).includes('T'),
+        backgroundColor: 'rgba(63,185,80,0.14)',
+        borderColor: '#3fb950',
+        textColor: '#56d364',
+        extendedProps: { _type: 'issue', issueId: i.id, desc: i.desc || '' },
+      });
+    });
+  }
+  return out;
 }
 
 function _fcInit() {
@@ -31333,21 +31391,20 @@ function _fcInit() {
     } : {
       left: 'prev,today,next',
       center: 'title',
-      right: 'schedToggle dayGridMonth,timeGridWeek,timeGridDay subscribe',
+      right: 'eventsToggle,schedToggle,issuesToggle dayGridMonth,timeGridWeek,timeGridDay subscribe',
     },
-    // Mobile's header row is already full — give the toggle its own footer bar.
+    // Mobile's header row is already full — give the layer toggles their own footer bar.
     // Subscribe stays hidden on mobile (pre-existing `display:none`), so it's not here.
-    footerToolbar: isMobile ? { left: 'schedToggle' } : false,
+    footerToolbar: isMobile ? { left: 'eventsToggle,schedToggle,issuesToggle' } : false,
     buttonText: isMobile ? { listWeek: 'List', dayGridMonth: 'Month', timeGridDay: 'Day', today: 'Today' } : {},
     customButtons: {
       subscribe: {
         text: 'Subscribe',
         click: showIcalInfo,
       },
-      schedToggle: {
-        text: _fcSchedBtnLabel(),
-        click: _fcToggleSched,
-      },
+      eventsToggle: { text: _fcLayerLabel('events'), click: () => _fcToggleLayer('events') },
+      schedToggle:  { text: _fcLayerLabel('sched'),  click: () => _fcToggleLayer('sched')  },
+      issuesToggle: { text: _fcLayerLabel('issues'), click: () => _fcToggleLayer('issues') },
     },
     events: function(info, successCallback) { successCallback(_fcGetEvents()); },
     height: isMobile ? (window.visualViewport ? window.visualViewport.height : window.innerHeight) - el.getBoundingClientRect().top : window.innerHeight - el.getBoundingClientRect().top,
@@ -31365,10 +31422,13 @@ function _fcInit() {
     stickyHeaderDates: true,
     eventClick: function(info) {
       const props = info.event.extendedProps;
-      if (props._type === 'schedule') openSchedModal(props.schedId);
+      if (props._type === 'event') openEventModal(props.evId);
+      else if (props._type === 'schedule') openSchedModal(props.schedId);
+      else if (props._type === 'issue') { switchView('board'); }
     },
-    dateClick: function() { openSchedModal(); },   // calendar is schedules now → new schedule
-    select: function() { openSchedModal(); },
+    // Clicking/selecting an empty slot creates an EVENT (the primary calendar citizen).
+    dateClick: function(info) { openEventModal(null, info.dateStr); },
+    select: function(info) { openEventModal(null, info.startStr, info.endStr, info.allDay); },
     viewDidMount: function(info) {
       localStorage.setItem('amux_cal_view', info.view.type);
     },
@@ -31379,9 +31439,16 @@ function _fcInit() {
     },
   });
   _fcInstance.render();
-  document.querySelectorAll('.fc-schedToggle-button').forEach(b => {
-    b.setAttribute('aria-pressed', String(_calShowSched));
-    b.setAttribute('title', 'Show/hide amux scheduled tasks (in-app only — never synced to Google Calendar)');
+  const _titles = {
+    events: 'Real calendar events — the only layer that syncs to Google Calendar',
+    sched:  'Scheduled tasks (in-app only — never synced to Google Calendar)',
+    issues: 'Board issues with a due date (in-app only)',
+  };
+  Object.keys(_CAL_LAYERS).forEach(key => {
+    document.querySelectorAll('.fc-' + _CAL_LAYERS[key].btn + '-button').forEach(b => {
+      b.setAttribute('aria-pressed', String(_CAL_LAYERS[key].get()));
+      b.setAttribute('title', _titles[key]);
+    });
   });
   // updateSize after layout settles (container was display:none → flex)
   setTimeout(() => { if (_fcInstance) _fcInstance.updateSize(); }, 50);
@@ -31398,6 +31465,102 @@ function renderCalendar() {
   } else {
     _fcInit();
   }
+  fetchCalEvents();   // refresh the events layer whenever the calendar is shown
+}
+
+// ── Calendar event modal (create / edit / delete a real calendar event) ──────
+function _evPad(n) { return String(n).padStart(2, '0'); }
+function _evSplit(iso) {
+  // "2026-07-15T14:00:00" → { date:'2026-07-15', time:'14:00' }; date-only → time ''
+  if (!iso) return { date: '', time: '' };
+  const s = String(iso);
+  const [d, t] = s.includes('T') ? s.split('T') : [s, ''];
+  return { date: d, time: t ? t.slice(0, 5) : '' };
+}
+function openEventModal(editId, startStr, endStr, allDay) {
+  const ev = editId ? (calEvents || []).find(e => e.id === editId) : null;
+  const s = _evSplit(ev ? ev.start : (startStr || ''));
+  const e = _evSplit(ev ? ev.end : (endStr || ''));
+  const isAllDay = ev ? !!ev.all_day : (allDay === true || (startStr && !String(startStr).includes('T')));
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  overlay.id = 'event-modal';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:440px" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 style="margin:0">${ev ? 'Edit event' : 'New event'}</h3>
+        <button class="modal-close" onclick="closeEventModal()">×</button>
+      </div>
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:10px">
+        <input id="ev-title" class="input" placeholder="Title" value="${ev ? esc(ev.title) : ''}" autofocus>
+        <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;color:var(--dim)">
+          <input type="checkbox" id="ev-allday" ${isAllDay ? 'checked' : ''} onchange="_evToggleAllDay()"> All day
+        </label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:0.8rem;color:var(--dim);min-width:34px">Start</span>
+          <input type="date" id="ev-sdate" class="input" value="${s.date}">
+          <input type="time" id="ev-stime" class="input" value="${s.time || '09:00'}" ${isAllDay ? 'style="display:none"' : ''}>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:0.8rem;color:var(--dim);min-width:34px">End</span>
+          <input type="date" id="ev-edate" class="input" value="${e.date}">
+          <input type="time" id="ev-etime" class="input" value="${e.time}" ${isAllDay ? 'style="display:none"' : ''}>
+        </div>
+        <input id="ev-loc" class="input" placeholder="Location (optional)" value="${ev && ev.location ? esc(ev.location) : ''}">
+        <textarea id="ev-desc" class="input" placeholder="Description (optional)" rows="2">${ev && ev.description ? esc(ev.description) : ''}</textarea>
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:space-between;gap:8px">
+        <div>${ev ? `<button class="btn danger" onclick="deleteEvent('${ev.id}')">Delete</button>` : ''}</div>
+        <div style="display:flex;gap:8px">
+          <button class="btn" onclick="closeEventModal()">Cancel</button>
+          <button class="btn primary" onclick="saveEvent('${ev ? ev.id : ''}')">Save</button>
+        </div>
+      </div>
+    </div>`;
+  overlay.onclick = closeEventModal;
+  document.body.appendChild(overlay);
+  setTimeout(() => { const t = document.getElementById('ev-title'); if (t) t.focus(); }, 30);
+}
+function _evToggleAllDay() {
+  const on = document.getElementById('ev-allday').checked;
+  ['ev-stime', 'ev-etime'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = on ? 'none' : ''; });
+}
+function closeEventModal() {
+  const m = document.getElementById('event-modal');
+  if (m) m.remove();
+}
+function _evCompose(dateId, timeId, allDay) {
+  const d = document.getElementById(dateId).value;
+  if (!d) return '';
+  if (allDay) return d;
+  const t = document.getElementById(timeId).value || '00:00';
+  return d + 'T' + t + ':00';
+}
+async function saveEvent(id) {
+  const title = document.getElementById('ev-title').value.trim();
+  if (!title) { document.getElementById('ev-title').focus(); return; }
+  const allDay = document.getElementById('ev-allday').checked;
+  const start = _evCompose('ev-sdate', 'ev-stime', allDay);
+  if (!start) { document.getElementById('ev-sdate').focus(); return; }
+  const end = _evCompose('ev-edate', 'ev-etime', allDay) || null;
+  const body = {
+    title, start, end, all_day: allDay,
+    location: document.getElementById('ev-loc').value.trim() || null,
+    description: document.getElementById('ev-desc').value.trim() || null,
+  };
+  try {
+    const url = API + '/api/cal-events' + (id ? '/' + id : '');
+    const r = await fetch(url, { method: id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || 'Save failed'); return; }
+  } catch (e) { alert('Save failed: ' + e.message); return; }
+  closeEventModal();
+  await fetchCalEvents();
+}
+async function deleteEvent(id) {
+  if (!confirm('Delete this event?')) return;
+  try { await fetch(API + '/api/cal-events/' + id, { method: 'DELETE' }); } catch (e) {}
+  closeEventModal();
+  await fetchCalEvents();
 }
 
 async function _tunnelStatus() {
@@ -38825,7 +38988,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.63';
+const CACHE = 'amux-v0.9.68';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
