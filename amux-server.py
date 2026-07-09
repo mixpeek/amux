@@ -4828,6 +4828,22 @@ CREATE TABLE IF NOT EXISTS schedule_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_sched_runs_sched ON schedule_runs(schedule_id, ran_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sched_runs_ran   ON schedule_runs(ran_at DESC);
+-- Real calendar EVENTS — the only layer that syncs to Google Calendar by default.
+-- (The calendar shows three layers: events here, tasks=schedules, issues=board.)
+CREATE TABLE IF NOT EXISTS cal_events (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    start       TEXT NOT NULL,          -- ISO 8601; date-only => all-day
+    end         TEXT,                   -- ISO 8601; optional
+    all_day     INTEGER NOT NULL DEFAULT 0,
+    location    TEXT,
+    description TEXT,
+    rrule       TEXT,                   -- optional RFC 5545 RRULE (without the "RRULE:" prefix)
+    created     INTEGER NOT NULL,
+    updated     INTEGER NOT NULL,
+    deleted     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_cal_events_start ON cal_events(start) WHERE deleted IS NULL;
 CREATE TABLE IF NOT EXISTS reports (
     id           TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -6545,6 +6561,21 @@ def _ical_dtstart(val):
     return None
 
 
+def _ical_date(val):
+    """Convert a stored date/datetime into an all-day DATE value (YYYYMMDD)."""
+    if not val:
+        return None
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", str(val).strip())
+    return "".join(m.groups()) if m else None
+
+
+def _ical_date_plus_days(datestr, days):
+    """YYYYMMDD + N days (for an exclusive all-day DTEND). datestr is YYYYMMDD."""
+    from datetime import date, timedelta
+    d = date(int(datestr[0:4]), int(datestr[4:6]), int(datestr[6:8])) + timedelta(days=days)
+    return d.strftime("%Y%m%d")
+
+
 def _cron_to_rrule(parts):
     """Best-effort 5-field cron -> RRULE (day-or-coarser only; time comes from DTSTART).
     Returns None for sub-daily cadences (hour='*', steps, lists) so they show as a
@@ -6619,68 +6650,68 @@ def _schedule_rrule(sched):
 
 
 def _generate_ical() -> str:
-    """RFC 5545 iCalendar feed built from amux **schedules** (recurring & one-shot
-    scheduled tasks). Board issues are intentionally excluded — a calendar of every
-    due date was too noisy; the calendar now reflects when things actually run."""
+    """RFC 5545 iCalendar feed built from amux calendar **events** only.
+
+    The amux calendar has three layers — events (real calendar events), tasks
+    (schedules), and issues (board items). By design ONLY events sync to an
+    external calendar (Google/Apple), because tasks and issues are internal
+    noise nobody wants mirrored into their real calendar. Tasks/issues stay
+    in-app, behind toggles."""
     from datetime import datetime, timezone
     try:
         db = get_db()
         rows = db.execute(
-            "SELECT * FROM schedules WHERE deleted IS NULL AND enabled=1 "
-            "ORDER BY next_run ASC, created ASC"
+            "SELECT * FROM cal_events WHERE deleted IS NULL ORDER BY start ASC"
         ).fetchall()
-        cols = [d[1] for d in db.execute("PRAGMA table_info(schedules)").fetchall()]
-        scheds = [dict(zip(cols, r)) for r in rows]
+        cols = [d[1] for d in db.execute("PRAGMA table_info(cal_events)").fetchall()]
+        events = [dict(zip(cols, r)) for r in rows]
     except Exception:
-        scheds = []
+        events = []
     dtstamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        "PRODID:-//amux//amux scheduler//EN",
+        "PRODID:-//amux//amux calendar//EN",
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
-        "X-WR-CALNAME:amux Schedules",
-        "X-WR-CALDESC:amux scheduled & recurring tasks",
+        "X-WR-CALNAME:amux",
+        "X-WR-CALDESC:amux calendar events",
         "REFRESH-INTERVAL;VALUE=DURATION:PT15M",
         "X-PUBLISHED-TTL:PT15M",
     ]
-    for s in scheds:
-        dtstart = _ical_dtstart(s.get("next_run") or s.get("run_at"))
-        if not dtstart:
-            continue
-        uid = f"{s.get('id', 'sched')}@amux"
-        summary = _ical_escape("⏰ " + (s.get("title") or "Scheduled task"))
-        parts = []
-        if s.get("session"):
-            parts.append("Session: " + str(s["session"]))
-        if s.get("command"):
-            cmd = str(s["command"])
-            parts.append("Command: " + (cmd[:200] + "…" if len(cmd) > 200 else cmd))
-        if s.get("schedule_expr"):
-            parts.append("Schedule: " + str(s["schedule_expr"]))
-        description = _ical_escape("\n".join(parts))
-        ev = [
-            "BEGIN:VEVENT",
-            f"UID:{uid}",
-            f"DTSTAMP:{dtstamp}",
-            f"DTSTART:{dtstart}",
-            "DURATION:PT30M",
-            f"SUMMARY:{summary}",
-        ]
-        if description:
-            ev.append(f"DESCRIPTION:{description}")
-        rrule = _schedule_rrule(s)
-        if rrule:
-            ev.append(f"RRULE:{rrule}")
-        ev += [
-            "CATEGORIES:amux,schedule",
-            "STATUS:CONFIRMED",
-            "TRANSP:TRANSPARENT",
-            "SEQUENCE:0",
-            "END:VEVENT",
-        ]
-        lines += ev
+    for ev_row in events:
+        all_day = bool(ev_row.get("all_day"))
+        uid = f"{ev_row.get('id', 'evt')}@amux"
+        summary = _ical_escape(ev_row.get("title") or "Event")
+        block = ["BEGIN:VEVENT", f"UID:{uid}", f"DTSTAMP:{dtstamp}"]
+        if all_day:
+            d0 = _ical_date(ev_row.get("start"))
+            if not d0:
+                continue
+            # All-day DTEND is exclusive; default to the day after start.
+            d1 = _ical_date(ev_row.get("end")) if ev_row.get("end") else None
+            d1 = d1 or _ical_date_plus_days(d0, 1)
+            block.append(f"DTSTART;VALUE=DATE:{d0}")
+            block.append(f"DTEND;VALUE=DATE:{d1}")
+        else:
+            dtstart = _ical_dtstart(ev_row.get("start"))
+            if not dtstart:
+                continue
+            block.append(f"DTSTART:{dtstart}")
+            dtend = _ical_dtstart(ev_row.get("end")) if ev_row.get("end") else None
+            if dtend:
+                block.append(f"DTEND:{dtend}")
+            else:
+                block.append("DURATION:PT1H")
+        block.append(f"SUMMARY:{summary}")
+        if ev_row.get("location"):
+            block.append(f"LOCATION:{_ical_escape(ev_row['location'])}")
+        if ev_row.get("description"):
+            block.append(f"DESCRIPTION:{_ical_escape(ev_row['description'])}")
+        if ev_row.get("rrule"):
+            block.append(f"RRULE:{ev_row['rrule']}")
+        block += ["STATUS:CONFIRMED", "SEQUENCE:0", "END:VEVENT"]
+        lines += block
     lines.append("END:VCALENDAR")
     return "\r\n".join(_ical_fold(l) for l in lines) + "\r\n"
 
@@ -13334,7 +13365,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     background: var(--card); border: 1px solid var(--border); border-radius: 20px;
     font-size: 0.72rem; max-width: 180px; user-select: none;
   }
-  .peek-attach-chip.uploading { opacity: 0.55; }
+  .peek-attach-chip.uploading { animation: chip-pulse 1.2s ease-in-out infinite; }
+  @keyframes chip-pulse { 0%,100% { opacity: 0.45; } 50% { opacity: 0.85; } }
   .peek-attach-chip img { width: 24px; height: 24px; object-fit: cover; border-radius: 3px; flex-shrink: 0; }
   .peek-attach-chip .chip-icon { font-size: 1rem; line-height: 1; flex-shrink: 0; }
   .peek-attach-chip .chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
@@ -22256,7 +22288,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.66';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.67';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -23554,11 +23586,11 @@ function renderPeekFiles() {
     } else {
       thumb = `<span class="chip-icon">${_fileIcon(f.name)}</span>`;
     }
-    const pct = isUploading && f.progress != null ? `<span style="color:var(--dim);font-size:0.65rem;min-width:28px;text-align:right;">${f.progress}%</span>` : '';
+    const uploading_label = isUploading && f.sizeMB ? `<span style="color:var(--dim);font-size:0.6rem;">${f.sizeMB} MB</span>` : '';
     return `<div class="peek-attach-chip${isUploading ? ' uploading' : ''}">
       ${thumb}
       <span class="chip-name">${esc(f.name)}</span>
-      ${isUploading ? pct : `<span class="chip-remove" onclick="removePeekFile(${i})">×</span>`}
+      ${isUploading ? uploading_label : `<span class="chip-remove" onclick="removePeekFile(${i})">×</span>`}
     </div>`;
   }).join('');
 }
@@ -23579,9 +23611,10 @@ function clearPeekFiles() {
 async function uploadAndAttach(file) {
   const isImage = file.type.startsWith('image/');
   let previewUrl = null;
-  if (isImage) previewUrl = URL.createObjectURL(file);
+  if (isImage && file.size < 10 * 1024 * 1024) previewUrl = URL.createObjectURL(file);
 
-  const placeholder = { name: file.name, path: null, url: null, isImage, previewUrl, progress: 0 };
+  const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+  const placeholder = { name: file.name, path: null, url: null, isImage, previewUrl, sizeMB };
   const idx = peekFiles.length;
   peekFiles.push(placeholder);
   renderPeekFiles();
@@ -23589,27 +23622,13 @@ async function uploadAndAttach(file) {
   try {
     const fd = new FormData();
     fd.append('file', file, file.name);
-    const xhr = new XMLHttpRequest();
-    const result = await new Promise((resolve, reject) => {
-      xhr.upload.onprogress = e => {
-        if (e.lengthComputable && peekFiles[idx]) {
-          peekFiles[idx].progress = Math.round(e.loaded / e.total * 100);
-          renderPeekFiles();
-        }
-      };
-      xhr.onload = () => {
-        try { resolve({ status: xhr.status, data: JSON.parse(xhr.responseText) }); }
-        catch { reject(new Error('invalid response')); }
-      };
-      xhr.onerror = () => reject(new Error('network error'));
-      xhr.open('POST', API + '/api/upload');
-      xhr.send(fd);
-    });
-    if (result.status >= 400 || result.data.error) {
-      showToast('Upload failed: ' + (result.data.error || result.status));
+    const r = await fetch(API + '/api/upload', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok || d.error) {
+      showToast('Upload failed: ' + (d.error || r.status));
       peekFiles.splice(idx, 1);
     } else {
-      peekFiles[idx] = { name: file.name, path: result.data.path, url: result.data.url, isImage, previewUrl };
+      peekFiles[idx] = { name: file.name, path: d.path, url: d.url, isImage, previewUrl };
     }
   } catch(e) {
     console.error('Upload error:', e);
@@ -42000,6 +42019,74 @@ class CCHandler(BaseHTTPRequestHandler):
                 _push_ical_bg()   # schedule removed → refresh calendar feed
                 self._json({"deleted": sched_id})
                 return
+
+        # ── Calendar events API (the layer that syncs to Google Calendar) ──────
+        if path == "/api/cal-events" or path.startswith("/api/cal-events/"):
+            import time as _te
+            db = get_db()
+
+            def _ev_cols():
+                return [d[1] for d in db.execute("PRAGMA table_info(cal_events)").fetchall()]
+
+            if method == "GET" and path == "/api/cal-events":
+                rows = db.execute(
+                    "SELECT * FROM cal_events WHERE deleted IS NULL ORDER BY start ASC"
+                ).fetchall()
+                cols = _ev_cols()
+                self._json([dict(zip(cols, r)) for r in rows])
+                return
+
+            if method == "POST" and path == "/api/cal-events":
+                body = self._read_body()
+                title = (body.get("title") or "").strip()
+                start = (body.get("start") or "").strip()
+                if not title or not start:
+                    self._json({"error": "title and start are required"}, 400)
+                    return
+                eid = _next_issue_id("EVT")
+                now = int(_te.time())
+                db.execute(
+                    "INSERT INTO cal_events (id,title,start,end,all_day,location,description,rrule,created,updated) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (eid, title, start, (body.get("end") or None), 1 if body.get("all_day") else 0,
+                     (body.get("location") or None), (body.get("description") or None),
+                     (body.get("rrule") or None), now, now))
+                db.commit()
+                _push_ical_bg()   # events drive the external calendar feed
+                row = db.execute("SELECT * FROM cal_events WHERE id=?", (eid,)).fetchone()
+                self._json(dict(zip(_ev_cols(), row)))
+                return
+
+            # /api/cal-events/<id>
+            if path.startswith("/api/cal-events/"):
+                eid = path.rsplit("/", 1)[-1]
+                if method == "PATCH":
+                    body = self._read_body()
+                    allowed = ("title", "start", "end", "all_day", "location", "description", "rrule")
+                    sets, vals = [], []
+                    for k in allowed:
+                        if k in body:
+                            sets.append(f"{k}=?")
+                            vals.append(1 if (k == "all_day" and body[k]) else
+                                        (0 if k == "all_day" else (body[k] or None)))
+                    if not sets:
+                        self._json({"error": "no updatable fields"}, 400)
+                        return
+                    vals += [int(_te.time()), eid]
+                    db.execute(f"UPDATE cal_events SET {','.join(sets)},updated=? WHERE id=?", vals)
+                    db.commit()
+                    _push_ical_bg()
+                    row = db.execute("SELECT * FROM cal_events WHERE id=?", (eid,)).fetchone()
+                    self._json(dict(zip(_ev_cols(), row)) if row else {"error": "not found"},
+                               200 if row else 404)
+                    return
+                if method == "DELETE":
+                    db.execute("UPDATE cal_events SET deleted=?,updated=? WHERE id=?",
+                               (int(_te.time()), int(_te.time()), eid))
+                    db.commit()
+                    _push_ical_bg()
+                    self._json({"deleted": eid})
+                    return
 
         # ── Reports API ───────────────────────────────────────────────────────
         if path == "/api/reports" or path.startswith("/api/reports/"):
