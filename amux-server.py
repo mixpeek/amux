@@ -7027,6 +7027,46 @@ def _parse_next_run(expr: str, from_ts: float | None = None) -> str | None:
     return None
 
 
+def _skip_next_run(sched):
+    """Compute the run time AFTER a recurring schedule's current next_run — i.e. skip
+    one occurrence. Returns 'YYYY-MM-DDTHH:MM' or None if it can't be advanced."""
+    import re as _re
+    from datetime import datetime, timedelta
+    try:
+        base = datetime.strptime((sched.get("next_run") or "")[:16], "%Y-%m-%dT%H:%M")
+    except Exception:
+        return None
+    expr = (sched.get("schedule_expr") or "").strip()
+    low = expr.lower()
+    m = _re.match(r'^every\s+(\d+)\s*(m|min|minutes?|h|hr|hours?|d|days?)$', low)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)[0]
+        step = {'m': timedelta(minutes=n), 'h': timedelta(hours=n), 'd': timedelta(days=n)}[unit]
+        return (base + step).strftime("%Y-%m-%dT%H:%M")
+    if low.startswith('every weekday'):
+        d = base + timedelta(days=1)
+        while d.weekday() >= 5:
+            d += timedelta(days=1)
+        return d.strftime("%Y-%m-%dT%H:%M")
+    parts = expr.split()
+    if len(parts) == 5:
+        nxt = _cron_next_run(parts, base + timedelta(minutes=1))
+        if nxt:
+            return nxt
+    rec = (sched.get("recurrence") or "").lower()
+    if rec == 'hourly':
+        return (base + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
+    if rec == 'weekly' or low.startswith('weekly') or _re.match(r'^every\s+\w+\s+at\b', low):
+        return (base + timedelta(weeks=1)).strftime("%Y-%m-%dT%H:%M")
+    if rec == 'monthly' or low.startswith('monthly'):
+        import calendar as _cal
+        y = base.year + (1 if base.month == 12 else 0)
+        mo = 1 if base.month == 12 else base.month + 1
+        day = min(base.day, _cal.monthrange(y, mo)[1])
+        return base.replace(year=y, month=mo, day=day).strftime("%Y-%m-%dT%H:%M")
+    return (base + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M")
+
+
 def _next_run_dt(sched):
     """Compute next run datetime for a schedule. Returns ISO string or None."""
     from datetime import datetime, timedelta
@@ -22264,7 +22304,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.60';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.61';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -29661,6 +29701,7 @@ function renderScheduler(opts) {
                 onclick="toggleSchedExpand('${esc(s.id)}')">View</button>
               <button class="btn sched-action-btn"
                 onclick="runScheduleNow('${esc(s.id)}')">Run Now</button>
+              ${s.sched_type !== 'once' && s.next_run ? `<button class="btn sched-action-btn" title="Skip the next occurrence" onclick="skipSchedule('${esc(s.id)}')">&#x23ED; Skip</button>` : ''}
               <button class="btn sched-action-btn"
                 onclick="openSchedModal('${esc(s.id)}')">Edit</button>
               <button class="btn sched-action-btn" style="color:var(--red);"
@@ -29793,6 +29834,19 @@ async function runScheduleNow(id) {
     renderScheduler();
     _peekRefreshSchedIfActive();
   }
+}
+async function skipSchedule(id) {
+  try {
+    const r = await fetch(API + '/api/schedules/' + id + '/skip', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.error) { if (typeof showToast === 'function') showToast(d.error || 'Could not skip'); return; }
+    await fetchSchedules();
+    renderScheduler();
+    _peekRefreshSchedIfActive();
+    if (typeof showToast === 'function' && d.next_run) showToast('Skipped → next ' + relTime(d.next_run));
+  } catch(e) { if (typeof showToast === 'function') showToast('Skip failed'); }
 }
 
 async function toggleSchedEnabled(id, enabled) {
@@ -38719,7 +38773,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.60';
+const CACHE = 'amux-v0.9.61';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -41843,6 +41897,27 @@ class CCHandler(BaseHTTPRequestHandler):
                            (now_str, int(_time.time()), sid_for_run))
                 db.commit()
                 self._json({"ok": True, "ran": sched["title"]})
+                return
+
+            # POST /api/schedules/<id>/skip — skip the next occurrence (recurring only)
+            if method == "POST" and sched_id.endswith("/skip"):
+                sid = sched_id[:-5]  # strip "/skip"
+                db = get_db()
+                row = db.execute("SELECT * FROM schedules WHERE id=? AND deleted IS NULL", (sid,)).fetchone()
+                if not row:
+                    self._json({"error": "not found"}, 404); return
+                sched = _sched_row_to_dict(row, _sched_cols(db))
+                if sched.get("sched_type") == "once":
+                    self._json({"error": "only recurring schedules can be skipped"}, 400); return
+                new_next = _skip_next_run(sched)
+                if not new_next:
+                    self._json({"error": "could not compute the next occurrence"}, 400); return
+                db.execute("UPDATE schedules SET next_run=?, updated=? WHERE id=?",
+                           (new_next, int(_time.time()), sid))
+                db.commit()
+                _push_ical_bg()                 # refresh iCal feed
+                _gcal_sync_schedule_bg(sid)      # push the new time to Google Calendar
+                self._json({"ok": True, "next_run": new_next})
                 return
 
             # GET /api/schedules/<id>
