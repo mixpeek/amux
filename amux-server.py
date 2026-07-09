@@ -13239,7 +13239,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   /* Peek find bar */
   .peek-find-wrap { position: relative; display: flex; align-items: center; gap: 0; }
-  .peek-find-wrap .search-input { padding-right: 120px; min-width: 180px; }
+  .peek-find-wrap .search-input { padding-right: 120px; min-width: 120px; }
   .peek-find-count { position: absolute; right: 60px; font-size: 0.65rem; color: var(--dim); white-space: nowrap; pointer-events: none; }
   .peek-nav-btn { width: 22px; height: 22px; border: none; background: transparent; color: var(--dim); cursor: pointer; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; position: absolute; }
   .peek-nav-btn:first-of-type { right: 36px; }
@@ -13251,6 +13251,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .peek-msg-nav .peek-nav-btn { position: static; width: 24px; height: 24px; }
   .peek-msg-count { font-size: 0.7rem; color: var(--dim); white-space: nowrap; padding: 0 3px; min-width: 20px; text-align: center; user-select: none; }
   .peek-prompt.peek-msg-current { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
+  .peek-more-wrap { position: relative; }
+  .peek-more-dropdown { display: none; position: absolute; top: calc(100% + 4px); right: 0; background: var(--card); border: 1px solid var(--border); border-radius: 8px; min-width: 160px; z-index: 60; box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
+  .peek-more-dropdown.open { display: block; }
+  .peek-more-item { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; font-size: 0.85rem; color: var(--text); border-bottom: 1px solid var(--border); -webkit-tap-highlight-color: transparent; }
+  .peek-more-item:last-child { border-bottom: none; }
+  .peek-more-item:active { background: var(--border); }
+  .peek-more-item .mi { width: 18px; text-align: center; flex-shrink: 0; }
   /* Peek search highlight */
   .peek-highlight { background: rgba(210,153,34,0.35); color: #fff; border-radius: 2px; }
   .peek-highlight.current { background: rgba(210,153,34,0.85); color: #000; }
@@ -17088,16 +17095,21 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <span class="peek-msg-count" id="peek-msg-count">❯</span>
         <button class="peek-nav-btn" onclick="peekMsgNext()" title="Next message">&#x2193;</button>
       </div>
-      <button class="btn peek-split-btn" id="peek-split-toggle" onclick="togglePeekSplit()" title="Split: file browser">&#x1F4C2;</button>
-      <button class="btn" onclick="togglePeekFocus()" id="peek-focus-btn" title="Focus mode — hide controls">&#x25B4;</button>
-      <button class="btn" id="peek-close-btn" onclick="closePeek()">Close</button>
+      <div class="peek-more-wrap">
+        <button class="btn" onclick="togglePeekMoreMenu()" id="peek-more-btn" title="More options">&#x22EE;</button>
+        <div class="peek-more-dropdown" id="peek-more-dropdown">
+          <div class="peek-more-item" id="peek-split-toggle" onclick="togglePeekMoreMenu();togglePeekSplit()"><span class="mi">&#x1F4C2;</span> File browser</div>
+          <div class="peek-more-item" id="peek-focus-btn" onclick="togglePeekMoreMenu();togglePeekFocus()"><span class="mi">&#x25B4;</span> Focus mode</div>
+        </div>
+      </div>
+      <button class="btn" id="peek-close-btn" onclick="closePeek()" title="Close" style="font-size:1.1rem;line-height:1;padding:4px 8px;">&#x2715;</button>
     </div>
   </div>
   <!-- Focus mode minimal bar (visible only in focus mode) -->
   <div class="peek-focus-bar" id="peek-focus-bar">
     <h3 id="peek-focus-title"></h3>
     <button class="btn" onclick="togglePeekFocus()" title="Show controls">&#x25BE; Expand</button>
-    <button class="btn" onclick="closePeek()">Close</button>
+    <button class="btn" onclick="closePeek()" style="font-size:1.1rem;line-height:1;padding:4px 8px;">&#x2715;</button>
   </div>
   <!-- Tab bar -->
   <div class="peek-tabs">
@@ -22244,7 +22256,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.63';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.64';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -23300,6 +23312,19 @@ function peekSearchPrev() {
   if (!_peekMatches.length) return;
   peekSearchIndex = (peekSearchIndex - 1 + _peekMatches.length) % _peekMatches.length;
   _peekScrollTo(peekSearchIndex);
+}
+
+// ── Peek more-menu ──
+function togglePeekMoreMenu() {
+  const dd = document.getElementById('peek-more-dropdown');
+  if (!dd) return;
+  const opening = !dd.classList.contains('open');
+  dd.classList.toggle('open');
+  if (opening) setTimeout(() => document.addEventListener('click', _closePeekMore, {once: true}), 0);
+}
+function _closePeekMore() {
+  const dd = document.getElementById('peek-more-dropdown');
+  if (dd) dd.classList.remove('open');
 }
 
 // ── Peek message navigation ──
