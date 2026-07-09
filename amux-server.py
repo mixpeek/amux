@@ -219,6 +219,8 @@ CC_BRANDING.mkdir(parents=True, exist_ok=True)
 CC_JOURNAL_MEDIA.mkdir(parents=True, exist_ok=True)
 
 UPLOAD_MAX_BYTES = 0  # no limit
+_chunked_uploads: dict = {}  # id -> {filename, size, chunks, received, tmpdir, ts}
+_chunked_uploads_lock = threading.Lock()
 CLAUDE_HOME = Path.home() / ".claude"
 
 # S3 iCal public sync (optional — set AMUX_S3_BUCKET to enable)
@@ -22314,7 +22316,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.68';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.69';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -23612,11 +23614,17 @@ function renderPeekFiles() {
     } else {
       thumb = `<span class="chip-icon">${_fileIcon(f.name)}</span>`;
     }
-    const uploading_label = isUploading && f.sizeMB ? `<span style="color:var(--dim);font-size:0.6rem;">${f.sizeMB} MB</span>` : '';
+    let statusHtml = '';
+    if (isUploading) {
+      const pct = f.totalChunks ? Math.round(f.chunk / f.totalChunks * 100) : 0;
+      statusHtml = `<span style="color:var(--dim);font-size:0.6rem;">${pct}%</span>`;
+    } else {
+      statusHtml = `<span style="color:var(--green);font-size:0.75rem;margin-right:2px;">✓</span><span class="chip-remove" onclick="removePeekFile(${i})">×</span>`;
+    }
     return `<div class="peek-attach-chip${isUploading ? ' uploading' : ''}">
       ${thumb}
       <span class="chip-name">${esc(f.name)}</span>
-      ${isUploading ? uploading_label : `<span style="color:var(--green);font-size:0.75rem;margin-right:2px;">✓</span><span class="chip-remove" onclick="removePeekFile(${i})">×</span>`}
+      ${statusHtml}
     </div>`;
   }).join('');
 }
@@ -23634,28 +23642,53 @@ function clearPeekFiles() {
   renderPeekFiles();
 }
 
+const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB per chunk
+
 async function uploadAndAttach(file) {
   const isImage = file.type.startsWith('image/');
   let previewUrl = null;
   if (isImage && file.size < 10 * 1024 * 1024) previewUrl = URL.createObjectURL(file);
 
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE) || 1;
   const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-  const placeholder = { name: file.name, path: null, url: null, isImage, previewUrl, sizeMB };
+  const placeholder = { name: file.name, path: null, url: null, isImage, previewUrl, sizeMB, chunk: 0, totalChunks };
   const idx = peekFiles.length;
   peekFiles.push(placeholder);
   renderPeekFiles();
 
   try {
-    const fd = new FormData();
-    fd.append('file', file, file.name);
-    const r = await fetch(API + '/api/upload', { method: 'POST', body: fd });
-    const d = await r.json();
-    if (!r.ok || d.error) {
-      showToast('Upload failed: ' + (d.error || r.status));
-      peekFiles.splice(idx, 1);
-    } else {
-      peekFiles[idx] = { name: file.name, path: d.path, url: d.url, isImage, previewUrl };
+    const startR = await fetch(API + '/api/upload/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: file.name, size: file.size, chunks: totalChunks })
+    });
+    const startD = await startR.json();
+    if (!startR.ok || startD.error) throw new Error(startD.error || 'start failed');
+    const uploadId = startD.id;
+
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const blob = file.slice(start, end);
+      const r = await fetch(API + '/api/upload/' + uploadId + '/chunk/' + i, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: blob
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        throw new Error(d.error || 'chunk ' + i + ' failed');
+      }
+      if (peekFiles[idx]) {
+        peekFiles[idx].chunk = i + 1;
+        renderPeekFiles();
+      }
     }
+
+    const finR = await fetch(API + '/api/upload/' + uploadId + '/finish', { method: 'POST' });
+    const finD = await finR.json();
+    if (!finR.ok || finD.error) throw new Error(finD.error || 'finalize failed');
+    peekFiles[idx] = { name: file.name, path: finD.path, url: finD.url, isImage, previewUrl };
   } catch(e) {
     console.error('Upload error:', e);
     showToast('Upload failed: ' + e.message);
@@ -41549,7 +41582,95 @@ class CCHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
 
-        # ── File upload (multipart or legacy base64 JSON) ──
+        # ── Chunked file upload ──
+        if method == "POST" and path == "/api/upload/start":
+            body = self._read_body()
+            filename = re.sub(r'[^a-zA-Z0-9._\-]', '_', body.get("name", "upload"))[:120]
+            total_chunks = int(body.get("chunks", 1))
+            uid = uuid.uuid4().hex[:12]
+            tmpdir = CC_UPLOADS / f".chunked-{uid}"
+            tmpdir.mkdir(parents=True, exist_ok=True)
+            with _chunked_uploads_lock:
+                # Purge stale uploads older than 1h
+                cutoff = time.time() - 3600
+                stale = [k for k, v in _chunked_uploads.items() if v["ts"] < cutoff]
+                for k in stale:
+                    import shutil as _shutil
+                    try:
+                        _shutil.rmtree(str(_chunked_uploads[k]["tmpdir"]), ignore_errors=True)
+                    except Exception:
+                        pass
+                    del _chunked_uploads[k]
+                _chunked_uploads[uid] = {
+                    "filename": filename, "size": int(body.get("size", 0)),
+                    "chunks": total_chunks, "received": set(),
+                    "tmpdir": tmpdir, "ts": time.time(),
+                }
+            return self._json({"id": uid, "chunks": total_chunks})
+
+        # PUT /api/upload/<id>/chunk/<n> — receive one chunk (raw bytes)
+        if method == "PUT" and "/chunk/" in path:
+            m = re.match(r"/api/upload/([a-f0-9]+)/chunk/(\d+)", path)
+            if m:
+                uid, chunk_n = m.group(1), int(m.group(2))
+                with _chunked_uploads_lock:
+                    entry = _chunked_uploads.get(uid)
+                if not entry:
+                    return self._json({"error": "unknown upload"}, 404)
+                if chunk_n >= entry["chunks"]:
+                    return self._json({"error": "chunk index out of range"}, 400)
+                length = int(self.headers.get("Content-Length", 0))
+                chunk_path = entry["tmpdir"] / f"{chunk_n:06d}"
+                with open(chunk_path, "wb") as f:
+                    remaining = length
+                    while remaining > 0:
+                        buf = self.rfile.read(min(remaining, 65536))
+                        if not buf:
+                            break
+                        f.write(buf)
+                        remaining -= len(buf)
+                with _chunked_uploads_lock:
+                    entry["received"].add(chunk_n)
+                return self._json({"ok": True, "chunk": chunk_n})
+
+        # POST /api/upload/<id>/finish — assemble chunks into final file
+        if method == "POST" and path.endswith("/finish"):
+            m = re.match(r"/api/upload/([a-f0-9]+)/finish", path)
+            if m:
+                uid = m.group(1)
+                with _chunked_uploads_lock:
+                    entry = _chunked_uploads.get(uid)
+                if not entry:
+                    return self._json({"error": "unknown upload"}, 404)
+                if len(entry["received"]) < entry["chunks"]:
+                    missing = entry["chunks"] - len(entry["received"])
+                    return self._json({"error": f"{missing} chunks missing"}, 400)
+                save_name = f"{uid}-{entry['filename']}"
+                save_path = CC_UPLOADS / save_name
+                with open(save_path, "wb") as out:
+                    for i in range(entry["chunks"]):
+                        cp = entry["tmpdir"] / f"{i:06d}"
+                        with open(cp, "rb") as inp:
+                            while True:
+                                buf = inp.read(65536)
+                                if not buf:
+                                    break
+                                out.write(buf)
+                import shutil as _shutil
+                _shutil.rmtree(str(entry["tmpdir"]), ignore_errors=True)
+                with _chunked_uploads_lock:
+                    _chunked_uploads.pop(uid, None)
+                # Purge uploads older than 24h
+                cutoff = time.time() - 86400
+                for old in CC_UPLOADS.iterdir():
+                    try:
+                        if old.is_file() and old.stat().st_mtime < cutoff:
+                            old.unlink()
+                    except Exception:
+                        pass
+                return self._json({"path": str(save_path), "name": entry["filename"], "url": f"/api/uploads/{save_name}"})
+
+        # ── File upload (multipart or legacy base64 JSON — small files / compat) ──
         if method == "POST" and path == "/api/upload":
             ctype = self.headers.get("Content-Type", "")
             if "multipart/form-data" in ctype:
