@@ -3606,13 +3606,16 @@ def _send_sms(phone: str, text: str):
             return False, f"twilio error: {str(e)[:120]}"
     # macOS Messages fallback — guarded by a hard timeout (Messages scripting can
     # block on an Automation-permission prompt).
+    # `buddy ph of s` is the form that actually delivers; `participant ph of svc`
+    # compiles but hangs until the osascript timeout fires.
     try:
         r = subprocess.run([
             "osascript",
             "-e", "on run {msg, ph}",
             "-e", 'tell application "Messages"',
-            "-e", "set svc to 1st service whose service type = iMessage",
-            "-e", "send msg to participant ph of svc",
+            "-e", "set s to first service whose service type = iMessage",
+            "-e", "set b to buddy ph of s",
+            "-e", "send msg to b",
             "-e", "end tell",
             "-e", "end run",
             "--", text, phone,
