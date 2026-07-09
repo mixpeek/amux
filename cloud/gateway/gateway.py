@@ -1251,12 +1251,20 @@ def _tunnel_serve_public(handler, tid, path, qs):
         return handler._json({"error": "tunnel timeout — local amux not responding"}, 504)
     resp = pend["resp"]
     rbody = base64.b64decode(resp.get("body", "")) if resp.get("body") else b""
+    upstream_cl = None
     handler.send_response(int(resp.get("status", 200)))
     for k, v in (resp.get("headers") or {}).items():
+        if k.lower() == "content-length":
+            upstream_cl = v
         if k.lower() in ("transfer-encoding", "connection", "content-length"):
             continue
         handler.send_header(k, v)
-    handler.send_header("Content-Length", str(len(rbody)))
+    # A HEAD carries no body, so len(rbody) is 0 — but Content-Length must still
+    # describe what a GET would return (RFC 9110 §9.3.2).
+    if handler.command == "HEAD" and upstream_cl is not None:
+        handler.send_header("Content-Length", upstream_cl)
+    else:
+        handler.send_header("Content-Length", str(len(rbody)))
     handler.end_headers()
     try:
         handler.wfile.write(rbody)
