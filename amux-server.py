@@ -13247,6 +13247,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .peek-nav-btn:hover { color: var(--text); }
   .peek-find-wrap .search-clear { position: absolute; right: 2px; }
   .peek-find-wrap.has-value .search-clear { display: flex; }
+  .peek-msg-nav { display: flex; align-items: center; gap: 0; border: 1px solid var(--border); border-radius: 6px; padding: 0 2px; }
+  .peek-msg-nav .peek-nav-btn { position: static; width: 24px; height: 24px; }
+  .peek-msg-count { font-size: 0.7rem; color: var(--dim); white-space: nowrap; padding: 0 3px; min-width: 20px; text-align: center; user-select: none; }
+  .peek-prompt.peek-msg-current { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
   /* Peek search highlight */
   .peek-highlight { background: rgba(210,153,34,0.35); color: #fff; border-radius: 2px; }
   .peek-highlight.current { background: rgba(210,153,34,0.85); color: #000; }
@@ -17078,6 +17082,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button class="peek-nav-btn" onclick="peekSearchPrev()" title="Previous match (Shift+Enter)">&#x2191;</button>
         <button class="peek-nav-btn" onclick="peekSearchNext()" title="Next match (Enter)">&#x2193;</button>
         <button class="search-clear" onclick="event.stopPropagation();clearPeekSearch()">&#x2715;</button>
+      </div>
+      <div class="peek-msg-nav" id="peek-msg-nav" title="Navigate user messages">
+        <button class="peek-nav-btn" onclick="peekMsgPrev()" title="Previous message">&#x2191;</button>
+        <span class="peek-msg-count" id="peek-msg-count">❯</span>
+        <button class="peek-nav-btn" onclick="peekMsgNext()" title="Next message">&#x2193;</button>
       </div>
       <button class="btn peek-split-btn" id="peek-split-toggle" onclick="togglePeekSplit()" title="Split: file browser">&#x1F4C2;</button>
       <button class="btn" onclick="togglePeekFocus()" id="peek-focus-btn" title="Focus mode — hide controls">&#x25B4;</button>
@@ -22267,6 +22276,7 @@ function openPeek(name, opts) {
   peekSearchQuery = prefillQuery;
   peekSearchIndex = 0;
   _peekMatches = [];
+  _peekMsgIndex = -1;
   lastPeekHTML = '';
   _lastPeekRaw = '';
   _peekEtag = null;   // new session → drop the old session's ETag
@@ -23290,6 +23300,35 @@ function peekSearchPrev() {
   if (!_peekMatches.length) return;
   peekSearchIndex = (peekSearchIndex - 1 + _peekMatches.length) % _peekMatches.length;
   _peekScrollTo(peekSearchIndex);
+}
+
+// ── Peek message navigation ──
+let _peekMsgIndex = -1;
+function _peekMsgPrompts() {
+  const body = document.getElementById('peek-body');
+  return body ? Array.from(body.querySelectorAll('.peek-prompt')) : [];
+}
+function _peekMsgUpdate(prompts) {
+  const countEl = document.getElementById('peek-msg-count');
+  if (!countEl) return;
+  prompts.forEach(p => p.classList.remove('peek-msg-current'));
+  if (!prompts.length) { countEl.textContent = '❯'; return; }
+  if (_peekMsgIndex < 0 || _peekMsgIndex >= prompts.length) _peekMsgIndex = prompts.length - 1;
+  prompts[_peekMsgIndex].classList.add('peek-msg-current');
+  prompts[_peekMsgIndex].scrollIntoView({ block: 'center', behavior: 'smooth' });
+  countEl.textContent = (_peekMsgIndex + 1) + '/' + prompts.length;
+}
+function peekMsgNext() {
+  const p = _peekMsgPrompts();
+  if (!p.length) return;
+  _peekMsgIndex = _peekMsgIndex < p.length - 1 ? _peekMsgIndex + 1 : 0;
+  _peekMsgUpdate(p);
+}
+function peekMsgPrev() {
+  const p = _peekMsgPrompts();
+  if (!p.length) return;
+  _peekMsgIndex = _peekMsgIndex <= 0 ? p.length - 1 : _peekMsgIndex - 1;
+  _peekMsgUpdate(p);
 }
 
 // ── Peek command bar ──
@@ -46250,7 +46289,7 @@ _TUNNEL_TOKEN = os.environ.get("AMUX_TUNNEL_TOKEN", "")
 _AMUX_SELF_PORT = 8822
 _AMUX_SELF_SCHEME = "https"
 _tunnel_client = {"running": False, "url": None, "tid": None, "error": None,
-                  "target": None, "thread": None, "requests": 0}
+                  "target": None, "thread": None, "requests": 0, "gen": 0}
 
 
 def _tunnel_serve_one(req, target_base):
@@ -46283,15 +46322,20 @@ def _tunnel_serve_one(req, target_base):
                 "body": base64.b64encode(f"tunnel local fetch error: {e}".encode()).decode()}
 
 
-def _tunnel_loop(token, gateway, target_base):
+def _tunnel_loop(token, gateway, target_base, gen):
+    """One tunnel session. `gen` fences this loop: stop/start bumps the generation,
+    so a loop still blocked in a 40s long-poll can never serve a request against a
+    stale target after the tunnel has been restarted at a different port."""
     import urllib.request, urllib.error, ssl as _ssl
+    def _live():
+        return _tunnel_client["running"] and _tunnel_client["gen"] == gen
     try:                       # verify the gateway's real cert (macOS python lacks a system CA bundle)
         import certifi
         gwctx = _ssl.create_default_context(cafile=certifi.where())
     except Exception:
         gwctx = _ssl.create_default_context()
     backoff = 1
-    while _tunnel_client["running"]:
+    while _live():
         try:
             req = urllib.request.Request(gateway + "/tunnel/register", method="POST",
                                          headers={"Authorization": "Bearer " + token})
@@ -46304,7 +46348,7 @@ def _tunnel_loop(token, gateway, target_base):
             time.sleep(min(backoff, 30)); backoff = min(backoff * 2, 30)
             continue
         tid = _tunnel_client["tid"]
-        while _tunnel_client["running"]:
+        while _live():
             try:
                 pr = urllib.request.Request(gateway + "/tunnel/poll?tid=" + tid,
                                             headers={"Authorization": "Bearer " + token})
@@ -46317,20 +46361,30 @@ def _tunnel_loop(token, gateway, target_base):
                 continue   # long-poll timeout / transient — just re-poll
             if item.get("idle") or not item.get("rid"):
                 continue
-            _tunnel_client["requests"] += 1
 
-            def _handle(it):
-                reply = _tunnel_serve_one(it, target_base)
+            def _reply(rid, payload):
                 try:
                     rr = urllib.request.Request(
-                        gateway + "/tunnel/reply?rid=" + it["rid"],
-                        data=json.dumps(reply).encode(), method="POST",
+                        gateway + "/tunnel/reply?rid=" + rid,
+                        data=json.dumps(payload).encode(), method="POST",
                         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
                     urllib.request.urlopen(rr, timeout=30, context=gwctx).read()
                 except Exception as e:
                     slog(f"[tunnel] reply failed: {e}")
+
+            if not _live():
+                # We were superseded while parked in the long-poll. Don't serve this
+                # against our stale target — hand the caller a retryable answer.
+                _reply(item["rid"], {"status": 503, "headers": {"Content-Type": "text/plain"},
+                                     "body": base64.b64encode(b"tunnel reconfigured, retry").decode()})
+                break
+            _tunnel_client["requests"] += 1
+
+            def _handle(it):
+                _reply(it["rid"], _tunnel_serve_one(it, target_base))
             threading.Thread(target=_handle, args=(item,), daemon=True).start()
-    _tunnel_client.update({"url": None, "tid": None})
+    if _tunnel_client["gen"] == gen:      # don't clobber a newer loop's state
+        _tunnel_client.update({"url": None, "tid": None})
     slog("[tunnel] stopped")
 
 
@@ -46343,8 +46397,10 @@ def _tunnel_start(token=None, target_port=None):
     port = int(target_port) if target_port else _AMUX_SELF_PORT
     scheme = _AMUX_SELF_SCHEME if port == _AMUX_SELF_PORT else "http"
     target_base = f"{scheme}://127.0.0.1:{port}"
-    _tunnel_client.update({"running": True, "target": target_base, "error": None, "requests": 0})
-    t = threading.Thread(target=_tunnel_loop, args=(token, _TUNNEL_GATEWAY, target_base), daemon=True)
+    gen = _tunnel_client["gen"] + 1
+    _tunnel_client.update({"running": True, "target": target_base, "error": None,
+                           "requests": 0, "gen": gen})
+    t = threading.Thread(target=_tunnel_loop, args=(token, _TUNNEL_GATEWAY, target_base, gen), daemon=True)
     _tunnel_client["thread"] = t
     t.start()
     for _ in range(40):   # wait briefly for first registration
@@ -46355,7 +46411,9 @@ def _tunnel_start(token=None, target_port=None):
 
 
 def _tunnel_stop():
-    _tunnel_client["running"] = False
+    # Bump the generation too: the loop may be parked in a long-poll, and without
+    # this it would resume serving as soon as a later _tunnel_start flips `running`.
+    _tunnel_client.update({"running": False, "gen": _tunnel_client["gen"] + 1})
     return {"running": False}
 
 
