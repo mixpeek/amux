@@ -294,7 +294,10 @@ The public URL comes from whichever exposure you have, in order:
 
 > Google refreshes external iCal feeds on its own slow cadence (hours) and caches
 > them **by URL**. A tunnel URL is only reachable while your machine + tunnel are up;
-> Google keeps the last snapshot otherwise. See `CLAUDE.md` § iCal / Google Calendar sync.
+> Google keeps the last snapshot otherwise.
+
+📖 **Full walkthrough:** [docs/calendar-sync.md](docs/calendar-sync.md) — step-by-step
+Google/Apple subscription, exposure tradeoffs, and the caching gotchas.
 
 ---
 
