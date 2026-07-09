@@ -7,7 +7,7 @@
 | iOS downloads | click on App Store link | ↑ iOS installs |
 | Cloud signups | click on concierge/cloud CTA | ↑ onboarding calls |
 
-**Tracking note:** PostHog project key is `phx_z3rBWTAM8jzH7MYoJt396nNPfmC8CuE5sTn86Yt5k4i4vgmG` (US cloud, us.i.posthog.com). To query KPI clicks use HogQL on `$autocapture` events filtered by `elements_chain` containing the relevant href. Personal API key needed for API queries — set `POSTHOG_PERSONAL_API_KEY` in ~/.amux/server.env.
+**Tracking note:** PostHog project key is `phc_Ckeacj8y8X8YiLkwHBcpBsJVSnsFKohch2vMv9sJYmE6` (project 378145 "amux", US cloud, us.i.posthog.com). To query KPI clicks use HogQL on `$autocapture` events filtered by `elements_chain` containing the relevant href. Personal API key needed for API queries — set `POSTHOG_PERSONAL_API_KEY` in ~/.amux/server.env. **Note:** site.js was mistakenly using a personal API key (`phx_`) before 2026-07-09 — no website analytics exist prior to that date.
 
 ---
 
