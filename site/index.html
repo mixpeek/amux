@@ -8,7 +8,7 @@
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="icon" type="image/png" sizes="180x180" href="/icon.png">
 <meta name="description" content="Run an AI engineering team from one dashboard. amux is the open-source control plane for AI coding agents — launch, coordinate, monitor, and recover dozens of parallel Claude Code sessions from a single interface. Self-healing, single-file.">
-<meta name="keywords" content="amux, agent control plane, agent infrastructure, agent fleet management, agent observability, claude code multiplexer, parallel AI coding agents, AI agent orchestration, self-healing AI agent, claude code dashboard, run multiple claude code, AI coding while you sleep, agent multiplexer, open source AI tools">
+<meta name="keywords" content="amux, agent control plane, agent infrastructure, agent fleet management, agent observability, claude code multiplexer, parallel AI coding agents, AI agent orchestration, self-healing AI agent, claude code dashboard, run multiple claude code, AI coding while you sleep, agent multiplexer, open source AI tools, ngrok alternative, expose localhost, localhost tunnel">
 <link rel="sitemap" type="application/xml" href="/sitemap.xml">
 <link rel="canonical" href="https://amux.io/">
 <meta name="google-site-verification" content="AJSSTzLMefBajDLdBuVXCqkllDAaLSJ-vWrbabxJQDI">
@@ -1053,6 +1053,10 @@
         <div class="ps-cell problem">No persistent knowledge between sessions</div>
         <div class="ps-cell solution"><b>Shared notes &amp; memory</b> &mdash; markdown documents agents read and write across sessions.</div>
       </div>
+      <div class="ps-row">
+        <div class="ps-cell problem">Dev server stuck on localhost — can't share with clients or test webhooks</div>
+        <div class="ps-cell solution"><b>Cloud tunnel</b> &mdash; stable public HTTPS URL, same address across restarts, no firewall config.</div>
+      </div>
     </div>
   </div>
 </section>
@@ -1100,6 +1104,10 @@
             <div class="nav-item" data-tab="channels" style="cursor:pointer;">
               <span class="ic"><svg class="ic" width="14" height="14" viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H7l-4 4V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/></svg></span>
               Channels <span class="badge">3</span>
+            </div>
+            <div class="nav-item" data-tab="tunnel" style="cursor:pointer;">
+              <span class="ic"><svg class="ic" width="14" height="14" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></span>
+              Tunnel <span class="badge" style="background:var(--accent-2);color:var(--bg)">on</span>
             </div>
             <div class="sidebar-section">Skills</div>
             <div class="nav-item"><span class="ic"><svg class="ic" width="14" height="14" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg></span> /commit</div>
@@ -1574,8 +1582,8 @@
   <div class="container">
     <div class="section-head">
       <div class="kicker">// Everything inside</div>
-      <h2>Batteries included. No external services.</h2>
-      <p class="sub">amux ships with the workspace tools an agent fleet needs &mdash; and nothing more.
+      <h2>Batteries included.</h2>
+      <p class="sub">amux ships with the workspace tools an agent fleet needs &mdash; kanban, CRM, email, browser automation, scheduler, and tunnel.
         Every feature lives in the same single Python file.</p>
     </div>
 
@@ -1633,6 +1641,12 @@
         <div class="glyph"><svg class="ic" width="16" height="16" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M4 8h16M8 4v16"/></svg></div>
         <h3>Single-file architecture</h3>
         <p>One Python file with inline HTML/CSS/JS. No build step. No dependencies. Edit and save &mdash; it restarts itself. Audit the whole thing in an afternoon.</p>
+      </div>
+      <div class="feat">
+        <div class="num">10</div>
+        <div class="glyph"><svg class="ic" width="16" height="16" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
+        <h3>Cloud tunnel <span style="font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--accent);opacity:.7;font-weight:500;letter-spacing:.04em">cloud</span></h3>
+        <p>Expose any localhost port at a stable public HTTPS URL &mdash; no inbound port, no firewall config. URL is token-derived so it never changes across restarts.</p>
       </div>
     </div>
   </div>

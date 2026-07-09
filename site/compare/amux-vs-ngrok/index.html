@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs ngrok — Stable Localhost Tunnel Without the ngrok Price Tag (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux tunnel vs ngrok: both expose localhost to the internet over HTTPS. amux gives you a stable URL for free if you already run amux. ngrok wins on TCP, request inspection UI, and free tier. Honest comparison.">
+  <meta name="keywords" content="amux vs ngrok, ngrok alternative, free ngrok alternative stable URL, open source ngrok alternative, expose localhost without ngrok, ngrok without changing URL, stable tunnel URL free">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-ngrok/">
+  <meta property="og:title" content="amux vs ngrok — Stable Localhost Tunnel Without the ngrok Price Tag (2026)">
+  <meta property="og:description" content="amux tunnel vs ngrok: stable public URL built into your agent orchestrator. ngrok wins on features. amux wins when you already run amux. Honest side-by-side.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-ngrok/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux vs ngrok — Stable Localhost Tunnel Without the ngrok Price Tag (2026)">
+  <meta name="twitter:description" content="ngrok is the industry standard. amux tunnel is built-in and gives you a stable URL without paying for ngrok Pro. Here's when each one wins.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"},
+      {"@type": "ListItem", "position": 3, "name": "amux vs ngrok", "item": "https://amux.io/compare/amux-vs-ngrok/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux vs ngrok — Stable Localhost Tunnel Without the ngrok Price Tag",
+    "description": "Compare amux tunnel with ngrok for exposing localhost to the internet. amux gives you a stable public URL built into your agent orchestrator. ngrok wins on TCP, request inspection, and free tier. Honest side-by-side.",
+    "url": "https://amux.io/compare/amux-vs-ngrok/",
+    "datePublished": "2026-07-09",
+    "dateModified": "2026-07-09",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
+    "image": "https://amux.io/og-image.png"
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is the main difference between amux tunnel and ngrok?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "ngrok is a dedicated, full-featured localhost tunnel tool with a generous free tier, request inspection UI, TCP support, and custom domains on paid plans. amux tunnel is built into the amux agent orchestrator — if you already run amux, you get a stable public HTTPS URL without installing a separate tool. ngrok has far more features; amux tunnel wins on simplicity when you're already in the amux ecosystem."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux tunnel give you a stable URL for free?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. The tunnel URL (https://cloud.amux.io/t/&lt;id&gt;/) is derived from a SHA-256 hash of your token, so it is identical across every restart. With ngrok's free tier, your URL changes every time you restart. ngrok's stable subdomain feature requires a paid plan. amux's stable URL is included with an active amux cloud subscription."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux tunnel support TCP or non-HTTP protocols?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. amux tunnel currently supports HTTP and HTTPS only. It relays method, headers, query string, body, and status codes intact — including HEAD requests and non-2xx responses. If you need TCP tunneling (databases, SSH, raw sockets), ngrok is the right tool."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux tunnel have a request inspection UI like ngrok?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. ngrok's request inspection and replay UI is one of its best features for debugging webhooks — you can see every request that came in, inspect headers and bodies, and replay them. amux tunnel does not have an equivalent UI. For webhook debugging specifically, ngrok's inspection UI is a significant advantage."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I use both amux tunnel and ngrok at the same time?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes, absolutely. They are not mutually exclusive. A common pattern: use amux tunnel for services that need a stable URL across restarts (like a webhook endpoint registered with a third-party service or a Google Calendar feed), and use ngrok when you need request inspection for debugging."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is amux tunnel open source?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The amux tunnel client code lives inside amux-server.py, which is open source (MIT + Commons Clause). The hosted cloud gateway that terminates the tunnel is the paid piece — it requires an active amux cloud subscription. ngrok's client is also open source, but ngrok's server is proprietary."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is a real use case where amux tunnel is better than ngrok?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Subscribing Google Calendar to an iCal feed generated by your local amux board. Google Calendar polls the URL periodically, so the URL must be stable across restarts. With ngrok free tier the URL changes on every restart. With amux tunnel the URL is always https://cloud.amux.io/t/&lt;id&gt;/api/calendar.ics — register it once in Google Calendar and it keeps working forever. See the AI agent + Google Calendar use case."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs ngrok</span></div>
+
+    <h1>amux vs ngrok</h1>
+    <p class="subtitle">ngrok is the industry-standard localhost tunnel — a dedicated tool, free tier, full-featured, excellent for debugging. amux tunnel is built into the amux agent orchestrator and gives you a stable public URL without paying for ngrok Pro. Here is the honest comparison. <em>Updated July 2026.</em></p>
+
+    <p><strong>ngrok</strong> is the most widely used tool for exposing a local port to the internet over a secure tunnel. Install the CLI, run <code>ngrok http 3000</code>, and you get a public HTTPS URL in seconds. The free tier works immediately — no account required for basic use — though the URL changes on every restart. Paid plans add stable subdomains, custom domains, request inspection UI, TCP tunneling, and multiple concurrent tunnels. ngrok is a mature, purpose-built product with excellent documentation, an inspection dashboard, and broad ecosystem integrations.</p>
+
+    <p><strong>amux tunnel</strong> is a built-in feature of amux — an open-source control plane for running a fleet of AI coding agents. Your machine dials out to the amux cloud gateway over a persistent long-poll connection; the gateway forwards incoming HTTP requests to your local server. No inbound port needs to be open. The public URL is derived from a SHA-256 hash of your token, so it is stable across restarts. The tunnel client is part of <code>amux-server.py</code> — no separate binary to install or maintain. The hosted gateway requires an active amux cloud subscription.</p>
+
+    <h2>At a Glance</h2>
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Feature</th>
+            <th style="padding:10px 16px;text-align:center;">amux tunnel</th>
+            <th style="padding:10px 16px;text-align:center;">ngrok</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Free tier</td>
+            <td style="padding:10px 16px;text-align:center;">No — requires amux cloud subscription</td>
+            <td style="padding:10px 16px;text-align:center;">Yes — ephemeral URL, no account needed</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Stable URL (same on every restart)</td>
+            <td style="padding:10px 16px;text-align:center;">Yes — always <code>https://cloud.amux.io/t/&lt;id&gt;/</code></td>
+            <td style="padding:10px 16px;text-align:center;">Paid plan only (static subdomain)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Custom domains</td>
+            <td style="padding:10px 16px;text-align:center;">Not available</td>
+            <td style="padding:10px 16px;text-align:center;">Yes (paid plans)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">TCP / non-HTTP tunneling</td>
+            <td style="padding:10px 16px;text-align:center;">Not available (HTTP/HTTPS only)</td>
+            <td style="padding:10px 16px;text-align:center;">Yes (TCP, TLS, SSH)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Request inspection &amp; replay UI</td>
+            <td style="padding:10px 16px;text-align:center;">Not available</td>
+            <td style="padding:10px 16px;text-align:center;">Yes — excellent (killer feature)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Multiple concurrent tunnels</td>
+            <td style="padding:10px 16px;text-align:center;">Not available (one per token)</td>
+            <td style="padding:10px 16px;text-align:center;">Yes (paid plans)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">HTTP/HTTPS support</td>
+            <td style="padding:10px 16px;text-align:center;">Yes</td>
+            <td style="padding:10px 16px;text-align:center;">Yes</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Relays method, headers, body, status</td>
+            <td style="padding:10px 16px;text-align:center;">Yes (including HEAD, non-2xx)</td>
+            <td style="padding:10px 16px;text-align:center;">Yes</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Self-hosting the gateway</td>
+            <td style="padding:10px 16px;text-align:center;">Not supported</td>
+            <td style="padding:10px 16px;text-align:center;">Not supported (ngrok-agent is OSS; server is not)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Included in product</td>
+            <td style="padding:10px 16px;text-align:center;">Yes — zero extra installs, built into amux</td>
+            <td style="padding:10px 16px;text-align:center;">Separate binary / daemon</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Agent orchestration</td>
+            <td style="padding:10px 16px;text-align:center;">Full (kanban, sessions, CRM, email, scheduler)</td>
+            <td style="padding:10px 16px;text-align:center;">None — tunnel only</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">Installation</td>
+            <td style="padding:10px 16px;text-align:center;"><code>amux tunnel start 3000</code> (built-in)</td>
+            <td style="padding:10px 16px;text-align:center;"><code>brew install ngrok</code> + auth token setup</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>How Each Tunnel Works</h2>
+
+    <h3>ngrok</h3>
+    <p>ngrok runs a local agent that connects to ngrok's cloud edge. The edge terminates TLS for your public URL and proxies requests back to your local agent, which forwards them to your service. The free tier assigns a random subdomain on each startup. Paid plans lock in a static subdomain. The ngrok dashboard (web UI or <code>localhost:4040</code>) shows every request in real time — headers, body, timing, status — and lets you replay any request with one click. This inspection UI is ngrok's single most valuable feature for webhook development.</p>
+
+    <h3>amux tunnel</h3>
+    <p>The amux tunnel client is built into <code>amux-server.py</code>. When you run <code>amux tunnel start 3000</code>, the amux process dials out to the cloud gateway and opens a persistent HTTP long-poll connection. No inbound port needs to be open on your machine or firewall. The gateway routes incoming requests to that connection and streams them back to your local server. Because the public URL is derived from a deterministic hash of your token, it never changes — you register it once (in a webhook provider, a calendar app, a third-party API) and it keeps working across every restart and network change.</p>
+
+    <pre><code># amux tunnel — three commands
+amux tunnel start 3000   # expose local port 3000
+amux tunnel url          # print the stable public URL
+amux tunnel stop         # stop tunneling</code></pre>
+
+    <h2>The Stable URL Advantage — Why It Matters</h2>
+    <p>This is the most concrete differentiator between amux tunnel and ngrok's free tier. When you register a webhook URL with Stripe, GitHub, or Slack — or subscribe Google Calendar to an iCal feed — you need that URL to stay alive across restarts. With ngrok free tier, it changes every time. With ngrok paid, you unlock a static subdomain for $8–$20/month. With amux tunnel, the URL is stable as long as your amux cloud subscription is active.</p>
+    <p>A real example from the amux codebase: the amux board exports board items with due dates as an iCal feed (<code>GET /api/calendar.ics</code>). You can subscribe Google Calendar to your tunnel URL — <code>https://cloud.amux.io/t/&lt;id&gt;/api/calendar.ics</code> — and Google will poll it periodically to stay in sync with your local board. This works indefinitely without reconfiguring Google Calendar every time you restart your machine. See the <a href="/use-cases/ai-agent-google-calendar/">AI agent + Google Calendar use case</a> for the full setup.</p>
+
+    <h2>When to Use ngrok</h2>
+    <p>ngrok is the right tool in these situations:</p>
+    <ul>
+      <li><strong>You need a free tier.</strong> ngrok works immediately with no cost. amux tunnel requires an amux cloud subscription.</li>
+      <li><strong>You need request inspection and replay.</strong> ngrok's web UI at <code>localhost:4040</code> shows every incoming request with headers, body, and timing, and lets you replay with one click. This is invaluable for webhook debugging. amux tunnel has nothing comparable.</li>
+      <li><strong>You need TCP tunneling.</strong> Databases, SSH, raw sockets — ngrok supports all of these. amux tunnel is HTTP/HTTPS only.</li>
+      <li><strong>You need custom domains.</strong> ngrok lets you point your own domain at a tunnel on paid plans. amux tunnel URLs are always under <code>cloud.amux.io</code>.</li>
+      <li><strong>You need multiple concurrent tunnels.</strong> ngrok supports multiple simultaneous tunnels per account on paid plans. amux supports one tunnel per token.</li>
+      <li><strong>You are not running amux.</strong> If you do not use amux for agent orchestration, installing ngrok is much simpler than adopting amux just for a tunnel.</li>
+    </ul>
+
+    <h2>When to Use amux tunnel</h2>
+    <p>amux tunnel makes sense in these situations:</p>
+    <ul>
+      <li><strong>You already run amux.</strong> If you are using amux for AI agent orchestration, the tunnel is built in — no extra binary, no extra auth token, no separate process to manage.</li>
+      <li><strong>You need a stable URL without paying for ngrok Pro.</strong> The amux tunnel URL does not change between restarts. This matters for webhooks, calendar feeds, OAuth redirect URIs, and any URL registered with an external service.</li>
+      <li><strong>You are exposing the amux dashboard itself.</strong> Run <code>amux tunnel start 8822</code> to make your dashboard reachable from your phone or a collaborator — the same URL every time, no reconfiguration.</li>
+      <li><strong>You want zero extra tooling.</strong> One command and the tunnel is live. No daemon, no config file, no separate terminal window running ngrok.</li>
+    </ul>
+
+    <h2>Use Both — They Are Not Mutually Exclusive</h2>
+    <p>Nothing stops you from running both. A practical split: use <strong>amux tunnel</strong> for services that need a stable registered URL (calendar feeds, persistent webhooks, the amux dashboard) and use <strong>ngrok</strong> when you need to debug a webhook interactively with the inspection UI, or when you need to tunnel a TCP service. The two tools solve different problems and operate on different ports — they coexist without conflict.</p>
+
+    <h2>Frequently Asked Questions</h2>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What is the main difference between amux tunnel and ngrok?</summary>
+      <p style="margin:0.8rem 0 0;">ngrok is a dedicated, full-featured localhost tunnel tool with a generous free tier, request inspection UI, TCP support, and custom domains on paid plans. amux tunnel is built into the amux agent orchestrator — if you already run amux, you get a stable public HTTPS URL without installing a separate tool. ngrok has far more features; amux tunnel wins on simplicity when you are already in the amux ecosystem.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Does amux tunnel give you a stable URL for free?</summary>
+      <p style="margin:0.8rem 0 0;">The URL is stable, but "free" depends on your definition. The tunnel URL does not change between restarts and is included with an active amux cloud subscription. You do not pay extra beyond the amux cloud plan. With ngrok's free tier the URL changes on every restart — stable subdomains require a paid ngrok plan.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Does amux tunnel support TCP or non-HTTP protocols?</summary>
+      <p style="margin:0.8rem 0 0;">No. amux tunnel is HTTP and HTTPS only. It faithfully relays method, headers, query string, body, and status codes — including HEAD requests and non-2xx responses. For TCP tunneling (databases, SSH, raw sockets), ngrok is the right tool.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Does amux tunnel have a request inspection UI like ngrok?</summary>
+      <p style="margin:0.8rem 0 0;">No. ngrok's request inspection and replay UI is one of its best features — you can see every request that came in, inspect headers and bodies, and replay them. amux tunnel has no equivalent. For active webhook debugging sessions, ngrok's inspection UI is a significant advantage over amux tunnel.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Can I use both amux tunnel and ngrok at the same time?</summary>
+      <p style="margin:0.8rem 0 0;">Yes. They operate on different ports and do not conflict. A common pattern: use amux tunnel for services that need a stable registered URL (iCal feeds, persistent webhooks), and use ngrok when you need the inspection UI for debugging a specific integration. Both can be running simultaneously.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Is the amux tunnel client open source?</summary>
+      <p style="margin:0.8rem 0 0;">Yes. The tunnel client lives inside <code>amux-server.py</code>, which is open source (MIT + Commons Clause). The amux cloud gateway that terminates the tunnel is the paid piece — it requires an active amux cloud subscription. The client code is auditable and ships with the rest of amux.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What is a real use case where amux tunnel is better than ngrok free tier?</summary>
+      <p style="margin:0.8rem 0 0;">Subscribing Google Calendar to an iCal feed generated by your local amux board. Google Calendar polls the URL periodically, so it must survive restarts. With ngrok free tier the URL changes on every restart, breaking the subscription. With amux tunnel the URL is always <code>https://cloud.amux.io/t/&lt;id&gt;/api/calendar.ics</code> — register it once and it keeps working. See the <a href="/use-cases/ai-agent-google-calendar/">AI agent + Google Calendar use case</a> for setup details.</p>
+    </details>
+
+    <h2>How amux Tunnel Fits Into the Bigger Picture</h2>
+    <p>amux is not just a tunnel. It is an open-source control plane for running an AI engineering team from a single dashboard or your phone — launching, monitoring, and self-healing dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, Gmail API, browser automation, and scheduler. The tunnel exists because agent workflows naturally produce HTTP services that need to be reachable from the outside world: webhook receivers, OAuth redirect endpoints, calendar feeds, API mocks.</p>
+    <p>If you are searching for an ngrok alternative because you want a tunnel, amux tunnel is an option but ngrok is probably a better standalone tunnel. If you are searching for an ngrok alternative because you want a stable URL <em>and</em> you are building AI agent workflows, amux gives you both the orchestration platform and the tunnel in one tool. Get started at <a href="/guides/getting-started/">the getting-started guide</a> or browse <a href="/changelog/">the changelog</a> to see what has shipped recently.</p>
+
+    <div class="cta-box">
+      <h3>Stable tunnel URL — built into your agent control plane</h3>
+      <p>amux is an open-source control plane for AI agent teams. Tunnel, kanban, CRM, email, and browser automation — all in a single Python file. amux cloud adds a stable public URL that never changes between restarts.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux serve  # → https://localhost:8822
+
+# Start tunnel (requires amux cloud subscription)
+export AMUX_TUNNEL_TOKEN=your_token   # ~/.amux/server.env
+amux tunnel start 8822               # expose the dashboard
+amux tunnel url                      # → https://cloud.amux.io/t/&lt;id&gt;/</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <a class="btn" href="/pricing/" style="margin-left:0.75rem;">amux cloud pricing →</a>
+    </div>
+
+    <p style="margin-top:2rem;"><strong>Related:</strong>
+      <a href="/use-cases/ai-agent-google-calendar/">AI agent + Google Calendar (iCal via tunnel)</a> ·
+      <a href="/compare/amux-vs-devin/">amux vs Devin</a> ·
+      <a href="/guides/getting-started/">Getting started</a> ·
+      <a href="/changelog/">Changelog</a> ·
+      <a href="/compare/">All comparisons →</a>
+    </p>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-codex/">vs Codex</a></li>
+            <li><a href="/compare/amux-vs-jules/">vs Jules</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/pricing/">Pricing</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
