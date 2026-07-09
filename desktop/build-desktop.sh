@@ -3,10 +3,13 @@
 # Requires: Xcode or Command Line Tools with matching Swift SDK
 set -euo pipefail
 
+# Run from the repo root so Amux.app builds there, regardless of where invoked.
+cd "$(dirname "$0")/.."
+
 APP="Amux.app"
-SRC="amux-desktop.swift"
+SRC="desktop/amux-desktop.swift"
 BIN="$APP/Contents/MacOS/amux"
-ICON_SRC="icon-512.png"
+ICON_SRC="assets/icon-512.png"
 ICNS="$APP/Contents/Resources/AppIcon.icns"
 
 echo "Building $APP from $SRC..."

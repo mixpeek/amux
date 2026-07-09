@@ -40145,8 +40145,8 @@ class CCHandler(BaseHTTPRequestHandler):
                     ct = {".png": "image/png", ".jpg": "image/jpeg",
                           ".svg": "image/svg+xml", ".webp": "image/webp"}[ext]
                     return self._raw(brand_icon.read_bytes(), ct, cache=False)
-            # Fall back to default icon
-            icon_path = Path(__file__).resolve().parent / path.lstrip("/")
+            # Fall back to the default icon shipped in assets/.
+            icon_path = Path(__file__).resolve().parent / "assets" / path.lstrip("/")
             if icon_path.exists():
                 ct = "image/svg+xml" if path.endswith(".svg") else "image/png"
                 return self._raw(icon_path.read_bytes(), ct, cache=True)
