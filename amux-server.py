@@ -2302,6 +2302,7 @@ def _session_cc_tasks(name: str) -> dict:
         for jf in tdir.glob("[0-9]*.json"):
             try:
                 d = json.loads(jf.read_text())
+                mtime = jf.stat().st_mtime
             except Exception:
                 continue
             if not isinstance(d, dict):
@@ -2312,12 +2313,25 @@ def _session_cc_tasks(name: str) -> dict:
                 "activeForm": (d.get("activeForm") or "").strip(),
                 "status": d.get("status") or "pending",
                 "blockedBy": [str(x) for x in (d.get("blockedBy") or [])],
+                "_mtime": mtime,
             })
         tasks.sort(key=lambda t: int(t["id"]) if t["id"].isdigit() else 1_000_000)
         counts = {}
         for t in tasks:
             counts[t["status"]] = counts.get(t["status"], 0) + 1
-        active = next((t for t in tasks if t["status"] == "in_progress"), None)
+        # The headline should reflect what the session ACTUALLY last worked on.
+        # Claude's convention is one in_progress at a time, but it often leaves
+        # several stale in_progress items AND marks the real current task done —
+        # so "first in_progress by id" points at a stale task (the reported bug).
+        # The single most-recently-updated task file is the truest signal: in the
+        # normal flow that's the current in_progress task; when a session just
+        # finished something and hasn't started the next, it's that completed task
+        # ("between tasks"), which matches reality better than a stale in_progress.
+        active = max(tasks, key=lambda t: t["_mtime"]) if tasks else None
+        for t in tasks:
+            t.pop("_mtime", None)
+        if active:
+            active = {k: v for k, v in active.items() if k != "_mtime"}
         return {"tasks": tasks, "counts": counts, "active": active, "total": len(tasks)}
     except Exception:
         return {"tasks": [], "counts": {}, "active": None, "total": 0}
@@ -12553,6 +12567,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .peek-plan .pp-title { font-weight: 600; flex-shrink: 0; }
   .peek-plan .pp-count { color: var(--dim); font-size: 0.74rem; flex-shrink: 0; }
   .peek-plan .pp-active { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .peek-plan .pp-active.pp-active-done { color: #4ec9b0; }
   .peek-plan-list { max-height: 40vh; overflow-y: auto; border-top: 1px solid var(--border); padding: 4px 0; }
   .peek-plan-item { display: flex; gap: 8px; align-items: baseline; padding: 3px 12px; font-size: 0.76rem; line-height: 1.4; }
   .peek-plan-item .pp-ico { flex-shrink: 0; width: 14px; text-align: center; color: var(--dim); }
@@ -22372,7 +22387,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.71';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.72';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -23288,7 +23303,19 @@ function _peekRenderPlan(d) {
   const c = (d && d.counts) || {};
   document.getElementById('peek-plan-count').textContent = (c.completed || 0) + '/' + d.total;
   const active = d.active;
-  document.getElementById('peek-plan-active').textContent = active ? (active.subject || active.activeForm || '') : '';
+  const _av = document.getElementById('peek-plan-active');
+  if (active) {
+    const st = active.status || 'in_progress';
+    const ICO2 = { pending: '○', in_progress: '◆', completed: '✓' };
+    // Headline is the most-recently-touched task — may be one just completed
+    // (session between tasks), so show its status glyph rather than implying
+    // it's actively in progress.
+    _av.textContent = (ICO2[st] || '◆') + ' ' + (active.subject || active.activeForm || '');
+    _av.classList.toggle('pp-active-done', st === 'completed');
+  } else {
+    _av.textContent = '';
+    _av.classList.remove('pp-active-done');
+  }
   const ICO = { pending: '○', in_progress: '◆', completed: '✓' };
   document.getElementById('peek-plan-list').innerHTML = tasks.map(t => {
     const st = t.status || 'pending';
@@ -39156,7 +39183,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.71';
+const CACHE = 'amux-v0.9.72';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
