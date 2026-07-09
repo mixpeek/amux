@@ -22326,7 +22326,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.70';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.71';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -31652,7 +31652,11 @@ async function loadTunnelSettings() {
   const s = await _tunnelStatus();
   if (s.error) { box.innerHTML = '<span style="color:var(--dim);">status unavailable</span>'; return; }
   if (!s.configured) {
-    box.innerHTML = '<span style="color:var(--dim);line-height:1.4;">Not configured. Set <code>AMUX_TUNNEL_TOKEN</code> in <code>~/.amux/server.env</code> (needs an active amux cloud subscription), then reload.</span>';
+    box.innerHTML = '<div style="color:var(--dim);line-height:1.5;">'
+      + 'Off. Two ways to turn it on:'
+      + '<div style="margin:6px 0 0;"><b style="color:var(--fg);">amux cloud</b> (easiest): set <code>AMUX_TUNNEL_TOKEN</code> in <code>~/.amux/server.env</code> from your paid amux cloud account, then reload.</div>'
+      + '<div style="margin:6px 0 0;"><b style="color:var(--fg);">Self-host (OSS, free):</b> run the gateway in <code>cloud/gateway/</code> on your own box + domain, then point <code>AMUX_TUNNEL_GATEWAY</code> at it (plus a token it accepts).</div>'
+      + '</div>';
     return;
   }
   if (s.running && s.url) {
@@ -31731,8 +31735,9 @@ async function _renderIcalBody(box) {
     if (tun.error) html += '<p style="color:var(--red);font-size:0.72rem;margin:0 0 0.4rem;word-break:break-word;">' + esc_url(tun.error) + '</p>';
     html += '<button id="tun-toggle" class="btn" style="font-size:0.78rem;" onclick="_tunnelStartUI(this.closest(\'[data-ical-box]\'))">Start public tunnel</button>';
   } else {
-    html += '<div style="margin-bottom:0.3rem;"><strong style="font-size:0.85rem;">Public tunnel</strong> <span style="color:var(--dim);font-size:0.78rem;">— amux cloud</span></div>';
-    html += '<p style="color:var(--muted);font-size:0.76rem;margin:0;">Sign in to amux cloud and set <code>AMUX_TUNNEL_TOKEN</code> to expose this calendar publicly — subscribe from Google/Apple anywhere, no port forwarding.</p>';
+    html += '<div style="margin-bottom:0.3rem;"><strong style="font-size:0.85rem;">Public tunnel</strong> <span style="color:var(--dim);font-size:0.78rem;">— off</span></div>';
+    html += '<p style="color:var(--muted);font-size:0.76rem;margin:0 0 0.35rem;">Expose this calendar at a public URL, no port forwarding. Set <code>AMUX_TUNNEL_TOKEN</code> from <b>amux cloud</b> (paid), or self-host the gateway (OSS) and point <code>AMUX_TUNNEL_GATEWAY</code> at it.</p>';
+    html += '<p style="color:var(--muted);font-size:0.76rem;margin:0;">No public URL? <b>Download .ics</b> below and import it — static, but works everywhere with zero infra.</p>';
   }
   html += '</div>';
 
@@ -39105,7 +39110,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.70';
+const CACHE = 'amux-v0.9.71';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
