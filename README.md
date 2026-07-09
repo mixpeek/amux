@@ -22,7 +22,7 @@
 
 > **[amux.io](https://amux.io)** · [Getting started](https://amux.io/guides/getting-started/) · [FAQ](https://amux.io/faq/) · [Blog](https://amux.io/blog/)
 
-<video src="amux.mp4" width="920" autoplay loop muted playsinline></video>
+<p align="center"><a href="https://amux.io"><img src="site/amux.gif" alt="amux dashboard — run parallel agent sessions from one board" width="920"/></a></p>
 
 ```bash
 git clone https://github.com/mixpeek/amux && cd amux && ./install.sh

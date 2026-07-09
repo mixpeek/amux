@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Docs & guides
+    url: https://amux.io
+    about: Getting started, FAQ, and feature guides.
+  - name: Concierge (done-for-you setup)
+    url: https://amux.io/concierge/
+    about: Want it set up and run for you?
