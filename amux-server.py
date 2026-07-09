@@ -228,6 +228,8 @@ _S3_REGION = os.environ.get("AMUX_S3_REGION", "us-east-1")
 # Google Calendar push sync (optional — set AMUX_GCAL_ID to enable)
 _GCAL_ID = os.environ.get("AMUX_GCAL_ID", "")
 _GCAL_TZ = os.environ.get("AMUX_GCAL_TZ", "America/New_York")
+_GCAL_SCOPES = ["https://www.googleapis.com/auth/calendar"]
+_GCAL_TOKEN_PATH = CC_HOME / "gcal-token.json"   # OAuth token (amux's own client, not ADC)
 _S3_CAL_URL = (
     f"https://{_S3_BUCKET}.s3.{_S3_REGION}.amazonaws.com/{_S3_KEY}"
     if _S3_BUCKET else ""
@@ -6769,11 +6771,13 @@ def _gcal_sync_item(item_id: str, title: str = "", due: str = "", due_time: str 
 
 
 def _gcal_service():
-    """Build a Google Calendar API client from ADC (calendar scope). None if unavailable."""
-    import google.auth, google.auth.transport.requests
+    """Build a Google Calendar API client from amux's OAuth calendar token (its own
+    OAuth client — avoids the block Google now applies to gcloud's default client for
+    the calendar scope). Raises if not connected."""
     from googleapiclient.discovery import build
-    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/calendar"])
-    creds.refresh(google.auth.transport.requests.Request())
+    creds = _gcal_creds()
+    if not creds:
+        raise RuntimeError("calendar not connected — start the OAuth flow via /api/gcal/auth")
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
@@ -11196,6 +11200,46 @@ def _gmail_auth_url(account: str) -> tuple[str, str] | tuple[None, str]:
             login_hint=account, include_granted_scopes="true"
         )
         _gmail_pending[state] = (account, flow)
+        return url, state
+    except Exception as e:
+        return None, str(e)
+
+
+def _gcal_creds():
+    """Load + refresh the calendar OAuth credentials (amux's own client). None if unconnected."""
+    if not _GCAL_TOKEN_PATH.exists():
+        return None
+    try:
+        from google.oauth2.credentials import Credentials
+        import google.auth.transport.requests
+        data = json.loads(_GCAL_TOKEN_PATH.read_text())
+        creds = Credentials(
+            token=data.get("token"), refresh_token=data.get("refresh_token"),
+            token_uri=data.get("token_uri"), client_id=data.get("client_id"),
+            client_secret=data.get("client_secret"), scopes=_GCAL_SCOPES)
+        if not creds.valid and creds.refresh_token:
+            creds.refresh(google.auth.transport.requests.Request())
+            _GCAL_TOKEN_PATH.write_text(json.dumps({
+                "token": creds.token, "refresh_token": creds.refresh_token,
+                "token_uri": creds.token_uri, "client_id": creds.client_id,
+                "client_secret": creds.client_secret}))
+        return creds
+    except Exception as e:
+        slog(f"[gcal] creds load failed: {e}")
+        return None
+
+
+def _gcal_auth_url():
+    """OAuth authorization URL for the calendar scope, using amux's own OAuth client
+    and the (already-registered) Gmail localhost callback. Returns (url, state) or (None, err)."""
+    cfg = _gmail_client_config()
+    if not cfg:
+        return None, "OAuth client not configured (~/.amux/gmail-oauth-client.json)"
+    try:
+        from google_auth_oauthlib.flow import Flow
+        flow = Flow.from_client_config(cfg, _GCAL_SCOPES, redirect_uri=_GMAIL_REDIRECT_URI)
+        url, state = flow.authorization_url(access_type="offline", prompt="consent")
+        _gmail_pending[state] = ("__gcal__", flow)   # the shared callback saves it to _GCAL_TOKEN_PATH
         return url, state
     except Exception as e:
         return None, str(e)
@@ -39348,7 +39392,12 @@ class CCHandler(BaseHTTPRequestHandler):
                     _env_set("AMUX_URGENT_SMS", "1" if body.get("sms") else "0")
                 return self._json({"ok": True})
 
-        # ── Real-time Google Calendar push (schedules → GCal via ADC) ──
+        # ── Real-time Google Calendar push (schedules → GCal via amux OAuth) ──
+        if path == "/api/gcal/auth" and method == "GET":
+            url, err = _gcal_auth_url()
+            if not url:
+                return self._json({"error": err}, 500)
+            return self._json({"url": url})
         if path == "/api/gcal/status" and method == "GET":
             adc_ok = False
             try:
@@ -42321,6 +42370,21 @@ class CCHandler(BaseHTTPRequestHandler):
                     self.send_response(400); self.send_header("Content-Type","text/html"); self.end_headers()
                     self.wfile.write(html.encode()); return
                 account, flow = entry
+                if account == "__gcal__":   # calendar OAuth (shares this callback) → save calendar token
+                    try:
+                        flow.fetch_token(code=code)
+                        creds = flow.credentials
+                        _GCAL_TOKEN_PATH.write_text(json.dumps({
+                            "token": creds.token, "refresh_token": creds.refresh_token,
+                            "token_uri": creds.token_uri, "client_id": creds.client_id,
+                            "client_secret": creds.client_secret}))
+                        html = "<html><body style='font-family:sans-serif'><h2>&#x2705; amux calendar connected!</h2><p>You can close this tab — real-time schedule sync is enabling now.</p></body></html>"
+                        self.send_response(200); self.send_header("Content-Type","text/html"); self.end_headers()
+                        self.wfile.write(html.encode()); return
+                    except Exception as e:
+                        html = f"<html><body><h2>Calendar token exchange failed</h2><pre>{e}</pre></body></html>"
+                        self.send_response(500); self.send_header("Content-Type","text/html"); self.end_headers()
+                        self.wfile.write(html.encode()); return
                 try:
                     flow.fetch_token(code=code)
                     creds = flow.credentials
