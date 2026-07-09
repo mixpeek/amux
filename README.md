@@ -273,13 +273,23 @@ The URL is derived from your token, so it **stays the same across restarts** —
 paste into a webhook or a calendar subscription.
 
 ```
-https://cloud.amux.io/t/<id>/            → your local server's /
-https://cloud.amux.io/t/<id>/api/foo     → your local server's /api/foo
+https://<id>.t.amux.io/            → your local server's /
+https://<id>.t.amux.io/api/foo     → your local server's /api/foo
 ```
+
+Each tunnel gets its own subdomain, so a tunneled app's root-absolute paths
+(`fetch("/api/x")`, `<script src="/app.js">`) resolve inside the tunnel. The older
+`https://cloud.amux.io/t/<id>/` path form still works for anything already pointed at
+it, but root-absolute paths escape it — prefer the subdomain.
 
 Anything HTTP works: a dev server, a webhook receiver, the amux calendar feed
 (`/api/calendar.ics`). Requests relay with method, headers, query string, body, and
 status code intact, including `HEAD`.
+
+> **Streaming isn't relayed yet.** Each request maps to a single buffered response, so
+> Server-Sent Events and WebSockets don't pass through. The amux dashboard still works
+> over a tunnel — it detects the dead SSE stream and falls back to polling — but it
+> takes ~2 minutes to fall back, and it stays in "Polling" mode.
 
 **Setup.** The tunnel is gated on an active [amux cloud](https://amux.io/cloud/)
 subscription (Clerk SSO + billing). Put your token in `~/.amux/server.env`:

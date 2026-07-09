@@ -1102,13 +1102,15 @@ cmd_tunnel() {
       curl -sk -X POST -H 'Content-Type: application/json' -d "$payload" \
         "$AMUX_API/api/tunnel/start" | python3 -c "
 import sys, json
-d = json.load(sys.stdin)
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+except ValueError:
+    # amux-server restarts on save; a mid-restart request returns nothing.
+    sys.exit('amux server not responding (restarting?) — retry in a moment')
 if d.get('error'):
-    print('error:', d['error']); sys.exit(1)
-if d.get('already'):
-    print('already running →', d.get('url') or '(registering)')
-else:
-    print('tunnel up →', d.get('url') or '(registering)')
+    sys.exit('error: ' + str(d['error']))
+print(('already running → ' if d.get('already') else 'tunnel up → ') + (d.get('url') or '(registering)'))
 "
       ;;
     stop)
@@ -1117,7 +1119,11 @@ else:
     status|"")
       curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
 import sys, json
-d = json.load(sys.stdin)
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+except ValueError:
+    sys.exit('amux server not responding (restarting?) — retry in a moment')
 if not d.get('configured'):
     print('not configured — set AMUX_TUNNEL_TOKEN in ~/.amux/server.env')
     print('(the tunnel needs an active amux cloud subscription)')
@@ -1132,7 +1138,11 @@ if d.get('error'): print('error   :', d['error'])
     url)
       curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
 import sys, json
-u = json.load(sys.stdin).get('url')
+raw = sys.stdin.read()
+try:
+    u = json.loads(raw).get('url')
+except ValueError:
+    sys.exit('amux server not responding (restarting?) — retry in a moment')
 print(u) if u else sys.exit('tunnel not running')
 "
       ;;
