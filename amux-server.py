@@ -45807,6 +45807,20 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 if not lp.exists():
                     return self._json({"error": "no log"}, 404)
                 data = lp.read_bytes()
+                # ?tail_kb=N — serve only the last N KB (line-aligned). Used by
+                # the peek's "load earlier output" affordance: Claude runs on
+                # the terminal's alternate screen, so tmux holds ONLY the
+                # viewport and the pipe-pane log is the sole scrollback. Full
+                # logs run to many MB — never ship those to a phone.
+                try:
+                    tail_kb = min(max(int(qs.get("tail_kb", ["0"])[0] or 0), 0), 1024)
+                except Exception:
+                    tail_kb = 0
+                if tail_kb and len(data) > tail_kb * 1024:
+                    data = data[-tail_kb * 1024:]
+                    nl = data.find(b"\n")
+                    if 0 <= nl < 4096:
+                        data = data[nl + 1:]
                 if want_plain:
                     text = _collapse_blank_runs(_STRIP_ANSI.sub("", data.decode("utf-8", errors="replace")))
                     data = text.encode("utf-8", errors="replace")
