@@ -10651,6 +10651,13 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
     _actions_st = _session_auto_actions.get(name, {})
     if _actions_st.get("restarting"):
         return False, "session is restarting"
+    # A start is "in flight" when the session was (re)started seconds ago —
+    # the pane shows the shell (or nothing) BEFORE claude paints its UI, which
+    # the auto-wake checks below misread as "not running". Starting AGAIN then
+    # races two claude processes → 'Session ID already in use' → the conflict
+    # auto-restart replays the last message and the user sees it delivered
+    # twice (AMUX-1681). Instead, wait for the in-flight boot and deliver.
+    _boot_in_flight = (time.time() - _load_meta(name).get("last_started", 0)) < 20
     # Single capture used for both resume-picker and is_running checks — avoids
     # spawning two separate tmux subprocesses on the hot send path.
     try:
@@ -10659,6 +10666,10 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
             return False, "session is in resume picker"
         if _out_st is not None and _at_shell_prompt(_out_st):
             # Terminal visible but Claude has exited — treat as not running
+            if _boot_in_flight:
+                threading.Thread(target=_send_after_ready, args=(name, text),
+                                 daemon=True).start()
+                return True, "sent (waiting for in-flight boot)"
             if name not in _auto_waking:
                 env_file = CC_SESSIONS / f"{name}.env"
                 if env_file.exists():
@@ -10677,6 +10688,10 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
     if not is_running(name):
         if name in _auto_waking:
             return False, "not running"
+        if _boot_in_flight:
+            threading.Thread(target=_send_after_ready, args=(name, text),
+                             daemon=True).start()
+            return True, "sent (waiting for in-flight boot)"
         env_file = CC_SESSIONS / f"{name}.env"
         if env_file.exists():
             _auto_waking.add(name)
