@@ -45904,11 +45904,24 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     tail_kb = min(max(int(qs.get("tail_kb", ["0"])[0] or 0), 0), 1024)
                 except Exception:
                     tail_kb = 0
+                # ?before_kb=N — skip the last N KB before slicing the tail:
+                # page BACKWARD through the log (the peek taps "load earlier"
+                # repeatedly until the beginning). X-Log-Remaining reports how
+                # many bytes are still older than this slice, so the client
+                # knows when it reached the start.
+                try:
+                    before_kb = max(int(qs.get("before_kb", ["0"])[0] or 0), 0)
+                except Exception:
+                    before_kb = 0
+                if before_kb:
+                    data = data[:max(0, len(data) - before_kb * 1024)]
+                pre_len = len(data)
                 if tail_kb and len(data) > tail_kb * 1024:
                     data = data[-tail_kb * 1024:]
                     nl = data.find(b"\n")
                     if 0 <= nl < 4096:
                         data = data[nl + 1:]
+                remaining = pre_len - len(data)
                 if want_plain:
                     text = _collapse_blank_runs(_STRIP_ANSI.sub("", data.decode("utf-8", errors="replace")))
                     data = text.encode("utf-8", errors="replace")
@@ -45916,6 +45929,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Content-Disposition", f'attachment; filename="{name}.log"')
                 self.send_header("Content-Length", str(len(data)))
+                self.send_header("X-Log-Remaining", str(remaining))
                 self.end_headers()
                 self.wfile.write(data)
                 return
