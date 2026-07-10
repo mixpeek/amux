@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>amux vs OpenAI Codex — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Compare amux's local Claude Code orchestration with OpenAI's cloud-based Codex agent.">
-  <meta name="keywords" content="amux vs codex, openai codex alternative, claude vs codex, AI coding agent comparison">
+  <title>amux vs OpenAI Codex (2026): Local Agent Fleet vs Cloud Coding Agent — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs OpenAI Codex compared: local multi-runtime agent fleet (Claude Code, Codex CLI, Gemini CLI) with phone management vs Codex cloud agent running in isolated containers. Updated July 2026.">
+  <meta name="keywords" content="amux vs codex, openai codex alternative, claude code vs codex, ai coding agent comparison, codex cli vs amux, local vs cloud coding agent">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-codex/">
-  <meta property="og:title" content="amux vs OpenAI Codex — amux">
-  <meta property="og:description" content="Compare amux's local Claude Code orchestration with OpenAI's cloud-based Codex agent.">
+  <meta property="og:title" content="amux vs OpenAI Codex (2026): Local Agent Fleet vs Cloud Coding Agent">
+  <meta property="og:description" content="amux runs your AI engineering team locally across Claude Code, Codex CLI, and Gemini CLI with self-healing and phone management. Codex runs tasks in isolated cloud containers. Here's how to choose.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-codex/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,9 +21,78 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs OpenAI Codex","item":"https://amux.io/compare/amux-vs-codex/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"amux vs OpenAI Codex","description":"Compare amux's local Claude Code orchestration with OpenAI's cloud-based Codex agent.","url":"https://amux.io/compare/amux-vs-codex/","about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","applicationCategory":"DeveloperApplication"}}</script>
-  </head>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"},
+      {"@type": "ListItem", "position": 3, "name": "amux vs OpenAI Codex", "item": "https://amux.io/compare/amux-vs-codex/"}
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux vs OpenAI Codex (2026): Local Agent Fleet vs Cloud Coding Agent",
+    "description": "amux vs OpenAI Codex compared: local multi-runtime agent fleet with phone management vs Codex cloud agent running in isolated containers.",
+    "datePublished": "2026-07-10",
+    "dateModified": "2026-07-10",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Can amux run OpenAI Codex CLI sessions?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux is a multi-runtime orchestrator — it can manage Claude Code, OpenAI Codex CLI, and Gemini CLI sessions in parallel from the same dashboard. You don't have to choose between amux and Codex CLI; amux can orchestrate both simultaneously."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the main difference between amux and OpenAI Codex?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux is an open-source control plane that runs your AI engineering team locally on your own machine — you get full environment access, phone management, self-healing, and built-in tools (kanban, CRM, email, scheduler). OpenAI's Codex cloud agent runs tasks in isolated cloud containers managed by OpenAI, using GPT-4o or o3. amux works across Claude Code, Codex CLI, and Gemini CLI; Codex cloud uses only GPT models."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux support multiple LLMs like Codex?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux supports Claude Code (any Claude model), OpenAI Codex CLI (GPT-4o, o3), and Gemini CLI (Gemini models) — all from the same dashboard. You can run sessions of different runtimes in parallel. Codex cloud is locked to OpenAI's GPT models."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is amux open source?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux is MIT + Commons Clause licensed, distributed as a single Python file with zero external dependencies. The Codex CLI is also open source (MIT), but the Codex cloud agent platform is proprietary."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Which is better for overnight unattended coding — amux or Codex?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Both support unattended operation but in different ways. amux runs on your local machine with a self-healing watchdog: if an agent crashes from context exhaustion, amux auto-compacts, restarts, and replays the last message — all without you. Codex cloud handles availability at the infrastructure level. amux additionally lets you monitor the full fleet and approve critical steps from your phone via the iOS app or PWA."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -39,22 +108,148 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs OpenAI Codex</span></div>
-    <h1>amux vs OpenAI Codex</h1>
-<p class="subtitle">Local-first fleet vs. cloud-based agent. Different ecosystems, similar goals.</p>
-<p><strong>OpenAI Codex</strong> runs cloud-based coding agents in sandboxed containers. <strong>amux</strong> runs Claude Code agents locally on your machine with full environment access.</p>
-<h2>Key differences</h2>
-<table><thead><tr><th>Feature</th><th>amux</th><th>Codex</th></tr></thead><tbody><tr><td>Hosting</td><td>Local machine</td><td>Cloud sandbox</td></tr><tr><td>Environment</td><td>Your tools, configs, credentials</td><td>Isolated container</td></tr><tr><td>Parallel agents</td><td>Unlimited local sessions</td><td>Cloud-based parallelism</td></tr><tr><td>Self-healing</td><td>Auto-compact, restart, unstick</td><td>Cloud infrastructure</td></tr><tr><td>LLM</td><td>Claude (Opus, Sonnet, Haiku)</td><td>GPT-4o, o3</td></tr><tr><td>Open source</td><td>Yes (MIT)</td><td>CLI open source, cloud proprietary</td></tr><tr><td>Cost</td><td>API tokens only</td><td>OpenAI pricing</td></tr></tbody></table>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+
+    <h1>amux vs OpenAI Codex (2026)</h1>
+    <p class="subtitle">Local agent fleet vs cloud coding agent. Different execution models, different strengths.</p>
+
+    <p><strong>amux</strong> is an open-source control plane that runs your AI engineering team on your own machine — dozens of parallel Claude Code, Codex CLI, or Gemini CLI sessions, monitored from your phone, with self-healing and built-in tools (kanban, CRM, email, scheduler). <strong>OpenAI Codex</strong> refers to two related products: the open-source Codex CLI (a terminal coding agent using GPT-4o/o3) and the proprietary Codex cloud agent (async tasks in isolated containers). The most common comparison is between amux's local fleet and Codex's cloud agent — and the answer often isn't "choose one." Updated July 2026.</p>
+
+    <h2>Quick comparison</h2>
+
+    <table>
+      <thead>
+        <tr><th>Feature</th><th>amux</th><th>Codex cloud agent</th><th>Codex CLI</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Execution environment</td><td>Your local machine</td><td>Isolated cloud container</td><td>Your local machine</td></tr>
+        <tr><td>LLMs supported</td><td>Claude Code, Codex CLI, Gemini CLI</td><td>GPT-4o, o3, o3-mini</td><td>GPT-4o, o3-mini</td></tr>
+        <tr><td>Parallel sessions</td><td>Unlimited (local tmux)</td><td>Async task queue</td><td>Manual (one per terminal)</td></tr>
+        <tr><td>Self-healing</td><td>Auto-compact, restart, replay last message</td><td>Cloud infra managed</td><td>None</td></tr>
+        <tr><td>Phone management</td><td>iOS app + PWA (monitor, approve, steer)</td><td>Browser-only</td><td>None</td></tr>
+        <tr><td>Open source</td><td>Yes (MIT + Commons Clause)</td><td>No (proprietary)</td><td>Yes (MIT)</td></tr>
+        <tr><td>Local machine access</td><td>Full (your tools, configs, secrets)</td><td>Sandboxed container</td><td>Full</td></tr>
+        <tr><td>Built-in task coordination</td><td>Kanban board, CRM, email, scheduler</td><td>No</td><td>No</td></tr>
+        <tr><td>Dashboard</td><td>Web dashboard + iOS app</td><td>ChatGPT / OpenAI platform</td><td>Terminal only</td></tr>
+        <tr><td>Pricing</td><td>API tokens only (Anthropic/OpenAI/Google rates)</td><td>OpenAI API usage</td><td>OpenAI API usage</td></tr>
+        <tr><td>Self-hosted</td><td>Yes (single Python file, zero deps)</td><td>No</td><td>Yes</td></tr>
+        <tr><td>Tunnel (localhost → public URL)</td><td>Yes (<a href="/compare/amux-vs-ngrok/">amux cloud</a>)</td><td>N/A (cloud-native)</td><td>No</td></tr>
+      </tbody>
+    </table>
+
+    <h2>The key insight: amux can orchestrate Codex CLI</h2>
+
+    <p>amux is a multi-runtime orchestrator. It can manage Claude Code, OpenAI Codex CLI, and Gemini CLI sessions simultaneously from the same dashboard. If you're already using Codex CLI and want to run multiple instances in parallel, monitor them from your phone, and have them self-heal on crash — amux adds that layer without replacing Codex.</p>
+
+    <pre><code># Register a Codex CLI session with amux
+amux register codex-agent-1 --dir ~/Dev/myproject
+amux register codex-agent-2 --dir ~/Dev/myproject
+amux start codex-agent-1
+amux start codex-agent-2
+amux serve  # → dashboard at https://localhost:8822</code></pre>
+
+    <p>Each session is then visible in the amux dashboard, gets the self-healing watchdog, appears in the phone app, and participates in the shared kanban queue. You don't have to choose between amux and Codex CLI.</p>
+
+    <h2>When to use Codex cloud agent</h2>
+
+    <ul>
+      <li><strong>You're already in the OpenAI ecosystem</strong> and want async task execution with minimal local setup.</li>
+      <li><strong>Sandboxed execution is a requirement</strong> — tasks that must run in a clean, isolated environment not touching your local filesystem.</li>
+      <li><strong>Native GitHub integration matters</strong> — Codex cloud can create PRs and push branches directly with built-in GitHub auth.</li>
+      <li><strong>You want managed cloud availability</strong> — no local machine dependency, no context exhaustion on your hardware.</li>
+      <li><strong>GPT-4o or o3 is your preferred model</strong> — Codex cloud is optimized for OpenAI's models; amux can also orchestrate Codex CLI but its primary runtime is Claude Code.</li>
+    </ul>
+
+    <h2>When to use amux</h2>
+
+    <ul>
+      <li><strong>You need full machine access</strong> — agents that read from local databases, use your CLI tools, access secrets in ~/.config, or interact with local dev servers.</li>
+      <li><strong>You want to run multiple runtimes</strong> — mix Claude Code, Codex CLI, and Gemini CLI sessions in parallel on the same project.</li>
+      <li><strong>Phone monitoring is essential</strong> — amux's iOS app and PWA let you watch agents, approve PR diffs, steer sessions, and kick off new tasks from anywhere, including overnight from your bed.</li>
+      <li><strong>Self-healing matters</strong> — the amux watchdog auto-compacts context, restarts crashed agents, and replays the last message automatically. Agents run overnight without you.</li>
+      <li><strong>Open source and self-hosted is required</strong> — amux is a single Python file, zero external dependencies, MIT + Commons Clause. Deploy it on any Linux/macOS box.</li>
+      <li><strong>You want built-in ops tools</strong> — kanban board, CRM, Gmail integration, browser automation, and scheduler are included at no extra cost.</li>
+    </ul>
+
+    <h2>Execution model comparison</h2>
+
+    <p>The deepest difference is execution environment. <strong>Codex cloud</strong> runs each task in an isolated sandbox — clean file system, no persistent state between tasks, managed by OpenAI's infrastructure. This is great for reproducibility but limits what agents can access.</p>
+
+    <p><strong>amux</strong> runs agents on your machine, inside your actual development environment. An agent can read your <code>~/.ssh/config</code>, run your local Docker Compose stack, query your local Postgres database, and use every tool in your PATH. This is what enables workflows like "have 8 agents work on different microservices simultaneously, each running the full test suite against the local database."</p>
+
+    <h2>Pricing model</h2>
+
+    <p><strong>amux</strong>: free and open source. You pay only for API tokens consumed by the agents — at Anthropic, OpenAI, or Google rates depending on which runtime you use. No subscription fee for the orchestrator itself. Cloud features (tunnel, hosted dashboard) are paid separately via amux cloud.</p>
+
+    <p><strong>Codex cloud</strong>: billed through OpenAI API usage. Pricing depends on model (GPT-4o vs o3) and token consumption. No separate orchestration cost, but all execution happens on OpenAI's infrastructure with their pricing.</p>
+
+    <h2>Architectural summary</h2>
+
+    <table>
+      <thead>
+        <tr><th>Dimension</th><th>amux</th><th>Codex cloud</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Where agents run</td><td>Your machine (tmux sessions)</td><td>OpenAI cloud containers</td></tr>
+        <tr><td>State persistence</td><td>Local filesystem, your database</td><td>Per-task sandbox (ephemeral)</td></tr>
+        <tr><td>Fault tolerance</td><td>Watchdog: auto-compact, restart, replay</td><td>Cloud SLA, retry managed by OpenAI</td></tr>
+        <tr><td>Observability</td><td>Live streaming in dashboard + phone</td><td>Task logs in OpenAI platform</td></tr>
+        <tr><td>Output destination</td><td>Local files, your Git remote, your tools</td><td>Container output, GitHub PRs</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Frequently asked questions</h2>
+
+    <details open>
+      <summary>Can amux run OpenAI Codex CLI sessions?</summary>
+      <p>Yes. amux is a multi-runtime orchestrator — it can manage Claude Code, OpenAI Codex CLI, and Gemini CLI sessions in parallel from the same dashboard. You don't have to choose; amux can orchestrate both simultaneously.</p>
+    </details>
+
+    <details>
+      <summary>What is the main difference between amux and OpenAI Codex cloud?</summary>
+      <p>amux runs your AI engineering team locally on your own machine with full environment access, phone management, self-healing, and built-in tools. Codex cloud runs tasks in isolated containers on OpenAI's infrastructure using GPT models. The choice is: local + multi-runtime + self-hosted vs cloud + GPT-only + managed.</p>
+    </details>
+
+    <details>
+      <summary>Does amux support multiple LLMs like Codex does?</summary>
+      <p>Yes — and broader. amux supports Claude Code (any Claude model), OpenAI Codex CLI (GPT-4o, o3), and Gemini CLI (Gemini models) all from the same dashboard. You can run sessions of different runtimes in parallel. Codex cloud is locked to OpenAI's GPT model family.</p>
+    </details>
+
+    <details>
+      <summary>Which is better for overnight unattended coding?</summary>
+      <p>Both support unattended operation. amux's self-healing watchdog handles local failures — context exhaustion, crash, stall — by auto-compacting, restarting, and replaying. Codex cloud handles availability at the infrastructure level. amux additionally lets you monitor and steer agents from your phone at any hour. The real question is whether you need local machine access (amux) or clean cloud sandboxes (Codex).</p>
+    </details>
+
+    <details>
+      <summary>Is amux open source?</summary>
+      <p>Yes. amux is MIT + Commons Clause, a single Python file, zero external dependencies. The Codex CLI is also open source (MIT). The Codex cloud agent platform is proprietary.</p>
+    </details>
+
+    <h2>See also</h2>
+    <ul>
+      <li><a href="/guides/multi-runtime-agent-setup/">Multi-runtime agent setup</a> — run Claude Code, Codex CLI, and Gemini CLI from one dashboard</li>
+      <li><a href="/guides/running-10-plus-agents/">Running 10+ agents in parallel</a></li>
+      <li><a href="/guides/detached-agent-sessions/">Run agent sessions in the background (amux start --detach)</a></li>
+      <li><a href="/compare/amux-vs-devin/">amux vs Devin</a></li>
+      <li><a href="/compare/amux-vs-cursor/">amux vs Cursor</a></li>
+      <li><a href="/compare/amux-vs-claude-managed-agents/">amux vs Claude Managed Agents</a></li>
+    </ul>
+
+    <div class="cta-box">
+      <h3>Run your AI engineering team from one dashboard</h3>
+      <p>amux orchestrates Claude Code, Codex CLI, and Gemini CLI sessions in parallel with self-healing, phone management, and built-in tools. Open source. Single Python file.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
+    </div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
       <div class="footer-top">
         <div class="footer-brand-col">
           <a href="/" class="footer-logo">amux</a>
-          <p>Open-source control plane for AI agents.</p>
+          <p>Open-source control plane for AI agent teams.</p>
         </div>
         <div class="footer-col">
           <div class="footer-col-label">Resources</div>
@@ -94,7 +289,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
       </div>
     </div>
   </footer>
-
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

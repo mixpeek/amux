@@ -1,5 +1,41 @@
 [
   {
+    "hash": "4aa57b80d95c3e2888b9cbb66cb6d64a5c1a919e",
+    "short": "4aa57b8",
+    "title": "Mobile terminal logs — full peek output on phone without losing the bottom nav",
+    "date": "2026-07-10",
+    "type": "feat",
+    "tags": ["mobile", "ux", "dashboard", "logs"],
+    "description": "The peek panel (session terminal logs) on mobile now reclaims the full Chrome viewport. Previously, iOS Chrome showed the address bar and bottom toolbar even in PWA mode, cutting off several rows of log output and making it impossible to see the most recent agent output. The new layout adjusts for the browser chrome dynamically, giving you the maximum usable screen for logs. This makes phone-based agent monitoring substantially more practical during active sessions."
+  },
+  {
+    "hash": "174d1777c73c3d81e5da61145efe4e0db3780bb3",
+    "short": "174d177",
+    "title": "Per-session token breakdown in the dashboard header",
+    "date": "2026-07-10",
+    "type": "fix",
+    "tags": ["tokens", "dashboard", "ux"],
+    "description": "The token counter in the amux logo modal now shows a per-session breakdown instead of a per-directory aggregate. Previously, if you had multiple sessions registered to the same directory, their token usage was lumped together and credited to whichever session happened to be listed first. Now each session shows its own running total independently. Useful for teams running parallel agents on the same repo who want to track which session is consuming the most context."
+  },
+  {
+    "hash": "75ece716158ac9d9e832ada8e3d8c82642be04b9",
+    "short": "75ece71",
+    "title": "Connection history modal — click the Live pill to see past disconnections",
+    "date": "2026-07-10",
+    "type": "feat",
+    "tags": ["dashboard", "connectivity", "ux", "monitoring"],
+    "description": "Clicking the connection status indicator (the green 'live' pill in the dashboard header) now opens a Connection modal that shows your browser client's full disconnection history for this session. Each degradation episode — polling, offline — is listed with start and end timestamps, duration, and whether it's ongoing. History survives page reloads (localStorage-backed) and a Clear button resets it. Useful for diagnosing flaky connections, understanding gaps in live output, and confirming how long your phone was offline while an overnight agent was running."
+  },
+  {
+    "hash": "f7bccd9519632f4889fab5d8444c74b48f6e6c54",
+    "short": "f7bccd9",
+    "title": "Start agent sessions in background — amux start --detach / -d",
+    "date": "2026-07-09",
+    "type": "feat",
+    "tags": ["cli", "automation", "unattended", "boot"],
+    "description": "amux start now accepts --detach (or -d) to create a session without attaching to your terminal. The command starts the agent and returns immediately (exit 0), leaving your shell free. Previously, amux start always attached — blocking scripts, justfiles, SSH one-shots, and CI pipelines that had no terminal to attach to. Now you can kick off agents from boot scripts (launchd, systemd), a Makefile, or a one-liner over SSH. Called on an already-running session, -d reports the status without attaching. See /guides/detached-agent-sessions/ for usage examples."
+  },
+  {
     "hash": "7d626af770de3f69ad02db21820082e45dab3693",
     "short": "7d626af",
     "title": "Skip next occurrence — pause a single schedule run without disabling the whole schedule",

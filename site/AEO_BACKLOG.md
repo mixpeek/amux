@@ -66,3 +66,10 @@ Track query gaps, target sections, priority, and status. Update every run.
 | AI agent Google Calendar integration | /use-cases/ai-agent-google-calendar/ | H | shipped 2026-07-09 |
 | schedule AI agents with Google Calendar | /use-cases/ai-agent-google-calendar/ | H | shipped 2026-07-09 |
 | amux Google Calendar sync | /use-cases/ai-agent-google-calendar/ | H | shipped 2026-07-09 |
+| amux vs OpenAI Codex comparison 2026 | /compare/amux-vs-codex/ | H | rebuilt 2026-07-10 (214→2000+ words, BreadcrumbList+Article+FAQPage JSON-LD) |
+| run Claude Code in background | /guides/detached-agent-sessions/ | H | shipped 2026-07-10 (new page, HowTo+FAQPage JSON-LD) |
+| detach Claude Code session unattended | /guides/detached-agent-sessions/ | H | shipped 2026-07-10 |
+| amux start detach background agent | /guides/detached-agent-sessions/ | M | shipped 2026-07-10 |
+| expose localhost public HTTPS URL | /guides/expose-localhost-publicly/ | H | shipped 2026-07-10 (new page, HowTo+FAQPage JSON-LD) |
+| localhost tunnel ngrok alternative 2026 | /guides/expose-localhost-publicly/ | H | shipped 2026-07-10 |
+| test webhooks locally 2026 | /guides/expose-localhost-publicly/ | M | shipped 2026-07-10 |
