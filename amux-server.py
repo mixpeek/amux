@@ -4123,6 +4123,25 @@ def _snapshot_all_sessions():
     finally:
         _snapshot_running = False
 
+def _steer_enqueue(name: str, text: str) -> str:
+    """Append a message to a session's durable steering queue (memory + DB).
+    Delivered at the next turn boundary by _steer_try_deliver."""
+    msg_id = f"steer-{int(time.time()*1000)}"
+    entry = {"id": msg_id, "text": text, "queued_at": time.time()}
+    with _steering_lock:
+        _steering_queue.setdefault(name, []).append(entry)
+    try:
+        db = get_db()
+        db.execute(
+            "INSERT OR REPLACE INTO steering_queue(id, session, text, queued_at) VALUES(?,?,?,?)",
+            (msg_id, name, text, entry["queued_at"]),
+        )
+        db.commit()
+    except Exception:
+        pass
+    return msg_id
+
+
 def _steer_try_deliver(name: str, status: str) -> None:
     """Deliver the head of a session's steering queue if it sits at a turn
     boundary (raw status idle/waiting). Shared by the 60s snapshot loop and
@@ -10741,6 +10760,17 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
             # the same sequence with a 1.2s gap submitted it. So track when each
             # Escape is sent and keep any pair ≥1.3s apart.
             _generating = _detect_claude_status(tmux_capture(name, 12) or "") == "active"
+            if _generating and ("@" in text or text.lstrip().startswith("/")):
+                # @/slash text can't be queued as typed input while a turn is
+                # running: the autocomplete picker opens on type and eats the
+                # Enter, and the picker-closer (Escape) would interrupt the
+                # turn — the message just sits unsubmitted in the box (the
+                # 15:06 @image ghost, 2026-07-10). Park it in the steering
+                # queue instead: the fast tick delivers it at the turn
+                # boundary through this same function's IDLE path, which does
+                # handle pickers.
+                _steer_enqueue(name, text)
+                return True, "queued (steering) until turn end — @/slash needs the picker closed"
             _esc_at = 0.0
             if not _generating:
                 # Close any picker left open by a previous attempt, so the C-u below
@@ -46173,16 +46203,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 if client_id and _send_dedup_seen(name, "steer:" + client_id):
                     return self._json({"ok": True, "deduped": True,
                                        "message": "duplicate retry ignored (already queued)"})
-                msg_id = f"steer-{int(time.time()*1000)}"
-                entry = {"id": msg_id, "text": text, "queued_at": time.time()}
-                with _steering_lock:
-                    _steering_queue.setdefault(name, []).append(entry)
-                db = get_db()
-                db.execute(
-                    "INSERT OR REPLACE INTO steering_queue(id, session, text, queued_at) VALUES(?,?,?,?)",
-                    (msg_id, name, text, entry["queued_at"]),
-                )
-                db.commit()
+                msg_id = _steer_enqueue(name, text)
                 return self._json({"ok": True, "id": msg_id, "message": "queued for next turn boundary"})
             return self._json({"error": "method not allowed"}, 405)
 
