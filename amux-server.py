@@ -7422,95 +7422,104 @@ def _gcal_sync_bg(item_id, **kwargs):
         threading.Thread(target=_gcal_sync_item, args=(item_id,), kwargs=kwargs, daemon=True).start()
 
 
+def _jsonl_daily_usage(jf, today):
+    """Sum today's (input, output) tokens for ONE conversation jsonl, with Claude
+    Code's thinking+tool_use dedup (identical usage logged on consecutive entries).
+    Streams the tail (today's entries are at the end) to bound memory."""
+    j_in = j_out = 0
+    prev_sig = None
+    try:
+        for entry in _iter_jsonl_tail(jf, max_bytes=20_000_000):
+            try:
+                ts = entry.get("timestamp", "")
+                if not ts or not ts.startswith(today):
+                    if not entry.get("message", {}).get("usage"):
+                        prev_sig = None
+                    continue
+                usage = entry.get("message", {}).get("usage", {})
+                if usage:
+                    sig = (usage.get("input_tokens", 0),
+                           usage.get("cache_read_input_tokens", 0),
+                           usage.get("output_tokens", 0))
+                    if sig == prev_sig:
+                        continue
+                    prev_sig = sig
+                    j_in += usage.get("input_tokens", 0)
+                    j_in += usage.get("cache_creation_input_tokens", 0)
+                    j_in += usage.get("cache_read_input_tokens", 0)
+                    j_out += usage.get("output_tokens", 0)
+                else:
+                    prev_sig = None
+            except (json.JSONDecodeError, AttributeError):
+                continue
+    except Exception:
+        pass
+    return j_in, j_out
+
+
+def _jsonl_owner_title(jf):
+    """The amux session that owns this conversation — its customTitle/sessionName
+    from the first record — or None for ad-hoc/untitled conversations."""
+    try:
+        with jf.open() as fh:
+            rec = json.loads(fh.readline() or "{}")
+        return (rec.get("customTitle") or rec.get("sessionName") or "").strip() or None
+    except Exception:
+        return None
+
+
 def get_daily_token_stats() -> dict:
-    """Get today's token usage across all Claude Code sessions and amux sessions."""
+    """Today's token usage, broken down PER SESSION (per conversation) — NOT per
+    project directory. Several amux sessions often share one working dir; the old
+    per-dir aggregation lumped them into a single 'a, b, c' row, so no session's
+    real usage was visible. Each conversation jsonl records its owning session as
+    customTitle; untitled/ad-hoc conversations fall back to a short dir-path label."""
     from datetime import datetime
     today = datetime.now().strftime("%Y-%m-%d")
     projects_dir = CLAUDE_HOME / "projects"
     if not projects_dir.is_dir():
-        return {"today": today, "total_tokens": 0, "total_input": 0, "total_output": 0, "sessions": []}
+        return {"today": today, "total_tokens": 0, "total_input": 0, "total_output": 0, "amux_tokens": 0, "sessions": []}
 
-    # Get amux session dirs for labeling (multiple sessions can share a dir)
-    amux_dirs = {}  # resolved_dir -> list of session names
-    for f in CC_SESSIONS.glob("*.env"):
-        cfg = parse_env_file(f)
-        d = cfg.get("CC_DIR", "")
-        if d:
-            resolved = _project_name(d)
-            amux_dirs.setdefault(resolved, []).append(f.stem)
+    amux_names = {f.stem for f in CC_SESSIONS.glob("*.env")}
 
     total_in = 0
     total_out = 0
-    session_stats = []
-
+    buckets = {}  # key -> {name, proj_dir(=stable key), amux, input, output}
     for proj_dir in projects_dir.iterdir():
         if not proj_dir.is_dir():
             continue
-        proj_in = 0
-        proj_out = 0
         for jf in proj_dir.glob("*.jsonl"):
-            # Quick check: skip files not modified today
             try:
                 mtime = datetime.fromtimestamp(jf.stat().st_mtime)
                 if mtime.strftime("%Y-%m-%d") != today:
                     continue
             except Exception:
                 continue
-            try:
-                prev_usage_sig = None
-                # Stream entries from the tail — today's entries are at the end.
-                # 20MB covers a full day's usage even for heavy sessions.
-                # Uses _iter_jsonl_tail to avoid accumulating all entries in memory.
-                for entry in _iter_jsonl_tail(jf, max_bytes=20_000_000):
-                    try:
-                        ts = entry.get("timestamp", "")
-                        if not ts or not ts.startswith(today):
-                            msg = entry.get("message", {})
-                            if not msg.get("usage"):
-                                prev_usage_sig = None
-                            continue
-                        msg = entry.get("message", {})
-                        usage = msg.get("usage", {})
-                        if usage:
-                            # Deduplicate: Claude Code logs thinking + tool_use
-                            # as separate entries with identical usage
-                            sig = (usage.get("input_tokens", 0),
-                                   usage.get("cache_read_input_tokens", 0),
-                                   usage.get("output_tokens", 0))
-                            if sig == prev_usage_sig:
-                                continue
-                            prev_usage_sig = sig
-                            proj_in += usage.get("input_tokens", 0)
-                            proj_in += usage.get("cache_creation_input_tokens", 0)
-                            proj_in += usage.get("cache_read_input_tokens", 0)
-                            proj_out += usage.get("output_tokens", 0)
-                        else:
-                            prev_usage_sig = None
-                    except (json.JSONDecodeError, AttributeError):
-                        continue
-            except Exception:
+            j_in, j_out = _jsonl_daily_usage(jf, today)
+            if j_in + j_out == 0:
                 continue
-        if proj_in + proj_out > 0:
-            proj_name = proj_dir.name
-            amux_names = amux_dirs.get(proj_name, [])
-            if amux_names:
-                label = ", ".join(sorted(amux_names))
+            title = _jsonl_owner_title(jf)
+            if title:
+                # Attribute to the owning session; multiple conversations of the
+                # same session (resume/compact) sum under one key.
+                key, label, is_amux = title, title, (title in amux_names)
             else:
-                # Show short path: ~/Dev/project instead of /Users/you/Dev/project
-                # proj_name is like "-Users-you-Dev" → "/Users/you/Dev"
-                full = "/" + proj_name.lstrip("-").replace("-", "/")
+                # Ad-hoc conversation with no session title — group by its dir.
+                key = "dir:" + proj_dir.name
+                full = "/" + proj_dir.name.lstrip("-").replace("-", "/")
                 home = str(Path.home())
                 label = "~" + full[len(home):] if full.startswith(home) else full
-            session_stats.append({
-                "name": label,
-                "proj_dir": proj_name,
-                "amux": bool(amux_names),
-                "input": proj_in,
-                "output": proj_out,
-                "total": proj_in + proj_out,
-            })
-            total_in += proj_in
-            total_out += proj_out
+                is_amux = False
+            b = buckets.setdefault(key, {"name": label, "proj_dir": key, "amux": is_amux, "input": 0, "output": 0})
+            b["input"] += j_in
+            b["output"] += j_out
+            total_in += j_in
+            total_out += j_out
+
+    session_stats = []
+    for b in buckets.values():
+        b["total"] = b["input"] + b["output"]
+        session_stats.append(b)
 
     # Subtract baseline if reset was used today
     baseline = _load_token_baseline()
