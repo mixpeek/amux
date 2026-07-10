@@ -10986,9 +10986,11 @@ def _agent_panel(clean: str):
     return select_mode, rows
 
 
-def _agent_nav(name: str, direction: str) -> tuple[bool, str]:
+def _agent_nav(name: str, direction: str, index: int = -1) -> tuple[bool, str]:
     """Switch which agent transcript the pane displays, via the agents panel:
     ↓ enters select mode, ↑/↓ move the cursor, Enter views the selection.
+    direction 'index' jumps to the absolute row `index` (0 = main) — used by
+    the clickable panel rows in peek.
 
     Every key is gated on a fresh capture proving the state it assumes — the
     panel is full of traps for blind keys: Left opens a 'Background this
@@ -11029,6 +11031,8 @@ def _agent_nav(name: str, direction: str) -> tuple[bool, str]:
             cursor = next((i for i, r in enumerate(rows) if r["viewed"]), 0)
         if direction == "main":
             target = 0
+        elif direction == "index":
+            target = max(0, min(len(rows) - 1, index))
         elif direction == "up":
             target = max(0, cursor - 1)
         else:
@@ -12870,6 +12874,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     opacity: 0.75; white-space: pre-wrap;
     border-left: 2px solid rgba(255,255,255,0.12); padding-left: 6px;
   }
+  .peek-agent-row { cursor: pointer; border-radius: 4px; }
+  .peek-agent-row:hover { background: rgba(88,166,255,0.12); }
+  .peek-agent-row:active { background: rgba(88,166,255,0.25); }
   .overlay-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
   .overlay-body a:active { color: #79c0ff; }
   .overlay-body .file-link { color: var(--cyan); text-decoration: none; border-bottom: 1px dashed var(--cyan); cursor: pointer; }
@@ -22863,7 +22870,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.82';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.83';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -22967,7 +22974,35 @@ function openPeek(name, opts) {
   _savePeekState();
 }
 
-async function agentNav(dir) {
+// The agents panel rows rendered at the bottom of the peek terminal are
+// tappable — wrap each ⏺/◯ row (the contiguous glyph block at the very
+// bottom, same structural rule as the server's _agent_panel) in a span that
+// jumps straight to that agent's transcript. Direct manipulation: tap the
+// agent you can already see instead of hunting for the ⌂/▲/▼ buttons.
+function _markAgentRows(html) {
+  const lines = html.split('\n');
+  const textOf = l => l.replace(/<[^>]*>/g, '');
+  let i = lines.length - 1;
+  while (i >= 0 && !textOf(lines[i]).trim()) i--;
+  const rowIdx = [];
+  while (i >= 0) {
+    const t = textOf(lines[i]).trim().replace(/^[❯  ]+/, '');
+    if (t[0] === '⏺' || t[0] === '◯') { rowIdx.push(i); i--; continue; }
+    break;
+  }
+  if (rowIdx.length < 2) return html;   // a panel always has main + ≥1 agent
+  rowIdx.reverse();   // screen order — index 0 = main, matching the server
+  rowIdx.forEach((li, n) => {
+    // stopPropagation: ANSI color spans can run unclosed across lines, which
+    // nests these row spans in the parsed DOM — without it a click on an
+    // inner row would bubble to the outer row and fire a second nav.
+    lines[li] = '<span class="peek-agent-row" onclick="event.stopPropagation();agentNav(\'index\',' + n +
+      ')" title="Tap to view">' + lines[li] + '</span>';
+  });
+  return lines.join('\n');
+}
+
+async function agentNav(dir, index) {
   // Subagent switcher: server drives the agents panel (↓ select mode,
   // ↑/↓ cursor, Enter to view) with capture-verified steps.
   if (!peekSession) return;
@@ -22975,7 +23010,7 @@ async function agentNav(dir) {
     const r = await fetch(API + '/api/sessions/' + peekSession + '/agent-nav', {
       method: 'POST',
       headers: _authHeaders({'Content-Type': 'application/json'}),
-      body: JSON.stringify({ dir })
+      body: JSON.stringify(dir === 'index' ? { dir, index } : { dir })
     });
     const d = await r.json();
     if (d.ok) {
@@ -23933,8 +23968,8 @@ async function refreshPeek() {
     // so the top of the capture is a hard cutoff mid-conversation. Compose a
     // "load earlier output" bar (or the loaded log tail) above the live view
     // so scrollback exists in peek the way it does in a real terminal.
-    _lastLiveHTML = newHTML;
-    lastPeekHTML = _peekEarlierHTML() + newHTML;
+    _lastLiveHTML = _markAgentRows(newHTML);
+    lastPeekHTML = _peekEarlierHTML() + _lastLiveHTML;
     const hasSearch = peekSearchQuery.trim().length > 0;
     // When user has scrolled up, skip DOM update to avoid fidgeting the view.
     // Buffer in lastPeekHTML and flush when they resume.
@@ -39793,7 +39828,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.82';
+const CACHE = 'amux-v0.9.83';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -46143,14 +46178,22 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 return self._json({"ok": ok, "message": msg}, code)
             if action == "agent-nav":
                 # Switch the pane's displayed agent transcript (subagent
-                # switcher in peek). Body: {"dir": "up"|"down"|"main"}.
+                # switcher in peek). Body: {"dir": "up"|"down"|"main"} or
+                # {"dir": "index", "index": N} (0 = main) for the clickable
+                # panel rows.
                 body = self._read_body()
                 d = (body.get("dir") or "").strip()
-                if d not in ("up", "down", "main"):
-                    return self._json({"error": "dir must be up|down|main"}, 400)
+                if d not in ("up", "down", "main", "index"):
+                    return self._json({"error": "dir must be up|down|main|index"}, 400)
+                try:
+                    idx = int(body.get("index", -1))
+                except Exception:
+                    idx = -1
+                if d == "index" and idx < 0:
+                    return self._json({"error": "index required for dir=index"}, 400)
                 if not is_running(name):
                     return self._json({"ok": False, "message": "not running"}, 409)
-                ok, msg = _agent_nav(name, d)
+                ok, msg = _agent_nav(name, d, idx)
                 return self._json({"ok": ok, "viewing": msg if ok else "",
                                    "message": msg}, 200 if ok else 409)
             if action == "memory":
