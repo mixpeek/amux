@@ -3217,6 +3217,39 @@ _RATE_LIMIT_DRIFT_LOG_COOLDOWN = 600  # don't repeat the drift warning more than
 _rate_limit_last_responded: dict = {}
 _rate_limit_last_drift_log: float = 0.0
 
+# Proof the session produced output on a line: an assistant message (⏺), an
+# echoed user message (❯ [09:32 AM] …), or a tool-run summary.
+_LIMIT_ACTIVITY_RE = re.compile(r"^(?:⏺\s|❯\s*\[\d|Ran \d+ shell command)")
+
+
+def _live_limit_region(clean: str) -> str:
+    """The slice of the live screen a usage-limit banner may legitimately occupy.
+
+    Claude Code hits a limit at the END of a turn, so a real banner is the last
+    transcript content before the input box. The exact same sentence also lands
+    in ordinary scrollback when a *subagent* dies on its own limit —
+    '⏺ Agent "x" failed: … You've reached your Fable 5 limit. Run /usage-credits …'
+    — while the main loop shrugs and keeps working. Matching the raw tail flags
+    those sessions forever: the text never leaves the screen, so the flag
+    outlives the event and contradicts the live 'working' status.
+
+    Both cases are separated by one signal: whether the session produced any
+    output BELOW the banner. So drop the input box and everything under it (UI
+    chrome + the background-agents panel), then keep only what follows the last
+    activity marker. A banner in that slice is live; anything above it is history.
+    """
+    lines = clean.splitlines()[-30:]
+    box = -1
+    for i, l in enumerate(lines):
+        if l.strip()[:1] == "❯":
+            box = i  # last ❯ wins: earlier ones are echoed user messages
+    region = lines[:box] if box >= 0 else lines
+    cut = -1
+    for i, l in enumerate(region):
+        if _LIMIT_ACTIVITY_RE.match(l.strip()):
+            cut = i
+    return "\n".join(region[cut + 1:])
+
 
 def _rate_limit_budget_state(actions: dict, today_utc: str, budget: int) -> tuple[bool, int]:
     """Return (exhausted, used) for a session's auto-resume budget.
@@ -3333,15 +3366,19 @@ def _rate_limit_auto_respond():
             # Only match it on the LIVE screen (bottom ~30 lines): the phrase often
             # appears in scrollback or tool output (e.g. an API echoing another
             # session's state), which must NOT flag a healthy session.
-            is_weekly = matched_idx < 0 and bool(_WEEKLY_LIMIT_RE.search(tail))
+            # ...and only against the slice below the session's last output: the
+            # same banner text sits in scrollback whenever a *subagent* died on
+            # its own limit, and that must not flag a healthy main loop.
+            live = _live_limit_region(clean)
+            is_weekly = matched_idx < 0 and bool(_WEEKLY_LIMIT_RE.search(live))
             is_session_banner = (matched_idx < 0 and not is_weekly
-                                 and bool(_SESSION_LIMIT_RE.search(tail)))
+                                 and bool(_SESSION_LIMIT_RE.search(live)))
             # Both weekly and session-limit banners are menu-less and keep their
             # banner on screen until reset — group them as "banner" limits.
             is_banner = is_weekly or is_session_banner
             # Per-model credit limit: menu-less, no reset time, NOT auto-resumable.
             is_credit = (matched_idx < 0 and not is_banner
-                         and bool(_MODEL_CREDIT_LIMIT_RE.search(tail)))
+                         and bool(_MODEL_CREDIT_LIMIT_RE.search(live)))
             if matched_idx < 0 and not is_banner and not is_credit:
                 # No live rate-limit UI. A real banner cap keeps its banner on
                 # screen until reset, so a session flagged from a banner without a
@@ -3369,7 +3406,7 @@ def _rate_limit_auto_respond():
                 # No reset time exists for a credit limit; auto-resume keys off
                 # rate_limit_reset_at, so leaving it unset keeps auto-resume from
                 # firing a useless "continue". Record the model name for the UI.
-                m = _MODEL_CREDIT_NAME_RE.search(tail)
+                m = _MODEL_CREDIT_NAME_RE.search(live)
                 actions["rate_limit_model_name"] = (m.group(1).strip() if m else "")
                 actions["rate_limit_last_event_ts"] = int(now)
                 actions.pop("rate_limit_reset_at", None)
