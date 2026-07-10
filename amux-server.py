@@ -22496,7 +22496,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.76';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.77';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -22572,9 +22572,11 @@ function openPeek(name, opts) {
     document.body.style.top = (-_peekScrollLockY) + 'px';
     document.body.style.width = '100%';
   }
-  // Restore focus mode preference
+  // Restore focus mode preference — and if focus is on, collapse the send bar
+  // too so both ends stay minimized (consistent with togglePeekFocus).
   const focusPref = localStorage.getItem('peekFocus') === '1';
   peekOv.classList.toggle('peek-focus', focusPref);
+  if (focusPref) { _peekCmdBeforeFocus = true; setPeekCmd(false); }
   document.getElementById('peek-focus-title').textContent = _peekTask ? name + ' — ' + _peekTask : name;
   _syncPeekOverlayToVisualViewport();
   _vvKick();   // keyboard may already be up or mid-animation when peek opens
@@ -23610,6 +23612,7 @@ function peekMsgPrev() {
 
 // ── Peek command bar ──
 let peekCmdOpen = true;
+let _peekCmdBeforeFocus = null;   // send-bar state remembered when entering focus
 function togglePeekFocus() {
   const ov = document.getElementById('peek-overlay');
   const on = ov.classList.toggle('peek-focus');
@@ -23617,6 +23620,16 @@ function togglePeekFocus() {
   const _ft = _fs && _fs.task_name;
   document.getElementById('peek-focus-title').textContent = _ft ? (peekSession + ' — ' + _ft) : (peekSession || '');
   localStorage.setItem('peekFocus', on ? '1' : '');
+  // Focus mode maximizes the terminal by collapsing BOTH ends: the top chrome
+  // (via .peek-focus) and the bottom Send Command section. Exiting restores the
+  // send bar to whatever it was before.
+  if (on) {
+    _peekCmdBeforeFocus = peekCmdOpen;
+    setPeekCmd(false);
+  } else {
+    setPeekCmd(_peekCmdBeforeFocus === null ? true : _peekCmdBeforeFocus);
+    _peekCmdBeforeFocus = null;
+  }
 }
 
 function togglePeekMenu() {
@@ -23645,14 +23658,15 @@ function _peekMenuRestart() {
   if (peekSession) doRestart(peekSession);
 }
 
-function togglePeekCmd() {
-  peekCmdOpen = !peekCmdOpen;
+function setPeekCmd(open) {
+  peekCmdOpen = open;
   const row = document.getElementById('peek-cmd-row');
   const toggle = document.getElementById('peek-cmd-toggle');
-  row.classList.toggle('open', peekCmdOpen);
-  toggle.innerHTML = peekCmdOpen ? '&#x25BC; Send command' : '&#x25B2; Send command';
-  if (peekCmdOpen) setTimeout(() => document.getElementById('peek-cmd-input').focus({ preventScroll: true }), 50);
+  if (row) row.classList.toggle('open', open);
+  if (toggle) toggle.innerHTML = open ? '&#x25BC; Send command' : '&#x25B2; Send command';
+  if (open) setTimeout(() => document.getElementById('peek-cmd-input')?.focus({ preventScroll: true }), 50);
 }
+function togglePeekCmd() { setPeekCmd(!peekCmdOpen); }
 // ── Input row: "more" menu (attach + history) and fullscreen compose ──
 function _togglePeekMore(e) {
   if (e) e.stopPropagation();
@@ -39321,7 +39335,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.76';
+const CACHE = 'amux-v0.9.77';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
