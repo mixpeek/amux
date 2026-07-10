@@ -18602,6 +18602,15 @@ function openBulkActions() {
   const transient = limited.filter(s => !(s.rate_limit_banner || s.rate_limit_weekly));
   const body = document.getElementById('bulk-actions-body');
   let html = '';
+  // Always offer "continue everything that's idle" — the common case is nudging a
+  // fleet of parked sessions, not just rate-limited ones.
+  const idleAll = sessions.filter(s => s.running && s.status === 'idle');
+  const _n = idleAll.length;
+  html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
+  html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">&#x25B6; Continue all idle sessions</div>`;
+  html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">${_n} idle session${_n === 1 ? '' : 's'} ready. Sessions that are actively working, or waiting on a prompt, are skipped so nothing gets interrupted or mis-answered.</div>`;
+  html += `<button class="btn primary" style="width:100%;"${_n ? '' : ' disabled'} onclick="bulkContinueAll()">Send &quot;continue&quot; to ${_n} idle session${_n === 1 ? '' : 's'}</button>`;
+  html += `</div>`;
   if (transient.length) {
     html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
     html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">Rate-limited sessions</div>`;
@@ -18636,7 +18645,7 @@ function openBulkActions() {
     html += `</div>`;
   }
   if (!limited.length && !creditLimited.length) {
-    html += `<div style="padding:20px 0;text-align:center;color:var(--dim);font-size:0.88rem;">No rate-limited sessions found.</div>`;
+    html += `<div style="padding:8px 0;text-align:center;color:var(--dim);font-size:0.82rem;">No rate-limited sessions.</div>`;
   }
   body.innerHTML = html;
   document.getElementById('bulk-actions-overlay').classList.add('open');
@@ -18660,6 +18669,29 @@ async function bulkSwitchModel(model) {
 function closeBulkActions() {
   document.getElementById('bulk-actions-overlay').classList.remove('open');
 }
+// Send "continue" to every idle session at once. Actively-generating sessions are
+// skipped (they're mid-turn), and so are 'waiting' ones — those sit on an approval
+// / multiple-choice prompt where typing text would answer the wrong thing.
+async function bulkContinueAll() {
+  const targets = sessions.filter(s => s.running && s.status === 'idle');
+  if (!targets.length) { showToast('No idle sessions to continue'); return; }
+  const ok = await showConfirm(
+    `Send "continue" to ${targets.length} idle session${targets.length === 1 ? '' : 's'}?`,
+    'Send continue', false);
+  if (!ok) return;
+  closeBulkActions();
+  showToast(`Sending "continue" to ${targets.length}…`);
+  const results = await Promise.all(targets.map(s =>
+    fetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/send', {
+      method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ text: 'continue' })
+    }).then(r => r.ok).catch(() => false)
+  ));
+  const sent = results.filter(Boolean).length;
+  const failed = results.length - sent;
+  showToast(`Sent "continue" to ${sent} session${sent === 1 ? '' : 's'}` + (failed ? ` — ${failed} failed` : ''));
+}
+
 async function bulkSendContinue(cappedOnly) {
   const now = Date.now() / 1000;
   const isCapped = s => s.rate_limit_banner || s.rate_limit_weekly;
@@ -22518,7 +22550,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.77';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.78';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -39357,7 +39389,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.77';
+const CACHE = 'amux-v0.9.78';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
