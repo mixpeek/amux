@@ -22387,7 +22387,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.73';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.74';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -23734,10 +23734,15 @@ async function uploadAndAttach(file) {
 
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE) || 1;
   const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+  // Track this entry by IDENTITY, never a captured index. The upload is async and
+  // multi-chunk (seconds on mobile), during which peekFiles can shift — removing
+  // another chip, a second attach, a failed-chunk retry that splices — so a
+  // numeric index goes stale and the finished file writes to the wrong slot or a
+  // placeholder never gets its .path (send then stalls on "wait for upload").
   const placeholder = { name: file.name, path: null, url: null, isImage, previewUrl, sizeMB, chunk: 0, totalChunks };
-  const idx = peekFiles.length;
   peekFiles.push(placeholder);
   renderPeekFiles();
+  const _present = () => peekFiles.indexOf(placeholder) >= 0;  // false once the user removes it
 
   try {
     const startR = await fetch(API + '/api/upload/start', {
@@ -23750,6 +23755,7 @@ async function uploadAndAttach(file) {
     const uploadId = startD.id;
 
     for (let i = 0; i < totalChunks; i++) {
+      if (!_present()) return;   // user removed the chip mid-upload — stop cleanly
       const start = i * CHUNK_SIZE;
       const end = Math.min(start + CHUNK_SIZE, file.size);
       const blob = file.slice(start, end);
@@ -23762,20 +23768,23 @@ async function uploadAndAttach(file) {
         const d = await r.json().catch(() => ({}));
         throw new Error(d.error || 'chunk ' + i + ' failed');
       }
-      if (peekFiles[idx]) {
-        peekFiles[idx].chunk = i + 1;
-        renderPeekFiles();
-      }
+      placeholder.chunk = i + 1;   // mutate the same object, wherever it now sits
+      renderPeekFiles();
     }
 
     const finR = await fetch(API + '/api/upload/' + uploadId + '/finish', { method: 'POST' });
     const finD = await finR.json();
     if (!finR.ok || finD.error) throw new Error(finD.error || 'finalize failed');
-    peekFiles[idx] = { name: file.name, path: finD.path, url: finD.url, isImage, previewUrl };
+    if (!_present()) return;   // removed while finishing — don't resurrect it
+    // Mutate in place so the entry stays exactly where it is in the array and
+    // simply gains its path/url (isUploading = !f.path flips to done).
+    placeholder.path = finD.path;
+    placeholder.url = finD.url;
   } catch(e) {
     console.error('Upload error:', e);
     showToast('Upload failed: ' + e.message);
-    peekFiles.splice(idx, 1);
+    const i = peekFiles.indexOf(placeholder);
+    if (i >= 0) peekFiles.splice(i, 1);   // remove THIS file by identity, not a stale index
   }
   renderPeekFiles();
 }
@@ -39203,7 +39212,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.73';
+const CACHE = 'amux-v0.9.74';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
