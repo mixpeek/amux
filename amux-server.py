@@ -10470,11 +10470,16 @@ def _verify_submitted(name: str, target: str, text: str) -> bool:
         if pend is None or tail not in pend:
             return True   # input cleared → the message went through
         # Text still in the box. If Claude is generating, it's queued and will
-        # submit when the turn ends — don't re-Enter (would duplicate).
+        # submit when the turn ends — don't touch it (Escape would interrupt).
         if _detect_claude_status(raw) == "active":
             return True
-        # Idle with our text stuck → a picker likely ate the Enter. Submit it.
+        # Idle with our text stuck → the autocomplete picker ate the Enter. Escape
+        # closes the picker WITHOUT selecting an entry (a bare Enter would pick one
+        # and rewrite an @path), then Enter submits the literal text.
         try:
+            subprocess.run(["tmux", "send-keys", "-t", target, "Escape"],
+                           capture_output=True, timeout=5)
+            time.sleep(0.06)
             subprocess.run(["tmux", "send-keys", "-t", target, "Enter"],
                            capture_output=True, timeout=5)
         except Exception:
@@ -10553,6 +10558,16 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
                     pass
                 if not text:
                     return True, "no suggestion found"
+            # Escape means "interrupt" while Claude is generating, but at the input
+            # prompt it merely closes an autocomplete picker and PRESERVES the typed
+            # text (verified on a live pane). So only use it when not generating.
+            _generating = _detect_claude_status(tmux_capture(name, 12) or "") == "active"
+            if not _generating:
+                # Close any picker left open by a previous attempt, so the C-u below
+                # actually reaches the input. Without this a retry appends and the
+                # message is submitted twice ("msg msg").
+                subprocess.run(["tmux", "send-keys", "-t", t, "Escape"], capture_output=True, timeout=5)
+                time.sleep(0.05)
             # Type into a clean input line. A mid-render send can paint characters
             # onto the terminal without them entering Claude's input buffer ("ghost
             # text") — Enter then submits an empty buffer and the message is lost.
@@ -10585,17 +10600,24 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
             # 20ms is ample for a local PTY; paste-buffer (long text) is atomic so
             # needs even less, but we use the same value for simplicity.
             time.sleep(0.02)
+            if not _generating:
+                # An @mention (@path or @session) or slash opens Claude's autocomplete
+                # picker while typing. A bare Enter then SELECTS a picker entry —
+                # rewriting the @path and NOT submitting. Escape closes the picker and
+                # keeps the literal text, so the Enter below actually submits it.
+                subprocess.run(["tmux", "send-keys", "-t", t, "Escape"], capture_output=True, timeout=5)
+                time.sleep(0.06)
             subprocess.run(
                 ["tmux", "send-keys", "-t", t, "Enter"],
                 check=True, capture_output=True, timeout=5,
             )
-            # send-keys succeeding only means the keystrokes reached the pane. An
-            # @mention (@path OR @session) opens Claude's autocomplete picker, and
-            # the Enter above selects/closes the picker instead of submitting —
-            # leaving the message unsent. Previously this made the steering queue
-            # clear a message it never delivered. Verify the input actually cleared
-            # (re-submitting if a picker ate the Enter); report failure otherwise so
-            # the caller doesn't treat a dropped message as sent.
+            if _generating:
+                # Typed while Claude was mid-turn: the input is queued and submits at
+                # the turn boundary. Don't Escape (would interrupt) and don't verify.
+                return True, "sent (queued while generating)"
+            # send-keys succeeding only means the keystrokes reached the pane. Confirm
+            # the input actually cleared; otherwise report failure so the caller keeps
+            # the message queued rather than treating a drop as sent.
             if _verify_submitted(name, t, text):
                 return True, "sent"
             return False, "not submitted (autocomplete popup ate the Enter?)"
