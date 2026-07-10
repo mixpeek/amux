@@ -10891,6 +10891,100 @@ def send_keys(name: str, keys: str) -> tuple[bool, str]:
             return False, e.stderr.decode(errors="replace")
 
 
+def _agent_panel(clean: str):
+    """Parse Claude Code's background-agents panel from the pane tail.
+
+    Returns (select_mode, rows): rows are the ⏺/◯ lines in screen order
+    (row 0 = main), each {cursor, viewed, label}. ❯ marks the selection
+    cursor, ⏺ marks whose transcript is displayed. Empty rows = no panel.
+
+    The panel is the contiguous glyph-led block at the very BOTTOM of the
+    pane — parse upward from the last line and stop at the first non-row, so
+    transcript lines that also start with ⏺ never pollute the row list.
+    Select mode is detected structurally (a ❯ cursor on a row), NOT from the
+    hint text: the hint varies with agent state ('x to stop' / 'x to clear')
+    and 'Enter to view tasks' in the ordinary status bar false-matches it."""
+    lines = [l for l in clean.splitlines() if l.strip()]
+    rows = []
+    i = len(lines) - 1
+    while i >= 0:
+        s = lines[i].strip()
+        body = s.lstrip("❯ \xa0").strip()
+        if body[:1] in ("⏺", "◯"):
+            # Row layout: "type  title <wide column gap> timer · tokens" —
+            # keep only the left column, single-spaced.
+            label = re.split(r"\s{4,}", body[1:].strip())[0]
+            rows.append({"cursor": s.startswith("❯"),
+                         "viewed": body[:1] == "⏺",
+                         "label": re.sub(r"\s+", " ", label)})
+            i -= 1
+            continue
+        break
+    rows.reverse()
+    select_mode = any(r["cursor"] for r in rows)
+    return select_mode, rows
+
+
+def _agent_nav(name: str, direction: str) -> tuple[bool, str]:
+    """Switch which agent transcript the pane displays, via the agents panel:
+    ↓ enters select mode, ↑/↓ move the cursor, Enter views the selection.
+
+    Every key is gated on a fresh capture proving the state it assumes — the
+    panel is full of traps for blind keys: Left opens a 'Background this
+    session?' dialog whose DEFAULT stops all agents, and x kills the selected
+    agent. Neither is ever sent; a visible Background dialog is cancelled
+    with Escape before navigating."""
+    t = tmux_target(name)
+
+    def cap():
+        return _STRIP_ANSI.sub("", tmux_capture(name, 20) or "")
+
+    def key(k, wait):
+        subprocess.run(["tmux", "send-keys", "-t", t, k],
+                       capture_output=True, timeout=5)
+        time.sleep(wait)
+
+    with _get_send_lock(name):
+        clean = cap()
+        if "Background this session?" in clean:
+            key("Escape", 0.4)  # cancel — never confirm this dialog
+            clean = cap()
+        select, rows = _agent_panel(clean)
+        if not rows:
+            # Visible ⏺/◯ rows are the required precondition. With rows
+            # hidden, ↓ opens the background-SHELLS manager instead — the
+            # '↓ to manage' hint is overloaded (seen live on a session with
+            # 11 shells) — so there is nothing safe to navigate.
+            return False, "no agents panel on screen"
+        for _ in range(3):
+            if select:
+                break
+            key("Down", 0.35)
+            select, rows = _agent_panel(cap())
+        if not select or not rows:
+            return False, "could not enter agent select mode"
+        cursor = next((i for i, r in enumerate(rows) if r["cursor"]), None)
+        if cursor is None:
+            cursor = next((i for i, r in enumerate(rows) if r["viewed"]), 0)
+        if direction == "main":
+            target = 0
+        elif direction == "up":
+            target = max(0, cursor - 1)
+        else:
+            target = min(len(rows) - 1, cursor + 1)
+        for _ in range(abs(target - cursor)):
+            key("Down" if target > cursor else "Up", 0.25)
+        # Re-verify before Enter: if select mode dropped meanwhile, Enter
+        # would submit the input box instead of viewing an agent.
+        select, _rows2 = _agent_panel(cap())
+        if not select:
+            return False, "agent panel closed mid-navigation"
+        key("Enter", 0.35)
+        _, rows3 = _agent_panel(cap())
+        viewing = next((r["label"] for r in rows3 if r["viewed"]), "")
+        return True, viewing or "switched"
+
+
 def list_tmux_sessions() -> list:
     """List all tmux sessions with their working dirs, excluding already-registered amux sessions."""
     registered = set()
@@ -12694,6 +12788,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     white-space: nowrap;
   }
   .peek-copy-btn:active { background: var(--accent); color: #fff; }
+  .peek-agent-nav {
+    position: absolute; top: 6px; right: 84px; z-index: 10;
+    display: flex; gap: 4px;
+  }
+  .peek-agent-nav button {
+    height: 28px; min-width: 32px; border-radius: 6px; padding: 0 6px;
+    border: 1px solid rgba(255,255,255,0.15); background: rgba(13,17,23,0.85);
+    color: var(--dim); font-size: 0.78rem; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; transition: all 0.15s;
+  }
+  .peek-agent-nav button:active { background: var(--accent); color: #fff; }
   .overlay-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
   .overlay-body a:active { color: #79c0ff; }
   .overlay-body .file-link { color: var(--cyan); text-decoration: none; border-bottom: 1px dashed var(--cyan); cursor: pointer; }
@@ -17443,6 +17548,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div style="position:relative;flex:1;min-height:0;">
       <div id="peek-body" class="overlay-body" style="position:absolute;inset:0;"></div>
       <button class="peek-copy-btn" id="peek-copy-btn" onclick="copyPeekContent()" title="Copy all">&#x2398; Copy</button>
+      <!-- Subagent switcher — appears only when the pane shows Claude's agents panel -->
+      <div class="peek-agent-nav" id="peek-agent-nav" style="display:none;">
+        <button onclick="agentNav('main')" title="View main conversation">&#x2302;</button>
+        <button onclick="agentNav('up')" title="View previous agent">&#x25B2;</button>
+        <button onclick="agentNav('down')" title="View next agent">&#x25BC;</button>
+      </div>
     </div>
     <div id="peek-status" class="overlay-status" onclick="_peekGeoDebug()" title="Tap for layout debug"></div>
     <div class="peek-cmd-bar">
@@ -22676,7 +22787,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.78';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.79';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -22777,6 +22888,27 @@ function openPeek(name, opts) {
   _schedulePeekPoll();
   _updateSendSplit();   // sync the Send/Queue button label to the current mode
   _savePeekState();
+}
+
+async function agentNav(dir) {
+  // Subagent switcher: server drives the agents panel (↓ select mode,
+  // ↑/↓ cursor, Enter to view) with capture-verified steps.
+  if (!peekSession) return;
+  try {
+    const r = await fetch(API + '/api/sessions/' + peekSession + '/agent-nav', {
+      method: 'POST',
+      headers: _authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({ dir })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      showToast('Viewing: ' + (d.viewing || 'switched'));
+      _peekEtag = null; _lastPeekRaw = null;   // force a fresh render
+      setTimeout(refreshPeek, 200);
+    } else {
+      showToast(d.message || 'Could not switch agent view');
+    }
+  } catch (e) { showToast('Could not switch agent view'); }
 }
 
 function copyPeekContent() {
@@ -23652,6 +23784,23 @@ async function refreshPeek() {
       return;
     }
     _lastPeekRaw = output;
+    // Subagent switcher visibility: the agents panel always includes a
+    // "⏺ main"/"◯ main" row in the bottom lines of the pane. Checking for
+    // that exact row (tail only, ANSI-stripped) avoids false positives from
+    // terminal output that merely QUOTES the panel's hint text.
+    const agentNavEl = document.getElementById('peek-agent-nav');
+    if (agentNavEl) {
+      const _tail = output.replace(/\u001b\[[0-9;?]*[a-zA-Z]/g, '')
+        .split('\n').filter(l => l.trim()).slice(-8);
+      const _hasAgents = _tail.some(l => {
+        const t = l.replace(/^[❯  ]+/, '').trim();
+        // Only a VISIBLE panel row counts. The '← for agents / ↓ to manage'
+        // status-bar hint is not enough: with rows hidden ↓ opens the
+        // background-shells manager, so there is nothing safe to switch.
+        return t === '⏺ main' || t === '◯ main';
+      });
+      agentNavEl.style.display = _hasAgents ? 'flex' : 'none';
+    }
     const atBottom = _isScrolledToBottom(body);
     if (atBottom) _peekScrollLocked = false;
     const newHTML = wrapBoxBlocks(highlightPrompts(ansiToHtml(output)));
@@ -39515,7 +39664,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.78';
+const CACHE = 'amux-v0.9.79';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -45832,6 +45981,18 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     _update_meta(name, last_send=int(time.time()))
                 code = 200 if ok else (409 if msg == "not running" else 500)
                 return self._json({"ok": ok, "message": msg}, code)
+            if action == "agent-nav":
+                # Switch the pane's displayed agent transcript (subagent
+                # switcher in peek). Body: {"dir": "up"|"down"|"main"}.
+                body = self._read_body()
+                d = (body.get("dir") or "").strip()
+                if d not in ("up", "down", "main"):
+                    return self._json({"error": "dir must be up|down|main"}, 400)
+                if not is_running(name):
+                    return self._json({"ok": False, "message": "not running"}, 409)
+                ok, msg = _agent_nav(name, d)
+                return self._json({"ok": ok, "viewing": msg if ok else "",
+                                   "message": msg}, 200 if ok else 409)
             if action == "memory":
                 body = self._read_body()
                 content = body.get("content", "")
