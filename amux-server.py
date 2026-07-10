@@ -15815,7 +15815,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <div class="header-row">
   <div style="display:flex;gap:8px;align-items:center;">
     <h1 id="brand-header" style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px;" onclick="openAbout()"><span id="brand-icon-header"></span><span id="brand-name-header">amux</span></h1>
-    <span id="conn-status" class="conn-status online" onclick="showQueueModal()"></span>
+    <span id="conn-status" class="conn-status online" title="Connection status — click for disconnection history" onclick="showConnHistory()"></span>
     <div style="position:relative;">
       <button id="notif-btn" onclick="toggleNotifPanel()" title="Notifications" style="background:none;border:none;cursor:pointer;padding:2px 4px;font-size:1rem;opacity:0.7;line-height:1;position:relative;" aria-label="Notifications">&#x1F514;<span id="notif-badge" class="notif-badge" style="display:none;">0</span></button>
       <div id="notif-panel" class="notif-panel">
@@ -18007,6 +18007,94 @@ function saveQueue() {
   if (typeof _idb !== 'undefined') _idb.set('offline_queue', offlineQueue);
 }
 
+// ═══════ CONNECTION HISTORY ═══════
+// Log every connection-state transition (live ↔ polling ↔ offline) with a
+// timestamp so the user can review disconnections from this client. Persisted
+// to localStorage so history survives reloads. Clicking the status pill shows it.
+let _connState = null;   // 'live' | 'polling' | 'offline' — null until first update
+let _connEvents = [];
+try { _connEvents = JSON.parse(localStorage.getItem('amux_conn_events') || '[]'); } catch(e) { _connEvents = []; }
+const _CONN_SESSION_START = Date.now();
+function _recordConnState(s) {
+  if (s === _connState) return;
+  const prev = _connState;
+  _connState = s;
+  if (prev === null) return;   // first observation — not a transition, don't log
+  _connEvents.push({ ts: Date.now(), from: prev, to: s });
+  if (_connEvents.length > 300) _connEvents = _connEvents.slice(-300);
+  try { localStorage.setItem('amux_conn_events', JSON.stringify(_connEvents)); } catch(e) {}
+}
+// Group raw transitions into degradation episodes: from leaving 'live' until
+// returning to it. Tracks the worst state reached (offline worse than polling).
+function _connEpisodes() {
+  const eps = [];
+  let cur = null;
+  for (const e of _connEvents) {
+    if (e.to !== 'live') {
+      if (!cur) cur = { start: e.ts, worst: e.to };
+      else if (e.to === 'offline') cur.worst = 'offline';
+    } else if (cur) {
+      cur.end = e.ts; eps.push(cur); cur = null;
+    }
+  }
+  if (cur) eps.push(cur);   // still degraded (ongoing)
+  return eps.reverse();     // most recent first
+}
+function _fmtDur(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60), r = s % 60;
+  if (m < 60) return m + 'm' + (r ? ' ' + r + 's' : '');
+  const h = Math.floor(m / 60);
+  return h + 'h ' + (m % 60) + 'm';
+}
+function _fmtClock(ts) {
+  const d = new Date(ts);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const t = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+  return ts >= today.getTime() ? t : (d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + t);
+}
+function showConnHistory() {
+  const eps = _connEpisodes();
+  const stateLabel = { live: '● Live', polling: '● Polling', offline: '● Offline' }[_connState] || '● —';
+  const stateColor = { live: '#3fb950', polling: '#facc15', offline: '#f85149' }[_connState] || 'var(--dim)';
+  let rows = '';
+  if (!eps.length) {
+    rows = '<div style="color:var(--dim);font-size:0.85rem;padding:10px 2px;">No disconnections recorded on this device since ' + _fmtClock(_CONN_SESSION_START) + '. Solid connection. 🟢</div>';
+  } else {
+    rows = eps.map(ep => {
+      const ongoing = !ep.end;
+      const dur = _fmtDur((ep.end || Date.now()) - ep.start);
+      const isOff = ep.worst === 'offline';
+      const ico = isOff ? '🔴' : '🟡';
+      const label = isOff ? 'Disconnected (offline)' : 'Degraded to polling';
+      const when = _fmtClock(ep.start) + ' → ' + (ongoing ? '<span style="color:' + (isOff ? '#f85149' : '#facc15') + '">ongoing</span>' : _fmtClock(ep.end));
+      return '<div style="display:flex;gap:8px;align-items:baseline;padding:7px 2px;border-top:1px solid var(--border);font-size:0.82rem;">'
+        + '<span style="flex-shrink:0;">' + ico + '</span>'
+        + '<div style="flex:1;min-width:0;"><div style="font-weight:600;">' + label + '</div>'
+        + '<div style="color:var(--dim);font-size:0.76rem;">' + when + '</div></div>'
+        + '<span style="color:var(--dim);flex-shrink:0;font-variant-numeric:tabular-nums;">' + dur + '</span></div>';
+    }).join('');
+  }
+  const pending = offlineQueue.length + drafts.length;
+  const pendingHtml = pending
+    ? '<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);font-size:0.8rem;color:var(--dim);">' + pending + ' operation' + (pending === 1 ? '' : 's') + ' queued while offline. <a href="#" onclick="event.preventDefault();document.getElementById(\'conn-hist-modal\').remove();showQueueModal();" style="color:var(--accent);">View queue</a></div>'
+    : '';
+  const clearHtml = _connEvents.length
+    ? '<button onclick="_connEvents=[];localStorage.removeItem(\'amux_conn_events\');document.getElementById(\'conn-hist-modal\').remove();" style="margin-top:12px;background:none;border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:0.75rem;color:var(--dim);cursor:pointer;">Clear history</button>'
+    : '';
+  const modal = document.createElement('div');
+  modal.id = 'conn-hist-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:2200;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.55);padding:16px;';
+  modal.onclick = e => { if (e.target === modal) modal.remove(); };
+  modal.innerHTML = '<div onclick="event.stopPropagation()" style="background:var(--bg);border:1px solid var(--border);border-radius:12px;max-width:440px;width:100%;max-height:80vh;overflow:auto;padding:1.2rem;box-shadow:0 8px 32px rgba(0,0,0,0.4);">'
+    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><b style="font-size:1rem;flex:1;">Connection</b>'
+    + '<span style="color:' + stateColor + ';font-size:0.82rem;font-weight:600;">' + stateLabel + '</span></div>'
+    + '<div style="color:var(--dim);font-size:0.76rem;margin-bottom:10px;">Disconnections from this device (this browser)</div>'
+    + rows + pendingHtml + clearHtml + '</div>';
+  document.body.appendChild(modal);
+}
+
 // ═══════ DEVICE NAME / CLOUD IDENTITY ═══════
 let _cloudEmail = '';
 let _gatewayOrgs = [];
@@ -18609,6 +18697,8 @@ function describeOp(item) {
 
 // Connection status
 function updateConnectionStatus() {
+  // Log the state transition (for the click-to-view disconnection history).
+  _recordConnState(!online ? 'offline' : (_liveSSE ? 'live' : 'polling'));
   // Update all connection status indicators (main + peek)
   document.querySelectorAll('#conn-status').forEach(el => {
     if (!online) {
@@ -22387,7 +22477,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.74';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.75';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -39212,7 +39302,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.74';
+const CACHE = 'amux-v0.9.75';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
