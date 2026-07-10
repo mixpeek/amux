@@ -2298,6 +2298,18 @@ def _session_cc_tasks(name: str) -> dict:
         tdir = CLAUDE_HOME / "tasks" / p.stem
         if not tdir.is_dir():
             return {"tasks": [], "counts": {}, "active": None, "total": 0}
+        # A pane showing the Claude splash with NO turns after it is a brand-new
+        # conversation (previous one died — e.g. session limit — and Claude was
+        # restarted). Its own id has no JSONL yet, so the resolver title-matches
+        # the DEAD conversation and its plan renders as if live ("Plan 2/5" over
+        # an empty session). Any plan is stale here. A --continue resume paints
+        # prior ⏺ turns below the splash, so it is not suppressed.
+        raw = tmux_capture(name, 40)
+        if raw:
+            clean = _STRIP_ANSI.sub("", raw)
+            i = clean.rfind("Claude Code v")
+            if i >= 0 and "⏺" not in clean[i:]:
+                return {"tasks": [], "counts": {}, "active": None, "total": 0}
         tasks = []
         for jf in tdir.glob("[0-9]*.json"):
             try:
