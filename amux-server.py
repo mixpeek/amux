@@ -12874,6 +12874,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     opacity: 0.75; white-space: pre-wrap;
     border-left: 2px solid rgba(255,255,255,0.12); padding-left: 6px;
   }
+  .peek-rule {
+    display: inline-flex; width: 100%; align-items: center; gap: 6px;
+    height: 1.15em; vertical-align: middle;
+  }
+  .peek-rule::before { content: ''; flex: 1; border-top: 1px solid rgba(127,148,170,0.35); }
+  .peek-rule::after { content: ''; width: 14px; border-top: 1px solid rgba(127,148,170,0.35); }
+  .peek-rule:not(:has(.peek-rule-tag))::after { display: none; }
+  .peek-rule-tag { color: var(--dim); font-size: 0.85em; white-space: nowrap; }
   .peek-agent-row { cursor: pointer; border-radius: 4px; }
   .peek-agent-row:hover { background: rgba(88,166,255,0.12); }
   .peek-agent-row:active { background: rgba(88,166,255,0.25); }
@@ -22870,7 +22878,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.83';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.84';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -22906,7 +22914,7 @@ function openPeek(name, opts) {
   lastPeekHTML = '';
   _lastPeekRaw = '';
   _peekEtag = null;   // new session → drop the old session's ETag
-  _peekEarlier = { html: '', hidden: false };  // reset the load-earlier state
+  _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };  // reset the load-earlier state
   const searchInp = document.getElementById('peek-search');
   if (searchInp) {
     searchInp.value = prefillQuery;
@@ -23881,35 +23889,69 @@ function _peekTogglePlan() {
 // sits above the live view; tapping it prepends the log tail (ANSI-stripped,
 // server-sliced via ?tail_kb so a multi-MB log never ships to a phone).
 let _lastLiveHTML = '';
-let _peekEarlier = { html: '', hidden: false };
+let _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };
+const _PEEK_LOG_CHUNK_KB = 192;
 function _peekEarlierHTML() {
   if (_peekEarlier.hidden) return '';
-  if (_peekEarlier.html) return _peekEarlier.html;
-  return '<div class="peek-earlier-bar" onclick="_peekLoadEarlier()">&#x25B2; Load earlier output (session log)</div>';
+  // The bar persists until the actual beginning of the log — every tap pages
+  // one chunk further back, so the whole session is always scrollable.
+  const bar = _peekEarlier.done
+    ? '<div class="peek-earlier-bar">&mdash; beginning of log &mdash;</div>'
+    : '<div class="peek-earlier-bar" onclick="_peekLoadEarlier()">&#x25B2; Load earlier output' +
+      (_peekEarlier.chunks.length ? '' : ' (session log)') + '</div>';
+  const blocks = _peekEarlier.chunks.length
+    ? '<div class="peek-earlier-block">' + _peekEarlier.chunks.join('') + '</div>' +
+      '<div class="peek-earlier-bar">&mdash; end of log &middot; live view below &mdash;</div>'
+    : '';
+  return bar + blocks;
 }
 async function _peekLoadEarlier() {
   const name = peekSession;
-  if (!name) return;
+  if (!name || _peekEarlier.loading || _peekEarlier.done) return;
+  _peekEarlier.loading = true;
   try {
-    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/log?plain=1&tail_kb=192',
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) +
+      '/log?plain=1&tail_kb=' + _PEEK_LOG_CHUNK_KB + '&before_kb=' + _peekEarlier.loadedKb,
       { headers: _authHeaders() });
     if (peekSession !== name) return;
     if (!r.ok) {
       showToast('No saved log for this session');
-      _peekEarlier.hidden = true;
+      if (r.status === 404) _peekEarlier.hidden = true;
     } else {
       const text = await r.text();
-      _peekEarlier.html = '<div class="peek-earlier-block">' + esc(text) + '</div>' +
-        '<div class="peek-earlier-bar">&mdash; end of log &middot; live view below &mdash;</div>';
+      const remaining = parseInt(r.headers.get('X-Log-Remaining') || '0', 10);
+      // New chunk is OLDER than everything loaded — it goes on top.
+      _peekEarlier.chunks.unshift('<span class="pe-chunk">' + esc(text) + '</span>');
+      _peekEarlier.loadedKb += _PEEK_LOG_CHUNK_KB;
+      _peekEarlier.done = remaining <= 0;
     }
     // Paint immediately (refreshPeek skips DOM writes while scrolled up) and
-    // anchor the view at the seam so the user stays where they were.
+    // anchor at the bottom of the just-loaded chunk so reading continues
+    // where the user was.
     lastPeekHTML = _peekEarlierHTML() + _lastLiveHTML;
     applyPeekSearch(true, false);
     const body = document.getElementById('peek-body');
-    const blk = body && body.querySelector('.peek-earlier-block');
-    if (blk) body.scrollTop = Math.max(0, blk.offsetTop + blk.offsetHeight - 60);
+    const first = body && body.querySelector('.pe-chunk');
+    if (first) body.scrollTop = Math.max(0, first.offsetTop + first.offsetHeight - 80);
   } catch (e) { showToast('Could not load log'); }
+  finally { _peekEarlier.loading = false; }
+}
+
+// ── Fitted border rules ──
+// Claude's pane borders are full-pane-width runs of ─ with the session/agent
+// name tagged at the RIGHT end ('──── gtm-strategy ──'). At any viewport
+// narrower than the pane, that line forced a horizontal scroller (via the
+// .peek-box wrapper) and pushed the name tag off-screen. Replace rule lines
+// with width-fitted elements BEFORE wrapBoxBlocks so the input-box region
+// stops being a scrollable box; real tables keep their scroller.
+function _fitRules(html) {
+  return html.split('\n').map(line => {
+    const t = line.replace(/<[^>]*>/g, '').trim();
+    if (/^─{30,}$/.test(t)) return '<span class="peek-rule"></span>';
+    const m = t.match(/^─{8,}\s(\S[^─]{0,120}?)\s(─{1,8})$/);
+    if (m) return '<span class="peek-rule"><span class="peek-rule-tag">' + esc(m[1]) + '</span></span>';
+    return line;
+  }).join('\n');
 }
 
 async function refreshPeek() {
@@ -23961,7 +24003,7 @@ async function refreshPeek() {
     }
     const atBottom = _isScrolledToBottom(body);
     if (atBottom) _peekScrollLocked = false;
-    const newHTML = wrapBoxBlocks(highlightPrompts(ansiToHtml(output)));
+    const newHTML = wrapBoxBlocks(_fitRules(highlightPrompts(ansiToHtml(output))));
     if (peekSelecting || (window.getSelection()?.toString().length > 0)) return;
     if (_sendingSnapshot && newHTML !== _sendingSnapshot) clearSendingIndicator();
     // Claude runs on the terminal's ALT SCREEN: tmux holds only the viewport,
@@ -39828,7 +39870,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.83';
+const CACHE = 'amux-v0.9.84';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
