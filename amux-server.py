@@ -42611,7 +42611,43 @@ class CCHandler(BaseHTTPRequestHandler):
             # ?done_limit=N  limits returned done/discarded items (default 100, 0=all)
             if method == "GET" and path == "/api/board":
                 done_limit = int(qs.get("done_limit", ["100"])[0])
-                return self._json(_load_board(done_limit=done_limit))
+                if done_limit == 0:
+                    return self._json(_load_board(done_limit=0))
+                # Default done_limit=100 → use the shared SSE board cache
+                bc = _sse_cache["board"]
+                now = time.time()
+                if now - bc["time"] > _SSE_CACHE_TTL:
+                    if _sse_cache_lock.acquire(blocking=False):
+                        released_to_bg = False
+                        try:
+                            if time.time() - bc["time"] > _SSE_CACHE_TTL:
+                                if bc["data"] is not None:
+                                    def _bg_board():
+                                        try:
+                                            data = _load_board()
+                                            bc["data"] = data
+                                            bc["json"] = json.dumps(data, sort_keys=True)
+                                            bc["time"] = time.time()
+                                        finally:
+                                            _sse_cache_lock.release()
+                                    threading.Thread(target=_bg_board, daemon=True).start()
+                                    released_to_bg = True
+                                    return self._json(bc["data"])
+                                data = _load_board()
+                                bc["data"] = data
+                                bc["json"] = json.dumps(data, sort_keys=True)
+                                bc["time"] = time.time()
+                        finally:
+                            if not released_to_bg:
+                                _sse_cache_lock.release()
+                    else:
+                        if bc["data"] is not None:
+                            return self._json(bc["data"])
+                        for _ in range(100):
+                            time.sleep(0.1)
+                            if bc["data"] is not None:
+                                break
+                return self._json(bc["data"] if bc["data"] is not None else [])
 
             # POST /api/board — create issue
             if method == "POST" and path == "/api/board":
