@@ -4303,6 +4303,30 @@ def _snapshot_all_sessions_inner():
             # ── 3. Auto-continue: unblock waiting sessions ───────────────────
             status = _detect_claude_status(clean)
 
+            # ── 2c. Ghost-text rescue: amux-injected text stuck in the box ──
+            # Every message amux sends carries a client-side "[H:MM AM]" prefix,
+            # so pending input starting with one is OURS — never something the
+            # user is composing at a real terminal. If it's sitting unsubmitted
+            # in an IDLE session, its Enter was eaten (typically keystrokes
+            # buffered through a Claude restart) and it will sit there forever:
+            # submit it. Space-stripped match because _pending_input strips.
+            if status == "idle":
+                _ghost = _pending_input(clean)
+                if _ghost and re.match(r"^\[\d{1,2}:\d{2}[AP]M\]", _ghost):
+                    with _get_send_lock(name):
+                        raw2 = tmux_capture(name, 25) or ""
+                        if (_detect_claude_status(raw2) == "idle"
+                                and _pending_input(_STRIP_ANSI.sub("", raw2)) == _ghost):
+                            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Escape"],
+                                           capture_output=True, timeout=5)
+                            time.sleep(0.06)
+                            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
+                                           capture_output=True, timeout=5)
+                            slog(f"[ghost-rescue] session={name} submitted stuck "
+                                 f"amux message: {_ghost[:80]!r}")
+                            _push_alert("ghost_rescue", name,
+                                        f"Rescued a stuck message in '{name}' — it was typed but never submitted")
+
             # Track last time Claude UI was visible (used by auto-restart below)
             if _claude_ui_visible(clean):
                 actions["last_claude_alive"] = now
@@ -10476,7 +10500,33 @@ def _get_send_lock(name: str) -> threading.Lock:
 
 _auto_waking = set()
 
-def _verify_submitted(name: str, target: str, text: str) -> bool:
+
+def _pending_input(clean: str):
+    """Unsubmitted text sitting in Claude Code's input box, or None when no
+    input prompt is visible. The box hard-wraps long text, so the ❯ line alone
+    is NOT the whole pending message — collect its continuation lines down to
+    the box's bottom border / status bar. Returned space-stripped, matching
+    _verify_submitted's space-insensitive comparison. (Checking only the ❯ line
+    is how a wrapped message's tail escaped verification and got dequeued as
+    'sent' while still sitting in the box — the 'random' ghost, 2026-07-10.)"""
+    lines = [l for l in clean.splitlines() if l.strip()]
+    idx = None
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip()[:1] in ("❯", "›"):
+            idx = i
+            break
+    if idx is None:
+        return None
+    buf = [lines[idx].strip().lstrip("❯› \xa0\t")]
+    for l in lines[idx + 1:]:
+        s = l.strip()
+        if s[:1] in ("─", "⏵"):
+            break
+        buf.append(s)
+    return "".join("".join(b.split()) for b in buf)
+
+
+def _verify_submitted(name: str, target: str, text: str, esc_at: float = 0.0) -> bool:
     """Confirm a just-sent message actually submitted. `send-keys` succeeding only
     means the keystrokes reached the pane — an autocomplete picker (opened by an
     @mention) can swallow the Enter, leaving the message unsent in the input box.
@@ -10491,39 +10541,49 @@ def _verify_submitted(name: str, target: str, text: str) -> bool:
     tail = text.strip()[-16:]
     if not tail:
         return True
+    # Compare space-insensitively: the input box hard-wraps long messages at the
+    # pane width, splitting the tail across visual lines at arbitrary points.
+    tail_sq = "".join(tail.split())
 
-    def _pending_from(clean):
-        for l in reversed(clean.splitlines()):
-            s = l.strip()
-            if s[:1] in ("❯", "›"):
-                return s.lstrip("❯› \xa0\t").strip()
-        return None
-
-    for _ in range(3):
+    cleared_once = False
+    for _ in range(4):
         time.sleep(0.3)
-        raw = tmux_capture(name, 12) or ""
-        clean = _STRIP_ANSI.sub("", raw)
-        pend = _pending_from(clean)
-        if pend is None or tail not in pend:
-            return True   # input cleared → the message went through
+        raw = tmux_capture(name, 25) or ""
+        pend = _pending_input(_STRIP_ANSI.sub("", raw))
+        if pend is None or tail_sq not in pend:
+            # Looks submitted — but right after a Claude restart the typed text
+            # can render into the box AFTER our first look (keystrokes buffered
+            # through boot), so a single clear look is not proof. Require two
+            # consecutive clear looks before declaring success.
+            if cleared_once:
+                return True
+            cleared_once = True
+            continue
+        cleared_once = False
         # Text still in the box. If Claude is generating, it's queued and will
         # submit when the turn ends — don't touch it (Escape would interrupt).
         if _detect_claude_status(raw) == "active":
             return True
         # Idle with our text stuck → the autocomplete picker ate the Enter. Escape
         # closes the picker WITHOUT selecting an entry (a bare Enter would pick one
-        # and rewrite an @path), then Enter submits the literal text.
+        # and rewrite an @path), then Enter submits the literal text. Any two
+        # Escapes within ~1s read as a double-press and EAT the pending message
+        # (v2.1.205) — so space each retry's Escape ≥1.3s from the previous one,
+        # including the one send_text itself sent before calling us.
         try:
+            if esc_at:
+                time.sleep(max(0.0, 1.3 - (time.monotonic() - esc_at)))
             subprocess.run(["tmux", "send-keys", "-t", target, "Escape"],
                            capture_output=True, timeout=5)
+            esc_at = time.monotonic()
             time.sleep(0.06)
             subprocess.run(["tmux", "send-keys", "-t", target, "Enter"],
                            capture_output=True, timeout=5)
         except Exception:
             break
-    raw = tmux_capture(name, 12) or ""
-    pend = _pending_from(_STRIP_ANSI.sub("", raw))
-    return pend is None or tail not in pend or _detect_claude_status(raw) == "active"
+    raw = tmux_capture(name, 25) or ""
+    pend = _pending_input(_STRIP_ANSI.sub("", raw))
+    return pend is None or tail_sq not in pend or _detect_claude_status(raw) == "active"
 
 
 def send_text(name: str, text: str) -> tuple[bool, str]:
@@ -10596,14 +10656,21 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
                 if not text:
                     return True, "no suggestion found"
             # Escape means "interrupt" while Claude is generating, but at the input
-            # prompt it merely closes an autocomplete picker and PRESERVES the typed
-            # text (verified on a live pane). So only use it when not generating.
+            # prompt a SINGLE Escape merely closes an autocomplete picker and
+            # PRESERVES the typed text. TWO Escapes within ~1s, however, read as a
+            # double-press EVEN WITH other keys typed in between, and Claude Code
+            # (v2.1.205) eats the entire pending message — reproduced live
+            # 2026-07-10: Esc/C-u/type/Esc/Enter ~150ms apart vanished the text,
+            # the same sequence with a 1.2s gap submitted it. So track when each
+            # Escape is sent and keep any pair ≥1.3s apart.
             _generating = _detect_claude_status(tmux_capture(name, 12) or "") == "active"
+            _esc_at = 0.0
             if not _generating:
                 # Close any picker left open by a previous attempt, so the C-u below
                 # actually reaches the input. Without this a retry appends and the
                 # message is submitted twice ("msg msg").
                 subprocess.run(["tmux", "send-keys", "-t", t, "Escape"], capture_output=True, timeout=5)
+                _esc_at = time.monotonic()
                 time.sleep(0.05)
             # Type into a clean input line. A mid-render send can paint characters
             # onto the terminal without them entering Claude's input buffer ("ghost
@@ -10637,12 +10704,18 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
             # 20ms is ample for a local PTY; paste-buffer (long text) is atomic so
             # needs even less, but we use the same value for simplicity.
             time.sleep(0.02)
-            if not _generating:
+            if not _generating and ("@" in text or text.lstrip().startswith("/")):
                 # An @mention (@path or @session) or slash opens Claude's autocomplete
                 # picker while typing. A bare Enter then SELECTS a picker entry —
                 # rewriting the @path and NOT submitting. Escape closes the picker and
                 # keeps the literal text, so the Enter below actually submits it.
+                # Only sent when the text can actually open a picker, and spaced
+                # ≥1.3s from the leading Escape — a closer pair reads as a
+                # double-press and eats the message (see above).
+                if _esc_at:
+                    time.sleep(max(0.0, 1.3 - (time.monotonic() - _esc_at)))
                 subprocess.run(["tmux", "send-keys", "-t", t, "Escape"], capture_output=True, timeout=5)
+                _esc_at = time.monotonic()
                 time.sleep(0.06)
             subprocess.run(
                 ["tmux", "send-keys", "-t", t, "Enter"],
@@ -10655,7 +10728,7 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
             # send-keys succeeding only means the keystrokes reached the pane. Confirm
             # the input actually cleared; otherwise report failure so the caller keeps
             # the message queued rather than treating a drop as sent.
-            if _verify_submitted(name, t, text):
+            if _verify_submitted(name, t, text, _esc_at):
                 return True, "sent"
             return False, "not submitted (autocomplete popup ate the Enter?)"
         except subprocess.CalledProcessError as e:
