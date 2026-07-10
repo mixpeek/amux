@@ -13548,6 +13548,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     flex-shrink: 0; min-width: 0; overflow: hidden; }
   .peek-dir-bar span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; font-family: "SF Mono","Fira Code",monospace; }
   .peek-terminal-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  /* Mobile: reclaim peek chrome for the terminal logs. The task label and the
+     directory path are already on the session card, and the header carries the
+     name/status; dropping the two redundant rows + tightening the header gives
+     the log area ~70px more height on a phone. */
+  @media (max-width: 600px) {
+    #peek-overlay .overlay-header { padding-bottom: 2px !important; gap: 2px !important; }
+    #peek-overlay #peek-task-row { display: none !important; }
+    #peek-overlay .peek-dir-bar { display: none !important; }
+    #peek-overlay .peek-tabs { padding: 0 8px; }
+  }
   /* Split pane wrapper — reuses fe-row / fe-cell-* from the Files tab */
   .peek-split-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .peek-split-wrap.split-active { flex-direction: row; gap: 0; }
@@ -22486,7 +22496,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.75';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.76';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -39311,7 +39321,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.75';
+const CACHE = 'amux-v0.9.76';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
