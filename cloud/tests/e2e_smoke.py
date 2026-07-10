@@ -119,7 +119,7 @@ class _NoRedirect(urllib.request.HTTPSHandler):
     http_error_301 = http_error_303 = http_error_307 = http_error_302
 
 
-def gw_request(method, path, body=None, cookie=None, follow=False, accept="application/json"):
+def gw_request(method, path, body=None, cookie=None, follow=False, accept="application/json", headers=None):
     url = f"{GATEWAY}{path}"
     data = json.dumps(body).encode() if body else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -129,6 +129,9 @@ def gw_request(method, path, body=None, cookie=None, follow=False, accept="appli
         req.add_header("Accept", accept)
     req.add_header("Content-Type", "application/json")
     req.add_header("User-Agent", "amux-e2e-smoke/1.0")
+    if headers:
+        for k, v in headers.items():
+            req.add_header(k, v)
     try:
         if follow:
             resp = urllib.request.urlopen(req, timeout=30, context=_ssl_ctx)
@@ -145,8 +148,10 @@ def gw_request(method, path, body=None, cookie=None, follow=False, accept="appli
 def wait_for_container(cookie, max_wait=240):
     """Poll /api/sessions until the container is healthy."""
     start = time.time()
+    last_code = 0
     while time.time() - start < max_wait:
         code, body, _ = gw_request("GET", "/api/sessions", cookie=cookie)
+        last_code = code
         if code == 200:
             elapsed = int(time.time() - start)
             log(f"Container ready after {elapsed}s")
@@ -155,6 +160,7 @@ def wait_for_container(cookie, max_wait=240):
             log(f"Trial expired (402)")
             return False
         time.sleep(5)
+    log(f"Last poll returned {last_code}")
     return False
 
 
@@ -456,40 +462,21 @@ def main():
     finally:
         # ── 11. Cleanup ──
         step("Cleanup — stop container and delete test user")
-        # Stop container via SSH (best-effort)
-        try:
-            import subprocess
-            r = subprocess.run(
-                ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
-                 "root@34.121.177.76",
-                 f"cd /var/amux/users/{user_id} && docker compose down 2>&1; "
-                 f"rm -rf /var/amux/users/{user_id}"],
-                capture_output=True, text=True, timeout=60)
-            if r.returncode == 0:
-                ok(f"Container for {user_id} stopped and cleaned up")
-            else:
-                warn(f"Container cleanup returned {r.returncode}: {r.stderr[:80]}")
-        except Exception as e:
-            warn(f"Container cleanup via SSH failed: {e}")
+        # Stop container + clean DB via gateway admin API
+        code, body, _ = gw_request("DELETE",
+                                    f"/api/gateway/admin/cleanup/{user_id}",
+                                    cookie=cookie,
+                                    headers={"X-E2E-Secret": COOKIE_SECRET})
+        if code == 200:
+            ok(f"Container for {user_id} stopped and DB cleaned via gateway API")
+        else:
+            warn(f"Gateway cleanup returned {code}: {body[:100]}")
         # Delete user from Clerk
         try:
             clerk_delete_user(user_id)
             ok(f"Test user {user_id} deleted from Clerk")
         except Exception as e:
             warn(f"Failed to delete test user: {e}")
-        # Delete user from gateway DB
-        try:
-            import subprocess
-            subprocess.run(
-                ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
-                 "root@34.121.177.76",
-                 f"sqlite3 /var/amux/gateway.db \"DELETE FROM users WHERE id='{user_id}'; "
-                 f"DELETE FROM orgs WHERE id='{user_id}'; "
-                 f"DELETE FROM org_memberships WHERE user_id='{user_id}';\""],
-                capture_output=True, text=True, timeout=10)
-            ok("Gateway DB records cleaned up")
-        except Exception as e:
-            warn(f"DB cleanup failed: {e}")
 
     # ── Summary ──
     print(f"\n{'═' * 50}")

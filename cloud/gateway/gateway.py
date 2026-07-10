@@ -2491,6 +2491,30 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"error": str(e)}, 400)
 
+        # ── Admin: cleanup user container + DB records (e2e test support) ─────
+        _cleanup_match = re.match(r"^/api/gateway/admin/cleanup/(.+)$", path)
+        if _cleanup_match and self.command == "DELETE":
+            e2e_secret = self.headers.get("X-E2E-Secret", "")
+            is_admin = ADMIN_EMAILS and user_email in ADMIN_EMAILS
+            is_e2e = e2e_secret and COOKIE_SECRET and hmac.compare_digest(e2e_secret, COOKIE_SECRET)
+            if not is_admin and not is_e2e:
+                return self._json({"error": "forbidden"}, 403)
+            target_uid = _cleanup_match.group(1)
+            stopped = False
+            try:
+                stop_container(target_uid)
+                stopped = True
+            except Exception as e:
+                print(f"[admin] cleanup stop_container({target_uid}) failed: {e}", flush=True)
+            try:
+                db.execute("DELETE FROM users WHERE id=?", (target_uid,))
+                db.execute("DELETE FROM orgs WHERE id=?", (target_uid,))
+                db.execute("DELETE FROM org_memberships WHERE user_id=?", (target_uid,))
+                db.commit()
+            except Exception as e:
+                print(f"[admin] cleanup DB for {target_uid} failed: {e}", flush=True)
+            return self._json({"ok": True, "container_stopped": stopped})
+
         # ── Determine target container via active org ─────────────────────────
         active_org = _active_org_id()
         org_data = db.execute("SELECT id, port, plan, trial_ends_at FROM orgs WHERE id=?", (active_org,)).fetchone()
