@@ -853,17 +853,20 @@ def _restore_user_files(user_id):
     """Restore ~/.amux/ flat files from R2 on every startup (safe: sync only adds/updates)."""
     vol = f"amux-data-{user_id}"
     r2_prefix = f"s3://{R2_BUCKET}/users/{user_id}/files/"
-    subprocess.run(
-        ["docker", "run", "--rm",
-         "-v", f"{vol}:/root/.amux",
-         "-e", f"AWS_ACCESS_KEY_ID={R2_ACCESS_KEY}",
-         "-e", f"AWS_SECRET_ACCESS_KEY={R2_SECRET_KEY}",
-         "amazon/aws-cli:latest",
-         "aws", "s3", "sync", r2_prefix, "/root/.amux/",
-         "--endpoint-url", R2_ENDPOINT,
-         "--exclude", "amux.db", "--exclude", "amux.db-shm", "--exclude", "amux.db-wal",
-         "--quiet"],
-        capture_output=True)
+    try:
+        subprocess.run(
+            ["docker", "run", "--rm",
+             "-v", f"{vol}:/root/.amux",
+             "-e", f"AWS_ACCESS_KEY_ID={R2_ACCESS_KEY}",
+             "-e", f"AWS_SECRET_ACCESS_KEY={R2_SECRET_KEY}",
+             "amazon/aws-cli:latest",
+             "aws", "s3", "sync", r2_prefix, "/root/.amux/",
+             "--endpoint-url", R2_ENDPOINT,
+             "--exclude", "amux.db", "--exclude", "amux.db-shm", "--exclude", "amux.db-wal",
+             "--quiet"],
+            capture_output=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        print(f"[docker] R2 restore timed out for {user_id} — continuing without restore", flush=True)
 
 def _push_key_to_container(ctr_name, api_key):
     """Write an API key into a single container's server.env and reload."""
@@ -965,12 +968,12 @@ def start_container(user_id, port):
                         echo "ANTHROPIC_API_KEY=$1" >> "$ENV"
                     fi
                  """, "--", api_key],
-                capture_output=True)
+                capture_output=True, timeout=30)
     except Exception as e:
         print(f"[org] failed to inject API key for {user_id}: {e}", flush=True)
     d = _compose_dir(user_id)
     r = subprocess.run(["docker", "compose", "up", "-d"], cwd=d,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, timeout=120)
     if r.returncode != 0:
         err = (r.stderr or r.stdout or "unknown error").strip()
         print(f"[docker] compose up failed for {user_id}: {err}", flush=True)
@@ -984,7 +987,12 @@ def start_container(user_id, port):
 def stop_container(user_id):
     d = _compose_dir(user_id)
     if os.path.isdir(d):
-        subprocess.run(["docker", "compose", "down"], cwd=d, capture_output=True)
+        subprocess.run(["docker", "compose", "down", "--remove-orphans"], cwd=d, capture_output=True)
+    for prefix in ("amux-user-", "amux-watchdog-", "amux-litestream-", "amux-sync-"):
+        ctr = f"{prefix}{user_id}"
+        subprocess.run(["docker", "rm", "-f", ctr], capture_output=True)
+    net = f"{user_id}_default".lower()
+    subprocess.run(["docker", "network", "rm", net], capture_output=True)
 
 def _migrate_and_stop_member_container(member_id, owner_id):
     """Migrate session/memory files from member's container to owner's, then stop member's."""

@@ -119,7 +119,7 @@ class _NoRedirect(urllib.request.HTTPSHandler):
     http_error_301 = http_error_303 = http_error_307 = http_error_302
 
 
-def gw_request(method, path, body=None, cookie=None, follow=False, accept="application/json", headers=None):
+def gw_request(method, path, body=None, cookie=None, follow=False, accept="application/json", headers=None, timeout=30):
     url = f"{GATEWAY}{path}"
     data = json.dumps(body).encode() if body else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -134,10 +134,10 @@ def gw_request(method, path, body=None, cookie=None, follow=False, accept="appli
             req.add_header(k, v)
     try:
         if follow:
-            resp = urllib.request.urlopen(req, timeout=30, context=_ssl_ctx)
+            resp = urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx)
         else:
             opener = urllib.request.build_opener(_NoRedirect)
-            resp = opener.open(req, timeout=30)
+            resp = opener.open(req, timeout=timeout)
         return resp.status, resp.read().decode(), dict(resp.headers)
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode(), dict(e.headers)
@@ -150,7 +150,10 @@ def wait_for_container(cookie, max_wait=240):
     start = time.time()
     last_code = 0
     while time.time() - start < max_wait:
-        code, body, _ = gw_request("GET", "/api/sessions", cookie=cookie)
+        try:
+            code, body, _ = gw_request("GET", "/api/sessions", cookie=cookie)
+        except Exception:
+            code = 0
         last_code = code
         if code == 200:
             elapsed = int(time.time() - start)
@@ -431,6 +434,7 @@ def main():
     user_id = user["id"]
     ok(f"Created test user: {user_id}")
 
+    cookie = make_cookie(user_id)
     try:
         # ── 3. Auth + container startup ──
         cookie, healthy = test_signup_and_auth(user_id)
@@ -463,10 +467,14 @@ def main():
         # ── 11. Cleanup ──
         step("Cleanup — stop container and delete test user")
         # Stop container + clean DB via gateway admin API
-        code, body, _ = gw_request("DELETE",
-                                    f"/api/gateway/admin/cleanup/{user_id}",
-                                    cookie=cookie,
-                                    headers={"X-E2E-Secret": COOKIE_SECRET})
+        try:
+            code, body, _ = gw_request("DELETE",
+                                        f"/api/gateway/admin/cleanup/{user_id}",
+                                        cookie=cookie,
+                                        headers={"X-E2E-Secret": COOKIE_SECRET},
+                                        timeout=60)
+        except Exception as e:
+            code, body = 0, str(e)
         if code == 200:
             ok(f"Container for {user_id} stopped and DB cleaned via gateway API")
         else:
