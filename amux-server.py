@@ -7972,9 +7972,13 @@ def _detect_claude_status(raw_output: str) -> str:
             return "waiting"
         if re.match(r".*\u276f\s*\d+\.", s):  # ❯ 1. Yes / ❯ 2. No selector
             return "waiting"
-        # "Interrupted" with follow-up question
+        # "Interrupted · What should Claude do instead?" — printed after the USER
+        # interrupts a turn. The session sits at a normal, fully usable prompt;
+        # nothing is awaiting a selection, so this is idle, not "needs input"
+        # (labeling it waiting made every interrupted session nag as if Claude
+        # had asked a question).
         if "interrupted" in sl and "what should claude do" in sl:
-            return "waiting"
+            return "idle"
 
     # ── 3. Status bar secondary checks ──
     if status_bar:
