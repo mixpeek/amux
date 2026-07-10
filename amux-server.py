@@ -2340,11 +2340,17 @@ def _session_cc_tasks(name: str) -> dict:
         # finished something and hasn't started the next, it's that completed task
         # ("between tasks"), which matches reality better than a stale in_progress.
         active = max(tasks, key=lambda t: t["_mtime"]) if tasks else None
+        # Newest task-file mtime = when the session last maintained its plan.
+        # Surfaced so the UI can flag a stale plan: a session can keep working
+        # for days without a single TaskUpdate, and a 2-day-old "Plan 10/15"
+        # headline silently reads as current (mixpeek-clustering, 2026-07-10).
+        updated_at = int(max((t["_mtime"] for t in tasks), default=0))
         for t in tasks:
             t.pop("_mtime", None)
         if active:
             active = {k: v for k, v in active.items() if k != "_mtime"}
-        return {"tasks": tasks, "counts": counts, "active": active, "total": len(tasks)}
+        return {"tasks": tasks, "counts": counts, "active": active,
+                "total": len(tasks), "updated_at": updated_at}
     except Exception:
         return {"tasks": [], "counts": {}, "active": None, "total": 0}
 
@@ -22847,7 +22853,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.80';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.81';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -23793,7 +23799,16 @@ function _peekRenderPlan(d) {
     // Headline is the most-recently-touched task — may be one just completed
     // (session between tasks), so show its status glyph rather than implying
     // it's actively in progress.
-    _av.textContent = (ICO2[st] || '◆') + ' ' + (active.subject || active.activeForm || '');
+    let txt = (ICO2[st] || '◆') + ' ' + (active.subject || active.activeForm || '');
+    // A plan nobody has touched in hours is probably NOT what the session is
+    // doing right now (sessions can work for days without a TaskUpdate) —
+    // say so instead of letting an old headline read as current.
+    const ageS = d.updated_at ? (Date.now() / 1000 - d.updated_at) : 0;
+    if (ageS > 6 * 3600) {
+      const age = ageS > 48 * 3600 ? Math.round(ageS / 86400) + 'd' : Math.round(ageS / 3600) + 'h';
+      txt += ' · plan last updated ' + age + ' ago';
+    }
+    _av.textContent = txt;
     _av.classList.toggle('pp-active-done', st === 'completed');
   } else {
     _av.textContent = '';
@@ -39725,7 +39740,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.80';
+const CACHE = 'amux-v0.9.81';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
