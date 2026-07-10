@@ -5118,6 +5118,12 @@ CREATE TABLE IF NOT EXISTS layout_presets (
     tab_order  TEXT NOT NULL DEFAULT '[]',
     created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS send_dedup (
+    session TEXT NOT NULL,
+    msg_id  TEXT NOT NULL,
+    ts      INTEGER NOT NULL,
+    PRIMARY KEY (session, msg_id)
+);
 CREATE TABLE IF NOT EXISTS graph_nodes (
     id          TEXT PRIMARY KEY,
     graph_id    TEXT NOT NULL DEFAULT 'default',
@@ -10515,6 +10521,40 @@ def _get_send_lock(name: str) -> threading.Lock:
 
 
 _auto_waking = set()
+
+
+def _send_dedup_seen(name: str, msg_id: str) -> bool:
+    """Record (session, msg_id) and report whether it was already recorded.
+
+    Sends must be idempotent across CLIENT RETRIES: when the server execv-
+    restarts mid-request, the keys may already have landed in tmux while the
+    HTTP response dies — the client then replays the request and the message
+    delivers twice (the 'deploy ×2' incident, 2026-07-10). Persisted in
+    sqlite precisely because the loss window IS a server restart — an
+    in-memory set would be wiped at the exact moment it matters."""
+    try:
+        db = get_db()
+        now = int(time.time())
+        db.execute("DELETE FROM send_dedup WHERE ts < ?", (now - 600,))
+        db.execute("INSERT INTO send_dedup (session, msg_id, ts) VALUES (?,?,?)",
+                   (name, msg_id, now))
+        db.commit()
+        return False
+    except sqlite3.IntegrityError:
+        return True
+    except Exception:
+        return False  # dedup is best-effort; never block a send on it
+
+
+def _send_dedup_forget(name: str, msg_id: str):
+    """Failed sends release their id so an explicit retry can go through."""
+    try:
+        db = get_db()
+        db.execute("DELETE FROM send_dedup WHERE session=? AND msg_id=?",
+                   (name, msg_id))
+        db.commit()
+    except Exception:
+        pass
 
 
 def _pending_input(clean: str):
@@ -21370,11 +21410,15 @@ async function doSend(name, text) {
     const author = _cloudEmail ? ` ${_cloudEmail}` : '';
     payload = `[${ts}${author}] ${text}`;
   }
+  // One msg_id per logical send, reused verbatim by the offline-queue replay:
+  // the server dedups on it, so a retry after a lost response (e.g. the
+  // server restarted mid-request AFTER the keys landed) can't deliver twice.
+  const sendBody = JSON.stringify({text: payload, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random())});
   // Use direct fetch (not apiCall) so we can handle 409 specifically
   try {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({text: payload})
+      body: sendBody
     });
     if (r.ok) return;
     if (r.status === 409) {
@@ -21396,10 +21440,11 @@ async function doSend(name, text) {
     }
     showToast('Send error: ' + r.status);
   } catch(e) {
-    // Offline — queue it
+    // Offline — queue it (same body, same msg_id → server-side dedup if the
+    // original request actually landed before the connection died)
     _queueOp(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({text: payload})
+      body: sendBody
     });
   }
 }
@@ -22787,7 +22832,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.79';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.80';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -24423,7 +24468,8 @@ async function steerSession(name, text) {
   if (!text) return;
   const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ text })
+    // msg_id makes retries idempotent — see doSend
+    body: JSON.stringify({ text, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()) })
   });
   if (r) {
     showToast('Steering queued — will deliver at next turn boundary');
@@ -39664,7 +39710,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.79';
+const CACHE = 'amux-v0.9.80';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -45915,6 +45961,12 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 text = body.get("text", "")
                 if not text:
                     return self._json({"error": "missing 'text'"}, 400)
+                # Same idempotency as /send: a client retry after a lost
+                # response must not enqueue the message twice.
+                client_id = str(body.get("msg_id") or "").strip()[:64]
+                if client_id and _send_dedup_seen(name, "steer:" + client_id):
+                    return self._json({"ok": True, "deduped": True,
+                                       "message": "duplicate retry ignored (already queued)"})
                 msg_id = f"steer-{int(time.time()*1000)}"
                 entry = {"id": msg_id, "text": text, "queued_at": time.time()}
                 with _steering_lock:
@@ -45938,6 +45990,15 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
             if action == "send":
                 body = self._read_body()
                 text = body.get("text", "")
+                # Idempotency: a client retry (offline queue, lost response
+                # during a server restart) replays the SAME msg_id — if the
+                # first attempt's keys already landed, delivering again
+                # duplicates the message. New ids are recorded up front;
+                # failed sends release theirs below.
+                msg_id = str(body.get("msg_id") or "").strip()[:64]
+                if msg_id and _send_dedup_seen(name, msg_id):
+                    return self._json({"ok": True, "deduped": True,
+                                       "message": "duplicate retry ignored (already delivered)"})
                 wd = _session_work_dir(name)
                 if wd:
                     threading.Thread(target=_ensure_memory, args=(name, wd), daemon=True).start()
@@ -45949,6 +46010,8 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     _update_meta(name, last_send=int(time.time()), last_send_text=text[:200])
                     _session_prev_status[name] = "active"  # seed for idle detection
                     _summarize_task_bg(name, text)
+                elif msg_id:
+                    _send_dedup_forget(name, msg_id)
                 # 409 = session exists but is not running (user-caused, not a server error)
                 code = 200 if ok else (409 if msg == "not running" else 500)
                 return self._json({"ok": ok, "message": msg}, code)
