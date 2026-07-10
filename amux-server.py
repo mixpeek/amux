@@ -12860,6 +12860,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     -webkit-tap-highlight-color: transparent; transition: all 0.15s;
   }
   .peek-agent-nav button:active { background: var(--accent); color: #fff; }
+  .peek-earlier-bar {
+    text-align: center; color: var(--dim); font-size: 0.72rem;
+    padding: 8px 0; cursor: pointer;
+    border-bottom: 1px dashed rgba(255,255,255,0.15);
+  }
+  .peek-earlier-bar:active { color: var(--accent); }
+  .peek-earlier-block {
+    opacity: 0.75; white-space: pre-wrap;
+    border-left: 2px solid rgba(255,255,255,0.12); padding-left: 6px;
+  }
   .overlay-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
   .overlay-body a:active { color: #79c0ff; }
   .overlay-body .file-link { color: var(--cyan); text-decoration: none; border-bottom: 1px dashed var(--cyan); cursor: pointer; }
@@ -22853,7 +22863,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.81';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.82';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -22889,6 +22899,7 @@ function openPeek(name, opts) {
   lastPeekHTML = '';
   _lastPeekRaw = '';
   _peekEtag = null;   // new session → drop the old session's ETag
+  _peekEarlier = { html: '', hidden: false };  // reset the load-earlier state
   const searchInp = document.getElementById('peek-search');
   if (searchInp) {
     searchInp.value = prefillQuery;
@@ -23829,6 +23840,43 @@ function _peekTogglePlan() {
   document.getElementById('peek-plan-list').style.display = _peekPlanOpen ? '' : 'none';
 }
 
+// ── "Load earlier output" — scrollback for the alt-screen ──
+// tmux keeps zero history for Claude's alternate screen; the pipe-pane log
+// (~/.amux/logs/<name>.log) is the only record of what scrolled off. The bar
+// sits above the live view; tapping it prepends the log tail (ANSI-stripped,
+// server-sliced via ?tail_kb so a multi-MB log never ships to a phone).
+let _lastLiveHTML = '';
+let _peekEarlier = { html: '', hidden: false };
+function _peekEarlierHTML() {
+  if (_peekEarlier.hidden) return '';
+  if (_peekEarlier.html) return _peekEarlier.html;
+  return '<div class="peek-earlier-bar" onclick="_peekLoadEarlier()">&#x25B2; Load earlier output (session log)</div>';
+}
+async function _peekLoadEarlier() {
+  const name = peekSession;
+  if (!name) return;
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/log?plain=1&tail_kb=192',
+      { headers: _authHeaders() });
+    if (peekSession !== name) return;
+    if (!r.ok) {
+      showToast('No saved log for this session');
+      _peekEarlier.hidden = true;
+    } else {
+      const text = await r.text();
+      _peekEarlier.html = '<div class="peek-earlier-block">' + esc(text) + '</div>' +
+        '<div class="peek-earlier-bar">&mdash; end of log &middot; live view below &mdash;</div>';
+    }
+    // Paint immediately (refreshPeek skips DOM writes while scrolled up) and
+    // anchor the view at the seam so the user stays where they were.
+    lastPeekHTML = _peekEarlierHTML() + _lastLiveHTML;
+    applyPeekSearch(true, false);
+    const body = document.getElementById('peek-body');
+    const blk = body && body.querySelector('.peek-earlier-block');
+    if (blk) body.scrollTop = Math.max(0, blk.offsetTop + blk.offsetHeight - 60);
+  } catch (e) { showToast('Could not load log'); }
+}
+
 async function refreshPeek() {
   const name = peekSession;
   if (!name) return;
@@ -23881,7 +23929,12 @@ async function refreshPeek() {
     const newHTML = wrapBoxBlocks(highlightPrompts(ansiToHtml(output)));
     if (peekSelecting || (window.getSelection()?.toString().length > 0)) return;
     if (_sendingSnapshot && newHTML !== _sendingSnapshot) clearSendingIndicator();
-    lastPeekHTML = newHTML;
+    // Claude runs on the terminal's ALT SCREEN: tmux holds only the viewport,
+    // so the top of the capture is a hard cutoff mid-conversation. Compose a
+    // "load earlier output" bar (or the loaded log tail) above the live view
+    // so scrollback exists in peek the way it does in a real terminal.
+    _lastLiveHTML = newHTML;
+    lastPeekHTML = _peekEarlierHTML() + newHTML;
     const hasSearch = peekSearchQuery.trim().length > 0;
     // When user has scrolled up, skip DOM update to avoid fidgeting the view.
     // Buffer in lastPeekHTML and flush when they resume.
@@ -39740,7 +39793,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.81';
+const CACHE = 'amux-v0.9.82';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
