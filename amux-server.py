@@ -43321,6 +43321,24 @@ class CCHandler(BaseHTTPRequestHandler):
                 cached = _json_r.loads(row["cached_data"] or "{}") if row["cached_data"] else {}
                 return self._json({"data":cached,"refreshed_at":row["last_refresh"]})
 
+        # GET /api/calendar — discovery pointer. Agents probing for "the
+        # calendar API" try this path first, hit "not found", and conclude
+        # there is no calendar API at all (the social session then filed
+        # events into Calendar.app instead of amux, 2026-07-10). Answer with
+        # the actual contract instead of a dead end.
+        if method == "GET" and path == "/api/calendar":
+            return self._json({
+                "events_api": "/api/cal-events",
+                "usage": {
+                    "list": "GET /api/cal-events",
+                    "create": "POST /api/cal-events {title, start: ISO-8601[, end, all_day, location, description, rrule]}",
+                    "update": "PATCH /api/cal-events/<EVT-id>",
+                    "delete": "DELETE /api/cal-events/<EVT-id>",
+                },
+                "ical_feed": "/api/calendar.ics",
+                "note": "Events created here appear in the dashboard Calendar tab and the iCal feed.",
+            })
+
                 # GET /api/calendar.ics — iCal subscription feed
         if method == "GET" and path == "/api/calendar.ics":
             ical_text = _generate_ical()
