@@ -891,6 +891,64 @@ def _on_claude_plan() -> bool:
     return False
 
 
+_usage_cache = {"data": None, "time": 0.0}
+_USAGE_TTL = 30  # seconds — the modal can be reopened without hammering Anthropic
+
+
+def _claude_oauth_token():
+    """Best-effort read of the Claude Code subscription OAuth token — macOS
+    keychain first, then ~/.claude/.credentials.json. Returns (token, expires_ms)
+    or (None, 0). Cloud hosts have neither, so usage simply reports unavailable —
+    no IS_CLOUD branch, just presence/absence of the credential."""
+    try:
+        r = subprocess.run(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            d = json.loads(r.stdout).get("claudeAiOauth", {})
+            if d.get("accessToken"):
+                return d["accessToken"], int(d.get("expiresAt") or 0)
+    except Exception:
+        pass
+    try:
+        p = Path.home() / ".claude" / ".credentials.json"
+        if p.exists():
+            d = json.loads(p.read_text()).get("claudeAiOauth", {})
+            if d.get("accessToken"):
+                return d["accessToken"], int(d.get("expiresAt") or 0)
+    except Exception:
+        pass
+    return None, 0
+
+
+def _fetch_claude_usage() -> dict:
+    """Fetch subscription usage from Claude Code's OAuth usage endpoint. The
+    `limits` array is model-agnostic — session (5h) + weekly, plus per-model
+    `weekly_scoped` entries carrying scope.model.display_name — so the UI reads
+    it the same regardless of which of the models is in use."""
+    token, exp = _claude_oauth_token()
+    if not token:
+        return {"available": False, "reason": "No Claude subscription token on this host"}
+    if exp and int(time.time() * 1000) > exp:
+        return {"available": False, "reason": "Token expired — run any Claude command to refresh it"}
+    try:
+        req = urllib.request.Request(
+            "https://api.anthropic.com/api/oauth/usage",
+            headers={"Authorization": f"Bearer {token}",
+                     "anthropic-beta": "oauth-2025-04-20",
+                     "anthropic-version": "2023-06-01"})
+        with urllib.request.urlopen(req, timeout=10, context=_push_ssl_context()) as resp:
+            data = json.loads(resp.read().decode())
+        data["available"] = True
+        return data
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return {"available": False, "reason": "Token rejected (401) — run any Claude command to refresh it"}
+        return {"available": False, "reason": f"Usage fetch failed (HTTP {e.code})"}
+    except Exception as e:
+        return {"available": False, "reason": f"Usage fetch failed: {e}"}
+
+
 def _claude_oneshot(prompt: str, model: str = "haiku", timeout: int = 35) -> tuple:
     """Run a one-shot headless `claude -p` query using the active Claude Code
     session's auth — Plan OAuth or API key, whichever the CLI is configured with.
@@ -43498,6 +43556,16 @@ class CCHandler(BaseHTTPRequestHandler):
                 "ical_feed": "/api/calendar.ics",
                 "note": "Events created here appear in the dashboard Calendar tab and the iCal feed.",
             })
+
+        # GET /api/usage — Claude subscription usage (5h + weekly + per-model
+        # scoped limits). Proxied server-side because the OAuth token can't be
+        # exposed to the browser and api.anthropic.com blocks cross-origin.
+        if method == "GET" and path == "/api/usage":
+            now = time.time()
+            if not _usage_cache["data"] or now - _usage_cache["time"] > _USAGE_TTL:
+                _usage_cache["data"] = _fetch_claude_usage()
+                _usage_cache["time"] = now
+            return self._json(_usage_cache["data"])
 
                 # GET /api/calendar.ics — iCal subscription feed
         if method == "GET" and path == "/api/calendar.ics":
