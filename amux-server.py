@@ -23030,7 +23030,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.91';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.92';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -27705,6 +27705,22 @@ function _fmtSize(bytes) {
   if (bytes < 1048576) return (bytes / 1024).toFixed(0) + 'K';
   return (bytes / 1048576).toFixed(1) + 'M';
 }
+async function _fsRename(path, refresh) {
+  const oldName = path.split('/').pop();
+  const entered = prompt('Rename "' + oldName + '" to:', oldName);
+  if (!entered || !entered.trim() || entered.trim() === oldName) return;
+  const newName = entered.trim();
+  if (/[\/\0]/.test(newName) || newName === '.' || newName === '..') { showToast('Invalid name'); return; }
+  try {
+    const r = await fetch(API + '/api/fs/rename', {
+      method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ path, new_name: newName })
+    });
+    const d = await r.json();
+    if (d.ok) { showToast('Renamed to ' + newName); refresh(); }
+    else showToast(d.error || 'Rename failed');
+  } catch (e) { showToast('Rename failed'); }
+}
 function _showExploreMenu(path, btn, type) {
   // Remove any existing popup
   document.querySelectorAll('.explore-menu-popup').forEach(el => el.remove());
@@ -27715,6 +27731,12 @@ function _showExploreMenu(path, btn, type) {
   copyItem.textContent = 'Copy path';
   copyItem.onclick = () => { popup.remove(); _copyExplorePath(path); };
   popup.appendChild(copyItem);
+  // Rename
+  const renItem = document.createElement('button');
+  renItem.className = 'explore-menu-item';
+  renItem.textContent = 'Rename';
+  renItem.onclick = () => { popup.remove(); _fsRename(path, () => loadExplore(_explorePath)); };
+  popup.appendChild(renItem);
   // Delete
   const delItem = document.createElement('button');
   delItem.className = 'explore-menu-item';
@@ -27764,6 +27786,12 @@ function _showFilesMenu(path, btn, type) {
   linkItem.textContent = 'Copy link';
   linkItem.onclick = () => { popup.remove(); _copyFileDeeplink(path); };
   popup.appendChild(linkItem);
+  // Rename
+  const renItem = document.createElement('button');
+  renItem.className = 'explore-menu-item';
+  renItem.textContent = 'Rename';
+  renItem.onclick = () => { popup.remove(); _fsRename(path, () => loadFiles(_filesPath)); };
+  popup.appendChild(renItem);
   // Download (files only)
   if (type !== 'dir' && type !== 'directory') {
     const dlItem = document.createElement('button');
@@ -40134,7 +40162,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.91';
+const CACHE = 'amux-v0.9.92';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -42671,6 +42699,33 @@ class CCHandler(BaseHTTPRequestHandler):
                 dest.write_bytes(data)
                 saved.append({"name": dest.name, "size": len(data)})
             return self._json({"saved": saved})
+
+        # POST /api/fs/rename — rename a file or folder in place (same parent
+        # dir; new_name is a bare name, not a path). Same containment as
+        # delete/write on BOTH source and destination.
+        if method == "POST" and path == "/api/fs/rename":
+            data = self._read_body()
+            src_path = (data.get("path") or "").strip()
+            new_name = (data.get("new_name") or "").strip()
+            if not src_path or not new_name:
+                return self._json({"error": "missing 'path' or 'new_name'"}, 400)
+            if "/" in new_name or "\x00" in new_name or new_name in (".", ".."):
+                return self._json({"error": "invalid name"}, 400)
+            src = Path(src_path).expanduser().resolve()
+            if not _is_path_allowed(src):
+                return self._json({"error": "access denied"}, 403)
+            if not src.exists():
+                return self._json({"error": "not found"}, 404)
+            dst = src.parent / new_name
+            if not _is_path_allowed(dst):
+                return self._json({"error": "access denied"}, 403)
+            if dst.exists():
+                return self._json({"error": "target already exists"}, 409)
+            try:
+                src.rename(dst)
+                return self._json({"ok": True, "path": str(dst)})
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
 
         # ── File/directory delete ──
         if method == "DELETE" and path == "/api/fs/delete":
