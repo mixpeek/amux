@@ -16148,10 +16148,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .sched-toggle-label { min-width: 44px; min-height: 44px; }
     .sched-mode-btn { min-height: 50px; font-size: 0.66rem; }
     .sched-chip { min-height: 38px; padding: 7px 13px; font-size: 0.76rem; }
-    /* On mobile: pin to top, let box scroll, cap textarea height */
+    /* On mobile: pin to top, let box scroll. The command box fills its
+       section (no fixed cap) so the editor isn't a tiny slot with dead space
+       below it; still user-draggable taller. */
     #sched-overlay { align-items: flex-start; padding: 8px; }
     #sched-overlay .board-edit-box { height: auto !important; max-height: calc(100dvh - 16px); overflow-y: auto !important; overflow-x: hidden; display: block !important; }
-    #sched-overlay #sched-command { min-height: 80px !important; max-height: 140px; resize: none; }
+    #sched-overlay #sched-command-section { min-height: 46dvh !important; }
+    #sched-overlay #sched-command { min-height: 200px !important; max-height: none; resize: vertical; }
     .sched-modal-footer { max-height: none; }
   }
   @media (max-width: 600px) {
@@ -22953,7 +22956,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.87';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.88';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -39991,7 +39994,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.87';
+const CACHE = 'amux-v0.9.88';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
