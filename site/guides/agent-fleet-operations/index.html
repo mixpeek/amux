@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agent Fleet Operations — Bulk Actions, Real-Time Monitoring &amp; Fleet-Level Visibility (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="How to operate a fleet of AI coding agents with amux — bulk continue all idle sessions, inspect subagent transcripts, load historical output, and monitor from your phone. Fleet operations guide for 10-50 parallel Claude Code, Codex, or Gemini CLI agents.">
+  <meta name="keywords" content="continue all idle Claude Code sessions, bulk restart AI coding agents, fleet operations AI agents, manage fleet Claude Code, Claude Code fleet management, AI agent bulk actions, monitor AI coding agent fleet, amux fleet operations">
+  <link rel="canonical" href="https://amux.io/guides/agent-fleet-operations/">
+  <meta property="og:title" content="AI Agent Fleet Operations — Bulk Actions, Real-Time Monitoring &amp; Fleet-Level Visibility (2026)">
+  <meta property="og:description" content="How to operate a fleet of AI coding agents with amux — bulk continue all idle sessions, inspect subagent transcripts, load historical output, and monitor from your phone.">
+  <meta property="og:url" content="https://amux.io/guides/agent-fleet-operations/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/"},
+      {"@type": "ListItem", "position": 3, "name": "AI Agent Fleet Operations", "item": "https://amux.io/guides/agent-fleet-operations/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "AI Agent Fleet Operations — Bulk Actions, Real-Time Monitoring & Fleet-Level Visibility (2026)",
+    "description": "How to operate a fleet of AI coding agents with amux — bulk continue all idle sessions, inspect subagent transcripts, load historical output, and monitor from your phone. Fleet operations guide for 10-50 parallel Claude Code, Codex, or Gemini CLI agents.",
+    "url": "https://amux.io/guides/agent-fleet-operations/",
+    "datePublished": "2026-07-11",
+    "dateModified": "2026-07-11",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["continue all idle Claude Code sessions", "bulk restart AI coding agents", "fleet operations AI agents", "Claude Code fleet management", "AI agent subagent monitoring", "amux fleet operations 2026"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "How to operate a fleet of AI coding agents with amux",
+    "description": "Monitor fleet health, take bulk actions across all agents, inspect individual agent transcripts, and manage your fleet from your phone.",
+    "step": [
+      {
+        "@type": "HowToStep",
+        "position": 1,
+        "name": "Open the amux dashboard",
+        "text": "Navigate to https://localhost:8822 in your browser or open the amux iOS app. The main session list shows all registered agents with real-time status dots and token counters."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 2,
+        "name": "Scan the session list for yellow or red status dots",
+        "text": "Green dots = actively working. Yellow = idle or waiting for input. Red = error or crash. Focus your attention on non-green sessions first — they need action."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 3,
+        "name": "Use bulk-actions → 'Continue all idle sessions' for fleet-wide wake-up",
+        "text": "Click the bulk-actions button in the top toolbar. Select 'Continue all idle sessions' to send a continue message to every yellow-status session simultaneously. This wakes up the entire idle fleet in one tap — useful after an overnight run where multiple agents hit context limits at once."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 4,
+        "name": "Click any session card to open the peek panel for deep inspection",
+        "text": "The peek panel shows live terminal output, the plan strip (Claude Code's task list), quick-action chips, and the send bar. Use it to understand exactly what a specific agent is doing, read its plan, send steering instructions, or load earlier output from the session log."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 5,
+        "name": "Use ▲/▼ in the peek panel to switch between agent and subagent transcripts",
+        "text": "When Claude Code spawns subagents, navigation buttons appear in the peek header. Use ▲/▼ to cycle through the main agent and each subagent's transcript, or tap any agent panel row (⏺/◯) to jump directly. The ⌂ button returns to the main transcript."
+      }
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "How do I restart all idle Claude Code agents at once?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Open the bulk-actions modal from the main dashboard toolbar and click 'Continue all idle sessions' (introduced in amux v0.9.78). This sends a 'continue' message to every session currently showing as idle (yellow status dot) simultaneously. All of them wake up at once — no need to click into each session individually. This is especially useful in the morning after an overnight run where multiple agents hit context limits and went idle around the same time."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I see what Claude Code subagents are doing?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. Introduced in amux v0.9.79, the peek panel includes a subagent transcript switcher. When Claude Code spawns subagents during complex agentic loops, ▲/▼ navigation buttons appear in the peek header. Use them to cycle through the main agent and each subagent's transcript. As of v0.9.83, you can also tap the ⏺/◯ agent panel rows directly to jump to a specific subagent without cycling. The ⌂ button always returns you to the main agent transcript."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I see historical output from a long Claude Code session?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Use the 'Load earlier output' bar at the top of the peek panel (introduced in amux v0.9.82). It pages backward through the session's persistent log file using the ?before_kb=N parameter, loading older output above the current live view. You can keep clicking to page backward through the complete session history — all the way to the start of the session. This works without attaching to the terminal and is accessible from your phone or browser."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I manage my agent fleet from my phone?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux is built phone-first. The native iOS app and PWA give you the full fleet operations surface on a 375px screen — session list with status dots, bulk-actions modal, peek panel with subagent switcher, plan strip, quick-action chips, and the send bar. As of v0.9.85, the peek panel also reflows transcript text to match your phone's actual character width, eliminating double-wrapping. For remote access, use Tailscale or amux tunnel to reach your home machine from anywhere."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What does the status dot color mean on each agent session card?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Green = the agent is actively producing output (working). Yellow = the agent is idle or waiting for input — it may be waiting for a permission prompt, have hit a context limit, or have finished its task. Red = the session has errored or crashed. The amux self-healing watchdog auto-restarts crashed (red) sessions if configured. For idle (yellow) sessions, use 'Continue all idle sessions' in the bulk-actions modal to restart the whole fleet at once."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>AI Agent Fleet Operations</span></div>
+
+    <h1>AI Agent Fleet Operations — Bulk Actions, Real-Time Monitoring &amp; Fleet-Level Visibility</h1>
+    <p class="subtitle">Updated July 2026 — bulk continue, subagent monitoring, scrollback, and responsive mobile peek</p>
+
+    <div style="background:var(--surface2,#252b3b);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
+      <strong>Quick answer:</strong> amux provides three fleet operation primitives — the <strong>bulk-actions modal</strong> for fleet-wide commands (including "Continue all idle sessions"), the <strong>peek panel</strong> for per-agent deep inspection including subagent transcripts and historical scrollback, and the <strong>session list</strong> for at-a-glance health via color-coded status dots. You can wake up, inspect, or redirect a fleet of 10–50 agents from a single dashboard tab or your phone — without touching a terminal.
+    </div>
+
+    <p>amux is an open-source control plane for AI agent teams — it runs dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with self-healing, kanban, CRM, and email built in. Once you're <a href="/guides/running-10-plus-agents/">running 10+ agents</a>, the individual-session mental model breaks down. You need fleet-level operations: bulk actions that apply to all agents simultaneously, fast triage to identify which sessions need attention, and deep inspection capabilities for when something goes wrong.</p>
+
+    <p>This guide covers the moment-to-moment work of fleet operations — reading the health view, taking bulk actions, inspecting individual agents, monitoring subagents, loading historical output, and doing all of it from your phone.</p>
+
+    <h2>The fleet health view: reading status at a glance</h2>
+
+    <p>The amux dashboard's main session list is your fleet overview. Each session card shows four key signals:</p>
+
+    <ul>
+      <li><strong>Status dot</strong> — the most important signal:
+        <ul>
+          <li><span style="color:#22c55e">●</span> <strong>Green</strong> — actively producing output; the agent is working</li>
+          <li><span style="color:#eab308">●</span> <strong>Yellow</strong> — idle or waiting for input; agent has paused (may need attention)</li>
+          <li><span style="color:#ef4444">●</span> <strong>Red</strong> — error or crash; the session process has exited</li>
+        </ul>
+      </li>
+      <li><strong>Token counter</strong> — running token spend for this session. A session spending 10× the average is either working much harder or spinning in a loop.</li>
+      <li><strong>Last active</strong> — time since the agent last produced output. A green-dot session that's been silent for 10+ minutes is suspicious.</li>
+      <li><strong>Session name and task</strong> — the current task label, scrolling horizontally if long, so you always see the full task description.</li>
+    </ul>
+
+    <p>The session list updates in real time via Server-Sent Events (SSE) — all connected clients (desktop browser, iOS app, phone PWA) see the same state within ~2 seconds of any change. You can have the dashboard open on your monitor and on your phone at the same time; both stay perfectly in sync.</p>
+
+    <p><strong>Fleet triage pattern:</strong> Scan for non-green dots first. If multiple sessions are yellow simultaneously, that's a signal of a systemic event — an API rate limit, a widespread context overflow, or a shared dependency that failed. A single red session is more likely an isolated crash or bug in that agent's task. Use these patterns to prioritize where to investigate first.</p>
+
+    <h2>Bulk fleet actions: the bulk-actions modal</h2>
+
+    <p>Individual sessions need individual attention. But some situations call for fleet-wide action — and that's what the bulk-actions modal provides. Access it from the button in the top-right toolbar of the main dashboard.</p>
+
+    <h3>Continue all idle sessions (v0.9.78)</h3>
+
+    <p>The most powerful fleet operation: "Continue all idle sessions" sends a "continue" message to every session currently showing a yellow (idle) status dot — all at once, with one tap.</p>
+
+    <p><strong>When to use it:</strong> The morning after an overnight run is the canonical case. After 6–8 hours of unattended operation, it's common for multiple agents to have hit context limits and gone idle at roughly the same time. Previously, waking them up required clicking into each session card, finding the send bar, and typing "continue" — one session at a time. With "Continue all idle sessions," you open the app, see a fleet of yellow dots, tap one button, and they all restart simultaneously.</p>
+
+    <p><strong>What it does:</strong> For each idle session, amux queues a "continue" delivery via the steering system — the same mechanism as manual sends. The message is delivered at the session's next available turn boundary, so it's safe even if a session was only briefly idle and just resumed on its own. Sessions that are actively working (green) are not affected.</p>
+
+    <p><strong>What this replaced:</strong></p>
+    <pre><code># Before: manually wake up 8 idle agents
+for session in auth-agent feature-agent test-agent docs-agent \
+               review-agent deploy-agent db-agent security-agent; do
+  tmux send-keys -t "$session" "continue" Enter
+done
+# → 8 separate terminal operations, easy to miss one</code></pre>
+
+    <pre><code># After: one tap in bulk-actions → "Continue all idle sessions"
+# All 8 wake up simultaneously, no terminal access required</code></pre>
+
+    <h2>Per-agent deep inspection: the peek panel</h2>
+
+    <p>When the fleet health view signals a problem with a specific session, the peek panel is where you investigate. Click any session card to open it.</p>
+
+    <p>The peek panel shows:</p>
+
+    <ul>
+      <li><strong>Live terminal output</strong> — last 100+ lines of the agent's terminal, streaming via SSE</li>
+      <li><strong>Plan strip</strong> — Claude Code's native task list, rendered as a structured checklist with pending, in-progress, and completed tasks. A stale plan warning shows "plan last updated Nh ago" (v0.9.81) when the agent has deviated from or finished its original plan.</li>
+      <li><strong>Quick-action chips</strong> — one-tap buttons for compact, continue, and status check</li>
+      <li><strong>Saved messages</strong> — a library of canned prompts (per-session and global) for recurring operations</li>
+      <li><strong>Send bar</strong> — type any instruction, delivered at the agent's next turn boundary</li>
+    </ul>
+
+    <p>See the full <a href="/guides/claude-code-plan-monitoring/">Claude Code monitoring guide</a> for a complete reference on reading the plan strip and interpreting agent output.</p>
+
+    <h3>Reading the output for fleet triage</h3>
+
+    <p>When investigating a yellow-dot session, start at the bottom of the peek output and look for:</p>
+
+    <ul>
+      <li><strong>Permission prompt</strong> — <code>Do you want to proceed?</code> or similar. Send "yes" or enable <a href="/guides/setting-up-yolo-mode/">YOLO mode</a> to auto-approve.</li>
+      <li><strong>Context limit message</strong> — Claude Code will say the context is full. Use the "compact" quick-action chip.</li>
+      <li><strong>Repeated tool calls</strong> — the same <code>Bash(</code> or <code>Read(</code> call appearing 3+ times at the bottom means the agent is looping. Send a steering message asking it to summarize what's blocking it.</li>
+      <li><strong>Successful completion</strong> — the agent may have finished its task and is waiting for you. Check the plan strip for all-checkmark status.</li>
+    </ul>
+
+    <h2>Subagent monitoring: switching between transcripts (v0.9.79)</h2>
+
+    <p>Claude Code can spawn subagents when working on complex tasks — for instance, delegating one part of a migration to a subagent while the main agent handles another part. Before amux v0.9.79, the peek panel only showed the main agent's transcript. If a subagent was doing the actual work, you had no way to see it from the dashboard.</p>
+
+    <p>The subagent switcher changes this. When Claude Code spawns subagents, navigation controls appear in the peek header:</p>
+
+    <ul>
+      <li><strong>▲ / ▼</strong> — cycle forward and backward through the main agent and all active subagent transcripts</li>
+      <li><strong>⌂</strong> — jump directly back to the main agent transcript at any time</li>
+      <li><strong>Tap ⏺/◯ agent panel rows</strong> (v0.9.83) — click any row in the agent panel to jump directly to that agent or subagent without cycling through the others</li>
+    </ul>
+
+    <p>Each view shows the selected agent's complete transcript, plan strip, and send bar — you can send steering messages to individual subagents, not just the main agent.</p>
+
+    <p><strong>When subagent monitoring matters most:</strong></p>
+    <ul>
+      <li><strong>Complex refactors</strong> — when Claude Code spawns subagents to handle different modules in parallel, you can verify each one is working on the right thing</li>
+      <li><strong>Nested agentic loops</strong> — if a subagent itself spawns sub-subagents, the switcher lets you navigate the full tree</li>
+      <li><strong>Debugging unexpected behavior</strong> — if the main agent's output looks fine but the task isn't progressing, switching to a subagent often reveals the actual source of the problem</li>
+      <li><strong>Token attribution</strong> — different subagents can consume very different amounts of tokens; inspecting their individual transcripts helps identify which one is running hot</li>
+    </ul>
+
+    <h2>Scrollback: loading historical output (v0.9.82)</h2>
+
+    <p>The tmux alt-screen only holds a limited scroll buffer. For sessions that have been running for hours, output from the beginning of the session — the initial task setup, early decisions, first errors — is long gone from the terminal buffer. Previously, reading it required attaching to the terminal and using tmux's own scroll mode, which only worked at the desktop and only held so much history.</p>
+
+    <p>In amux v0.9.82, a "Load earlier output" bar appears at the top of the peek panel. Clicking it fetches the previous page of output from the session's persistent log file (not the tmux buffer), loading it above the current view. Each page is line-aligned, so you never see a truncated line.</p>
+
+    <p>The underlying mechanism:</p>
+    <ul>
+      <li>amux writes every session's output to a persistent log file on disk</li>
+      <li>The peek panel paginates backward through this log using <code>GET /api/sessions/{name}/log?before_kb=N</code></li>
+      <li>The <code>X-Log-Remaining</code> response header tells the client how much earlier content is still available</li>
+      <li>When <code>X-Log-Remaining: 0</code>, the bar disappears — you've reached the beginning of the session</li>
+    </ul>
+
+    <p><strong>Use cases for fleet operations:</strong></p>
+    <ul>
+      <li><strong>Morning diagnosis</strong> — understand what happened overnight by reading from the point where an agent went quiet, then paging backward to find the root cause</li>
+      <li><strong>Audit trail</strong> — verify what decisions an agent made during a complex migration before merging its changes</li>
+      <li><strong>Subagent history</strong> — after switching to a subagent's transcript, load its earlier output to understand how it approached its subtask from the start</li>
+      <li><strong>Post-incident review</strong> — after a crash and restart, read the pre-crash output to understand what the agent was doing when it failed</li>
+    </ul>
+
+    <h2>Responsive monitoring from your phone (v0.9.85)</h2>
+
+    <p>Fleet operations don't stop when you leave your desk. amux is built phone-first: every feature described in this guide — the session list, bulk-actions modal, peek panel, subagent switcher, scrollback — is fully accessible from the iOS app or PWA on a 375px screen.</p>
+
+    <p>As of v0.9.85, the peek panel also corrects a long-standing mobile usability problem. The tmux pane running Claude Code had its width set at session creation time based on the desktop layout (~220 columns). When you opened the peek panel on a phone, Claude Code's output was hard-wrapped at 220 columns — causing double-wrapping and horizontal scrolling on the narrow screen.</p>
+
+    <p>The fix: the peek panel now measures the viewer's actual terminal character capacity using a font probe and sends that width to tmux via <code>POST /api/sessions/{name}/resize</code>. Claude Code receives the resize signal and reflows its transcript to fit. On a phone, you now see properly wrapped output — the same readability as on desktop, just narrower.</p>
+
+    <p><strong>Recommended morning fleet check (from your phone):</strong></p>
+    <ol>
+      <li>Open amux iOS app or PWA</li>
+      <li>Scan session list — note any yellow or red dots</li>
+      <li>Tap bulk-actions → "Continue all idle sessions" to restart any idle agents</li>
+      <li>Wait 30 seconds, check that yellow dots turn green</li>
+      <li>Tap any red-dot sessions to check the crash reason in the peek panel</li>
+      <li>For sessions still yellow after "continue": tap in, read the peek output, send a steering message if needed</li>
+      <li>Open the kanban board to see what was completed overnight</li>
+    </ol>
+
+    <p>This full check typically takes under 2 minutes from bed before you're out of the house. See <a href="/guides/mobile-management-pwa/">Managing agents from your phone</a> for the full mobile setup guide.</p>
+
+    <h2>Fleet operations: with amux vs. without it</h2>
+
+    <table style="width:100%;border-collapse:collapse;margin:1.25rem 0;font-size:0.9rem">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border,#333)">
+          <th style="text-align:left;padding:0.6rem 0.75rem">Fleet operation</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">Without amux</th>
+          <th style="text-align:left;padding:0.6rem 0.75rem">With amux</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Fleet health overview</td>
+          <td style="padding:0.6rem 0.75rem">Check each terminal window individually</td>
+          <td style="padding:0.6rem 0.75rem">Session list with live color-coded status dots</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Wake up all idle agents at once</td>
+          <td style="padding:0.6rem 0.75rem">Loop through terminals sending "continue" to each</td>
+          <td style="padding:0.6rem 0.75rem">Bulk-actions → "Continue all idle sessions" (v0.9.78)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Restart crashed agents automatically</td>
+          <td style="padding:0.6rem 0.75rem">Manual — check for dead tmux sessions, restart by hand</td>
+          <td style="padding:0.6rem 0.75rem">Self-healing watchdog auto-restarts on crash and replays last message</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Inspect individual subagent transcripts</td>
+          <td style="padding:0.6rem 0.75rem">Must attach to terminal and navigate tmux panes manually</td>
+          <td style="padding:0.6rem 0.75rem">Subagent switcher: ▲/▼ buttons or tap agent panel rows (v0.9.79/v0.9.83)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Load historical output beyond terminal buffer</td>
+          <td style="padding:0.6rem 0.75rem">tmux scroll mode (desktop-only, finite buffer)</td>
+          <td style="padding:0.6rem 0.75rem">"Load earlier output" bar pages through persistent log (v0.9.82)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Mobile fleet monitoring</td>
+          <td style="padding:0.6rem 0.75rem">SSH + tmux attach (fragile, double-wrapping on narrow screens)</td>
+          <td style="padding:0.6rem 0.75rem">iOS app or PWA; peek reflows text to phone width (v0.9.85)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Per-session token tracking</td>
+          <td style="padding:0.6rem 0.75rem">No built-in tracking; parse JSONL transcripts manually</td>
+          <td style="padding:0.6rem 0.75rem">Token counter on each session card, updated live</td>
+        </tr>
+        <tr>
+          <td style="padding:0.6rem 0.75rem">Task completion status across fleet</td>
+          <td style="padding:0.6rem 0.75rem">Check each agent's output manually</td>
+          <td style="padding:0.6rem 0.75rem">Kanban board: todo/doing/done per session, atomic claiming prevents duplicates</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Frequently asked questions</h2>
+
+    <h3>How do I restart all idle Claude Code agents at once?</h3>
+    <p>Click the bulk-actions button in the top-right dashboard toolbar and select "Continue all idle sessions" (v0.9.78). This sends a "continue" message to every session currently showing as idle (yellow status dot) simultaneously. Particularly useful in the morning after an overnight run.</p>
+
+    <h3>Can I see what Claude Code subagents are doing?</h3>
+    <p>Yes. Amux v0.9.79 added a subagent transcript switcher to the peek panel. When Claude Code spawns subagents, ▲/▼ navigation buttons appear. Tap them to cycle through each subagent's transcript, or tap ⏺/◯ agent panel rows (v0.9.83) to jump directly. The ⌂ button returns to the main transcript.</p>
+
+    <h3>How do I see historical output from a long Claude Code session?</h3>
+    <p>Use the "Load earlier output" bar at the top of the peek panel (v0.9.82). It pages backward through the session's persistent log file, loading older output above the live view. Keep clicking to reach the beginning of the session. Works on phone and desktop, no terminal attachment needed.</p>
+
+    <h3>Can I manage my agent fleet from my phone?</h3>
+    <p>Yes. The amux iOS app and PWA provide the full fleet operations surface on any screen size. As of v0.9.85, the peek panel reflows to your phone's character width — no double-wrapping. Use Tailscale for secure remote access from anywhere, or <a href="/guides/expose-localhost-publicly/">amux tunnel</a> for a public HTTPS URL.</p>
+
+    <h3>What does the status dot color mean?</h3>
+    <p><span style="color:#22c55e">Green</span> = actively working. <span style="color:#eab308">Yellow</span> = idle or waiting for input (needs attention or just finished). <span style="color:#ef4444">Red</span> = crashed or errored. The self-healing watchdog auto-restarts red sessions if configured. For yellow sessions, use "Continue all idle sessions" from the bulk-actions modal.</p>
+
+    <div class="cta-box">
+      <h3>Run an AI engineering team from one dashboard</h3>
+      <p>amux is an open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with self-healing, kanban, CRM, and email built in. MIT licensed, single Python file, zero external dependencies.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
+        <a class="btn" href="/guides/getting-started/">Get started</a>
+        <a class="btn" href="/guides/running-10-plus-agents/">Run 10+ agents</a>
+      </div>
+    </div>
+
+    <h2>Related guides</h2>
+    <ul>
+      <li><a href="/guides/running-10-plus-agents/">Running 10+ AI coding agents in parallel</a></li>
+      <li><a href="/guides/claude-code-plan-monitoring/">Claude Code monitoring — plan strip, peek panel, and live output</a></li>
+      <li><a href="/guides/self-healing-configuration/">Self-healing agent configuration</a></li>
+      <li><a href="/guides/mobile-management-pwa/">Managing agents from your phone</a></li>
+      <li><a href="/guides/kanban-board-for-agents/">Kanban board for AI agents</a></li>
+      <li><a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep</a></li>
+      <li><a href="/guides/detached-agent-sessions/">Run Claude Code in the background — amux start --detach</a></li>
+    </ul>
+  </main>
+
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

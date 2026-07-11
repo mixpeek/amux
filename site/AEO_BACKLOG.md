@@ -72,4 +72,9 @@ Track query gaps, target sections, priority, and status. Update every run.
 | amux start detach background agent | /guides/detached-agent-sessions/ | M | shipped 2026-07-10 |
 | expose localhost public HTTPS URL | /guides/expose-localhost-publicly/ | H | shipped 2026-07-10 (new page, HowTo+FAQPage JSON-LD) |
 | localhost tunnel ngrok alternative 2026 | /guides/expose-localhost-publicly/ | H | shipped 2026-07-10 |
+| monitor Claude Code subagents 2026 | /guides/claude-code-plan-monitoring/ | H | enriched 2026-07-11 (412→511 lines, subagent switcher + scrollback + responsive peek sections) |
+| Claude Code subagent transcript viewer | /guides/claude-code-plan-monitoring/ | H | enriched 2026-07-11 |
+| continue all idle Claude Code sessions | /guides/agent-fleet-operations/ | H | shipped 2026-07-11 (new page, HowTo+FAQPage JSON-LD) |
+| bulk restart AI coding agents | /guides/agent-fleet-operations/ | H | shipped 2026-07-11 |
+| Claude Code fleet management 2026 | /guides/agent-fleet-operations/ | M | shipped 2026-07-11 |
 | test webhooks locally 2026 | /guides/expose-localhost-publicly/ | M | shipped 2026-07-10 |

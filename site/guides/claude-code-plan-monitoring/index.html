@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#1e2330">
   <title>How to Monitor Claude Code Agents — See What Your Agent Is Doing (2026)</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="See exactly what your Claude Code agent is doing in real time. amux's plan strip and session peek panel show the agent's task list, current step, and live output — from your browser or phone.">
-  <meta name="keywords" content="monitor Claude Code agents, see what Claude Code is doing, Claude Code task progress, Claude Code plan visibility, Claude Code plan mode, watch Claude Code tasks, AI coding agent dashboard">
+  <meta name="description" content="See exactly what your Claude Code agent is doing in real time. amux's plan strip, session peek panel, subagent switcher, and scrollback show the agent's full output — from your browser or phone.">
+  <meta name="keywords" content="monitor Claude Code agents, see what Claude Code is doing, Claude Code task progress, Claude Code plan visibility, Claude Code plan mode, watch Claude Code tasks, AI coding agent dashboard, Claude Code subagent monitoring, Claude Code scrollback">
   <link rel="canonical" href="https://amux.io/guides/claude-code-plan-monitoring/">
   <meta property="og:title" content="How to Monitor Claude Code Agents — See What Your Agent Is Doing">
-  <meta property="og:description" content="See exactly what your Claude Code agent is doing in real time. amux's plan strip and session peek panel show the agent's task list, current step, and live output — from your browser or phone.">
+  <meta property="og:description" content="See exactly what your Claude Code agent is doing in real time. amux's plan strip, session peek panel, subagent switcher, and scrollback show the agent's full output — from your browser or phone.">
   <meta property="og:url" content="https://amux.io/guides/claude-code-plan-monitoring/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -39,14 +39,14 @@
     "@context": "https://schema.org",
     "@type": "Article",
     "headline": "How to Monitor Claude Code Agents — See What Your Agent Is Doing",
-    "description": "See exactly what your Claude Code agent is doing in real time. amux's plan strip and session peek panel show the agent's task list, current step, and live output — from your browser or phone.",
+    "description": "See exactly what your Claude Code agent is doing in real time. amux's plan strip, session peek panel, subagent switcher, and scrollback show the agent's full output — from your browser or phone.",
     "url": "https://amux.io/guides/claude-code-plan-monitoring/",
     "datePublished": "2026-07-08",
-    "dateModified": "2026-07-08",
+    "dateModified": "2026-07-10",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
     "image": "https://amux.io/og-image.png",
-    "keywords": ["monitor Claude Code agents", "Claude Code task progress", "Claude Code plan visibility", "AI agent monitoring dashboard", "Claude Code plan mode 2026"]
+    "keywords": ["monitor Claude Code agents", "Claude Code task progress", "Claude Code plan visibility", "AI agent monitoring dashboard", "Claude Code subagent monitoring", "Claude Code scrollback 2026"]
   }
   </script>
 
@@ -68,7 +68,15 @@
         "name": "What is the Claude Code plan strip in amux?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "The plan strip (introduced in amux v0.9.44) is a read-only view inside the session peek panel that reads Claude Code's native internal task list and displays it as a structured list. It shows tasks that are pending, the task currently being worked on, and tasks that have already been completed. The strip updates in real time as the agent progresses. You can fetch the raw plan data via the REST API at GET /api/sessions/{name}/plan."
+          "text": "The plan strip (introduced in amux v0.9.44) is a read-only view inside the session peek panel that reads Claude Code's native internal task list and displays it as a structured list. It shows tasks that are pending, the task currently being worked on, and tasks that have already been completed. The strip updates in real time as the agent progresses. A stale plan warning (v0.9.81) shows 'plan last updated Nh ago' when the plan hasn't changed in a while. You can fetch the raw plan data via the REST API at GET /api/sessions/{name}/plan."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I see what Claude Code subagents are doing?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. Introduced in amux v0.9.79, the peek panel includes a subagent switcher. When Claude Code spawns subagents during complex agentic loops, ▲/▼ navigation buttons appear in the peek header, letting you cycle through each subagent's transcript. You can also tap the ⏺/◯ agent panel rows directly (v0.9.83) to jump to a specific subagent. The ⌂ button returns you to the main agent transcript. This is the only way to inspect subagent output without attaching directly to the tmux terminal."
         }
       },
       {
@@ -76,7 +84,15 @@
         "name": "Can I monitor Claude Code agents from my phone?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes. The amux dashboard is a phone-optimized PWA, and there is also a native iOS app (App Store id6760410435). From your phone you can see all running agent sessions with live status, tap into any session's peek panel to read its output and plan strip, send instructions via the steering queue or saved message chips, and move tasks on the board. The full monitoring surface is accessible from your pocket."
+          "text": "Yes. The amux dashboard is a phone-optimized PWA, and there is also a native iOS app (App Store id6760410435). As of v0.9.85, the peek panel measures the viewer's actual terminal width (font probe) and sends it to tmux, so Claude Code reflows the transcript to match your phone's screen — no double-wrapping or horizontal scrolling. From your phone you can see all running agent sessions with live status, tap into any session's peek panel to read its output and plan strip, send instructions via the steering queue, and switch between subagent transcripts."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I see output from earlier in a Claude Code session?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Use the 'Load earlier output' bar at the top of the peek panel (introduced in amux v0.9.82). It pages backward through the session's log file using the ?before_kb=N parameter, loading older output above the live alt-screen view. You can keep loading earlier pages until you reach the beginning of the session. This gives you the full session history without attaching to the terminal or reading raw log files."
         }
       },
       {
@@ -84,7 +100,15 @@
         "name": "What should I do when a Claude Code agent goes quiet and stops producing output?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "First, open the session peek panel in amux and check the last few lines of output — the agent may be waiting for a permission prompt, hitting a context limit, or stuck in a loop. Next, check the plan strip: if the current task hasn't changed in a long time, it's likely stuck. You can use the quick-action chips in the peek panel to send a 'status' check, trigger a '/compact' to reset context, or use a saved-message prompt to ask the agent to summarize its current state. If the session is truly stuck, amux's self-healing watchdog can auto-restart it and replay the last message."
+          "text": "First, open the session peek panel in amux and check the last few lines of output — the agent may be waiting for a permission prompt, hitting a context limit, or stuck in a loop. Next, check the plan strip: if the current task hasn't changed in a long time, the stale plan warning will show how many hours ago it was last updated. You can use the quick-action chips in the peek panel to send a 'status' check, trigger a '/compact' to reset context, or use a saved-message prompt to ask the agent to summarize its current state. If multiple agents went idle simultaneously, use the 'Continue all idle sessions' button in the bulk-actions modal to wake up the whole fleet at once."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I monitor multiple Claude Code agents at once?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The amux dashboard main view shows all sessions simultaneously with color-coded status indicators. Each session card displays the session name, status (active, waiting, idle, error), and a summary of recent activity. You can see at a glance which agents are actively writing code, which are waiting for input, and which have gone idle. For fleet-wide recovery when multiple agents go idle at once, the bulk-actions modal's 'Continue all idle sessions' button wakes them all up in one tap. For deeper monitoring of a specific agent, click its card to open the peek panel with full output and plan strip."
         }
       },
       {
@@ -93,14 +117,6 @@
         "acceptedAnswer": {
           "@type": "Answer",
           "text": "Yes. amux exposes GET /api/sessions/{name}/plan which returns the agent's current plan as structured JSON, including the list of tasks with their statuses (pending, in_progress, completed). You can poll this endpoint from your own scripts, CI pipelines, or monitoring dashboards to integrate Claude Code plan data into external systems."
-        }
-      },
-      {
-        "@type": "Question",
-        "name": "How do I monitor multiple Claude Code agents at once?",
-        "acceptedAnswer": {
-          "@type": "Answer",
-          "text": "The amux dashboard main view shows all sessions simultaneously with color-coded status indicators. Each session card displays the session name, status (active, waiting, idle, error), and a summary of recent activity. You can see at a glance which agents are actively writing code, which are waiting for input, and which have gone idle. For deeper monitoring of a specific agent, click its card to open the peek panel with full output and plan strip. For fleet-wide task tracking, the kanban board shows which tasks each session owns."
         }
       }
     ]
@@ -124,13 +140,13 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Monitor Claude Code Agents</span></div>
 
     <h1>How to Monitor Claude Code Agents — See What Your Agent Is Doing</h1>
-    <p class="subtitle">Updated July 2026 — real-time plan visibility, session peek, and mobile monitoring for Claude Code</p>
+    <p class="subtitle">Updated July 2026 — subagent monitoring, scrollback, and responsive layout</p>
 
     <div style="background:var(--surface2,#252b3b);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
-      <strong>Quick answer:</strong> Install amux and open the dashboard. Click any session card to open the peek panel — it streams the agent's live terminal output and reads Claude Code's native task list to display a real-time plan strip showing pending, in-progress, and completed tasks. Accessible from any browser or the amux iOS app. No terminal required.
+      <strong>Quick answer:</strong> Install amux and open the dashboard. Click any session card to open the peek panel — it streams the agent's live terminal output and reads Claude Code's native task list to display a real-time plan strip showing pending, in-progress, and completed tasks. Switch between subagent transcripts using ▲/▼ navigation. Load earlier output to scroll back through session history. Accessible from any browser or the amux iOS app. No terminal required.
     </div>
 
-    <p>When you run a Claude Code agent on a long task, you often have no idea what it's actually doing. It's working in a tmux terminal you've minimized, and unless you attach to that terminal, you're flying blind. You don't know whether it's making progress, waiting for a prompt, spinning in a loop, or has already finished and is waiting for you. amux solves this with a real-time monitoring layer: a session peek panel that streams live output and a plan strip that reads Claude Code's own task list and surfaces it as structured, human-readable progress.</p>
+    <p>When you run a Claude Code agent on a long task, you often have no idea what it's actually doing. It's working in a tmux terminal you've minimized, and unless you attach to that terminal, you're flying blind. You don't know whether it's making progress, waiting for a prompt, spinning in a loop, or has already finished and is waiting for you. amux solves this with a real-time monitoring layer: a session peek panel that streams live output, a plan strip that reads Claude Code's own task list, and — new in July 2026 — a subagent switcher that lets you inspect every subagent transcript individually.</p>
 
     <h2>The problem with monitoring Claude Code</h2>
 
@@ -142,6 +158,7 @@
       <li>Walk away from your computer — to a meeting, to sleep, to anything else</li>
       <li>Want to check on progress from your phone</li>
       <li>Need to understand the agent's plan before it executes it</li>
+      <li>Need to see what a subagent spawned by Claude Code is actually doing</li>
     </ul>
 
     <p>The raw terminal gives you a fire hose of output with no structure. You can't tell at a glance whether the agent is on step 2 of 8 or whether it got stuck on step 2 an hour ago and has been retrying ever since. You can't peek at it from another device without setting up SSH tunneling or tmux sharing. And when you run <a href="/guides/running-10-plus-agents/">10 or more agents in parallel</a>, checking each terminal individually is completely untenable.</p>
@@ -159,6 +176,8 @@
     </ul>
 
     <p>The strip updates in real time as the agent progresses through its plan. You don't need to parse terminal output to understand where the agent is — the plan strip gives you a structured view of intent and progress simultaneously.</p>
+
+    <p><strong>Stale plan warning (v0.9.81):</strong> If the plan hasn't been updated in a while, the strip shows "plan last updated Nh ago" in amber. This signals that the agent may have deviated from the original plan, completed it, or gone quiet. A stale plan with a still-active session often means the agent is improvising beyond its original task list.</p>
 
     <p>Claude Code internally maintains a task list when working on multi-step problems. The plan strip reads this through amux's server endpoint:</p>
 
@@ -207,13 +226,63 @@
 
     <p>If you see the same tool call repeated 3+ times at the bottom of the output, the agent is likely stuck. Use the quick-action chips or the send bar to unstick it.</p>
 
+    <h2>New in July 2026: Subagent monitoring and scrollback</h2>
+
+    <p>A series of peek panel improvements shipped in July 2026 that significantly deepen monitoring capabilities — particularly for long-running sessions and complex agentic loops.</p>
+
+    <h3>Subagent transcript switcher (v0.9.79 + v0.9.83)</h3>
+
+    <p>Claude Code can spawn subagents to handle parallel subtasks within a larger agentic loop. Previously, the peek panel only showed the main agent's transcript — if a subagent was doing the actual work, you had no visibility into it from the dashboard.</p>
+
+    <p>In amux v0.9.79, a subagent switcher was added to the peek header. When subagents are active, ▲/▼ navigation buttons appear alongside a ⌂ home button. Use them to:</p>
+
+    <ul>
+      <li><strong>▲/▼</strong> — cycle through the main agent and all active subagent transcripts</li>
+      <li><strong>⌂</strong> — jump back to the main agent's transcript at any time</li>
+      <li><strong>Tap ⏺/◯ agent panel rows</strong> (v0.9.83) — click any agent row directly to jump to that transcript without cycling through others</li>
+    </ul>
+
+    <p>This is particularly useful for complex tasks where Claude Code delegates subtasks to subagents (e.g., "research approach A while I try approach B"). You can spot-check each subagent's progress independently and understand what the full agentic loop is doing without attaching to the terminal.</p>
+
+    <h3>Load earlier output — scrollback above the alt-screen (v0.9.82)</h3>
+
+    <p>The tmux alt-screen only holds a finite scroll buffer. For long-running sessions, output from hours ago may have scrolled out of the buffer entirely. Previously, you had to attach to the terminal and use tmux's own scroll mode to read historical output — not possible from the dashboard or phone.</p>
+
+    <p>In amux v0.9.82, a "Load earlier output" bar appears at the top of the peek panel. Clicking it fetches the previous page of log output (using the session's persistent log file, not just the tmux buffer), loading it above the current view. You can keep clicking to page backward through the complete session history.</p>
+
+    <p>Internally this uses <code>GET /api/sessions/{name}/log?before_kb=N</code> with the <code>X-Log-Remaining</code> response header to know when you've reached the beginning. All paging is line-aligned, so you never see a truncated line mid-output.</p>
+
+    <p>Use cases:</p>
+    <ul>
+      <li>Understanding what an overnight agent did before it went idle</li>
+      <li>Finding the exact error that caused an agent to deviate from its plan</li>
+      <li>Auditing the decisions an agent made during a complex refactor</li>
+      <li>Reading a subagent's full output after switching to it in an active loop</li>
+    </ul>
+
+    <h3>Responsive peek — reflows to your screen width (v0.9.85)</h3>
+
+    <p>The tmux pane that runs Claude Code has its own character width. Previously, this width was set at session creation time based on the dashboard's desktop layout (~220 columns). When you opened the peek panel on a phone (say, 80 columns wide), Claude Code's output was already hard-wrapped at 220 columns — so text double-wrapped on the narrow screen and required horizontal scrolling to read.</p>
+
+    <p>In amux v0.9.85, the peek panel measures the viewer's actual terminal character capacity using a font probe and sends that width to the tmux pane via <code>POST /api/sessions/{name}/resize</code>. Claude Code receives the resize signal and reflows its entire transcript to fit. The result: output renders correctly on whatever device is viewing it, with no double-wrapping and no horizontal scroll.</p>
+
+    <p>This makes phone-based monitoring substantially more readable. Combined with the iOS app's optimized layout, you now have a genuinely comfortable monitoring experience on a 375px screen.</p>
+
+    <h3>Continue all idle sessions — fleet-level wake-up (v0.9.78)</h3>
+
+    <p>When multiple agents in a fleet go idle simultaneously — common after an overnight run where several agents hit context limits at around the same time — waking them up one by one was tedious. Each required opening its session card, navigating to the peek panel, and sending a "continue" message.</p>
+
+    <p>In amux v0.9.78, a "Continue all idle sessions" button was added to the bulk-actions modal (accessible from the main dashboard toolbar). One tap sends a "continue" message to every session that's currently idle. All of them wake up simultaneously.</p>
+
+    <p>This is particularly useful for the morning after an overnight fleet run: open the app, tap bulk-actions → "Continue all idle sessions," and your fleet picks up where it left off — without manually touching each session. See the full <a href="/guides/agent-fleet-operations/">AI Agent Fleet Operations guide</a> for more bulk operation patterns.</p>
+
     <h2>Monitoring multiple agents at once: the dashboard board</h2>
 
     <p>When you're <a href="/guides/running-10-plus-agents/">running a fleet of agents</a>, the dashboard's main session list is your fleet overview. Each session card shows:</p>
 
     <ul>
       <li><strong>Status dot</strong> — green (actively producing output), yellow (idle / waiting for input), red (error or crashed)</li>
-      <li><strong>Session name</strong> — and any long task names, which now scroll horizontally instead of truncating (v0.9.48), so you see the full context</li>
+      <li><strong>Session name</strong> — and any long task names, which scroll horizontally instead of truncating, so you see the full context</li>
       <li><strong>Token counter</strong> — running token spend for this session, useful for spotting runaway sessions</li>
       <li><strong>Last active</strong> — how long ago the agent last produced output. A session that's been silent for 10+ minutes and not in a "waiting" state deserves a look.</li>
     </ul>
@@ -231,17 +300,17 @@
 
     <h2>From your phone: mobile monitoring</h2>
 
-    <p>amux is built phone-first. The monitoring surface described above — peek panel, plan strip, quick-action chips, saved messages, session list — is fully accessible on a 375px screen. Touch targets meet the 44×44px minimum; the layout reflows for mobile; the iOS PWA installs to your home screen for native-feeling access.</p>
+    <p>amux is built phone-first. The monitoring surface described above — peek panel, plan strip, quick-action chips, saved messages, session list, subagent switcher, scrollback — is fully accessible on a 375px screen. Touch targets meet the 44×44px minimum; the layout reflows for mobile; the iOS PWA installs to your home screen for native-feeling access. As of v0.9.85, the peek panel reflows transcript text to match the phone's actual character width, eliminating the double-wrapping that previously made phone monitoring uncomfortable.</p>
 
     <p>For the smoothest mobile experience, use the <strong>native iOS app</strong> (App Store: <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux – Agent Multiplexer</a>). It connects to your local amux server over your home network or via Tailscale for remote access. Key mobile monitoring flows:</p>
 
     <ul>
-      <li><strong>Morning check:</strong> open the app, scan the session list for any red/yellow dots from the overnight run, tap into any concerning session to read its plan strip and last output</li>
+      <li><strong>Morning check:</strong> open the app, scan the session list for any red/yellow dots from the overnight run; tap bulk-actions → "Continue all idle sessions" to restart any that went idle; tap into specific sessions to read the plan strip and last output</li>
       <li><strong>Mid-meeting check:</strong> pull out your phone, glance at the session list — if everything is green, you don't need to think about it; if something is yellow or red, open the peek panel and send a quick instruction with a saved message chip</li>
       <li><strong>Approval from anywhere:</strong> if an agent hits a permission prompt it can't auto-approve, you'll see the session go yellow. Tap in, read the prompt in the output, and send approval via the send bar — all without returning to your desk.</li>
     </ul>
 
-    <p>For a full guide to mobile agent management, see <a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep</a>.</p>
+    <p>For a full guide to mobile agent management, see <a href="/guides/mobile-management-pwa/">Managing agents from your phone</a>.</p>
 
     <h2>What to do when an agent goes quiet</h2>
 
@@ -252,6 +321,9 @@
 
     <h3>Context window full</h3>
     <p>When the context window fills, Claude Code stops. The output will contain a message about the context limit. Use the "compact" quick-action chip in the peek panel to trigger <code>/compact</code>, which summarizes the context and continues. amux's <a href="/guides/self-healing-configuration/">self-healing watchdog</a> can auto-compact on context overflow if configured.</p>
+
+    <h3>Multiple agents idle at once</h3>
+    <p>If you see several sessions go yellow at the same time (common after an overnight run), don't click into each one individually. Open the bulk-actions modal and use "Continue all idle sessions" to wake up the entire fleet in one tap.</p>
 
     <h3>Genuinely stuck in a loop</h3>
     <p>Sometimes an agent retries the same operation repeatedly without making progress. Check the plan strip — if the current task hasn't changed and the output shows repeated tool calls, the agent is looping. Send a steering message: "You appear to be stuck on [task]. Stop retrying and summarize what you've tried and what's blocking you." Then decide whether to give it new information or take a different approach manually.</p>
@@ -284,14 +356,34 @@
           <td style="padding:0.6rem 0.75rem">Plan strip — structured, real-time, always current</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Know if the plan is stale</td>
+          <td style="padding:0.6rem 0.75rem">No signal — must re-read output to infer</td>
+          <td style="padding:0.6rem 0.75rem">Stale plan warning shows "last updated Nh ago" (v0.9.81)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">View individual subagent transcripts</td>
+          <td style="padding:0.6rem 0.75rem">Must attach to tmux and navigate manually</td>
+          <td style="padding:0.6rem 0.75rem">Subagent switcher: ▲/▼ buttons or tap agent panel rows (v0.9.79/v0.9.83)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Load historical output beyond terminal buffer</td>
+          <td style="padding:0.6rem 0.75rem">Attach to terminal, use tmux scroll mode (desktop only)</td>
+          <td style="padding:0.6rem 0.75rem">"Load earlier output" bar pages backward through log file (v0.9.82)</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
           <td style="padding:0.6rem 0.75rem">Monitor from phone</td>
-          <td style="padding:0.6rem 0.75rem">SSH + tmux attach (fragile, slow on mobile)</td>
-          <td style="padding:0.6rem 0.75rem">iOS app or PWA, native feel, no SSH required</td>
+          <td style="padding:0.6rem 0.75rem">SSH + tmux attach (fragile, double-wrapping on mobile)</td>
+          <td style="padding:0.6rem 0.75rem">iOS app or PWA, responsive peek reflows to phone width (v0.9.85)</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,#333)">
           <td style="padding:0.6rem 0.75rem">Monitor 5+ agents simultaneously</td>
           <td style="padding:0.6rem 0.75rem">Multiple terminal windows or tmux splits</td>
           <td style="padding:0.6rem 0.75rem">Single dashboard, all sessions in one view</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border,#333)">
+          <td style="padding:0.6rem 0.75rem">Wake up multiple idle agents at once</td>
+          <td style="padding:0.6rem 0.75rem">Open each terminal, send "continue" individually</td>
+          <td style="padding:0.6rem 0.75rem">Bulk-actions → "Continue all idle sessions" in one tap (v0.9.78)</td>
         </tr>
         <tr style="border-bottom:1px solid var(--border,#333)">
           <td style="padding:0.6rem 0.75rem">Send mid-task instructions</td>
@@ -322,37 +414,44 @@
     <p>Open the amux dashboard at <code>https://localhost:8822</code> (or the iOS app) and click any session card. The peek panel opens with live streaming output and the plan strip showing the agent's current task list. No terminal needed.</p>
 
     <h3>What is the Claude Code plan strip?</h3>
-    <p>The plan strip (v0.9.44) is a structured view inside the amux peek panel that reads Claude Code's native task list. It displays completed tasks, the current in-progress task, and pending tasks — updated in real time as the agent works. The raw data is available at <code>GET /api/sessions/{name}/plan</code>.</p>
+    <p>The plan strip (v0.9.44) is a structured view inside the amux peek panel that reads Claude Code's native task list. It displays completed tasks, the current in-progress task, and pending tasks — updated in real time as the agent works. A stale plan warning (v0.9.81) shows "plan last updated Nh ago" when the plan hasn't changed recently. The raw data is available at <code>GET /api/sessions/{name}/plan</code>.</p>
+
+    <h3>Can I see what Claude Code subagents are doing?</h3>
+    <p>Yes. In amux v0.9.79, the peek panel gained a subagent switcher. When Claude Code spawns subagents, ▲/▼ navigation buttons appear and you can cycle through each subagent's transcript. Tap any ⏺/◯ agent panel row (v0.9.83) to jump directly to that subagent. The ⌂ button returns you to the main transcript. See <a href="/guides/agent-fleet-operations/">Agent Fleet Operations</a> for more fleet monitoring patterns.</p>
+
+    <h3>How do I see older output from a long Claude Code session?</h3>
+    <p>Use the "Load earlier output" bar at the top of the peek panel (v0.9.82). It fetches older pages from the session's persistent log file, loading historical output above the live alt-screen view. Keep clicking to page backward through the complete session history — you don't need to attach to the terminal.</p>
 
     <h3>Can I monitor agents from my phone?</h3>
-    <p>Yes. The amux dashboard is a phone-optimized PWA and there's also a <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">native iOS app</a>. You can view live output, read the plan strip, send instructions, and manage the board from a 375px screen.</p>
+    <p>Yes. The amux dashboard is a phone-optimized PWA and there's also a <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">native iOS app</a>. As of v0.9.85, the peek panel reflows transcript text to your phone's actual character width — no double-wrapping or horizontal scrolling. You can view live output, read the plan strip, send instructions, switch between subagent transcripts, and load earlier output from a 375px screen.</p>
+
+    <h3>What do I do when multiple agents go idle at once?</h3>
+    <p>Open the bulk-actions modal from the main dashboard toolbar and tap "Continue all idle sessions" (v0.9.78). This sends a "continue" message to every session currently showing as idle — waking up the whole fleet in one tap. Particularly useful in the morning after an overnight run where multiple agents hit context limits simultaneously.</p>
 
     <h3>What do I do when an agent stops producing output?</h3>
     <p>Open the peek panel and check the last few lines of output. Common causes: waiting for a permission prompt (send "yes"), context window full (use the compact chip), genuinely stuck (send a steering message asking it to report its current state), or crashed (the watchdog auto-restarts if configured). See the full decision tree in the "What to do when an agent goes quiet" section above.</p>
-
-    <h3>How do I monitor 10 agents at once without going crazy?</h3>
-    <p>The dashboard session list gives you a fleet overview at a glance via color-coded status dots. You only need to open the peek panel for sessions that show yellow (waiting) or red (error). For task-level tracking across the fleet, the <a href="/guides/running-10-plus-agents/">kanban board</a> shows who owns what and what's been completed.</p>
 
     <h3>Is there an API to read agent plan data programmatically?</h3>
     <p>Yes: <code>GET /api/sessions/{name}/plan</code> returns structured JSON with the agent's task list including status for each task (pending, in_progress, completed). Useful for CI integration, custom dashboards, or scripts that trigger on task completion.</p>
 
     <div class="cta-box">
       <h3>Monitor your Claude Code agents from one dashboard</h3>
-      <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. Plan strip, live peek panel, mobile-first, MIT licensed.</p>
+      <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. Plan strip, live peek panel, subagent switcher, scrollback, mobile-first, MIT licensed.</p>
       <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # → https://localhost:8822</code></pre>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
-        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
         <a class="btn" href="/guides/getting-started/">Get started</a>
-        <a class="btn" href="/guides/running-10-plus-agents/">Run 10+ agents</a>
+        <a class="btn" href="/guides/agent-fleet-operations/">Fleet operations guide</a>
       </div>
     </div>
 
     <h2>Related guides</h2>
     <ul>
       <li><a href="/guides/getting-started/">Getting started with amux</a></li>
+      <li><a href="/guides/agent-fleet-operations/">AI Agent Fleet Operations — bulk actions and fleet-level visibility</a></li>
       <li><a href="/guides/running-10-plus-agents/">Running 10+ AI coding agents in parallel</a></li>
       <li><a href="/guides/self-healing-configuration/">Self-healing agent configuration</a></li>
       <li><a href="/guides/setting-up-yolo-mode/">Setting up YOLO mode</a></li>

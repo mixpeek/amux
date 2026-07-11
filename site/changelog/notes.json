@@ -1,5 +1,41 @@
 [
   {
+    "hash": "4ba9266124e919ca6de13988ac8a2dcab88861e1",
+    "short": "4ba9266",
+    "title": "Peek reflows to your screen — no more double-wrapped text on phones",
+    "date": "2026-07-10",
+    "type": "feat",
+    "tags": ["peek", "mobile", "ux", "responsive"],
+    "description": "The peek panel (session terminal output) now measures the viewer's real character width and tells tmux to resize the pane to match. Previously, panes were always sized for a wide desktop terminal (~220 cols), so phones and narrow windows got double-wrapped text and horizontal scrolling. Claude Code reflows the entire transcript on terminal resize, so the fix is automatic: peek probes the viewport, sends the measured width, and Claude Code's output reformats itself to fit. Desktop gets the full-width view; phones get a clean, narrow layout. SW v0.9.85."
+  },
+  {
+    "hash": "10615aeea8d69804fcbcb0c9fc9fb1694561c6ea",
+    "short": "10615ae",
+    "title": "Tap agent rows to switch transcript in peek",
+    "date": "2026-07-10",
+    "type": "feat",
+    "tags": ["peek", "ux", "agents", "navigation"],
+    "description": "The ⏺/◯ agent panel rows in the peek terminal are now tappable: tap a row to switch the transcript view to that agent. Previously, navigating between the main agent and subagents required using the ▲/▼ buttons. Now a single tap on any agent row switches the view, making subagent navigation much faster on both desktop and mobile. Combined with the ▲/▼ buttons and ⌂ home button, you have three ways to navigate between transcripts in a multi-subagent session. SW v0.9.83."
+  },
+  {
+    "hash": "3f3a1628f9f3252bc6b8ac10507edc100c534157",
+    "short": "3f3a162",
+    "title": "Load earlier output — scroll back through the complete session log",
+    "date": "2026-07-10",
+    "type": "feat",
+    "tags": ["peek", "scrollback", "logs", "ux"],
+    "description": "The peek panel now has a 'Load earlier output' bar at the top that fetches older log pages and prepends them above the live terminal view. Previously, the peek panel only showed what was currently in the tmux scroll buffer — if Claude Code had written thousands of lines over a long session, most of that history was inaccessible from the dashboard. Now you can page backward through the complete session log without attaching to a terminal. Each page load fetches the previous chunk of the log file and inserts it above what was already showing. SW v0.9.82."
+  },
+  {
+    "hash": "2d2ab4b216ba12cbe7a069bdbeb87990d2f3774f",
+    "short": "2d2ab4b",
+    "title": "Subagent switcher — navigate between main agent and subagent transcripts in peek",
+    "date": "2026-07-10",
+    "type": "feat",
+    "tags": ["peek", "subagents", "monitoring", "ux"],
+    "description": "When Claude Code spawns subagents (for parallel subtasks or in agentic loops), you can now switch between their transcripts directly in the peek panel. Use the ▲/▼ buttons to step through prev/next agents, or tap any agent row in the panel to jump directly to that transcript. The ⌂ button always returns you to the main agent's output. Previously, the only way to see a subagent's output was to attach to the tmux pane, which required knowing the session name and navigating tmux pane splitting. The subagent switcher makes multi-agent debugging accessible from any browser or the iOS app. SW v0.9.79."
+  },
+  {
     "hash": "4aa57b80d95c3e2888b9cbb66cb6d64a5c1a919e",
     "short": "4aa57b8",
     "title": "Mobile terminal logs — full peek output on phone without losing the bottom nav",
