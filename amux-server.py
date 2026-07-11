@@ -19021,16 +19021,24 @@ function openBulkActions() {
     html += `</div>`;
     html += `</div>`;
   }
-  // Secondary, last: the broad "nudge every idle session" broadcast. Kept for
-  // the occasional fleet-wide restart, but not the headline action — sending
-  // "continue" to a session that's idle because it finished just adds noise.
-  const idleAll = sessions.filter(s => s.running && s.status === 'idle');
-  const _n = idleAll.length;
-  html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
-  html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;color:var(--dim);">&#x25B6; Continue all idle sessions</div>`;
-  html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">Blunt fleet-wide nudge: ${_n} idle session${_n === 1 ? '' : 's'}. Most are idle because they finished and are awaiting you, so this can interrupt more than it helps — prefer the targeted actions above.</div>`;
-  html += `<button class="btn" style="width:100%;"${_n ? '' : ' disabled'} onclick="bulkContinueAll()">Send &quot;continue&quot; to all ${_n} idle session${_n === 1 ? '' : 's'}</button>`;
-  html += `</div>`;
+  // Bottom: one button to resume every LIMITED session at once (rate + credit).
+  // Replaces the old all-idle broadcast — there's no reason to nudge sessions
+  // that are idle because they finished; the useful bulk action is resuming
+  // the ones that actually got stuck.
+  const _seen = new Set();
+  const allLimited = [...transient, ...capped, ...creditLimited]
+    .filter(s => !_seen.has(s.name) && _seen.add(s.name));
+  const _n = allLimited.length;
+  if (_n) {
+    html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
+    html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;color:var(--dim);">&#x25B6; Continue all limited sessions</div>`;
+    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">Send "continue" to every limited session (${_n}) at once. Rate-limited resume immediately; credit-limited resume only if you've already switched model or topped up credits (otherwise use the switch above).</div>`;
+    html += `<button class="btn" style="width:100%;" onclick="bulkContinueLimited()">Send &quot;continue&quot; to ${_n} limited session${_n === 1 ? '' : 's'}</button>`;
+    html += `</div>`;
+  }
+  if (!limited.length && !creditLimited.length) {
+    html += `<div style="padding:8px 0;text-align:center;color:var(--dim);font-size:0.82rem;">No limited sessions.</div>`;
+  }
   body.innerHTML = html;
   document.getElementById('bulk-actions-overlay').classList.add('open');
 }
@@ -19057,18 +19065,20 @@ async function bulkSwitchModel(model) {
 function closeBulkActions() {
   document.getElementById('bulk-actions-overlay').classList.remove('open');
 }
-// Send "continue" to every idle session at once. Actively-generating sessions are
-// skipped (they're mid-turn), and so are 'waiting' ones — those sit on an approval
-// / multiple-choice prompt where typing text would answer the wrong thing.
-async function bulkContinueAll() {
-  const targets = sessions.filter(s => s.running && s.status === 'idle');
-  if (!targets.length) { showToast('No idle sessions to continue'); return; }
-  const ok = await showConfirm(
-    `Send "continue" to ${targets.length} idle session${targets.length === 1 ? '' : 's'}?`,
-    'Send continue', false);
-  if (!ok) return;
+// Send "continue" to every LIMITED session at once — rate-limited (API/usage
+// cap) and credit-limited. This is the useful bulk nudge: sessions that got
+// stuck, not sessions that are idle because they finished.
+async function bulkContinueLimited() {
+  const now = Date.now() / 1000;
+  const seen = new Set();
+  const targets = sessions.filter(s => {
+    const lim = (s.rate_limited_until && s.rate_limited_until > now) || s.credit_limited;
+    if (!lim || seen.has(s.name)) return false;
+    seen.add(s.name); return true;
+  });
+  if (!targets.length) { showToast('No limited sessions to continue'); return; }
   closeBulkActions();
-  showToast(`Sending "continue" to ${targets.length}…`);
+  showToast(`Sending "continue" to ${targets.length} limited…`);
   const results = await Promise.all(targets.map(s =>
     fetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/send', {
       method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
@@ -19077,7 +19087,7 @@ async function bulkContinueAll() {
   ));
   const sent = results.filter(Boolean).length;
   const failed = results.length - sent;
-  showToast(`Sent "continue" to ${sent} session${sent === 1 ? '' : 's'}` + (failed ? ` — ${failed} failed` : ''));
+  showToast(`Sent "continue" to ${sent} limited session${sent === 1 ? '' : 's'}` + (failed ? ` — ${failed} failed` : ''));
 }
 
 async function bulkSendContinue(cappedOnly) {
@@ -22943,7 +22953,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.86';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.87';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -39981,7 +39991,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.86';
+const CACHE = 'amux-v0.9.87';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
