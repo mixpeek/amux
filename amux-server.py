@@ -12783,7 +12783,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     font-weight: 600; text-transform: uppercase; white-space: nowrap; flex-shrink: 0;
   }
   .badge.yolo { background: rgba(210,153,34,0.2); color: var(--yellow); }
-  .card-sched-count { font-size: 0.72rem; color: #a78bfa; padding: 1px 0 2px; cursor: pointer; opacity: 0.85; }
+  .card-sched-count { font-size: 0.72rem; color: var(--dim); padding: 1px 0 2px; cursor: pointer; opacity: 0.9; }
+  .card-sched-count .sched-on { color: var(--green); font-weight: 600; }
+  .card-sched-count .sched-off { color: #f0a020; font-weight: 600; }
   .sched-toggle-label { display:flex;align-items:center;cursor:pointer;flex-shrink:0;margin-top:1px;min-width:44px;min-height:44px;justify-content:center; }
   .sched-actions { display:flex;gap:6px;margin-top:8px;flex-wrap:wrap; }
   .sched-action-btn { font-size:0.72rem;padding:4px 12px; }
@@ -20085,7 +20087,9 @@ function render() {
     const model = sessionConfiguredModel(s);
     const effort = provider === 'claude' ? flagValue(flags, '--effort') : '';
     const pLabel = providerLabel(provider);
-    const schedCount = schedules.filter(sc => sc.session === s.name && sc.enabled).length;
+    const _schedMine = schedules.filter(sc => sc.session === s.name);
+    const schedOn = _schedMine.filter(sc => sc.enabled).length;
+    const schedOff = _schedMine.length - schedOn;
     return `
     <div class="card ${isExp ? 'expanded' : ''}" data-session="${esc(s.name)}" onclick="event.stopPropagation();toggle('${s.name}')">
       <div class="card-header" onclick="headerTap('${s.name}', event)" onmousedown="tileMouseDown(event,'${s.name}')">
@@ -20138,7 +20142,7 @@ function render() {
       ${s.dir ? _renderBranchBadge(s.name, s.branch) : ''}
       ${isExp && s.desc ? `<div class="card-desc">${esc(s.desc)}</div>` : ''}
       ${!isExp && s.task_name ? `<div class="card-preview" style="font-weight:600;color:var(--text);">${esc(s.task_name)}</div>` : ''}
-      ${!isExp && schedCount ? `<div class="card-sched-count" onclick="event.stopPropagation();switchView('scheduler')">&#x23F2; ${schedCount} scheduler${schedCount>1?'s':''}</div>` : ''}
+      ${!isExp && (schedOn + schedOff) ? `<div class="card-sched-count" onclick="event.stopPropagation();switchView('scheduler')" title="${schedOn} enabled, ${schedOff} disabled">&#x23F2; ${[schedOn ? `<span class="sched-on">${schedOn} on</span>` : '', schedOff ? `<span class="sched-off">${schedOff} off</span>` : ''].filter(Boolean).join(' &middot; ')}</div>` : ''}
       ${isExp && s.preview ? `<div class="card-preview">${esc(s.preview)}</div>` : ''}
       ${logSearchMode && _logMatches[s.name] ? (() => {
         const hits = _logMatches[s.name];
@@ -23019,7 +23023,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.89';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.90';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -40107,7 +40111,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.89';
+const CACHE = 'amux-v0.9.90';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
