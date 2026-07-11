@@ -16350,6 +16350,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           </div>
         </div>
         <div class="settings-sep"></div>
+        <div class="settings-section" id="settings-usage-section">
+          <div class="settings-section-label">Subscription usage</div>
+          <div id="settings-usage-body" style="font-size:0.82rem;color:var(--dim);">Loading…</div>
+        </div>
+        <div class="settings-sep"></div>
         <div class="settings-section">
           <div class="settings-section-label">Automation</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;">
@@ -23014,7 +23019,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.88';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.89';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -34696,6 +34701,56 @@ function toggleSettings() {
     loadTaskGuard();
     loadAlertConfig();
     loadTunnelSettings();
+    loadUsage();
+  }
+}
+// Subscription usage — model-agnostic. The server proxies Claude's OAuth usage
+// endpoint and returns limits[]: session (5h), weekly_all, and per-model
+// weekly_scoped entries (scope.model.display_name). We render remaining =
+// 100 − percent for each, colouring by how close to the cap it is.
+async function loadUsage() {
+  const el = document.getElementById('settings-usage-body');
+  if (!el) return;
+  el.textContent = 'Loading…';
+  try {
+    const r = await fetch(API + '/api/usage');
+    const d = await r.json();
+    if (!d.available) { el.innerHTML = '<span style="color:var(--dim);">' + esc(d.reason || 'Usage unavailable') + '</span>'; return; }
+    const limits = (d.limits || []).filter(l => typeof l.percent === 'number');
+    if (!limits.length) { el.innerHTML = '<span style="color:var(--dim);">No usage limits reported</span>'; return; }
+    const label = l => {
+      if (l.kind === 'session') return '5-hour session';
+      const m = l.scope && l.scope.model && l.scope.model.display_name;
+      if (m) return m + ' · weekly';
+      if (l.group === 'weekly' || l.kind.indexOf('weekly') === 0) return 'Weekly (all models)';
+      return l.kind;
+    };
+    const resetTxt = iso => {
+      if (!iso) return '';
+      const dt = new Date(iso); if (isNaN(dt)) return '';
+      const now = Date.now(), diff = dt - now;
+      if (diff <= 0) return 'resets soon';
+      const h = Math.floor(diff / 3600000), dys = Math.floor(h / 24);
+      return 'resets ' + (dys >= 1 ? 'in ' + dys + 'd' : (h >= 1 ? 'in ' + h + 'h' : 'in <1h'));
+    };
+    // session first, then weekly-all, then per-model scoped
+    const order = l => l.kind === 'session' ? 0 : (l.scope && l.scope.model ? 2 : 1);
+    limits.sort((a, b) => order(a) - order(b));
+    el.innerHTML = limits.map(l => {
+      const used = Math.max(0, Math.min(100, Math.round(l.percent)));
+      const rem = 100 - used;
+      const col = used >= 90 ? 'var(--red)' : (used >= 70 ? '#f0a020' : 'var(--green)');
+      return '<div style="margin-bottom:9px;">'
+        + '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px;">'
+        +   '<span style="font-size:0.8rem;color:var(--fg);">' + esc(label(l)) + '</span>'
+        +   '<span style="font-size:0.74rem;color:var(--dim);">' + rem + '% left · ' + esc(resetTxt(l.resets_at)) + '</span>'
+        + '</div>'
+        + '<div style="height:6px;border-radius:4px;background:var(--border);overflow:hidden;">'
+        +   '<div style="height:100%;width:' + used + '%;background:' + col + ';"></div>'
+        + '</div></div>';
+    }).join('');
+  } catch (e) {
+    el.innerHTML = '<span style="color:var(--dim);">Could not load usage</span>';
   }
 }
 async function loadAlertConfig() {
@@ -40052,7 +40107,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.88';
+const CACHE = 'amux-v0.9.89';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
