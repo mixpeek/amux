@@ -10982,6 +10982,35 @@ def send_keys(name: str, keys: str) -> tuple[bool, str]:
             return False, e.stderr.decode(errors="replace")
 
 
+def _resize_pane(name: str, cols: int, rows: int) -> tuple[bool, str]:
+    """Resize a session's tmux window to the peek viewer's dimensions so
+    Claude Code reflows the transcript to the width actually being read —
+    true responsive peek (verified: resize-window triggers a full re-render
+    of the conversation at the new width).
+
+    Refuses when a real terminal client is attached: the attached terminal's
+    size is authoritative, and resizing under it would garble the user's
+    iTerm view."""
+    cols = max(50, min(300, int(cols)))
+    rows = max(20, min(100, int(rows)))
+    t = tmux_name(name)
+    try:
+        r = subprocess.run(["tmux", "list-clients", "-t", t, "-F", "#{client_name}"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return False, "terminal client attached — its size wins"
+        cur = subprocess.run(["tmux", "display-message", "-p", "-t", t,
+                              "#{window_width}x#{window_height}"],
+                             capture_output=True, text=True, timeout=5)
+        if cur.returncode == 0 and cur.stdout.strip() == f"{cols}x{rows}":
+            return True, "already sized"
+        subprocess.run(["tmux", "resize-window", "-t", t, "-x", str(cols), "-y", str(rows)],
+                       capture_output=True, timeout=5)
+        return True, f"resized to {cols}x{rows}"
+    except Exception as e:
+        return False, str(e)
+
+
 def _agent_panel(clean: str):
     """Parse Claude Code's background-agents panel from the pane tail.
 
@@ -22908,7 +22937,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.84';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.85';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -23008,6 +23037,7 @@ function openPeek(name, opts) {
   });
   refreshPeek();
   _schedulePeekPoll();
+  setTimeout(_peekFitPane, 350);   // fit the pane to this viewer's width
   _updateSendSplit();   // sync the Send/Queue button label to the current mode
   _savePeekState();
 }
@@ -23912,6 +23942,51 @@ function _peekTogglePlan() {
   document.getElementById('peek-plan').classList.toggle('open', _peekPlanOpen);
   document.getElementById('peek-plan-list').style.display = _peekPlanOpen ? '' : 'none';
 }
+
+// ── Responsive peek: fit the tmux pane to the viewer ──
+// The pane is the layout engine: Claude Code reflows the whole transcript on
+// terminal resize, so matching the tmux window to the viewer's measured
+// character width makes peek natively responsive (no double-wrapping at
+// phone widths). The server refuses while a real terminal is attached.
+let _peekSizeSent = { session: null, cols: 0 };
+function _peekMeasureCols() {
+  const body = document.getElementById('peek-body');
+  if (!body || !body.clientWidth) return 0;
+  const probe = document.createElement('span');
+  probe.textContent = 'X'.repeat(100);
+  probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;';
+  body.appendChild(probe);
+  const w = probe.getBoundingClientRect().width / 100;
+  probe.remove();
+  if (!w) return 0;
+  return Math.max(50, Math.min(300, Math.floor((body.clientWidth - 16) / w)));
+}
+async function _peekFitPane() {
+  const name = peekSession;
+  if (!name) return;
+  const cols = _peekMeasureCols();
+  if (!cols) return;
+  // Skip near-identical sizes: every resize forces Claude to re-render.
+  if (_peekSizeSent.session === name && Math.abs(_peekSizeSent.cols - cols) <= 4) return;
+  _peekSizeSent = { session: name, cols };
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/resize', {
+      method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({ cols, rows: 50 })
+    });
+    const d = await r.json();
+    if (d.resized && !/already/.test(d.message || '')) {
+      _peekEtag = null; _lastPeekRaw = null;   // repaint at the new width
+      setTimeout(refreshPeek, 450);            // give Claude a beat to reflow
+    }
+  } catch (e) {}
+}
+let _peekFitTimer = null;
+window.addEventListener('resize', () => {
+  if (!peekSession) return;
+  clearTimeout(_peekFitTimer);
+  _peekFitTimer = setTimeout(_peekFitPane, 600);
+});
 
 // ── "Load earlier output" — scrollback for the alt-screen ──
 // tmux keeps zero history for Claude's alternate screen; the pipe-pane log
@@ -39900,7 +39975,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.84';
+const CACHE = 'amux-v0.9.85';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -46307,6 +46382,22 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     _update_meta(name, last_send=int(time.time()))
                 code = 200 if ok else (409 if msg == "not running" else 500)
                 return self._json({"ok": ok, "message": msg}, code)
+            if action == "resize":
+                # Fit the pane to the peek viewer so Claude reflows to the
+                # width being read. Body: {"cols": N, "rows": N}. No-op with
+                # reason when a real terminal client is attached.
+                body = self._read_body()
+                try:
+                    cols = int(body.get("cols", 0))
+                    rows = int(body.get("rows", 50))
+                except Exception:
+                    return self._json({"error": "cols/rows must be integers"}, 400)
+                if not cols:
+                    return self._json({"error": "cols required"}, 400)
+                if not is_running(name):
+                    return self._json({"ok": False, "message": "not running"}, 409)
+                ok, msg = _resize_pane(name, cols, rows)
+                return self._json({"ok": True, "resized": ok, "message": msg})
             if action == "agent-nav":
                 # Switch the pane's displayed agent transcript (subagent
                 # switcher in peek). Body: {"dir": "up"|"down"|"main"} or
