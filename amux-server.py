@@ -16662,6 +16662,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="fe-tb-btn" onclick="_filesNewFile()" title="New file">
         <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M7 1H3a1 1 0 00-1 1v9a1 1 0 001 1h7a1 1 0 001-1V5L7 1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/><path d="M7 1v4h4M6.5 7v4M4.5 9h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
+      <button class="fe-tb-btn" onclick="_filesNewFolder()" title="New folder">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1.5 3a1 1 0 011-1h2.6l1.2 1.5h4.2a1 1 0 011 1V10a1 1 0 01-1 1h-8a1 1 0 01-1-1V3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/><path d="M6.5 5.8v3.4M4.8 7.5h3.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+      </button>
       <button class="fe-tb-btn" onclick="triggerFilesUpload()" title="Upload files">
         <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 9V3M3.5 5.5l3-3 3 3M2 10.5h9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
@@ -16703,6 +16706,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button class="fe-tb-oitem" onclick="_filesNewFile();_filesOverflowClose()">
           <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M7 1H3a1 1 0 00-1 1v9a1 1 0 001 1h7a1 1 0 001-1V5L7 1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/><path d="M7 1v4h4M6.5 7v4M4.5 9h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
           New file
+        </button>
+        <button class="fe-tb-oitem" onclick="_filesNewFolder();_filesOverflowClose()">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1.5 3a1 1 0 011-1h2.6l1.2 1.5h4.2a1 1 0 011 1V10a1 1 0 01-1 1h-8a1 1 0 01-1-1V3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/><path d="M6.5 5.8v3.4M4.8 7.5h3.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          New folder
         </button>
         <button class="fe-tb-oitem" onclick="triggerFilesUpload();_filesOverflowClose()">
           <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 9V3M3.5 5.5l3-3 3 3M2 10.5h9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -23023,7 +23030,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.90';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.91';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -27481,6 +27488,22 @@ function _filesSearchFilter(q) {
   _renderFilesEntries(body, path, data, cacheTs);
 }
 
+async function _filesNewFolder() {
+  const name = prompt('Folder name:');
+  if (!name || !name.trim()) return;
+  const fname = name.trim();
+  if (/[\/\0]/.test(fname) || fname === '.' || fname === '..') { showToast('Invalid folder name'); return; }
+  const fpath = (_filesPath || '/').replace(/\/$/, '') + '/' + fname;
+  try {
+    const r = await fetch(API + '/api/fs/mkdir', {
+      method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ path: fpath })
+    });
+    const d = await r.json();
+    if (d.ok) { showToast('Created ' + fname + '/'); loadFiles(_filesPath); }
+    else showToast(d.error || 'Could not create folder');
+  } catch (e) { showToast('Could not create folder'); }
+}
 function _filesNewFile() {
   const name = prompt('File name (e.g. notes.txt, script.py, data.json):');
   if (!name || !name.trim()) return;
@@ -40111,7 +40134,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.90';
+const CACHE = 'amux-v0.9.91';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -42217,6 +42240,27 @@ class CCHandler(BaseHTTPRequestHandler):
             return
 
         # PUT /api/file — write text content back to a file (markdown/text only)
+        # POST /api/fs/mkdir — create a folder from the Files view. Same
+        # containment rule as file writes (_is_path_allowed); nested creation
+        # allowed, existing dir is a 409.
+        if method == "POST" and path == "/api/fs/mkdir":
+            body = self._read_body()
+            fpath = (body.get("path") or "").strip()
+            if not fpath:
+                return self._json({"error": "missing path"}, 400)
+            p = Path(fpath).expanduser()
+            if not p.is_absolute():
+                return self._json({"error": "absolute path required"}, 400)
+            if not _is_path_allowed(p):
+                return self._json({"error": "access denied"}, 403)
+            try:
+                p.mkdir(parents=True, exist_ok=False)
+                return self._json({"ok": True, "path": str(p)})
+            except FileExistsError:
+                return self._json({"error": "already exists"}, 409)
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
+
         if method == "PUT" and path == "/api/file":
             body = self._read_body()
             fpath = body.get("path", "")
