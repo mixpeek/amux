@@ -18984,15 +18984,10 @@ function openBulkActions() {
   const transient = limited.filter(s => !(s.rate_limit_banner || s.rate_limit_weekly));
   const body = document.getElementById('bulk-actions-body');
   let html = '';
-  // Always offer "continue everything that's idle" — the common case is nudging a
-  // fleet of parked sessions, not just rate-limited ones.
-  const idleAll = sessions.filter(s => s.running && s.status === 'idle');
-  const _n = idleAll.length;
-  html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
-  html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">&#x25B6; Continue all idle sessions</div>`;
-  html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">${_n} idle session${_n === 1 ? '' : 's'} ready. Sessions that are actively working, or waiting on a prompt, are skipped so nothing gets interrupted or mis-answered.</div>`;
-  html += `<button class="btn primary" style="width:100%;"${_n ? '' : ' disabled'} onclick="bulkContinueAll()">Send &quot;continue&quot; to ${_n} idle session${_n === 1 ? '' : 's'}</button>`;
-  html += `</div>`;
+  // Sessions that need attention (rate/credit-limited) come FIRST — those are
+  // the ones with a real reason to be nudged. "Continue everything idle" is a
+  // blunt broadcast (most idle sessions are idle because they finished and are
+  // awaiting a human), so it's demoted to a secondary option at the bottom.
   if (transient.length) {
     html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
     html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">Rate-limited sessions</div>`;
@@ -19016,19 +19011,26 @@ function openBulkActions() {
   if (creditLimited.length) {
     html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
     html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;">&#x26A0;&#xFE0F; Model usage limit reached</div>`;
-    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">${creditLimited.length} session${creditLimited.length>1?'s':''} hit a per-model credit limit. There's no reset time, so "continue" won't help: switch model to unblock now, or top up at /usage-credits.</div>`;
+    html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">${creditLimited.length} session${creditLimited.length>1?'s':''} hit a per-model credit limit. There's no reset time, so switching the model is what unblocks them — each switch also sends "continue" so the interrupted turn resumes. Or top up at /usage-credits.</div>`;
     html += `<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-height:180px;overflow-y:auto;">`;
     creditLimited.forEach(s => { html += _clRow(s); });
     html += `</div>`;
     html += `<div style="display:flex;gap:8px;">`;
-    html += `<button class="btn primary" style="flex:1;" onclick="bulkSwitchModel('sonnet')">Switch to Sonnet</button>`;
-    html += `<button class="btn" style="flex:1;" onclick="bulkSwitchModel('opus')">Switch to Opus</button>`;
+    html += `<button class="btn primary" style="flex:1;" onclick="bulkSwitchModel('sonnet')">Switch to Sonnet &amp; continue</button>`;
+    html += `<button class="btn" style="flex:1;" onclick="bulkSwitchModel('opus')">Switch to Opus &amp; continue</button>`;
     html += `</div>`;
     html += `</div>`;
   }
-  if (!limited.length && !creditLimited.length) {
-    html += `<div style="padding:8px 0;text-align:center;color:var(--dim);font-size:0.82rem;">No rate-limited sessions.</div>`;
-  }
+  // Secondary, last: the broad "nudge every idle session" broadcast. Kept for
+  // the occasional fleet-wide restart, but not the headline action — sending
+  // "continue" to a session that's idle because it finished just adds noise.
+  const idleAll = sessions.filter(s => s.running && s.status === 'idle');
+  const _n = idleAll.length;
+  html += `<div style="padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;">`;
+  html += `<div style="font-weight:600;font-size:0.9rem;margin-bottom:8px;color:var(--dim);">&#x25B6; Continue all idle sessions</div>`;
+  html += `<div style="font-size:0.8rem;color:var(--dim);margin-bottom:12px;">Blunt fleet-wide nudge: ${_n} idle session${_n === 1 ? '' : 's'}. Most are idle because they finished and are awaiting you, so this can interrupt more than it helps — prefer the targeted actions above.</div>`;
+  html += `<button class="btn" style="width:100%;"${_n ? '' : ' disabled'} onclick="bulkContinueAll()">Send &quot;continue&quot; to all ${_n} idle session${_n === 1 ? '' : 's'}</button>`;
+  html += `</div>`;
   body.innerHTML = html;
   document.getElementById('bulk-actions-overlay').classList.add('open');
 }
@@ -19036,17 +19038,21 @@ async function bulkSwitchModel(model) {
   const matched = sessions.filter(s => s.credit_limited);
   if (!matched.length) { closeBulkActions(); return; }
   closeBulkActions();
-  let sent = 0;
-  for (const s of matched) {
-    try {
-      await fetch(API + '/api/sessions/' + encodeURIComponent(s.name) + '/send', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({text: '/model ' + model})
-      });
-      sent++;
-    } catch(e) {}
-  }
-  showToast(`Switched ${sent} session${sent>1?'s':''} to ${model}`);
+  showToast(`Switching ${matched.length} session${matched.length>1?'s':''} to ${model}…`);
+  const _send = (name, text) => fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
+    method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
+    body: JSON.stringify({ text })
+  }).then(r => r.ok).catch(() => false);
+  // Switch the model, then resume: a credit-limited session's turn died on the
+  // limit, so /model alone leaves it parked at the prompt. Send "continue"
+  // after a beat so the /model command lands first and the work picks back up.
+  let switched = 0;
+  await Promise.all(matched.map(async s => {
+    if (await _send(s.name, '/model ' + model)) switched++;
+  }));
+  await new Promise(r => setTimeout(r, 1500));
+  await Promise.all(matched.map(s => _send(s.name, 'continue')));
+  showToast(`Switched ${switched} session${switched>1?'s':''} to ${model} & resumed`);
 }
 function closeBulkActions() {
   document.getElementById('bulk-actions-overlay').classList.remove('open');
@@ -22937,7 +22943,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.85';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.86';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -39975,7 +39981,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.85';
+const CACHE = 'amux-v0.9.86';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
