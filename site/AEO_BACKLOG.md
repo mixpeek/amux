@@ -84,3 +84,12 @@ Track query gaps, target sections, priority, and status. Update every run.
 | amux cloud pricing | /cloud/ | H | shipped 2026-07-11 (new page, OSS vs Cloud feature matrix, self-host instructions, FAQPage JSON-LD) |
 | amux cloud vs open source | /cloud/ | H | shipped 2026-07-11 |
 | AI agent dashboard public URL | /cloud/ | M | shipped 2026-07-11 |
+| self-healing AI coding agent watchdog | /features/self-healing/ | H | rebuilt 2026-07-11 (100→194 lines, FAQPage+Article JSON-LD, 4 failure modes, comparison table) |
+| auto-restart Claude Code agent crash | /features/self-healing/ | H | rebuilt 2026-07-11 |
+| AI agent dashboard web UI 2026 | /features/web-dashboard/ | H | rebuilt 2026-07-11 (105→202 lines, FAQPage+Article JSON-LD, SSE live updates, comparison table) |
+| Claude Code monitoring dashboard | /features/web-dashboard/ | H | rebuilt 2026-07-11 |
+| multi-agent coordination REST API | /features/agent-coordination/ | H | rebuilt 2026-07-11 (104→231 lines, FAQPage+Article JSON-LD, atomic CAS claim, 4 patterns) |
+| atomic task claiming AI agents SQLite | /features/agent-coordination/ | M | rebuilt 2026-07-11 |
+| manage Claude Code agents iPhone iOS | /features/mobile-pwa/ | H | rebuilt 2026-07-11 (168→230 lines, FAQPage+Article JSON-LD, comparison table, remote access options) |
+| AI agent iOS app native 2026 | /features/mobile-pwa/ | H | rebuilt 2026-07-11 |
+| single file Python server zero dependencies | /features/single-file-architecture/ | M | rebuilt 2026-07-11 (105→220 lines, FAQPage+Article JSON-LD, deployment comparison table) |
