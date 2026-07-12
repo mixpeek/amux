@@ -109,27 +109,68 @@ _BLOCKED_SYSTEM_PREFIXES = (
 )
 
 def _is_path_allowed(p: Path) -> bool:
-    """Check if a resolved path is safe to access via file APIs."""
+    """Check if a resolved path is safe to access via file APIs.
+
+    Comparisons are case-INSENSITIVE: macOS/APFS is case-insensitive by default
+    and Path.resolve() does not canonicalize case, so a case-sensitive check let
+    `~/.SSH/id_ed25519` slip past the `.ssh` deny-rule while opening the same
+    file. Casefolding errs toward denying (safe) on case-sensitive volumes too."""
     try:
         resolved = p.resolve()
     except (OSError, ValueError):
         return False
     resolved_str = str(resolved)
-    if resolved_str in _BLOCKED_SYSTEM_PATHS:
+    resolved_lower = resolved_str.lower()
+    if resolved_lower in {s.lower() for s in _BLOCKED_SYSTEM_PATHS}:
         return False
-    if any(resolved_str.startswith(pfx) for pfx in _BLOCKED_SYSTEM_PREFIXES):
+    if any(resolved_lower.startswith(pfx.lower()) for pfx in _BLOCKED_SYSTEM_PREFIXES):
         return False
     home = Path.home().resolve()
     try:
         rel = resolved.relative_to(home)
-        parts = rel.parts
+        parts = tuple(seg.lower() for seg in rel.parts)
         for sensitive in _SENSITIVE_PATHS:
-            sens_parts = Path(sensitive).parts
+            sens_parts = tuple(seg.lower() for seg in Path(sensitive).parts)
             if parts[:len(sens_parts)] == sens_parts:
                 return False
     except ValueError:
         pass
     return True
+
+
+# Basenames/dirs that must NEVER be written via the file APIs regardless of
+# extension — writing any of these is a code-execution primitive (shell rc
+# files, login items, launch agents). Checked on write/upload in addition to
+# _is_path_allowed. Case-insensitive.
+_DANGEROUS_WRITE_BASENAMES = {
+    ".zshrc", ".zprofile", ".zshenv", ".bashrc", ".bash_profile", ".profile",
+    ".bash_login", ".zlogin", ".kshrc", ".cshrc", ".tcshrc", ".login",
+    "authorized_keys", ".netrc", ".pam_environment", ".forward",
+    "config.fish", "crontab",
+}
+_DANGEROUS_WRITE_SUFFIXES = {".plist", ".command", ".desktop", ".scpt", ".terminal"}
+_DANGEROUS_WRITE_DIR_MARKERS = (
+    "/launchagents/", "/launchdaemons/", "/.config/autostart/",
+    "/library/launchagents/", "/library/launchdaemons/",
+    "/.config/systemd/", "/bin/", "/sbin/", "/.git/hooks/",
+)
+
+
+def _is_dangerous_write(p: Path) -> bool:
+    """True if writing to this resolved path would be a code-execution vector."""
+    try:
+        resolved = p.resolve()
+    except (OSError, ValueError):
+        return True
+    name = resolved.name.lower()
+    low = str(resolved).lower()
+    if name in _DANGEROUS_WRITE_BASENAMES:
+        return True
+    if resolved.suffix.lower() in _DANGEROUS_WRITE_SUFFIXES:
+        return True
+    if any(m in low + "/" for m in _DANGEROUS_WRITE_DIR_MARKERS):
+        return True
+    return False
 
 # ── Authentication ───────────────────────────────────────────────────────────
 _AUTH_TOKEN_FILE = _amux_home / "auth_token"
@@ -41170,6 +41211,13 @@ class CCHandler(BaseHTTPRequestHandler):
             proxy_path = "/" + parts[1] if len(parts) > 1 else "/"
             if not proxy_port.isdigit():
                 return self._json({"error": "invalid port"}, 400)
+            # SECURITY: /proxy/ is auth-exempt (public prefix) and forwards to
+            # 127.0.0.1, and amux trusts localhost — so proxying to amux's own
+            # port would be an unauthenticated SSRF-to-self against the ungated
+            # control plane (/send = RCE). Refuse it. The client already skips
+            # amux's own port when rewriting links, so this breaks nothing legit.
+            if int(proxy_port) == _AMUX_SELF_PORT:
+                return self._json({"error": "cannot proxy to amux itself"}, 403)
             proxy_url = f"http://127.0.0.1:{proxy_port}{proxy_path}"
             raw_qs = urlparse(self.path).query
             if raw_qs:
@@ -42529,6 +42577,11 @@ class CCHandler(BaseHTTPRequestHandler):
             # Allow extensionless files and common text extensions
             if ext and ext not in WRITABLE_EXTS:
                 return self._json({"error": "file type not writable: " + ext}, 400)
+            # Block code-execution-vector writes even when extensionless (shell
+            # rc files, launch agents, git hooks, etc.) — these bypass the ext
+            # allowlist above via an empty suffix.
+            if _is_dangerous_write(p):
+                return self._json({"error": "refused: writing this file could execute code"}, 403)
             # Create parent directories if they don't exist (for new files)
             p.parent.mkdir(parents=True, exist_ok=True)
             try:
@@ -42852,6 +42905,11 @@ class CCHandler(BaseHTTPRequestHandler):
             dir_path = data.get("path", "/")
             # Resolve to absolute path
             target = Path(dir_path).expanduser().resolve()
+            # Same containment as the other file APIs — this both prevented an
+            # existence oracle for arbitrary paths and stopped `open`-ing (thus
+            # launching) an arbitrary .app bundle dropped elsewhere.
+            if not _is_path_allowed(target):
+                return self._json({"error": "access denied"}, 403)
             if not target.exists():
                 return self._json({"error": "path not found"}, 404)
             if target.is_file():
@@ -42908,6 +42966,11 @@ class CCHandler(BaseHTTPRequestHandler):
                 safe_name = re.sub(r'[^\w.\- ]', '_', Path(filename).name)[:240] or "upload"
                 data = part.get_payload(decode=True) or b""
                 dest = dest_dir / safe_name
+                # Refuse code-execution-vector uploads (launch agents, shell rc,
+                # .plist/.command/.desktop) — uploads have no extension allowlist.
+                if _is_dangerous_write(dest):
+                    saved.append({"name": safe_name, "error": "refused: could execute code"})
+                    continue
                 if dest.exists():
                     stem, suffix, i = dest.stem, dest.suffix, 1
                     while dest.exists():
@@ -46660,6 +46723,11 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     sha = qs.get("sha", [""])[0]
                     if not sha:
                         return self._json({"error": "sha required"}, 400)
+                    # Validate: a commit-ish only. Prevents `sha` from being a
+                    # git flag like `--output=<path>` (git show/diff honor it →
+                    # arbitrary file write). Hex sha or a conservative ref name.
+                    if not re.fullmatch(r"[0-9a-fA-F]{4,64}|[A-Za-z0-9][A-Za-z0-9._/-]{0,120}", sha):
+                        return self._json({"error": "invalid sha"}, 400)
                     rd = subprocess.run(
                         ["git", "-C", wd, "show", sha, "--stat", "--format=%H%n%an%n%ai%n%s%n%b%x00"],
                         capture_output=True, text=True, timeout=10, errors="replace",
@@ -46684,6 +46752,8 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     file_path = qs.get("file", [""])[0]
                     staged = qs.get("staged", ["0"])[0] == "1"
                     base = qs.get("base", [""])[0]
+                    if base and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,120}", base):
+                        return self._json({"error": "invalid base"}, 400)
                     cmd = ["git", "-C", wd, "diff"]
                     if base:
                         cmd.append(f"{base}..HEAD")
