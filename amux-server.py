@@ -20107,7 +20107,7 @@ function render() {
   if (activeTag && !allTags.includes(activeTag)) activeTag = null;
   if (allTags.length) {
     tagEl.innerHTML = allTags.map(t =>
-      `<span class="tag-filter${activeTag === t ? ' active' : ''}" onclick="toggleTagFilter('${esc(t)}')">${esc(t)}</span>`
+      `<span class="tag-filter${activeTag === t ? ' active' : ''}" onclick="toggleTagFilter('${escJs(t)}')">${esc(t)}</span>`
     ).join('');
   } else {
     tagEl.innerHTML = '';
@@ -20184,19 +20184,19 @@ function render() {
           <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${esc(s.name)}</div>
           <button class="card-menu-btn" onclick="event.stopPropagation();toggleMenu('${s.name}')" title="Options">&#x22EF;</button>
           <div class="card-menu" id="menu-${s.name}">
-          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','task','${esc(s.task_name||"")}')"><span class="mi">&#x270F;</span> Task label${s.task_name ? '' : ' (none)'}</div>
+          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','task','${escJs(s.task_name||"")}')"><span class="mi">&#x270F;</span> Task label${s.task_name ? '' : ' (none)'}</div>
           <div class="card-menu-sep"></div>
           <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();openPeek('${s.name}')"><span class="mi">&#x1F4BB;</span> Peek terminal</div>
           ${s.dir ? `<div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();openExplore('${s.dir.replace(/'/g,"\\'")}','${s.name.replace(/'/g,"\\'")}')"><span class="mi">&#x1F4C1;</span> Browse files</div>` : ''}
           <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();showSessionInfo('${s.name}')"><span class="mi">&#x2139;</span> Info</div>
           <div class="card-menu-item" onclick="event.stopPropagation();togglePin('${s.name}')"><span class="mi">${s.pinned?'&#x1F4CC;':'&#x1F4CC;'}</span> ${s.pinned ? 'Unpin' : 'Pin to top'}</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','name','${esc(s.name)}')"><span class="mi">&#x270E;</span> Rename</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','provider','${esc(provider)}')"><span class="mi">&#x21C4;</span> Provider: ${pLabel}</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','model','${esc(model||"")}','${esc(provider)}')"><span class="mi">&#x2699;</span> Model${model ? ': '+esc(model) : ''}</div>
-          ${provider === 'claude' ? `<div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','effort','${esc(effort||"")}','${esc(provider)}')"><span class="mi">&#x1F9E0;</span> Effort${effort ? ': '+esc(effort) : ' (default)'}</div>` : ''}
+          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','name','${escJs(s.name)}')"><span class="mi">&#x270E;</span> Rename</div>
+          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','provider','${escJs(provider)}')"><span class="mi">&#x21C4;</span> Provider: ${pLabel}</div>
+          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','model','${escJs(model||"")}','${escJs(provider)}')"><span class="mi">&#x2699;</span> Model${model ? ': '+esc(model) : ''}</div>
+          ${provider === 'claude' ? `<div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','effort','${escJs(effort||"")}','${escJs(provider)}')"><span class="mi">&#x1F9E0;</span> Effort${effort ? ': '+esc(effort) : ' (default)'}</div>` : ''}
           <div class="card-menu-item" onclick="event.stopPropagation();toggleYolo('${s.name}')"><span class="mi">${isYolo?'&#x2611;':'&#x2610;'}</span> YOLO mode</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','desc','${esc(s.desc||"")}')"><span class="mi">&#x1F4DD;</span> Description</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','tags','${esc(s.tags.join(", "))}')"><span class="mi">&#x1F3F7;</span> Tags</div>
+          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','desc','${escJs(s.desc||"")}')"><span class="mi">&#x1F4DD;</span> Description</div>
+          <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','tags','${escJs(s.tags.join(", "))}')"><span class="mi">&#x1F3F7;</span> Tags</div>
           <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','dir','${esc(s.dir)}')"><span class="mi">&#x1F4C1;</span> Directory</div>
           ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();doRestart('${s.name}')"><span class="mi">&#x21BB;</span> Restart</div>` : ''}
           ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();doStop('${s.name}')"><span class="mi">&#x23F9;</span> Stop</div>` : ''}
@@ -20238,11 +20238,11 @@ function render() {
         ).join('') + (hits.length > 2 ? `<div class="card-log-hit" style="color:var(--dim);font-style:italic;" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}'})">+${hits.length - 2} more matches</div>` : '');
       })() : ''}
       ${(isYolo || model || s.tags.length || provider) ? `<div class="badges">
-        ${provider && provider !== 'claude' ? `<span class="badge provider ${provider}" onclick="event.stopPropagation();editField('${s.name}','provider','${esc(provider)}')" title="Change provider">${pLabel}</span>` : ''}
+        ${provider && provider !== 'claude' ? `<span class="badge provider ${provider}" onclick="event.stopPropagation();editField('${s.name}','provider','${escJs(provider)}')" title="Change provider">${pLabel}</span>` : ''}
         ${isYolo ? '<span class="badge yolo">YOLO</span>' : ''}
         ${model ? `<span class="badge model" onclick="event.stopPropagation();editField('${s.name}','model','${esc(model)}','${esc(provider)}')" title="Change model">${esc(model)}</span>` : ''}
         ${effort ? `<span class="badge effort" onclick="event.stopPropagation();editField('${s.name}','model','${esc(model)}','${esc(provider)}')" title="Reasoning effort — click to change">${esc(effort)}</span>` : ''}
-        ${s.tags.map(t => `<span class="tag" data-tag="${esc(t)}" onclick="event.stopPropagation();toggleTagFilter('${esc(t)}')">${esc(t)}</span>`).join('')}
+        ${s.tags.map(t => `<span class="tag" data-tag="${esc(t)}" onclick="event.stopPropagation();toggleTagFilter('${escJs(t)}')">${esc(t)}</span>`).join('')}
       </div>` : ''}
       ${!s.running ? `<div style="padding:6px 0 2px;" onclick="event.stopPropagation()">
         <button class="btn primary" style="width:100%;" onclick="doStart('${s.name}')">&#x25B6; Start</button>
@@ -20390,7 +20390,19 @@ function render() {
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
-  return d.innerHTML;
+  // textContent→innerHTML escapes & < >, but NOT quotes — leaving values
+  // interpolated into double-quoted HTML attributes (title="", data-*="")
+  // open to breakout+event-handler injection. Also escape " (safe in every
+  // context). Note: ' is intentionally NOT escaped here so the many
+  // onclick="f('${esc(x)}')" sites that add .replace(/'/g,"\\'") keep working;
+  // use escJs() for values placed inside a single-quoted JS string.
+  return d.innerHTML.replace(/"/g, '&quot;');
+}
+// For a value placed inside a single-quoted JS string within an HTML attribute,
+// e.g. onclick="fn('${escJs(x)}')": HTML-escape (incl. ") then backslash-escape
+// \ and ' so it can't break out of the JS string.
+function escJs(s) {
+  return esc(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 function _cssRect(el) {
   const r = el.getBoundingClientRect();
@@ -23107,7 +23119,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.96';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.97';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -38648,7 +38660,7 @@ async function _gmailOpenThread(threadId, itemEl) {
     card.className = 'gmail-msg-card' + (collapsed ? ' collapsed' : '');
     const body = msg.html_body || msg.text_body.replace(/\\n/g, '<br>') || '(empty)';
     const bodyHtml = msg.html_body
-      ? `<iframe srcdoc="\${body.replace(/"/g,'&quot;')}" style="min-height:200px;max-height:600px;" onload="this.style.height=(this.contentDocument.body.scrollHeight+20)+'px'"></iframe>`
+      ? `<iframe sandbox="" srcdoc="\${body.replace(/"/g,'&quot;')}" style="width:100%;height:440px;border:0;background:#fff;border-radius:6px;"></iframe>`
       : `<div style="white-space:pre-wrap;word-break:break-word;">\${esc(msg.text_body || '(empty)')}</div>`;
     card.innerHTML = `
       <div class="gmail-msg-card-header" onclick="this.closest('.gmail-msg-card').classList.toggle('collapsed')">
@@ -40359,7 +40371,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.96';
+const CACHE = 'amux-v0.9.97';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
