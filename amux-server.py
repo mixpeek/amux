@@ -20633,6 +20633,7 @@ const ALL_TABS = [
   { id: 'calendar',      label: 'Calendar' },
   { id: 'scheduler',     label: 'Scheduler' },
   { id: 'files',         label: 'Files' },
+  { id: 'proxies',       label: 'Proxies' },
   { id: 'logs',          label: 'Logs' },
   { id: 'browser',       label: 'Browser' },
   { id: 'grid',          label: 'Workspace' },
@@ -23064,7 +23065,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.94';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.95';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -27793,10 +27794,17 @@ function _showExploreMenu(path, btn, type) {
   const pw = popup.offsetWidth || 140;
   const ph = popup.offsetHeight || 80;
   const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const vw = window.innerWidth / z, vh = window.innerHeight / z;
+  // Open beside the ⋯ button: align the menu's right edge to the button's
+  // right edge (drops down from the button). If that would clip off the left,
+  // flip to open rightward from the button's left edge. Then clamp fully
+  // on-screen so it's never cut off in a narrow panel.
   let left = r.right - pw;
-  if (left < 8) left = 8;
+  if (left < 8) left = r.left;
+  left = Math.max(8, Math.min(left, vw - pw - 8));
   let top = r.bottom + 4;
-  if (top + ph > window.innerHeight / z) top = r.top - ph - 4;
+  if (top + ph > vh - 8) top = r.top - ph - 4;   // flip above if it overflows
+  top = Math.max(8, Math.min(top, vh - ph - 8));
   popup.style.left = left + 'px';
   popup.style.top = top + 'px';
   setTimeout(() => {
@@ -27864,10 +27872,17 @@ function _showFilesMenu(path, btn, type) {
   const pw = popup.offsetWidth || 160;
   const ph = popup.offsetHeight || 140;
   const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const vw = window.innerWidth / z, vh = window.innerHeight / z;
+  // Open beside the ⋯ button: align the menu's right edge to the button's
+  // right edge (drops down from the button). If that would clip off the left,
+  // flip to open rightward from the button's left edge. Then clamp fully
+  // on-screen so it's never cut off in a narrow panel.
   let left = r.right - pw;
-  if (left < 8) left = 8;
+  if (left < 8) left = r.left;
+  left = Math.max(8, Math.min(left, vw - pw - 8));
   let top = r.bottom + 4;
-  if (top + ph > window.innerHeight / z) top = r.top - ph - 4;
+  if (top + ph > vh - 8) top = r.top - ph - 4;   // flip above if it overflows
+  top = Math.max(8, Math.min(top, vh - ph - 8));
   popup.style.left = left + 'px';
   popup.style.top = top + 'px';
   setTimeout(() => {
@@ -40299,7 +40314,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.94';
+const CACHE = 'amux-v0.9.95';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
