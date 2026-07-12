@@ -494,6 +494,14 @@ Then open `http://<your-ip>:8888` on your phone (use your Tailscale IP if on Tai
 - [Bootstrapped founders](https://amux.io/solutions/bootstrapped-founders/) — ship a product on a solo founder's time budget
 - [All roles →](https://amux.io/solutions/)
 
+## Roadmap
+
+amux is growing from a control-plane dashboard into the **durable operating system around agents** — it owns execution, state, isolation, recovery, observability, and verification, so the model only has to own reasoning. As models get stronger (and more local), that harness keeps its value.
+
+The plan lives in **[the roadmap epic (#46)](https://github.com/mixpeek/amux/issues/46)**: a universal agent-runtime contract, event-sourced session state, automatic worktree isolation, deterministic verification gates, an MCP broker, capability-based permissions, and more.
+
+**We'd love help building it.** The foundational *seams* are maintainer-owned; the *leaves* they unlock — provider adapters, verification runners, MCP tools, eval scenarios, policy hooks — are great contributor work. See **[CONTRIBUTING.md](CONTRIBUTING.md#building-the-harness-roadmap)** and the [`help wanted`](https://github.com/mixpeek/amux/labels/help%20wanted) issues.
+
 ## Resources
 
 - [Getting started guide](https://amux.io/guides/getting-started/)

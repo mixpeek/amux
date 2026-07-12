@@ -46,6 +46,29 @@ Open `https://localhost:8822`. It uses a self-signed cert, so accept the browser
 4. **Verify it works end-to-end**, not just that it parses — drive the actual UI/endpoint you changed.
 5. Match the surrounding style; the dashboard has no build step or framework.
 
+## Building the harness roadmap
+
+amux is becoming the **durable operating system around agents**: it owns execution, state, isolation, recovery, observability, and verification — the model owns reasoning. The roadmap for that layer lives in **[the roadmap epic](https://github.com/mixpeek/amux/issues/46)** and its linked issues.
+
+### Seams first, then leaves
+
+The big architectural pieces are built **seams-first**:
+
+- **Seams (maintainer-owned):** the two interfaces everything else plugs into — the [agent runtime contract + capability registry](https://github.com/mixpeek/amux/issues/47) and [event-sourced session state](https://github.com/mixpeek/amux/issues/48). These land first.
+- **Leaves (great for contributors):** once a seam exists, the work it unlocks is naturally parallel and self-contained — **provider adapters, verification runners, MCP tools, eval scenarios, policy hooks**. If a leaf issue is blocked on a seam, it says so; watch the epic for when it opens up.
+
+If you want to help, comment on a `help wanted` roadmap issue to claim it, or propose a smaller sub-task on the epic.
+
+### Working in one file, in parallel
+
+The whole product is one ~50k-line file, so a dozen contributors can't hack on it at once without colliding. Keep merges clean:
+
+- **Claim before you start** — comment on the issue so two people don't edit the same region.
+- **One issue per PR, one region per PR.** Small, single-purpose diffs merge; sprawling ones rot in conflicts.
+- **Rebase on `main` right before you push** — the file moves fast.
+- **Be additive.** Prefer new functions/handlers behind a clearly-labelled `# ── <feature> ──` section header over rewriting shared regions, so conflicts localize and reviewers can find your code.
+- New subsystems still obey the single-file rule — a "module" here is a well-marked section, not a new file.
+
 ## Mobile & CSS
 
 The dashboard is a mobile-first PWA. New UI must fit the existing `@media (max-width: 600px)` breakpoints, keep touch targets ≥ 44×44, and use `env(safe-area-inset-*)` for anything at screen edges (iOS notch).
