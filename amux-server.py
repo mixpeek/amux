@@ -16818,7 +16818,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           </div>
         </div>
         <div class="settings-section" style="text-align:center;display:flex;flex-direction:column;gap:8px;">
-          <span style="font-size:0.7rem;color:var(--dim);cursor:pointer;" onclick="openSkills();closeSettings()">&#x26A1; Skills &amp; commands</span>
           <span style="font-size:0.7rem;color:var(--dim);cursor:pointer;" onclick="openAbout();closeSettings()">About amux &amp; token stats</span>
           <span style="font-size:0.7rem;color:var(--dim);cursor:pointer;" onclick="openDevtools();closeSettings()">&#x1F6E0; Developer tools</span>
           <span id="logout-btn" style="font-size:0.7rem;color:var(--dim);cursor:pointer;display:none;" onclick="window.location='/api/cloud-logout'">&#x2192; Sign out</span>
@@ -18585,20 +18584,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 
-<!-- Skills modal -->
-<div id="skills-modal" class="overlay" style="z-index:200;" onclick="if(event.target===this)closeSkills()">
-  <div style="display:flex;flex-direction:column;height:100%;max-width:600px;margin:0 auto;width:100%;">
-    <div class="overlay-header">
-      <h2>&#x26A1; Skills library</h2>
-      <div style="display:flex;gap:8px;">
-        <button class="btn primary" onclick="editSkill()" style="font-size:0.8rem;">+ New skill</button>
-        <button class="btn" onclick="closeSkills()">&#x2715;</button>
-      </div>
-    </div>
-    <p style="font-size:0.8rem;color:var(--dim);margin:0 0 14px;">Shared skills for all sessions. Use with <code style="background:var(--card);padding:1px 5px;border-radius:4px;font-size:0.78rem;">/command</code> in Claude Code.</p>
-    <div id="skills-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;"></div>
-  </div>
-</div>
 <!-- Skill editor modal -->
 <div id="skill-edit-modal" class="overlay" style="z-index:210;" onclick="if(event.target===this)closeSkillEdit()">
   <div style="display:flex;flex-direction:column;height:100%;max-width:700px;margin:0 auto;width:100%;">
@@ -23406,7 +23391,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.102';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.103';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -34804,36 +34789,6 @@ function _isBuiltinCmd(cmd) {
   return builtins.has(cmd);
 }
 
-async function openSkills() {
-  const modal = document.getElementById('skills-modal');
-  const list = document.getElementById('skills-list');
-  modal.classList.add('active');
-  list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;text-align:center;padding:20px;">Loading...</div>';
-  try {
-    const skills = await fetch(API + '/api/skills').then(r => r.json());
-    if (!skills.length) {
-      list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;text-align:center;padding:20px;">No skills yet. Click <b>+ New skill</b> to create one.</div>';
-      return;
-    }
-    list.innerHTML = skills.map(s => {
-      const cmd = '/' + esc(s.name);
-      const hint = s.hint ? '<div class="skill-card-hint">' + esc(s.hint) + '</div>' : '';
-      return '<div class="skill-card" style="cursor:pointer;" onclick="editSkill(\'' + esc(s.name) + '\')">' +
-        '<div style="display:flex;align-items:center;justify-content:space-between;">' +
-          '<span class="skill-card-name">' + cmd + '</span>' +
-          '<button class="btn" style="font-size:0.65rem;padding:2px 8px;" onclick="event.stopPropagation();navigator.clipboard.writeText(\'' + esc(s.name) + '\');showToast(\'Copied!\')">Copy</button>' +
-        '</div>' +
-        (s.description ? '<div class="skill-card-desc">' + esc(s.description) + '</div>' : '') +
-        hint +
-      '</div>';
-    }).join('');
-  } catch(e) {
-    list.innerHTML = '<div style="color:var(--red);font-size:0.85rem;text-align:center;padding:20px;">Failed to load skills</div>';
-  }
-}
-function closeSkills() {
-  document.getElementById('skills-modal').classList.remove('active');
-}
 let _skillEditName = null;
 async function editSkill(name) {
   _skillEditName = name || null;
@@ -34875,7 +34830,7 @@ async function saveSkill() {
   if (r.ok) {
     showToast('Saved /' + name);
     closeSkillEdit();
-    openSkills();  // refresh list
+    _skillsTabLoad();  // refresh the Skills tab
   } else {
     showToast('Save failed');
   }
@@ -34887,7 +34842,7 @@ async function deleteSkill() {
   if (r.ok) {
     showToast('Deleted /' + name);
     closeSkillEdit();
-    openSkills();
+    _skillsTabLoad();
   }
 }
 
@@ -40685,7 +40640,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.102';
+const CACHE = 'amux-v0.9.103';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
