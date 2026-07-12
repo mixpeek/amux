@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agent Daily Standup — Wake Up to a Full Progress Report (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="AI agents running overnight with amux post their completed tasks, blockers, and next steps to a shared kanban board. Your morning review is a 5-minute board scan from your phone — not a standup meeting.">
+  <meta name="keywords" content="AI agent daily standup, automate engineering standup with AI, AI morning report coding agents, what did my AI agents do overnight, AI agent progress report, AI coding agent status report, morning review AI engineering team">
+  <link rel="canonical" href="https://amux.io/use-cases/ai-agent-daily-standup/">
+  <meta property="og:title" content="AI Agent Daily Standup — Wake Up to a Full Progress Report (2026)">
+  <meta property="og:description" content="AI agents running overnight with amux post their completed tasks, blockers, and next steps to a shared board. Your morning is a 5-minute phone review, not a standup meeting.">
+  <meta property="og:url" content="https://amux.io/use-cases/ai-agent-daily-standup/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="AI Agent Daily Standup — Wake Up to a Full Progress Report">
+  <meta name="twitter:description" content="AI agents post their own standup to the board at 7am. Review from your phone in 5 minutes. No meeting required.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Use Cases","item":"https://amux.io/use-cases/"},{"@type":"ListItem","position":3,"name":"AI Agent Daily Standup","item":"https://amux.io/use-cases/ai-agent-daily-standup/"}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Daily Standup — Wake Up to a Full Progress Report","description":"AI agents running overnight with amux post their completed tasks, blockers, and next steps to a shared kanban board. Your morning review is a 5-minute board scan from your phone — not a standup meeting.","url":"https://amux.io/use-cases/ai-agent-daily-standup/","datePublished":"2026-07-12","dateModified":"2026-07-12","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},"image":"https://amux.io/og-image.png"}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to set up AI agent daily standups with amux","description":"Configure your AI agent sessions to post a standup summary to the amux board each morning so you can review overnight progress from your phone.","totalTime":"PT10M","step":[{"@type":"HowToStep","position":1,"name":"Open the amux iOS app or PWA","text":"Open the amux dashboard on your phone (iOS app, Android PWA, or browser at https://localhost:8822). This is your morning standup command center."},{"@type":"HowToStep","position":2,"name":"Tap the Board tab and scan for today's standup posts","text":"Your agent sessions post standup summaries as board issues titled 'Standup YYYY-MM-DD'. Filter the board or scroll to today's date. Each session has its own post."},{"@type":"HowToStep","position":3,"name":"Scan BLOCKED items first","text":"Search for 'BLOCKED' in the board. Any agent that hit a blocker overnight flagged it explicitly. These are your action items — send a steering instruction to unblock the agent."},{"@type":"HowToStep","position":4,"name":"Move verified done items","text":"For tasks marked done that you can confirm, move them to 'verified' status. For items still in progress, leave them as 'doing'."},{"@type":"HowToStep","position":5,"name":"Send steering instructions via saved message chips","text":"For sessions still running, open the peek panel and use the steering bar or saved message chips to send next-step instructions. The agent picks them up at its next turn boundary."}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How do I see what my AI agents did overnight?","acceptedAnswer":{"@type":"Answer","text":"Open the amux board on the iOS app or PWA in the morning. If you have standup schedules configured, each agent session posts a summary to the board at a set time (e.g. 7am). The summary shows completed tasks (with files changed), in-progress items, blockers, and what the agent plans to do next. The board is visible from any connected client — desktop, iOS app, or Android PWA."}},{"@type":"Question","name":"Can AI agents replace daily standup meetings?","acceptedAnswer":{"@type":"Answer","text":"For an AI-only team, yes. Each agent posts a structured standup to the shared board at the configured time, and you review it asynchronously from your phone. For a human+AI hybrid team, AI standup posts give the human team visibility into what their automated counterparts did overnight — reducing the cognitive overhead of tracking parallel agent work and eliminating the need to check multiple dashboards."}},{"@type":"Question","name":"How do I schedule an AI agent to post a morning report?","acceptedAnswer":{"@type":"Answer","text":"Use the amux scheduler: create a schedule with schedule_expr 'daily at 7am' and a command asking the agent to summarize its work and post to the board. Example: curl -sk -X POST -H 'Content-Type: application/json' -d '{\"title\":\"Morning standup\",\"session\":\"myproject\",\"command\":\"Summarize the last 8 hours of work. List completed tasks, in-progress items, blockers, and what you plan to do next. Create a board issue titled Standup $(date +%Y-%m-%d) with this summary.\",\"schedule_expr\":\"daily at 7am\"}' https://localhost:8822/api/schedules"}},{"@type":"Question","name":"What should an AI agent standup include?","acceptedAnswer":{"@type":"Answer","text":"A good AI agent standup post includes: (1) completed tasks with a brief note about which files changed, (2) tests passing or failing, (3) PRs opened or updated, (4) explicit BLOCKED items — where the agent stopped and exactly why, and (5) the next planned action. Always end your overnight agent prompts with 'Post a standup summary to the board at the end of your session.' That instruction ensures the agent reports before its context window ends."}},{"@type":"Question","name":"How does the amux board work for team visibility?","acceptedAnswer":{"@type":"Answer","text":"The amux board is a shared SQLite-backed kanban visible to all connected clients — desktop browser, iOS app, and PWA. Agents create board issues atomically via POST /api/board (SQLite compare-and-swap prevents duplicate claims). Humans move issues from 'done' to 'verified' after confirmation. It replaces a separate project management tool for AI-only or human+AI hybrid teams and is accessible from anywhere without a VPN."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/use-cases/">Use Cases</a> <span class="sep">›</span> <span>AI Agent Daily Standup</span></div>
+
+    <h1>AI Agent Daily Standup</h1>
+    <p class="subtitle">AI agents running overnight with amux post their completed tasks, blockers, and next steps to a shared kanban board — your morning review is a 5-minute board scan from your phone instead of a standup meeting. <em>Updated July 2026.</em></p>
+
+    <div class="callout" style="background:var(--bg-2);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;">
+      <p style="margin:0;font-size:1.05rem;"><strong>Quick answer:</strong> Set up a morning report schedule — at 7am, each agent session summarizes yesterday's output to the board, and you review it over coffee. No meeting, no context-switching, no waiting for humans to post updates. Each standup post includes completed items, files changed, test results, PRs opened, blockers, and next planned action.</p>
+    </div>
+
+    <h2>The Three-Part Morning Review</h2>
+
+    <p>The overnight AI standup works in three layers:</p>
+
+    <h3>Part A — Board-first agents</h3>
+    <p>Configure your agent sessions to write board issues throughout the night as they complete tasks. Each completed task becomes a board issue titled with the work done, marked <code>done</code>. Issues that hit a blocker are created with <code>BLOCKED: [reason]</code> in the description. By the time you wake up, the board already reflects the overnight state without any special morning report — the standup summarizes what's already there.</p>
+
+    <h3>Part B — Morning summary schedule</h3>
+    <p>Create a scheduler entry for each session (or one master schedule that broadcasts to all sessions) that fires at 7am:</p>
+    <pre><code>curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Morning standup — myproject",
+    "session": "myproject",
+    "command": "Summarize the last 8 hours of work. List: (1) completed tasks with file changes, (2) in-progress items, (3) any blockers or places you stopped and why, (4) what you plan to do next. Create a board issue titled \"Standup $(date +%Y-%m-%d)\" with this summary.",
+    "schedule_expr": "daily at 7am"
+  }' \
+  https://localhost:8822/api/schedules</code></pre>
+
+    <p>The agent receives this prompt, reflects on its session history, and posts a structured issue to the board before you check your phone.</p>
+
+    <h3>Part C — Phone review</h3>
+    <p>Open the amux iOS app or PWA. Tap the Board tab. You see the night's standup posts in order — one per session. Filter by today's date or search for "Standup" to find this morning's posts instantly.</p>
+
+    <h2>What a Good AI Agent Standup Includes</h2>
+
+    <p>Tell your agents exactly what to include in the standup. A complete standup post contains:</p>
+    <ul>
+      <li><strong>Completed tasks</strong> — what files changed and a one-line why</li>
+      <li><strong>Tests passing / failing</strong> — current test suite status</li>
+      <li><strong>PRs opened or updated</strong> — links to pull requests created during the session</li>
+      <li><strong>BLOCKED items</strong> — explicit flag with the exact reason the agent stopped (missing credentials, ambiguous spec, conflicting requirement, merge conflict)</li>
+      <li><strong>Next planned action</strong> — what the agent will do when you send it back to work</li>
+    </ul>
+    <p>Add this to the end of every overnight agent prompt: <em>"Post a standup summary to the board at the end of your session, or before your context runs out."</em> That instruction ensures the report is posted even if the context window fills before morning.</p>
+
+    <h2>The 5-Minute Morning Review Workflow</h2>
+
+    <ol>
+      <li><strong>Open amux iOS app or PWA</strong> — the sessions view shows live status dots for each agent</li>
+      <li><strong>Tap Board tab → scan for today's standup posts</strong> — search "Standup" or filter by date</li>
+      <li><strong>Scan BLOCKED items first</strong> — these need your input before agents can continue</li>
+      <li><strong>Move verified done items to 'verified'</strong> — mark confirmed completed work</li>
+      <li><strong>Send steering instructions</strong> — open peek panel on any running session, use the steering bar or saved message chips to send next steps</li>
+    </ol>
+
+    <p>Total time: 5 minutes. You never open a terminal, never attach to a tmux session, never sift through git log. The board is the single pane of truth.</p>
+
+    <h2>What Happens When an Agent Is Blocked</h2>
+
+    <p>A properly configured agent flags blockers explicitly — not as a missing commit, but as a board issue with "BLOCKED" in the title or description. Three blocker types to handle differently:</p>
+    <ul>
+      <li><strong>Ambiguous spec</strong> — you need to clarify the requirement. Send a steering message with the answer.</li>
+      <li><strong>Missing credentials / access</strong> — you need to rotate an API key or grant access. Do it in your tooling, then tell the agent to continue.</li>
+      <li><strong>Merge conflict</strong> — you need to merge the upstream changes. Resolve locally, push, then send "Pull the latest and continue."</li>
+    </ul>
+    <p>The key is that the agent stops cleanly at a known point rather than silently hallucinating past a blocker or consuming tokens in a loop. Self-healing handles crashes and context overflow; blockers that require human judgment always surface to the board.</p>
+
+    <h2>Standup Comparison</h2>
+
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Approach</th>
+            <th style="padding:10px 16px;text-align:center;">Time required</th>
+            <th style="padding:10px 16px;text-align:center;">Blockers surfaced</th>
+            <th style="padding:10px 16px;text-align:center;">Overnight visibility</th>
+            <th style="padding:10px 16px;text-align:center;">Context depth</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">amux board morning review</td>
+            <td style="padding:10px 16px;text-align:center;">5 min, async</td>
+            <td style="padding:10px 16px;text-align:center;">✓ explicit BLOCKED flag</td>
+            <td style="padding:10px 16px;text-align:center;">✓ full overnight</td>
+            <td style="padding:10px 16px;text-align:center;">Full session output + board</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Human daily standup</td>
+            <td style="padding:10px 16px;text-align:center;">15–30 min, sync</td>
+            <td style="padding:10px 16px;text-align:center;">✓</td>
+            <td style="padding:10px 16px;text-align:center;">✗ no overnight</td>
+            <td style="padding:10px 16px;text-align:center;">What people remember</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">GitHub commit digest</td>
+            <td style="padding:10px 16px;text-align:center;">3 min</td>
+            <td style="padding:10px 16px;text-align:center;">✗</td>
+            <td style="padding:10px 16px;text-align:center;">Partial (commits only)</td>
+            <td style="padding:10px 16px;text-align:center;">Code changes, no blockers</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Slack bot daily digest</td>
+            <td style="padding:10px 16px;text-align:center;">2 min, async</td>
+            <td style="padding:10px 16px;text-align:center;">✗</td>
+            <td style="padding:10px 16px;text-align:center;">Partial (message summary)</td>
+            <td style="padding:10px 16px;text-align:center;">Surface-level only</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">Manual terminal check</td>
+            <td style="padding:10px 16px;text-align:center;">15+ min</td>
+            <td style="padding:10px 16px;text-align:center;">If you find them</td>
+            <td style="padding:10px 16px;text-align:center;">✓ if you scroll enough</td>
+            <td style="padding:10px 16px;text-align:center;">Raw terminal output</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Frequently Asked Questions</h2>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">How do I see what my AI agents did overnight?</summary>
+      <p style="margin:0.8rem 0 0;">Open the amux board on the iOS app or PWA in the morning. If standup schedules are configured, each session posts a summary to the board at the scheduled time (e.g. 7am). Each summary shows completed tasks, in-progress items, blockers, and next steps — all visible without opening a terminal.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Can AI agents replace daily standup meetings?</summary>
+      <p style="margin:0.8rem 0 0;">For an AI-only team, yes — each agent posts a structured standup to the shared board and you review it asynchronously. For a human+AI hybrid team, AI standup posts give the human team visibility into what their automated counterparts did, eliminating the need to check separate dashboards and reducing the cognitive overhead of tracking parallel work.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">How do I schedule an AI agent to post a morning report?</summary>
+      <p style="margin:0.8rem 0 0;">Use the amux scheduler API or dashboard. Create a schedule with <code>"schedule_expr": "daily at 7am"</code> and a command that asks the session to summarize its work and post to the board. You can also configure it via the amux dashboard under the Scheduler tab — no terminal required.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What should an AI agent standup include?</summary>
+      <p style="margin:0.8rem 0 0;">Completed tasks (with files changed), tests passing/failing, PRs opened or updated, explicit BLOCKED items (where the agent stopped and why), and next planned action. Add "Post a standup summary to the board at the end of your session" to every overnight agent prompt — this ensures the report is posted before the context window ends.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">How does the amux board work for team visibility?</summary>
+      <p style="margin:0.8rem 0 0;">The amux board is a shared SQLite-backed kanban visible to all connected clients — desktop browser, iOS app, and Android PWA. Agents create issues atomically via the REST API (SQLite compare-and-swap prevents duplicate work). Humans move issues from 'done' to 'verified' after confirmation. No separate project management tool needed for AI-only or human+AI teams.</p>
+    </details>
+
+    <div class="cta-box">
+      <h3>Run your AI engineering team overnight — wake up to a full standup report</h3>
+      <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. Self-healing, single Python file, zero external dependencies, MIT licensed.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822</code></pre>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
+        <a class="btn" href="/guides/getting-started/">Get started →</a>
+      </div>
+    </div>
+
+    <p style="margin-top:2rem;"><strong>Related:</strong>
+      <a href="/guides/kanban-board-for-agents/">Kanban board for agents</a> ·
+      <a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep</a> ·
+      <a href="/features/mobile-pwa/">iOS app &amp; mobile PWA</a> ·
+      <a href="/use-cases/ai-agent-google-calendar/">AI agents + Google Calendar</a> ·
+      <a href="/guides/claude-code-plan-monitoring/">Monitor Claude Code agents</a> ·
+      <a href="/use-cases/">All use cases →</a>
+    </p>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Use Cases</div>
+          <ul>
+            <li><a href="/use-cases/ai-coding-while-you-sleep/">Overnight coding</a></li>
+            <li><a href="/use-cases/ai-agent-google-calendar/">Calendar sync</a></li>
+            <li><a href="/use-cases/parallel-feature-development/">Parallel features</a></li>
+            <li><a href="/use-cases/">All use cases</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/features/">Features</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/pricing/">Pricing</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
