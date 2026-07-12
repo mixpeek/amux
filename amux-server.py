@@ -4251,7 +4251,7 @@ _STEER_SETTLE_SECS = float(os.environ.get("AMUX_STEER_SETTLE_SECS", "6"))
 _steer_settle_since: dict = {}   # name -> monotonic ts of first deliverable observation
 
 
-def _steer_try_deliver(name: str, status: str) -> None:
+def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
     """Deliver the head of a session's steering queue once it has sat at a turn
     boundary (raw status idle/waiting) *continuously* for _STEER_SETTLE_SECS.
 
@@ -4260,13 +4260,22 @@ def _steer_try_deliver(name: str, status: str) -> None:
     idle on a later confirming tick before anything is sent, and any active
     frame in the meantime resets it. Shared by the 60s snapshot loop and the 4s
     steering tick; the in-flight marker under the lock prevents the two loops
-    from double-delivering the same message."""
+    from double-delivering the same message.
+
+    `raw` (the tmux frame) lets us look past the main loop: a session whose main
+    loop rests at the prompt while a background subagent is still working is NOT
+    done, so an in-flight subagent holds steering exactly like an active frame
+    (mirrors the client-facing status). Only 'idle' is suppressed this way — a
+    'waiting' prompt genuinely needs the user's input regardless of subagents."""
     now = time.monotonic()
+    deliverable = status in ("waiting", "idle")
+    if deliverable and status == "idle" and raw and _has_running_subagent(raw):
+        deliverable = False  # main loop idle but a subagent is still running
     with _steering_lock:
         queue = _steering_queue.get(name, [])
-        if not queue or status not in ("waiting", "idle"):
-            # Working again (active/unknown) or nothing queued → drop the timer
-            # so the next idle stretch has to settle again from scratch.
+        if not queue or not deliverable:
+            # Working again (active/unknown/subagent) or nothing queued → drop
+            # the timer so the next idle stretch has to settle from scratch.
             _steer_settle_since.pop(name, None)
             return
         first = _steer_settle_since.get(name)
@@ -4314,7 +4323,7 @@ def _steering_fast_tick():
             raw = tmux_capture(name, 60)
             if not raw:
                 continue
-            _steer_try_deliver(name, _detect_claude_status(raw))
+            _steer_try_deliver(name, _detect_claude_status(raw), raw)
         except Exception:
             pass
 
@@ -4717,7 +4726,7 @@ def _snapshot_all_sessions_inner():
                 actions.pop("ac_waiting_since", None)
 
             # ── 5. Steering: deliver queued messages at turn boundary ────────
-            _steer_try_deliver(name, status)
+            _steer_try_deliver(name, status, output)
 
         except Exception:
             pass
