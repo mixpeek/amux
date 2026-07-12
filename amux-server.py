@@ -5630,21 +5630,10 @@ def _auto_trust_dir(work_dir: str):
 
 
 def _sync_skills_and_cli():
-    """Sync skills to ~/.claude/commands/ and install the amux CLI stub (once at startup)."""
+    """Sync skills to every provider's command dir and install the amux CLI stub (once at startup)."""
     import pathlib as _pathlib
-    # ── ~/.claude/commands/ — skills as slash commands ────────────────────────
-    try:
-        commands_dir = _pathlib.Path.home() / ".claude" / "commands"
-        commands_dir.mkdir(parents=True, exist_ok=True)
-        db = get_db()
-        rows = db.execute("SELECT name, content FROM skills").fetchall()
-        for row in rows:
-            try:
-                (commands_dir / (row["name"] + ".md")).write_text(row["content"])
-            except Exception:
-                pass
-    except Exception:
-        pass
+    # ── Skills as /commands for Claude, Codex AND Gemini (model-agnostic) ──────
+    _sync_skills_to_commands()
 
     # ── /usr/local/bin/amux — CLI stub for sessions ───────────────────────────
     _amux_stub = r"""#!/bin/sh
@@ -5819,19 +5808,69 @@ def _auto_trust_codex_dir(work_dir: str):
         pass
 
 
+def _parse_skill_md(content: str) -> tuple:
+    """Split a skill's markdown into (description, body). Frontmatter optional."""
+    desc, body = "", content
+    if content.startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) == 3:
+            fm, body = parts[1], parts[2].lstrip("\n")
+            m = re.search(r'(?mi)^description:\s*(.+)$', fm)
+            if m:
+                desc = m.group(1).strip().strip('"\'')
+    return desc, body
+
+
+def _skill_provider_files(name: str, content: str) -> list:
+    """Model-agnostic: the per-provider custom-command file for one skill, so a
+    skill is a /command in Claude, Codex AND Gemini regardless of which model a
+    session runs. Returns [(path, data)] (data is unused for removal)."""
+    import pathlib as _p
+    home = _p.Path.home()
+    desc, body = _parse_skill_md(content)
+    # Claude Code (~/.claude/commands) and Codex (~/.codex/prompts) both read a
+    # markdown command/prompt file verbatim, invoked as /<name>.
+    files = [
+        (home / ".claude" / "commands" / (name + ".md"), content),
+        (home / ".codex" / "prompts" / (name + ".md"), content),
+    ]
+    # Gemini custom commands are TOML with a required `prompt` (+ optional description).
+    def _toml_block(s):
+        return s.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+    gem = ""
+    if desc:
+        gem += 'description = "' + desc.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ") + '"\n'
+    gem += 'prompt = """\n' + _toml_block(body) + '\n"""\n'
+    files.append((home / ".gemini" / "commands" / (name + ".toml"), gem))
+    return files
+
+
+def _write_skill_to_providers(name: str, content: str) -> None:
+    for path, data in _skill_provider_files(name, content):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(data)
+        except Exception:
+            pass
+
+
+def _remove_skill_from_providers(name: str) -> None:
+    for path, _ in _skill_provider_files(name, ""):
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception:
+            pass
+
+
 def _sync_skills_to_commands():
-    """Write a single skill to ~/.claude/commands/ after save."""
+    """Sync every skill to each provider's command dir (Claude/Codex/Gemini), so
+    a skill is a /command regardless of the session's model. Called after a save."""
     try:
-        import pathlib as _p
-        commands_dir = _p.Path.home() / ".claude" / "commands"
-        commands_dir.mkdir(parents=True, exist_ok=True)
         db = get_db()
         rows = db.execute("SELECT name, content FROM skills").fetchall()
         for row in rows:
-            try:
-                (commands_dir / (row["name"] + ".md")).write_text(row["content"])
-            except Exception:
-                pass
+            _write_skill_to_providers(row["name"], row["content"])
     except Exception:
         pass
 
@@ -16799,6 +16838,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-logs" onclick="switchView('logs')">Logs</button>
   <button id="tab-grid" onclick="enterGridMode()">Workspace</button>
   <button id="tab-notes" onclick="switchView('notes')">Notes</button>
+  <button id="tab-skills" onclick="switchView('skills')">Skills</button>
   <button id="tab-crm" onclick="switchView('crm')">People</button>
   <button id="tab-map" onclick="switchView('map')">Map</button>
   <button id="tab-metrics" onclick="switchView('metrics')">Metrics</button>
@@ -20905,6 +20945,7 @@ const ALL_TABS = [
   { id: 'browser',       label: 'Browser' },
   { id: 'grid',          label: 'Workspace' },
   { id: 'notes',         label: 'Notes' },
+  { id: 'skills',        label: 'Skills' },
   { id: 'crm',           label: 'People' },
   { id: 'map',           label: 'Map' },
   { id: 'metrics',       label: 'Metrics' },
@@ -20917,8 +20958,8 @@ let hiddenTabs = (function() {
     const s = localStorage.getItem('amux_hidden_tabs');
     if (s !== null) return new Set(JSON.parse(s));
   } catch(e) {}
-  // Default visible tabs: sessions, files, scheduler, board, workspace, notes, browser
-  return new Set(['logs','metrics','crm','torrents','terminal','skills']);
+  // Default visible tabs: sessions, files, scheduler, board, workspace, notes, skills, browser
+  return new Set(['logs','metrics','crm','torrents','terminal']);
 })();
 
 let tabOrder = (function() {
@@ -23365,7 +23406,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.101';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.102';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -29933,9 +29974,9 @@ function _chromeSave() {
 function switchView(view) {
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
   activeView = view;
-  const _svIds = ['session','board','calendar','scheduler','files','proxies','logs','notes','crm','map','metrics','torrents','terminal','browser','graph'];
-  const _svNames = ['sessions','board','calendar','scheduler','files','proxies','logs','notes','crm','map','metrics','torrents','terminal','browser','graph'];
-  const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','flex','','flex'];
+  const _svIds = ['session','board','calendar','scheduler','files','proxies','logs','notes','skills','crm','map','metrics','torrents','terminal','browser','graph'];
+  const _svNames = ['sessions','board','calendar','scheduler','files','proxies','logs','notes','skills','crm','map','metrics','torrents','terminal','browser','graph'];
+  const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','','flex'];
   for (let i = 0; i < _svIds.length; i++) {
     const ve = document.getElementById(_svIds[i] + '-view');
     if (ve) ve.style.display = view === _svNames[i] ? (_svDisplay[i] || '') : 'none';
@@ -40644,7 +40685,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.101';
+const CACHE = 'amux-v0.9.102';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -42408,6 +42449,9 @@ class CCHandler(BaseHTTPRequestHandler):
                     f.unlink()
             except Exception:
                 pass
+            # Remove from every provider's command dir so a deleted skill stops
+            # showing up as a /command in Claude/Codex/Gemini.
+            _remove_skill_from_providers(name)
             return self._json({"ok": True})
 
         # GET /api/prefs — read all prefs (or ?key=X for one)
