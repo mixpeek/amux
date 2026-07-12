@@ -4241,6 +4241,32 @@ def _steer_enqueue(name: str, text: str) -> str:
     return msg_id
 
 
+_STEER_HISTORY_KEEP = 100  # per-session cap on delivered-steer log rows
+
+
+def _steer_record_history(name: str, text: str, queued_at=None, msg_id: str = "") -> None:
+    """Log a steering message that was actually delivered to a session, so the
+    steering tab can show what was sent (queue rows are deleted on delivery).
+    Best-effort: never let history bookkeeping break a delivery. Pruned to the
+    most recent _STEER_HISTORY_KEEP rows per session."""
+    try:
+        hid = msg_id or f"steerh-{int(time.time()*1000)}"
+        db = get_db()
+        db.execute(
+            "INSERT OR REPLACE INTO steering_history(id, session, text, queued_at, delivered_at) "
+            "VALUES(?,?,?,?,?)",
+            (hid, name, text, queued_at, time.time()),
+        )
+        db.execute(
+            "DELETE FROM steering_history WHERE session=? AND id NOT IN "
+            "(SELECT id FROM steering_history WHERE session=? ORDER BY delivered_at DESC LIMIT ?)",
+            (name, name, _STEER_HISTORY_KEEP),
+        )
+        db.commit()
+    except Exception:
+        pass
+
+
 # A single tmux frame that momentarily reads idle is not proof a session
 # finished its task — captures tear, and a session pauses briefly between steps.
 # Before delivering steering we require the session to read idle/waiting
@@ -4302,6 +4328,7 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
             db.commit()
         except Exception:
             pass
+        _steer_record_history(name, msg["text"], msg.get("queued_at"), msg["id"])
         _push_alert("steering_delivered", name,
                     f"Steering message delivered to '{name}'")
     else:
@@ -5332,6 +5359,16 @@ CREATE TABLE IF NOT EXISTS steering_queue (
     queued_at   REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_steering_session ON steering_queue(session);
+-- Log of steering messages that were actually delivered to a session, so the
+-- steering tab can show what was sent (queued messages are deleted on delivery).
+CREATE TABLE IF NOT EXISTS steering_history (
+    id           TEXT PRIMARY KEY,
+    session      TEXT NOT NULL,
+    text         TEXT NOT NULL,
+    queued_at    REAL,
+    delivered_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_steering_hist_session ON steering_history(session, delivered_at DESC);
 """
 
 
@@ -17973,7 +18010,14 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <span id="peek-steering-count" style="flex:1;font-size:0.82rem;color:var(--dim);align-self:center;"></span>
       <button class="btn" style="font-size:0.8rem;padding:5px 12px;" onclick="_steeringClearAll()">Clear all</button>
     </div>
-    <div class="peek-tasks-list" id="peek-steering-list" style="gap:6px;"></div>
+    <div class="peek-tasks-list" id="peek-steering-list" style="gap:6px;flex:none;"></div>
+    <div id="peek-steering-history-wrap" style="margin-top:14px;display:none;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span style="font-size:0.8rem;font-weight:600;">Sent history</span>
+        <span id="peek-steering-history-count" style="font-size:0.72rem;color:var(--dim);flex:1;"></span>
+      </div>
+      <div class="peek-tasks-list" id="peek-steering-history-list" style="gap:6px;"></div>
+    </div>
   </div>
   <!-- Issues panel (board issues for this session) -->
   <div id="peek-issues-panel" class="peek-tasks-panel">
@@ -21888,7 +21932,7 @@ function setPeekTab(tab) {
     _transcriptTimer = setInterval(() => loadPeekTranscript(false), 3000);
   } else { transcript.classList.remove('active'); }
   const steering = document.getElementById('peek-steering-panel');
-  if (tab === 'steering') { steering.classList.add('active'); _steeringRender(); loadPeekInstructions(); }
+  if (tab === 'steering') { steering.classList.add('active'); _steerHistLoadedFor = null; _steeringRender(); loadPeekInstructions(); }
   else { steering.classList.remove('active'); }
   const issues = document.getElementById('peek-issues-panel');
   if (tab === 'issues') { issues.classList.add('active'); renderPeekIssues(); }
@@ -21938,6 +21982,9 @@ async function savePeekInstructions(apply) {
 }
 
 // ── Steering panel ──
+let _steerLastQueueLen = 0;
+let _steerHistLoadedFor = null;
+
 function _steeringRender() {
   if (!peekSession) return;
   const sess = sessions.find(s => s.name === peekSession);
@@ -21947,21 +21994,50 @@ function _steeringRender() {
   countEl.textContent = queue.length ? queue.length + ' queued' : 'No queued messages';
   if (!queue.length) {
     list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:20px 0;text-align:center;">No steering messages queued.<br>Send a message while the session is active to queue it.</div>';
-    return;
+  } else {
+    list.innerHTML = queue.map(m => {
+      const ago = timeAgo(m.queued_at);
+      return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:0.85rem;color:var(--fg);white-space:pre-wrap;word-break:break-word;">${esc(m.text)}</div>
+          <div style="font-size:0.75rem;color:var(--dim);margin-top:4px;">Queued ${ago}</div>
+        </div>
+        <div style="display:flex;gap:4px;flex-shrink:0;">
+          <button class="btn primary" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringSendNow('${m.id}')">Send now</button>
+          <button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringCancel('${m.id}')">✕</button>
+        </div>
+      </div>`;
+    }).join('');
   }
-  list.innerHTML = queue.map(m => {
-    const ago = timeAgo(m.queued_at);
-    return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;">
+  // Refresh the sent-history log when the tab/session was just (re)opened or
+  // whenever the queue shrank — a message just left the queue (delivered/sent).
+  const prevLen = _steerLastQueueLen;
+  _steerLastQueueLen = queue.length;
+  if (_steerHistLoadedFor !== peekSession || queue.length < prevLen) _steeringLoadHistory();
+}
+
+async function _steeringLoadHistory() {
+  if (!peekSession) return;
+  const forSess = peekSession;
+  _steerHistLoadedFor = peekSession;
+  const wrap = document.getElementById('peek-steering-history-wrap');
+  const hList = document.getElementById('peek-steering-history-list');
+  const hCount = document.getElementById('peek-steering-history-count');
+  if (!wrap) return;
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer?history=1');
+    const hist = await r.json();
+    if (peekSession !== forSess) return;   // user switched away mid-fetch
+    if (!Array.isArray(hist) || !hist.length) { wrap.style.display = 'none'; return; }
+    wrap.style.display = 'block';
+    hCount.textContent = hist.length >= 100 ? 'last 100' : hist.length + ' sent';
+    hList.innerHTML = hist.map(m => `<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 12px;background:rgba(255,255,255,0.02);border:1px solid var(--border);border-radius:8px;">
       <div style="flex:1;min-width:0;">
-        <div style="font-size:0.85rem;color:var(--fg);white-space:pre-wrap;word-break:break-word;">${esc(m.text)}</div>
-        <div style="font-size:0.75rem;color:var(--dim);margin-top:4px;">Queued ${ago}</div>
+        <div style="font-size:0.82rem;color:var(--dim);white-space:pre-wrap;word-break:break-word;">${esc(m.text)}</div>
+        <div style="font-size:0.72rem;color:var(--dim);margin-top:4px;">Sent ${timeAgo(m.delivered_at)}</div>
       </div>
-      <div style="display:flex;gap:4px;flex-shrink:0;">
-        <button class="btn primary" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringSendNow('${m.id}')">Send now</button>
-        <button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_steeringCancel('${m.id}')">✕</button>
-      </div>
-    </div>`;
-  }).join('');
+    </div>`).join('');
+  } catch(e) { /* keep whatever was shown */ }
 }
 
 function _steeringUpdateBadge() {
@@ -21981,7 +22057,7 @@ async function _steeringSendNow(msgId) {
   try {
     await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', {
       method: 'DELETE', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({id: msgId})
+      body: JSON.stringify({id: msgId, sent: true})
     });
     await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/send', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -21989,6 +22065,7 @@ async function _steeringSendNow(msgId) {
     });
     await fetchSessions();
     _steeringRender();
+    _steeringLoadHistory();
     _steeringUpdateBadge();
     showToast('Sent to ' + peekSession);
   } catch(e) { showToast('Failed to send'); }
@@ -23158,7 +23235,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.98';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.99';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -40428,7 +40505,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.98';
+const CACHE = 'amux-v0.9.99';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -46882,6 +46959,16 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 content = mem_file.read_text(errors="replace") if mem_file.exists() else ""
                 return self._json({"content": content, "path": str(mem_file)})
             if action == "steer":
+                if qs.get("history", ["0"])[0] == "1":
+                    rows = get_db().execute(
+                        "SELECT id, text, queued_at, delivered_at FROM steering_history "
+                        "WHERE session=? ORDER BY delivered_at DESC LIMIT 100", (name,)
+                    ).fetchall()
+                    return self._json([
+                        {"id": r["id"], "text": r["text"],
+                         "queued_at": r["queued_at"], "delivered_at": r["delivered_at"]}
+                        for r in rows
+                    ])
                 with _steering_lock:
                     queue = list(_steering_queue.get(name, []))
                 return self._json(queue)
@@ -46924,13 +47011,18 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
             if method == "DELETE":
                 body = self._read_body()
                 msg_id = body.get("id", "")
+                # "Send now" removes a queued item AND delivers it — flag it so we
+                # log it to history like an auto-delivered steer. A plain cancel
+                # (sent falsy) just drops the item and records nothing.
+                sent = bool(body.get("sent"))
                 with _steering_lock:
+                    q = _steering_queue.get(name, [])
+                    sent_msg = next((m for m in q if m["id"] == msg_id), None) if msg_id else None
                     if msg_id:
-                        q = _steering_queue.get(name, [])
                         _steering_queue[name] = [m for m in q if m["id"] != msg_id]
                         removed = len(q) - len(_steering_queue[name])
                     else:
-                        removed = len(_steering_queue.get(name, []))
+                        removed = len(q)
                         _steering_queue[name] = []
                 db = get_db()
                 if msg_id:
@@ -46938,6 +47030,9 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 else:
                     db.execute("DELETE FROM steering_queue WHERE session=?", (name,))
                 db.commit()
+                if sent and sent_msg:
+                    _steer_record_history(name, sent_msg["text"],
+                                          sent_msg.get("queued_at"), sent_msg["id"])
                 return self._json({"ok": True, "cleared": removed})
             if method == "POST":
                 body = self._read_body()
@@ -47394,6 +47489,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                                 _steering_queue.setdefault(new_name, []).extend(q)
                         db2 = get_db()
                         db2.execute("UPDATE steering_queue SET session=? WHERE session=?", (new_name, name))
+                        db2.execute("UPDATE steering_history SET session=? WHERE session=?", (new_name, name))
                         db2.commit()
                     except Exception:
                         pass
