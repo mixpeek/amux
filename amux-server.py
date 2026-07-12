@@ -1019,6 +1019,102 @@ def _claude_oneshot(prompt: str, model: str = "haiku", timeout: int = 35) -> tup
         return ("", str(e))
 
 
+# Peek "Look up" should ride whatever provider the peeked session already uses,
+# on that provider's fastest/lightest model — so a Gemini- or Ollama-only setup
+# doesn't need an Anthropic key just to explain a snippet. Not the session's own
+# (possibly heavy) model: the point is a cheap, snappy answer.
+_PROVIDER_LOOKUP_MODEL = {
+    "claude": "haiku",
+    "gemini": "gemini-2.5-flash-lite",
+    "codex":  "gpt-5-mini",
+}
+
+
+def _session_provider(name: str) -> str:
+    if not name:
+        return "claude"
+    try:
+        cfg = parse_env_file(CC_SESSIONS / f"{name}.env")
+        return (cfg.get("CC_PROVIDER") or "claude").strip().lower() or "claude"
+    except Exception:
+        return "claude"
+
+
+def _session_model_flag(name: str) -> str:
+    try:
+        cfg = parse_env_file(CC_SESSIONS / f"{name}.env")
+        m = re.search(r'(?:--model|-m)\s+(\S+)', cfg.get("CC_FLAGS", "") or "")
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+
+def _ollama_first_model() -> str:
+    """Smallest sensible default: the first model `ollama list` reports."""
+    try:
+        ob = shutil.which("ollama")
+        if not ob:
+            return ""
+        r = subprocess.run([ob, "list"], capture_output=True, text=True, timeout=5)
+        for line in r.stdout.splitlines()[1:]:
+            parts = line.split()
+            if parts:
+                return parts[0]
+    except Exception:
+        pass
+    return ""
+
+
+def _lookup_via_claude(prompt: str, timeout: int = 35) -> tuple:
+    """Claude haiku one-shot — SDK when an API key is present and not on a Plan,
+    else the claude CLI (OAuth subscription). This is the universal fallback."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if api_key and not _on_claude_plan():
+        try:
+            import anthropic as _anthropic
+            client = _anthropic.Anthropic(api_key=api_key)
+            msg = client.messages.create(
+                model="claude-haiku-4-5-20251001", max_tokens=400,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return (msg.content[0].text.strip(), "")
+        except Exception as e:
+            return ("", str(e))
+    return _claude_oneshot(prompt, model="haiku", timeout=timeout)
+
+
+def _lookup_via_provider(provider: str, prompt: str, name: str = "", timeout: int = 35) -> tuple:
+    """Try the session provider's fastest model via its CLI. Returns (text, err);
+    empty text means the caller should fall back to _lookup_via_claude. codex and
+    unknown providers fall straight through (codex exec is agentic/verbose — no
+    clean one-shot completion, so we don't parse it here)."""
+    try:
+        if provider == "gemini":
+            gem = shutil.which("gemini")
+            if gem:
+                env = dict(os.environ)
+                env["GEMINI_CLI_TRUST_WORKSPACE"] = "true"
+                env.pop("CLAUDECODE", None)
+                env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+                r = subprocess.run(
+                    [gem, "-p", prompt, "-m", _PROVIDER_LOOKUP_MODEL["gemini"]],
+                    capture_output=True, text=True, timeout=timeout, cwd=str(CC_HOME), env=env)
+                if r.returncode == 0 and r.stdout.strip():
+                    return (r.stdout.strip(), "")
+        elif provider == "ollama":
+            ob = shutil.which("ollama")
+            model = _session_model_flag(name) or _ollama_first_model()
+            if ob and model:
+                r = subprocess.run(
+                    [ob, "run", model, prompt],
+                    capture_output=True, text=True, timeout=timeout, cwd=str(CC_HOME))
+                if r.returncode == 0 and r.stdout.strip():
+                    return (r.stdout.strip(), "")
+    except Exception:
+        pass
+    return ("", "")   # fall back to claude
+
+
 def _bu_agent_run(task: str, session: str = "amux-agent", profile: str = "default",
                   start_url: str = "", max_iterations: int = 25,
                   model: str = "claude-sonnet-4-5") -> dict:
@@ -23248,7 +23344,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.99';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.100';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -28922,7 +29018,7 @@ async function _peekLookupSelection() {
   try {
     const r = await fetch(API + '/api/lookup', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ text })
+      body: JSON.stringify({ text, session: peekSession })
     });
     const d = await r.json();
     if (d.error) {
@@ -40518,7 +40614,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.99';
+const CACHE = 'amux-v0.9.100';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -44324,26 +44420,22 @@ class CCHandler(BaseHTTPRequestHandler):
             prompt = (f"Briefly explain what this means or refers to in 2-4 sentences. "
                       f"Be concise and direct. If it's a technical term, code, error, "
                       f"or concept, explain it. If it's a name, identify it.\n\n{text}")
-            # Use the same auth as the active Claude Code session: when on a Plan
-            # (OAuth) use the claude CLI; otherwise use the API key via the SDK.
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-            if api_key and not _on_claude_plan():
-                try:
-                    import anthropic as _anthropic
-                    client = _anthropic.Anthropic(api_key=api_key)
-                    msg = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
-                        max_tokens=400,
-                        messages=[{"role": "user", "content": prompt}],
-                    )
-                    return self._json({"text": msg.content[0].text.strip()})
-                except Exception as e:
-                    return self._json({"error": str(e)}, 500)
-            # Plan / no key → fall back to the claude CLI (uses OAuth subscription)
-            out, err = _claude_oneshot(prompt, model="haiku", timeout=35)
-            if err:
-                return self._json({"error": err}, 500)
-            return self._json({"text": out})
+            # Ride the peeked session's provider on its fastest/lightest model, so
+            # the lookup uses whatever the session already runs on (no hard
+            # Anthropic dependency for gemini/ollama-only setups). Falls back to
+            # claude haiku when that provider's CLI can't answer (or for
+            # codex/claude, which route straight to the fallback).
+            name = (body.get("session") or "").strip()
+            provider = _session_provider(name)
+            out, err = _lookup_via_provider(provider, prompt, name)
+            used = provider
+            if not out:
+                out, err = _lookup_via_claude(prompt)
+                if out:
+                    used = "claude"
+            if not out:
+                return self._json({"error": err or "lookup failed"}, 500)
+            return self._json({"text": out, "provider": used})
 
         if method == "POST" and path == "/api/suggest-branch":
             body = self._read_body()
