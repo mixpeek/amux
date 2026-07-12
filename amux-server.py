@@ -16767,7 +16767,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
     <div style="font-size:0.78rem;color:var(--dim);line-height:1.5;margin-bottom:14px;">
       Expose a local server at a public HTTPS URL through amux cloud — no inbound port or router config.
-      Anything you start here is <b>public</b>. One proxy is live at a time (the gateway maps one URL per account).
+      Anything you start here is <b>public</b>, but rate-limited to protect the target. One proxy is live at a time (the gateway maps one URL per account).
+      <span id="proxies-rate" style="color:var(--dim);"></span>
       <span id="proxies-unconfigured" style="display:none;color:#f0a020;">No tunnel token configured — set <code>AMUX_TUNNEL_TOKEN</code> to enable.</span>
     </div>
     <div id="proxies-list"></div>
@@ -23065,7 +23066,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.95';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.96';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -32709,6 +32710,8 @@ async function loadProxies() {
     const r = await fetch(API + '/api/proxies', { headers: _authHeaders() });
     const d = await r.json();
     document.getElementById('proxies-unconfigured').style.display = d.configured ? 'none' : 'inline';
+    const rl = document.getElementById('proxies-rate');
+    if (rl && d.rate_per_min) rl.textContent = ' Limit: ' + d.rate_per_min + ' req/min, ' + d.max_concurrent + ' concurrent.';
     const list = d.proxies || [];
     if (!list.length) {
       wrap.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px 0;text-align:center;">No proxies yet. Create one to expose a local server publicly.</div>';
@@ -32722,7 +32725,8 @@ async function loadProxies() {
         ? '<div style="display:flex;align-items:center;gap:8px;margin-top:8px;">'
           + '<a href="' + esc(p.url) + '" target="_blank" style="color:var(--accent);font-size:0.8rem;word-break:break-all;">' + esc(p.url) + '</a>'
           + '<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_proxyCopy(this,\'' + esc(p.url) + '\')">Copy</button>'
-          + '<span style="color:var(--dim);font-size:0.72rem;">' + (p.requests || 0) + ' req</span></div>'
+          + '<span style="color:var(--dim);font-size:0.72rem;">' + (p.requests || 0) + ' req'
+          + (p.dropped ? ' &middot; <span style="color:#f0a020;">' + p.dropped + ' rate-limited</span>' : '') + '</span></div>'
         : '';
       const errRow = (live && p.error) ? '<div style="color:var(--red);font-size:0.74rem;margin-top:6px;">' + esc(p.error) + '</div>' : '';
       return '<div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;">'
@@ -40314,7 +40318,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.95';
+const CACHE = 'amux-v0.9.96';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -48240,6 +48244,38 @@ _TUNNEL_TOKEN = os.environ.get("AMUX_TUNNEL_TOKEN", "")
 _TUNNEL_TARGET_PORT = int(os.environ.get("AMUX_TUNNEL_PORT", "0") or 0) or None
 _AMUX_SELF_PORT = 8822
 _AMUX_SELF_SCHEME = "https"
+
+# Rate limiting for the PUBLIC tunnel — a proxy exposes a local app to the
+# internet, so without a cap a scanner/bot (or a runaway client) can hammer the
+# target until it falls over. Enforced on the relay side: excess requests get a
+# fast 429/503 and are NEVER fetched against the local app. Both tunable via env.
+_TUNNEL_RATE_PER_MIN = int(os.environ.get("AMUX_TUNNEL_RATE_PER_MIN", "180") or 180)
+_TUNNEL_MAX_CONCURRENT = int(os.environ.get("AMUX_TUNNEL_MAX_CONCURRENT", "8") or 8)
+import collections as _collections
+_tunnel_req_times = _collections.deque()   # sliding-window timestamps of served reqs
+_tunnel_rl_lock = threading.Lock()
+_tunnel_inflight = threading.BoundedSemaphore(max(1, _TUNNEL_MAX_CONCURRENT))
+_tunnel_rl_dropped = 0   # count of requests rejected by the limiter (for status)
+
+
+def _tunnel_rate_ok() -> bool:
+    """Sliding 60s window: True if under the per-minute cap (and records the hit)."""
+    now = time.time()
+    with _tunnel_rl_lock:
+        while _tunnel_req_times and now - _tunnel_req_times[0] > 60:
+            _tunnel_req_times.popleft()
+        if len(_tunnel_req_times) >= _TUNNEL_RATE_PER_MIN:
+            return False
+        _tunnel_req_times.append(now)
+        return True
+
+
+def _tunnel_rl_reply_payload(status, msg, retry=10):
+    return {"status": status,
+            "headers": {"Content-Type": "text/plain", "Retry-After": str(retry)},
+            "body": base64.b64encode(msg.encode()).decode()}
+
+
 _tunnel_client = {"running": False, "url": None, "tid": None, "error": None,
                   "target": None, "thread": None, "requests": 0, "gen": 0,
                   "proxy_id": None}
@@ -48266,11 +48302,14 @@ def _proxies_list():
             d["url"] = _tunnel_client["url"]
             d["requests"] = _tunnel_client["requests"]
             d["error"] = _tunnel_client["error"]
+            d["dropped"] = _tunnel_rl_dropped
         out.append(d)
     return {"proxies": out,
             "active_id": live_id,
             "configured": bool(_TUNNEL_TOKEN),
-            "self_port": _AMUX_SELF_PORT}
+            "self_port": _AMUX_SELF_PORT,
+            "rate_per_min": _TUNNEL_RATE_PER_MIN,
+            "max_concurrent": _TUNNEL_MAX_CONCURRENT}
 
 
 def _proxy_start(proxy_id):
@@ -48383,10 +48422,27 @@ def _tunnel_loop(token, gateway, target_base, gen):
                 _reply(item["rid"], {"status": 503, "headers": {"Content-Type": "text/plain"},
                                      "body": base64.b64encode(b"tunnel reconfigured, retry").decode()})
                 break
+            # Rate limit BEFORE touching the local app — a fast 429 keeps a flood
+            # from ever reaching the target (and drains the gateway queue quickly).
+            global _tunnel_rl_dropped
+            if not _tunnel_rate_ok():
+                _tunnel_rl_dropped += 1
+                _reply(item["rid"], _tunnel_rl_reply_payload(429, "rate limited"))
+                continue
             _tunnel_client["requests"] += 1
 
             def _handle(it):
-                _reply(it["rid"], _tunnel_serve_one(it, target_base))
+                # Concurrency cap: bound simultaneous fetches so a burst can't
+                # spawn unbounded threads all hammering the local app at once.
+                global _tunnel_rl_dropped
+                if not _tunnel_inflight.acquire(blocking=True, timeout=8):
+                    _tunnel_rl_dropped += 1
+                    _reply(it["rid"], _tunnel_rl_reply_payload(503, "server busy, retry", retry=3))
+                    return
+                try:
+                    _reply(it["rid"], _tunnel_serve_one(it, target_base))
+                finally:
+                    _tunnel_inflight.release()
             threading.Thread(target=_handle, args=(item,), daemon=True).start()
     if _tunnel_client["gen"] == gen:      # don't clobber a newer loop's state
         _tunnel_client.update({"url": None, "tid": None})
@@ -48414,6 +48470,10 @@ def _tunnel_start(token=None, target_port=None):
     gen = _tunnel_client["gen"] + 1
     _tunnel_client.update({"running": True, "target": target_base, "error": None,
                            "requests": 0, "gen": gen})
+    global _tunnel_rl_dropped
+    _tunnel_rl_dropped = 0
+    with _tunnel_rl_lock:
+        _tunnel_req_times.clear()
     t = threading.Thread(target=_tunnel_loop, args=(token, _TUNNEL_GATEWAY, target_base, gen), daemon=True)
     _tunnel_client["thread"] = t
     t.start()
