@@ -5207,6 +5207,14 @@ CREATE TABLE IF NOT EXISTS send_dedup (
     ts      INTEGER NOT NULL,
     PRIMARY KEY (session, msg_id)
 );
+CREATE TABLE IF NOT EXISTS proxies (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    port         INTEGER NOT NULL,
+    scheme       TEXT NOT NULL DEFAULT 'http',
+    created_at   INTEGER NOT NULL,
+    last_started INTEGER
+);
 CREATE TABLE IF NOT EXISTS graph_nodes (
     id          TEXT PRIMARY KEY,
     graph_id    TEXT NOT NULL DEFAULT 'default',
@@ -16387,12 +16395,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           <div id="alert-test-status" style="font-size:0.7rem;color:var(--dim);margin-top:4px;min-height:1em;"></div>
         </div>
         <div class="settings-sep"></div>
-        <div class="settings-section" id="settings-tunnel-section">
-          <div class="settings-section-label">Tunnel (public proxy)</div>
-          <div style="font-size:0.68rem;color:var(--dim);margin-bottom:8px;line-height:1.4;">Expose a local port at a public HTTPS URL through amux cloud — no inbound port, no router config. Anything you tunnel is <b>public</b>.</div>
-          <div id="settings-tunnel-body" style="font-size:0.82rem;color:var(--dim);">Loading…</div>
-        </div>
-        <div class="settings-sep"></div>
         <div class="settings-section">
           <div class="settings-section-label">Default Model</div>
           <div style="font-size:0.72rem;color:var(--dim);margin-bottom:6px;">Applied to new sessions without an explicit model</div>
@@ -16546,6 +16548,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-calendar" onclick="switchView('calendar')">Calendar</button>
   <button id="tab-scheduler" onclick="switchView('scheduler')">Scheduler</button>
   <button id="tab-files" onclick="switchView('files')">Files</button>
+  <button id="tab-proxies" onclick="switchView('proxies')">Proxies</button>
   <button id="tab-logs" onclick="switchView('logs')">Logs</button>
   <button id="tab-grid" onclick="enterGridMode()">Workspace</button>
   <button id="tab-notes" onclick="switchView('notes')">Notes</button>
@@ -16555,8 +16558,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-torrents" onclick="switchView('torrents')">Torrents</button>
   <button id="tab-terminal" onclick="switchView('terminal')">Terminal</button>
   <button id="tab-browser" onclick="switchView('browser')">Browser</button>
-  <button id="tab-habits" onclick="switchView('habits')">Habits</button>
-  <button id="tab-skills" onclick="switchView('skills')">Skills</button>
 </div>
 <div class="tab-customize-wrap">
   <button class="tab-customize-btn" onclick="event.stopPropagation();toggleTabCustomizer()" title="Show/hide tabs">&#x229E;</button>
@@ -16756,6 +16757,42 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
   <div id="files-body" style="flex:1;overflow-y:auto;"></div>
   <div id="fe-status" class="fe-status"></div>
+</div>
+
+<div id="proxies-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
+  <div style="max-width:760px;width:100%;margin:0 auto;padding:16px 16px 40px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;">
+      <div style="font-size:1.05rem;font-weight:700;">Public proxies</div>
+      <button class="btn primary" onclick="_proxyOpenForm()">+ New proxy</button>
+    </div>
+    <div style="font-size:0.78rem;color:var(--dim);line-height:1.5;margin-bottom:14px;">
+      Expose a local server at a public HTTPS URL through amux cloud — no inbound port or router config.
+      Anything you start here is <b>public</b>. One proxy is live at a time (the gateway maps one URL per account).
+      <span id="proxies-unconfigured" style="display:none;color:#f0a020;">No tunnel token configured — set <code>AMUX_TUNNEL_TOKEN</code> to enable.</span>
+    </div>
+    <div id="proxies-list"></div>
+  </div>
+  <div id="proxy-form-overlay" class="board-edit-overlay" style="display:none;" onclick="if(event.target===this)_proxyCloseForm()">
+    <div class="board-edit-box" style="max-width:420px;">
+      <div style="padding:14px 16px;">
+        <div style="font-weight:600;font-size:0.95rem;margin-bottom:12px;" id="proxy-form-title">New proxy</div>
+        <input type="hidden" id="proxy-form-id">
+        <label class="field-label">Name</label>
+        <input id="proxy-form-name" type="text" placeholder="e.g. Local Flask app" autocomplete="off" style="width:100%;margin-bottom:10px;">
+        <label class="field-label">Local port</label>
+        <input id="proxy-form-port" type="number" min="1" max="65535" placeholder="5000" autocomplete="off" style="width:100%;margin-bottom:10px;">
+        <label class="field-label">Scheme</label>
+        <select id="proxy-form-scheme" style="width:100%;margin-bottom:14px;">
+          <option value="http">http</option>
+          <option value="https">https</option>
+        </select>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button class="btn" onclick="_proxyCloseForm()">Cancel</button>
+          <button class="btn primary" onclick="_proxySaveForm(this)">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div id="logs-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
@@ -20605,9 +20642,6 @@ const ALL_TABS = [
   { id: 'metrics',       label: 'Metrics' },
   { id: 'torrents',      label: 'Torrents' },
   { id: 'terminal',      label: 'Terminal' },
-  { id: 'journal',       label: 'Journal' },
-  { id: 'habits',        label: 'Habits' },
-  { id: 'skills',        label: 'Skills' },
 ];
 
 let hiddenTabs = (function() {
@@ -23030,7 +23064,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.93';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.94';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -29575,9 +29609,9 @@ function _chromeSave() {
 function switchView(view) {
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
   activeView = view;
-  const _svIds = ['session','board','calendar','scheduler','files','logs','notes','crm','map','metrics','torrents','terminal','browser','graph','journal','habits','skills'];
-  const _svNames = ['sessions','board','calendar','scheduler','files','logs','notes','crm','map','metrics','torrents','terminal','browser','graph','journal','habits','skills'];
-  const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','','flex','flex','flex','flex'];
+  const _svIds = ['session','board','calendar','scheduler','files','proxies','logs','notes','crm','map','metrics','torrents','terminal','browser','graph'];
+  const _svNames = ['sessions','board','calendar','scheduler','files','proxies','logs','notes','crm','map','metrics','torrents','terminal','browser','graph'];
+  const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','flex','','flex'];
   for (let i = 0; i < _svIds.length; i++) {
     const ve = document.getElementById(_svIds[i] + '-view');
     if (ve) ve.style.display = view === _svNames[i] ? (_svDisplay[i] || '') : 'none';
@@ -29596,7 +29630,8 @@ function switchView(view) {
   if (view === 'habits') _habitsLoad();
   if (view === 'skills') _skillsTabLoad();
   if (view === 'files') loadFiles(_filesPath);
-  else {
+  if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
+  if (view !== 'files') {
     try { if (location.hash.startsWith('#path=')) history.replaceState({}, '', location.pathname); } catch(e) {}
     if (view === 'sessions') _exploreSession = null;
   }
@@ -32648,6 +32683,109 @@ async function _tunnelStatus() {
 }
 
 // Tunnel panel in the Settings dropdown (the discoverable home for the proxy).
+// ── Proxies tab ──────────────────────────────────────────────────────────
+let _proxiesTimer = null;
+function _startProxiesTimer() { if (!_proxiesTimer) _proxiesTimer = setInterval(loadProxies, 3000); }
+function _stopProxiesTimer() { if (_proxiesTimer) { clearInterval(_proxiesTimer); _proxiesTimer = null; } }
+async function loadProxies() {
+  const wrap = document.getElementById('proxies-list');
+  if (!wrap) return;
+  try {
+    const r = await fetch(API + '/api/proxies', { headers: _authHeaders() });
+    const d = await r.json();
+    document.getElementById('proxies-unconfigured').style.display = d.configured ? 'none' : 'inline';
+    const list = d.proxies || [];
+    if (!list.length) {
+      wrap.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px 0;text-align:center;">No proxies yet. Create one to expose a local server publicly.</div>';
+      return;
+    }
+    wrap.innerHTML = list.map(p => {
+      const live = p.live;
+      const dot = live ? '<span style="color:var(--green);">●</span>' : '<span style="color:var(--dim);">○</span>';
+      const status = live ? '<span style="color:var(--green);font-weight:600;">Live</span>' : '<span style="color:var(--dim);">Stopped</span>';
+      const urlRow = (live && p.url)
+        ? '<div style="display:flex;align-items:center;gap:8px;margin-top:8px;">'
+          + '<a href="' + esc(p.url) + '" target="_blank" style="color:var(--accent);font-size:0.8rem;word-break:break-all;">' + esc(p.url) + '</a>'
+          + '<button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_proxyCopy(this,\'' + esc(p.url) + '\')">Copy</button>'
+          + '<span style="color:var(--dim);font-size:0.72rem;">' + (p.requests || 0) + ' req</span></div>'
+        : '';
+      const errRow = (live && p.error) ? '<div style="color:var(--red);font-size:0.74rem;margin-top:6px;">' + esc(p.error) + '</div>' : '';
+      return '<div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">'
+        +   '<div style="min-width:0;">'
+        +     '<div style="font-weight:600;font-size:0.9rem;">' + dot + ' ' + esc(p.name) + '</div>'
+        +     '<div style="color:var(--dim);font-size:0.76rem;margin-top:2px;">' + esc(p.scheme) + '://localhost:' + p.port + ' &middot; ' + status + '</div>'
+        +   '</div>'
+        +   '<div style="display:flex;gap:6px;flex-shrink:0;">'
+        +     (live
+              ? '<button class="btn" onclick="_proxyStop(\'' + p.id + '\')">Stop</button>'
+              : '<button class="btn primary" onclick="_proxyStart(\'' + p.id + '\',this)">Start</button>')
+        +     '<button class="btn" onclick="_proxyEdit(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g,"\\'") + '\',' + p.port + ',\'' + esc(p.scheme) + '\')">Edit</button>'
+        +     '<button class="btn" style="color:var(--red);" onclick="_proxyDelete(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g,"\\'") + '\')">Delete</button>'
+        +   '</div>'
+        + '</div>' + urlRow + errRow + '</div>';
+    }).join('');
+  } catch (e) {
+    wrap.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;">Could not load proxies</div>';
+  }
+}
+function _proxyCopy(btn, url) {
+  navigator.clipboard?.writeText(url); const t = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => btn.textContent = t, 1200);
+}
+function _proxyOpenForm() {
+  document.getElementById('proxy-form-id').value = '';
+  document.getElementById('proxy-form-name').value = '';
+  document.getElementById('proxy-form-port').value = '';
+  document.getElementById('proxy-form-scheme').value = 'http';
+  document.getElementById('proxy-form-title').textContent = 'New proxy';
+  document.getElementById('proxy-form-overlay').style.display = 'flex';
+  setTimeout(() => document.getElementById('proxy-form-name').focus(), 50);
+}
+function _proxyEdit(id, name, port, scheme) {
+  document.getElementById('proxy-form-id').value = id;
+  document.getElementById('proxy-form-name').value = name;
+  document.getElementById('proxy-form-port').value = port;
+  document.getElementById('proxy-form-scheme').value = scheme || 'http';
+  document.getElementById('proxy-form-title').textContent = 'Edit proxy';
+  document.getElementById('proxy-form-overlay').style.display = 'flex';
+}
+function _proxyCloseForm() { document.getElementById('proxy-form-overlay').style.display = 'none'; }
+async function _proxySaveForm(btn) {
+  const id = document.getElementById('proxy-form-id').value;
+  const name = document.getElementById('proxy-form-name').value.trim();
+  const port = parseInt(document.getElementById('proxy-form-port').value, 10);
+  const scheme = document.getElementById('proxy-form-scheme').value;
+  if (!name || !(port >= 1 && port <= 65535)) { showToast('Name and a valid port (1-65535) required'); return; }
+  btn.disabled = true;
+  try {
+    const url = id ? (API + '/api/proxies/' + id) : (API + '/api/proxies');
+    const r = await fetch(url, { method: id ? 'PATCH' : 'POST',
+      headers: _authHeaders({'Content-Type':'application/json'}), body: JSON.stringify({ name, port, scheme }) });
+    const d = await r.json();
+    if (d.ok || d.id) { _proxyCloseForm(); loadProxies(); }
+    else showToast(d.error || 'Save failed');
+  } catch (e) { showToast('Save failed'); }
+  finally { btn.disabled = false; }
+}
+async function _proxyStart(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+  try {
+    const r = await fetch(API + '/api/proxies/' + id + '/start', { method: 'POST', headers: _authHeaders() });
+    const d = await r.json();
+    if (d.error) showToast(d.error);
+    else showToast('Proxy started');
+  } catch (e) { showToast('Start failed'); }
+  loadProxies();
+}
+async function _proxyStop(id) {
+  try { await fetch(API + '/api/proxies/' + id + '/stop', { method: 'POST', headers: _authHeaders() }); } catch (e) {}
+  showToast('Proxy stopped'); loadProxies();
+}
+async function _proxyDelete(id, name) {
+  if (!await showConfirm('Delete proxy "' + name + '"?', 'Delete', false)) return;
+  try { await fetch(API + '/api/proxies/' + id, { method: 'DELETE', headers: _authHeaders() }); } catch (e) {}
+  loadProxies();
+}
 async function loadTunnelSettings() {
   const box = document.getElementById('settings-tunnel-body');
   if (!box) return;
@@ -34755,7 +34893,6 @@ function toggleSettings() {
     loadCommitGuard();
     loadTaskGuard();
     loadAlertConfig();
-    loadTunnelSettings();
     loadUsage();
   }
 }
@@ -40162,7 +40299,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.93';
+const CACHE = 'amux-v0.9.94';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -40811,6 +40948,67 @@ class CCHandler(BaseHTTPRequestHandler):
             return self._json(_tunnel_start(token=body.get("token"), target_port=body.get("port")))
         if path == "/api/tunnel/stop" and method == "POST":
             return self._json(_tunnel_stop())
+
+        # ── Proxies (public tunnel targets) ──────────────────────────────
+        if path == "/api/proxies" and method == "GET":
+            return self._json(_proxies_list())
+        if path == "/api/proxies" and method == "POST":
+            body = self._read_body()
+            name = (body.get("name") or "").strip()
+            try:
+                port = int(body.get("port"))
+            except Exception:
+                port = 0
+            if not name or not (1 <= port <= 65535):
+                return self._json({"error": "name and a valid port (1-65535) are required"}, 400)
+            scheme = (body.get("scheme") or "http").strip().lower()
+            if scheme not in ("http", "https"):
+                scheme = "http"
+            pid = _next_issue_id("PRX")
+            db = get_db()
+            db.execute("INSERT INTO proxies (id, name, port, scheme, created_at) VALUES (?,?,?,?,?)",
+                       (pid, name, port, scheme, int(time.time())))
+            db.commit()
+            return self._json({"ok": True, "id": pid})
+        if path.startswith("/api/proxies/") and path.count("/") == 3:
+            pid = path.rsplit("/", 1)[1]
+            if method == "PATCH":
+                body = self._read_body()
+                db = get_db()
+                r = db.execute("SELECT * FROM proxies WHERE id=?", (pid,)).fetchone()
+                if not r:
+                    return self._json({"error": "not found"}, 404)
+                name = (body.get("name") or r["name"]).strip() or r["name"]
+                try:
+                    port = int(body.get("port")) if body.get("port") is not None else r["port"]
+                except Exception:
+                    port = r["port"]
+                if not (1 <= port <= 65535):
+                    return self._json({"error": "invalid port"}, 400)
+                scheme = (body.get("scheme") or r["scheme"]).strip().lower()
+                if scheme not in ("http", "https"):
+                    scheme = r["scheme"]
+                db.execute("UPDATE proxies SET name=?, port=?, scheme=? WHERE id=?",
+                           (name, port, scheme, pid))
+                db.commit()
+                # If this proxy is live and its port changed, restart it onto the new port.
+                if _tunnel_client["running"] and _tunnel_client.get("proxy_id") == pid and port != r["port"]:
+                    _proxy_start(pid)
+                return self._json({"ok": True})
+            if method == "DELETE":
+                _proxy_stop(pid)
+                db = get_db()
+                db.execute("DELETE FROM proxies WHERE id=?", (pid,))
+                db.commit()
+                return self._json({"ok": True})
+        if path.startswith("/api/proxies/") and path.endswith("/start") and method == "POST":
+            pid = path.split("/")[3]
+            res, code = _proxy_start(pid)
+            return self._json(res, code)
+        if path.startswith("/api/proxies/") and path.endswith("/stop") and method == "POST":
+            pid = path.split("/")[3]
+            res, code = _proxy_stop(pid)
+            return self._json(res, code)
 
         # ── Urgent owner alert (use sparingly) + its config ──
         if path == "/api/alert/owner" and method == "POST":
@@ -48028,7 +48226,60 @@ _TUNNEL_TARGET_PORT = int(os.environ.get("AMUX_TUNNEL_PORT", "0") or 0) or None
 _AMUX_SELF_PORT = 8822
 _AMUX_SELF_SCHEME = "https"
 _tunnel_client = {"running": False, "url": None, "tid": None, "error": None,
-                  "target": None, "thread": None, "requests": 0, "gen": 0}
+                  "target": None, "thread": None, "requests": 0, "gen": 0,
+                  "proxy_id": None}
+
+
+# ── Proxies (public tunnels, managed from the Proxies tab) ───────────────────
+# The gateway derives one tid per token, so exactly one proxy is live at a time;
+# the tab is a library of saved targets and start/stop picks the active one.
+def _proxy_row_to_dict(r):
+    return {"id": r["id"], "name": r["name"], "port": r["port"],
+            "scheme": r["scheme"], "created_at": r["created_at"],
+            "last_started": r["last_started"]}
+
+
+def _proxies_list():
+    db = get_db()
+    rows = db.execute("SELECT * FROM proxies ORDER BY created_at ASC").fetchall()
+    out = []
+    live_id = _tunnel_client.get("proxy_id") if _tunnel_client["running"] else None
+    for r in rows:
+        d = _proxy_row_to_dict(r)
+        d["live"] = (r["id"] == live_id)
+        if d["live"]:
+            d["url"] = _tunnel_client["url"]
+            d["requests"] = _tunnel_client["requests"]
+            d["error"] = _tunnel_client["error"]
+        out.append(d)
+    return {"proxies": out,
+            "active_id": live_id,
+            "configured": bool(_TUNNEL_TOKEN),
+            "self_port": _AMUX_SELF_PORT}
+
+
+def _proxy_start(proxy_id):
+    db = get_db()
+    r = db.execute("SELECT * FROM proxies WHERE id=?", (proxy_id,)).fetchone()
+    if not r:
+        return {"error": "proxy not found"}, 404
+    if _tunnel_client["running"]:
+        _tunnel_stop()
+        time.sleep(0.3)
+    res = _tunnel_start(target_port=r["port"])
+    if res.get("error"):
+        return res, 400
+    _tunnel_client["proxy_id"] = proxy_id
+    db.execute("UPDATE proxies SET last_started=? WHERE id=?", (int(time.time()), proxy_id))
+    db.commit()
+    return {"ok": True, **res}, 200
+
+
+def _proxy_stop(proxy_id):
+    if _tunnel_client.get("proxy_id") == proxy_id or proxy_id is None:
+        _tunnel_stop()
+        _tunnel_client["proxy_id"] = None
+    return {"ok": True}, 200
 
 
 def _tunnel_serve_one(req, target_base):
