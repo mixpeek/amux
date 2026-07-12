@@ -3736,6 +3736,12 @@ def _rate_limit_auto_resume():
         try:
             cfg = parse_env_file(env_file)
 
+            # Archived sessions have no live tmux to resume — drop the stale
+            # reset so they stop being candidates instead of retrying forever.
+            if cfg.get("CC_ARCHIVED") == "1":
+                actions.pop("rate_limit_reset_at", None)
+                continue
+
             # Always run the rollover so the per-day counter doesn't grow
             # forever in unlimited mode; second return is ignored unless
             # we're enforcing a cap.
@@ -8835,24 +8841,32 @@ def list_sessions() -> list:
             tokens = _token_cache["data"].get((proj_key, conv_id), 0)
         else:
             tokens = _token_cache["data"].get(proj_key, 0)
+        # Archived sessions have no live tmux, so any lingering rate/credit-limit
+        # flag is un-actionable — drop it from the reported limit state so it
+        # doesn't show in badges/bulk-actions or trigger auto-resume.
+        _arch = cfg.get("CC_ARCHIVED", "") == "1"
+        _aa = {} if _arch else _session_auto_actions.get(name, {})
         sessions.append({
             "name": name,
             "dir": resolved_dir,
             "desc": cfg.get("CC_DESC", ""),
             "pinned": cfg.get("CC_PINNED", "") == "1",
-            "archived": cfg.get("CC_ARCHIVED", "") == "1",
+            "archived": _arch,
             "auto_continue": cfg.get("CC_AUTO_CONTINUE") in ("1", "true", "yes"),
             "steering": _steering_queue.get(name, []),
-            "rate_limited_until": _session_auto_actions.get(name, {}).get("rate_limit_reset_at", 0),
-            "rate_limit_weekly": bool(_session_auto_actions.get(name, {}).get("rate_limit_weekly")),
+            # Archiving kills the tmux session, so a lingering limit flag can't be
+            # acted on and must not count in badges/bulk-actions/auto-resume —
+            # report an archived session as unlimited (_aa is empty when archived).
+            "rate_limited_until": _aa.get("rate_limit_reset_at", 0),
+            "rate_limit_weekly": bool(_aa.get("rate_limit_weekly")),
             # True for any menu-less usage-cap banner (weekly OR 5-hour session) —
             # these auto-resume at their reset time, no manual action needed.
-            "rate_limit_banner": bool(_session_auto_actions.get(name, {}).get("rate_limit_banner")),
+            "rate_limit_banner": bool(_aa.get("rate_limit_banner")),
             # Per-model credit/usage limit (e.g. "reached your Fable 5 limit").
             # No reset time — needs a model switch or credit top-up, so it does
             # NOT auto-resume; surfaced in bulk actions for a one-tap switch.
-            "credit_limited": bool(_session_auto_actions.get(name, {}).get("rate_limit_credits")),
-            "credit_limit_model": _session_auto_actions.get(name, {}).get("rate_limit_model_name", ""),
+            "credit_limited": bool(_aa.get("rate_limit_credits")),
+            "credit_limit_model": _aa.get("rate_limit_model_name", ""),
             "tags": [t.strip() for t in cfg.get("CC_TAGS", "").split(",") if t.strip()],
             "flags": cfg.get("CC_FLAGS", ""),
             "creator": cfg.get("CC_CREATOR", ""),
@@ -10806,6 +10820,13 @@ def archive_session(name: str) -> tuple[bool, str]:
     # (is_running False), so an archived session never leaves an orphan idle
     # shell holding memory. kill-session is a no-op if it's already gone.
     _kill_tmux_session(name)
+    # Drop any rate/credit-limit state — with no live tmux it can't be resumed,
+    # and it must not linger in badges/bulk-actions or the auto-resume loop.
+    acts = _session_auto_actions.get(name)
+    if acts:
+        for k in ("rate_limit_reset_at", "rate_limit_weekly", "rate_limit_banner",
+                  "rate_limit_credits", "rate_limit_model_name"):
+            acts.pop(k, None)
     cfg = parse_env_file(f)
     cfg["CC_ARCHIVED"] = "1"
     _write_env(f, cfg)
