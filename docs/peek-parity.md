@@ -70,7 +70,11 @@ step and refuses rather than guesses.
 Derived UI (plan strip, task headline) must carry its provenance: the plan
 strip appends "plan last updated Nh ago" when the newest task file is >6h old,
 and a freshly restarted conversation (splash with zero turns) shows no plan at
-all rather than a dead conversation's plan.
+all rather than a dead conversation's plan. A plan untouched beyond the
+dead-plan cutoff (`AMUX_PLAN_STALE_HIDE_HOURS`, default 24h) is suppressed
+entirely — a session that moved on to new work without maintaining its plan
+must not headline the old, finished one (the task header already shows the
+real current task).
 
 ### P8 — Nothing user-authored is destroyed
 Clearing/typing into the input box must never eat queued or user-composed

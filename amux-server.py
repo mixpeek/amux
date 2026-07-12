@@ -2383,6 +2383,15 @@ def _session_jsonl_path(name: str):
     return result
 
 
+# A plan nobody has touched in over a day is not the session's live execution
+# plan — the session moved on without maintaining it (Claude often leaves the
+# last item 'completed' and starts new work with no TaskUpdate). Past this cutoff
+# hide the strip entirely rather than headline a dead plan; the 6h client-side
+# "· plan last updated Nh ago" caveat still covers the fresher-but-stale band.
+# (mixpeek-clustering, 2026-07-10/14: a 4-day-old completed plan kept headlining.)
+_PLAN_STALE_HIDE_SECS = float(os.environ.get("AMUX_PLAN_STALE_HIDE_HOURS", "24")) * 3600
+
+
 def _session_cc_tasks(name: str) -> dict:
     """Read Claude Code's native task list for a session — the ephemeral
     TaskCreate/TaskUpdate items it stores in ~/.claude/tasks/<conv_id>/<n>.json
@@ -2444,6 +2453,10 @@ def _session_cc_tasks(name: str) -> dict:
         # for days without a single TaskUpdate, and a 2-day-old "Plan 10/15"
         # headline silently reads as current (mixpeek-clustering, 2026-07-10).
         updated_at = int(max((t["_mtime"] for t in tasks), default=0))
+        # Dead-plan cutoff: untouched for >_PLAN_STALE_HIDE_SECS → the session
+        # moved on without maintaining it, so suppress rather than headline it.
+        if updated_at and (time.time() - updated_at) > _PLAN_STALE_HIDE_SECS:
+            return {"tasks": [], "counts": {}, "active": None, "total": 0}
         for t in tasks:
             t.pop("_mtime", None)
         if active:
