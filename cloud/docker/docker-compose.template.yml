@@ -20,7 +20,12 @@ services:
       POSTHOG_KEY: "${POSTHOG_KEY}"
       POSTHOG_HOST: "${POSTHOG_HOST}"
     ports:
-      - "${USER_PORT}:8822"
+      # SECURITY: bind loopback-only. Inside the container AMUX_AUTH_TOKEN is
+      # "none" (no per-request auth — the gateway is the trust boundary), so a
+      # 0.0.0.0 publish let one tenant's container reach another's over the
+      # docker bridge (172.17.0.1:<other_port>) → cross-tenant unauth RCE. The
+      # gateway already proxies to 127.0.0.1:<port>, so loopback-only is enough.
+      - "127.0.0.1:${USER_PORT}:8822"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8822/api/sessions"]
       interval: 5s
