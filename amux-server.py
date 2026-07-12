@@ -13838,9 +13838,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .peek-nav-btn:hover { color: var(--text); }
   .peek-find-wrap .search-clear { position: absolute; right: 2px; }
   .peek-find-wrap.has-value .search-clear { display: flex; }
-  .peek-msg-nav { display: flex; align-items: center; gap: 0; border: 1px solid var(--border); border-radius: 6px; padding: 0 2px; }
-  .peek-msg-nav .peek-nav-btn { position: static; width: 24px; height: 24px; }
-  .peek-msg-count { font-size: 0.7rem; color: var(--dim); white-space: nowrap; padding: 0 3px; min-width: 20px; text-align: center; user-select: none; }
+  .peek-msg-nav { display: flex; flex-direction: column; align-items: center; gap: 0; border: 1px solid var(--border); border-radius: 6px; padding: 1px 0; }
+  .peek-msg-nav .peek-nav-btn { position: static; width: 24px; height: 16px; }
+  .peek-msg-count { font-size: 0.62rem; color: var(--dim); white-space: nowrap; line-height: 1; padding: 1px 0; min-width: 16px; text-align: center; user-select: none; }
   .peek-prompt.peek-msg-current { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
   .peek-more-wrap { position: relative; }
   .peek-more-dropdown { display: none; position: absolute; top: calc(100% + 4px); right: 0; background: var(--card); border: 1px solid var(--border); border-radius: 8px; min-width: 160px; z-index: 60; box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
@@ -23030,7 +23030,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.92';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.93';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -40162,7 +40162,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.92';
+const CACHE = 'amux-v0.9.93';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
