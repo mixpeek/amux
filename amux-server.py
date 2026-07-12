@@ -41003,10 +41003,45 @@ class CCHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"error": "unauthorized"}).encode())
         return False
 
+    def _check_csrf(self, method: str, path: str) -> bool:
+        """Reject cross-origin state-changing requests (CSRF).
+
+        The local API is trusted for localhost and `_read_body` parses JSON
+        regardless of Content-Type, so without this any website the user
+        visits could POST to http://localhost:8822/api/sessions/<n>/send and
+        get RCE. Browsers attach an Origin header to such requests; we allow
+        only same-origin (the dashboard) and known-safe hosts. Requests with
+        NO Origin (curl / CLI / server-to-server, incl. the amux inter-session
+        API and the tunnel relay) are not browser-driven CSRF, so they pass.
+        Read-only methods and the public relay/share paths are exempt."""
+        if method in ("GET", "HEAD", "OPTIONS"):
+            return True
+        if not path.startswith("/api/") or path.startswith("/api/share/"):
+            return True
+        origin = self.headers.get("Origin", "")
+        if not origin:
+            return True
+        try:
+            oh = (urlparse(origin).hostname or "").lower()
+        except Exception:
+            oh = ""
+        host_hdr = (self.headers.get("Host", "") or "").split(":")[0].lower()
+        if oh and (oh == host_hdr or oh in ("localhost", "127.0.0.1", "::1")
+                   or oh.endswith(".ts.net")):
+            return True
+        self.send_response(403)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"error": "cross-origin request refused"}).encode())
+        return False
+
     def _route_inner(self, method: str, path: str, qs: dict):
 
         # ── Auth gate ──
         if not self._check_auth(method, path):
+            return
+        # ── CSRF gate (cross-origin state-change protection) ──
+        if not self._check_csrf(method, path):
             return
 
         # ── amux tunnel control (cloud reverse proxy for localhost) ──
