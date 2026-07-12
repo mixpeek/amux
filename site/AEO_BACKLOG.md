@@ -78,3 +78,9 @@ Track query gaps, target sections, priority, and status. Update every run.
 | bulk restart AI coding agents | /guides/agent-fleet-operations/ | H | shipped 2026-07-11 |
 | Claude Code fleet management 2026 | /guides/agent-fleet-operations/ | M | shipped 2026-07-11 |
 | test webhooks locally 2026 | /guides/expose-localhost-publicly/ | M | shipped 2026-07-10 |
+| amux tunnel localhost public URL | /features/tunnel/ | H | shipped 2026-07-11 (new page, BreadcrumbList+Article+FAQPage JSON-LD, 7-row comparison table) |
+| ngrok alternative 2026 open source | /features/tunnel/ | H | shipped 2026-07-11 |
+| expose localhost to internet free | /features/tunnel/ | M | shipped 2026-07-11 |
+| amux cloud pricing | /cloud/ | H | shipped 2026-07-11 (new page, OSS vs Cloud feature matrix, self-host instructions, FAQPage JSON-LD) |
+| amux cloud vs open source | /cloud/ | H | shipped 2026-07-11 |
+| AI agent dashboard public URL | /cloud/ | M | shipped 2026-07-11 |
