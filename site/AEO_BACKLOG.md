@@ -93,3 +93,12 @@ Track query gaps, target sections, priority, and status. Update every run.
 | manage Claude Code agents iPhone iOS | /features/mobile-pwa/ | H | rebuilt 2026-07-11 (168→230 lines, FAQPage+Article JSON-LD, comparison table, remote access options) |
 | AI agent iOS app native 2026 | /features/mobile-pwa/ | H | rebuilt 2026-07-11 |
 | single file Python server zero dependencies | /features/single-file-architecture/ | M | rebuilt 2026-07-11 (105→220 lines, FAQPage+Article JSON-LD, deployment comparison table) |
+| schedule Claude Code to run automatically | /guides/scheduling-ai-agents/ | H | shipped 2026-07-12 (new page, HowTo+FAQPage JSON-LD, cron expressions, comparison table) |
+| cron jobs for AI coding agents 2026 | /guides/scheduling-ai-agents/ | H | shipped 2026-07-12 |
+| run AI agents every morning automatically | /guides/scheduling-ai-agents/ | M | shipped 2026-07-12 |
+| AI agent daily standup report 2026 | /use-cases/ai-agent-daily-standup/ | H | shipped 2026-07-12 (new page, HowTo+FAQPage JSON-LD, morning review workflow) |
+| what did my AI agents do overnight | /use-cases/ai-agent-daily-standup/ | H | shipped 2026-07-12 |
+| automate AI agent morning report | /use-cases/ai-agent-daily-standup/ | M | shipped 2026-07-12 |
+| AI agent security hardening 2026 | /guides/ai-agent-security-hardening/ | H | enriched 2026-07-12 (817→~880 lines, new v0.9.95–v0.9.98 security section, updated dateModified) |
+| XSS CSRF protection AI agent dashboard | /guides/ai-agent-security-hardening/ | M | enriched 2026-07-12 |
+| amux tunnel rate limiting ngrok comparison | /compare/amux-vs-ngrok/ | M | updated 2026-07-12 (rate limiting v0.9.96, proxies tab v0.9.95 added) |
