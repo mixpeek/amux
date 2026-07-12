@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Single-File Architecture — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Why amux is a single Python file with inline HTML/CSS/JS — and why that matters.">
-  <meta name="keywords" content="single file architecture, minimal dependencies, simple deployment, python server">
+  <title>Single-File Architecture — amux is One Python File (2026) — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux's entire server, dashboard, and REST API live in a single Python file (amux-server.py). No external dependencies beyond Python 3 and tmux. Self-heals by restarting itself on file save. Deploy in under 2 minutes.">
+  <meta name="keywords" content="single file Python server, zero dependency AI agent tool, self-contained AI agent dashboard, Python tmux AI orchestration, amux architecture">
   <link rel="canonical" href="https://amux.io/features/single-file-architecture/">
-  <meta property="og:title" content="Single-File Architecture — amux">
-  <meta property="og:description" content="Why amux is a single Python file with inline HTML/CSS/JS — and why that matters.">
+  <meta property="og:title" content="Single-File Architecture — amux is One Python File (2026) — amux">
+  <meta property="og:description" content="amux's entire server, dashboard, and REST API live in a single Python file (amux-server.py). No external dependencies beyond Python 3 and tmux. Self-heals by restarting itself on file save.">
   <meta property="og:url" content="https://amux.io/features/single-file-architecture/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -22,8 +22,9 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Features","item":"https://amux.io/features/"},{"@type":"ListItem","position":3,"name":"Single-File Architecture","item":"https://amux.io/features/single-file-architecture/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Single-File Architecture","description":"Why amux is a single Python file with inline HTML/CSS/JS — and why that matters.","url":"https://amux.io/features/single-file-architecture/","about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","featureList":"Single-File Architecture"}}</script>
-  </head>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Single-File Architecture — amux is One Python File (2026)","description":"amux's entire server, dashboard, and REST API live in a single Python file (amux-server.py). No external dependencies beyond Python 3 and tmux. Self-heals by restarting itself on file save.","datePublished":"2026-07-11","dateModified":"2026-07-11","author":{"@type":"Organization","name":"Mixpeek"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon.svg"}},"mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/features/single-file-architecture/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How many lines of code is amux?","acceptedAnswer":{"@type":"Answer","text":"amux is a single Python file (amux-server.py) containing the complete HTTP server, REST API, SSE backend, web dashboard (HTML/CSS/JS inline), SQLite layer, self-healing watchdog, and all business logic. The entire AI agent control plane is in one file."}},{"@type":"Question","name":"Does amux require any Python packages?","acceptedAnswer":{"@type":"Answer","text":"No. amux uses only Python's standard library. The only system requirements are Python 3.8+ and tmux. There is nothing to pip install."}},{"@type":"Question","name":"How does amux auto-restart when the file changes?","acceptedAnswer":{"@type":"Answer","text":"The server uses os.execv to replace itself with a fresh process when it detects its own file has changed (mtime check every few seconds). This means 'touch amux-server.py' or any file edit triggers a hot restart automatically — no service restart command needed."}},{"@type":"Question","name":"Is it hard to contribute to a large single file?","acceptedAnswer":{"@type":"Answer","text":"The file is organized into sections with clear comment headers. Adding a new REST endpoint is a single 'if self.path.startswith(...)' block. Most contributions are 10–50 lines. The entire codebase is visible at once — no jumping between modules."}},{"@type":"Question","name":"Is this architecture production-grade?","acceptedAnswer":{"@type":"Answer","text":"For a developer tool running on a single machine managing a local agent fleet — yes. amux is designed to be reliable, fast to deploy, and easy to understand. It is not designed to serve thousands of concurrent requests, but it comfortably handles dozens of agent sessions and multiple browser tabs simultaneously."}}]}</script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -39,20 +40,102 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/features/">Features</a> <span class="sep">›</span> <span>Single-File Architecture</span></div>
-    <h1>Single-File Architecture</h1>
-<p class="subtitle">~12,000 lines. One file. Zero build step.</p>
-<p>amux is a single Python file (<code>amux-server.py</code>) with the full web dashboard embedded as inline HTML/CSS/JS. Edit it, and it restarts automatically via <code>os.execv</code>.</p>
-<h2>Why single-file?</h2>
-<ul>
-<li><strong>Zero build step:</strong> No npm, no webpack, no compilation</li>
-<li><strong>Easy to deploy:</strong> Copy one file, run it</li>
-<li><strong>Easy to modify:</strong> Everything is in one place</li>
-<li><strong>Minimal dependencies:</strong> Just Python 3 and tmux</li>
-</ul>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+
+    <div class="kicker">// feature</div>
+    <h1>Single-File Architecture<br><span class="subtitle">amux is One Python File (2026)</span></h1>
+    <p class="lede">amux&rsquo;s entire server, dashboard, and REST API live in a single Python file (<code>amux-server.py</code>). No external dependencies beyond Python&nbsp;3 and tmux. Self-heals by restarting itself on file save. Deploy in under 2&nbsp;minutes.</p>
+    <p style="color:var(--muted);font-size:0.85rem">Last updated: July 11, 2026</p>
+
+    <div style="background:var(--surface-2,#1a1f2e);border-left:3px solid var(--accent,#6ee7b7);padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
+      <strong>Quick answer:</strong> amux is a single Python file (<code>amux-server.py</code>) that contains the HTTP server, REST API, SSE backend, web dashboard (HTML/CSS/JS inline), SQLite database, self-healing watchdog, and all business logic. Zero external Python dependencies &mdash; if you have Python&nbsp;3 and tmux, you can run amux. The file watches its own mtime and restarts itself when you change it, so deploying a new version is <code>git pull &amp;&amp; touch amux-server.py</code>.
+    </div>
+
+    <h2>What lives inside a single file</h2>
+    <ul>
+      <li>Python HTTP server (stdlib only &mdash; no Flask, FastAPI, or Django)</li>
+      <li>REST API (~60 endpoints: sessions, board, notes, CRM, email, calendar, scheduler, browser automation)</li>
+      <li>SSE event streaming backbone (live dashboard updates, ping/pong health checks)</li>
+      <li>Web dashboard: complete HTML, CSS, and JavaScript inline as string constants</li>
+      <li>SQLite schema and query layer (board, sessions, notes, CRM, calendar, schedules)</li>
+      <li>Self-healing watchdog (detects crashed agents, restarts them automatically)</li>
+      <li>Email integration (Gmail API + Mail.app fallback), CRM, browser automation API</li>
+      <li>iCal feed generator (syncs to Google Calendar and Apple Calendar)</li>
+      <li>Tunnel client (connects to amux cloud relay for public HTTPS URLs)</li>
+    </ul>
+
+    <h2>Why single-file?</h2>
+    <ul>
+      <li><strong>No dependency hell</strong> &mdash; <code>git clone &amp;&amp; python3 amux-server.py</code> just works. Nothing to pip install.</li>
+      <li><strong>Trivially deployable</strong> &mdash; copy one file to a new machine; no package manager, no virtualenv, no npm, no build step</li>
+      <li><strong>Forkable and diffable</strong> &mdash; diff the whole project at once; pull requests touch one file</li>
+      <li><strong>Self-restarting</strong> &mdash; the server watches its own mtime via <code>os.execv</code>; edit and save, it reloads automatically</li>
+      <li><strong>Auditable</strong> &mdash; every endpoint, every SQL query, every piece of business logic is visible in one place with no hidden framework magic</li>
+    </ul>
+
+    <h2>Technical implementation</h2>
+    <p>amux uses Python&rsquo;s <code>http.server.BaseHTTPRequestHandler</code> as the server base. Routing is a single <code>if/elif</code> chain on <code>self.path</code>. SQLite handles all persistent storage via Python&rsquo;s stdlib <code>sqlite3</code> module. Server-sent events (SSE) are streamed over persistent HTTP connections. The web dashboard &mdash; all HTML, CSS, and JavaScript &mdash; is stored as Python string constants and served inline.</p>
+    <p><strong>Self-restart mechanism:</strong> A background thread checks the server file&rsquo;s mtime every few seconds. When a change is detected, it calls <code>os.execv(sys.executable, [sys.executable] + sys.argv)</code>, replacing the process with a fresh copy that picks up the new code. The <code>~/.amux/server.env</code> file loads environment variables at startup via <code>os.environ.setdefault</code>, so they survive across restarts.</p>
+
+    <h2>Deployment comparison</h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>Deploy method</th><th>Steps</th><th>Dependencies</th><th>Restart on update</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>amux single file</td><td><code>git clone &amp;&amp; python3 amux-server.py</code></td><td>Python 3 + tmux</td><td><code>touch amux-server.py</code> (auto)</td></tr>
+          <tr><td>Typical web app</td><td>Install packages, build assets, configure server</td><td>pip/npm/cargo + dozens of packages</td><td>Restart service manually</td></tr>
+          <tr><td>Docker</td><td>Build image, run container</td><td>Docker daemon + base image</td><td>Rebuild and redeploy image</td></tr>
+          <tr><td>Cloud agent (Devin etc.)</td><td>Sign up, no deploy</td><td>None (not self-hosted)</td><td>N/A</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Contributing</h2>
+    <p>Because amux is one file, contributions are a single PR touching <code>amux-server.py</code>. The pattern for a new REST endpoint:</p>
+    <pre><code>elif self.path.startswith('/api/myendpoint'):
+    data = json.loads(self.rfile.read(...))
+    result = do_something(data)
+    return self._json(result)</code></pre>
+    <p>The file is organized into sections with clear comment headers: <code># ── SESSIONS ──</code>, <code># ── BOARD ──</code>, <code># ── EMAIL ──</code>, etc. Most contributions are 10&ndash;50 lines. Verify syntax after editing: <code>python3 -c "import ast; ast.parse(open('amux-server.py').read())"</code></p>
+
+    <h2>Frequently asked questions</h2>
+
+    <h3>How many lines of code is amux?</h3>
+    <p>amux is a single Python file (<code>amux-server.py</code>) containing the complete HTTP server, REST API, SSE backend, web dashboard (HTML/CSS/JS inline), SQLite layer, self-healing watchdog, and all business logic. The entire AI agent control plane is in one file.</p>
+
+    <h3>Does amux require any Python packages?</h3>
+    <p>No. amux uses only Python&rsquo;s standard library. The only system requirements are Python 3.8+ and tmux. There is nothing to <code>pip install</code>.</p>
+
+    <h3>How does amux auto-restart when the file changes?</h3>
+    <p>The server uses <code>os.execv</code> to replace itself with a fresh process when it detects its own file has changed (mtime check every few seconds). This means <code>touch amux-server.py</code> or any file edit triggers a hot restart automatically &mdash; no service restart command needed.</p>
+
+    <h3>Is it hard to contribute to a large single file?</h3>
+    <p>The file is organized into sections with clear comment headers. Adding a new REST endpoint is a single <code>if self.path.startswith(...)</code> block. Most contributions are 10&ndash;50 lines. The entire codebase is visible at once &mdash; no jumping between modules.</p>
+
+    <h3>Is this architecture production-grade?</h3>
+    <p>For a developer tool running on a single machine managing a local agent fleet &mdash; yes. amux is designed to be reliable, fast to deploy, and easy to understand. It is not designed to serve thousands of concurrent requests, but it comfortably handles dozens of agent sessions and multiple browser tabs simultaneously.</p>
+
+    <div class="cta-box">
+      <h3>Run your AI engineering team from one dashboard</h3>
+      <p>amux is an open-source control plane for AI coding agents &mdash; self-healing, phone-first, MIT licensed, single Python file.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8822</code></pre>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">&#11088; Star on GitHub</a>
+        <a class="btn" href="/guides/getting-started/">Get started</a>
+      </div>
+    </div>
+
+    <h2>Related guides</h2>
+    <ul>
+      <li><a href="/guides/getting-started/">Getting started with amux</a></li>
+      <li><a href="/features/self-healing/">Self-healing watchdog &mdash; how amux auto-restarts crashed agents</a></li>
+      <li><a href="/features/web-dashboard/">Web dashboard &mdash; the amux live agent monitoring UI</a></li>
+      <li><a href="/guides/rest-api-reference/">amux REST API reference</a></li>
+    </ul>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -99,7 +182,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
       </div>
     </div>
   </footer>
-
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>
