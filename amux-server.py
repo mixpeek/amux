@@ -48134,6 +48134,15 @@ def _tunnel_start(token=None, target_port=None):
     if not token:
         return {"error": "no tunnel token — set AMUX_TUNNEL_TOKEN (from your amux cloud account)"}
     port = int(target_port) if target_port else _AMUX_SELF_PORT
+    # SECURITY: refuse to tunnel amux's own control plane. The local server has
+    # no request auth (that's the cloud gateway's job for the hosted tier), and
+    # POST /api/sessions/<name>/send is ungated — exposing 8822 publicly is
+    # unauthenticated RCE on YOLO sessions. Proxies must target a specific app
+    # port; override only with an explicit, informed opt-in.
+    if port == _AMUX_SELF_PORT and os.environ.get("AMUX_TUNNEL_ALLOW_SELF", "") not in ("1", "true", "yes"):
+        return {"error": "refusing to tunnel amux itself (port %d) — its control plane is "
+                         "unauthenticated. Point the proxy at a specific app port instead, or set "
+                         "AMUX_TUNNEL_ALLOW_SELF=1 to override." % port}
     scheme = _AMUX_SELF_SCHEME if port == _AMUX_SELF_PORT else "http"
     target_base = f"{scheme}://127.0.0.1:{port}"
     gen = _tunnel_client["gen"] + 1
@@ -48261,7 +48270,10 @@ def main():
     _install_signal_handlers()
     global _AMUX_SELF_PORT, _AMUX_SELF_SCHEME
     _AMUX_SELF_PORT, _AMUX_SELF_SCHEME = port, scheme
-    if _TUNNEL_TOKEN:   # auto-start the cloud tunnel when a subscription token is configured
+    # Tunnels are opt-in per target now (managed from the Proxies tab). Only
+    # auto-start on boot when a specific target port is explicitly configured
+    # (AMUX_TUNNEL_PORT) — never default to exposing amux's own control plane.
+    if _TUNNEL_TOKEN and _TUNNEL_TARGET_PORT:
         threading.Thread(target=lambda: _tunnel_start(target_port=_TUNNEL_TARGET_PORT),
                          daemon=True).start()
     slog(f"[startup] server starting — pid={os.getpid()}, port={port}, scheme={scheme}, python={sys.version.split()[0]}")
