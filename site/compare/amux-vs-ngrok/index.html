@@ -45,7 +45,7 @@
     "description": "Compare amux tunnel with ngrok for exposing localhost to the internet. amux gives you a stable public URL built into your agent orchestrator. ngrok wins on TCP, request inspection, and free tier. Honest side-by-side.",
     "url": "https://amux.io/compare/amux-vs-ngrok/",
     "datePublished": "2026-07-09",
-    "dateModified": "2026-07-09",
+    "dateModified": "2026-07-12",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
     "image": "https://amux.io/og-image.png"
@@ -134,7 +134,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs ngrok</span></div>
 
     <h1>amux vs ngrok</h1>
-    <p class="subtitle">ngrok is the industry-standard localhost tunnel — a dedicated tool, free tier, full-featured, excellent for debugging. amux tunnel is built into the amux agent orchestrator and gives you a stable public URL without paying for ngrok Pro. Here is the honest comparison. <em>Updated July 2026.</em></p>
+    <p class="subtitle">ngrok is the industry-standard localhost tunnel — a dedicated tool, free tier, full-featured, excellent for debugging. amux tunnel is built into the amux agent orchestrator and gives you a stable public URL without paying for ngrok Pro. Now includes built-in rate limiting (v0.9.96) and a Proxies management tab (v0.9.95). Here is the honest comparison. <em>Updated July 2026.</em></p>
 
     <p><strong>ngrok</strong> is the most widely used tool for exposing a local port to the internet over a secure tunnel. Install the CLI, run <code>ngrok http 3000</code>, and you get a public HTTPS URL in seconds. The free tier works immediately — no account required for basic use — though the URL changes on every restart. Paid plans add stable subdomains, custom domains, request inspection UI, TCP tunneling, and multiple concurrent tunnels. ngrok is a mature, purpose-built product with excellent documentation, an inspection dashboard, and broad ecosystem integrations.</p>
 
@@ -210,6 +210,16 @@
             <td style="padding:10px 16px;">Agent orchestration</td>
             <td style="padding:10px 16px;text-align:center;">Full (kanban, sessions, CRM, email, scheduler)</td>
             <td style="padding:10px 16px;text-align:center;">None — tunnel only</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Rate limiting (protect target from hammering)</td>
+            <td style="padding:10px 16px;text-align:center;">Yes — built-in (v0.9.96)</td>
+            <td style="padding:10px 16px;text-align:center;">Paid plans only</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Management UI</td>
+            <td style="padding:10px 16px;text-align:center;">Proxies tab in the amux dashboard (v0.9.95)</td>
+            <td style="padding:10px 16px;text-align:center;">Separate inspection UI at <code>localhost:4040</code></td>
           </tr>
           <tr>
             <td style="padding:10px 16px;">Installation</td>
