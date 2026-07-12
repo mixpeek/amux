@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Self-Healing AI Agents — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="amux's self-healing watchdog automatically recovers from crashes, context exhaustion, and stuck states.">
-  <meta name="keywords" content="self-healing AI agent, auto recovery, context compaction, agent watchdog, claude code crash fix">
+  <title>Self-Healing AI Agents — amux Watchdog &amp; Auto-Recovery (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux's background watchdog automatically recovers Claude Code agents from context exhaustion, crashes, thinking-block corruption, and silent hangs — no babysitting required.">
+  <meta name="keywords" content="self-healing AI coding agent, auto-restart Claude Code agent, Claude Code crash recovery, AI agent context limit handling, agent watchdog, YOLO mode">
   <link rel="canonical" href="https://amux.io/features/self-healing/">
-  <meta property="og:title" content="Self-Healing AI Agents — amux">
-  <meta property="og:description" content="amux's self-healing watchdog automatically recovers from crashes, context exhaustion, and stuck states.">
+  <meta property="og:title" content="Self-Healing AI Agents — amux Watchdog &amp; Auto-Recovery (2026)">
+  <meta property="og:description" content="amux's background watchdog automatically recovers Claude Code agents from context exhaustion, crashes, thinking-block corruption, and silent hangs — no babysitting required.">
   <meta property="og:url" content="https://amux.io/features/self-healing/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -22,8 +22,9 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Features","item":"https://amux.io/features/"},{"@type":"ListItem","position":3,"name":"Self-Healing AI Agents","item":"https://amux.io/features/self-healing/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Self-Healing AI Agents","description":"amux's self-healing watchdog automatically recovers from crashes, context exhaustion, and stuck states.","url":"https://amux.io/features/self-healing/","about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","featureList":"Self-Healing AI Agents"}}</script>
-  </head>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Self-Healing AI Agents — amux Watchdog & Auto-Recovery (2026)","description":"amux's background watchdog automatically recovers Claude Code agents from context exhaustion, crashes, thinking-block corruption, and silent hangs.","url":"https://amux.io/features/self-healing/","datePublished":"2026-07-11","dateModified":"2026-07-11","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Does amux automatically restart Claude Code when it crashes?","acceptedAnswer":{"@type":"Answer","text":"Yes. The amux watchdog detects process exits and automatically restarts the Claude Code session within ~5 seconds. When YOLO mode is enabled, the agent resumes where it left off without any human intervention."}},{"@type":"Question","name":"What is YOLO mode in amux?","acceptedAnswer":{"@type":"Answer","text":"YOLO mode (--yolo flag) auto-approves all Claude Code tool calls, preventing the tool-approval stuck failure mode entirely. Enable it with: amux register myproject --dir ~/Dev/myproject --yolo, or set YOLO=1 in ~/.amux/server.env."}},{"@type":"Question","name":"How do I configure the context threshold for auto-compact?","acceptedAnswer":{"@type":"Answer","text":"Set WATCHDOG_CONTEXT_THRESHOLD in ~/.amux/server.env as a percentage (0-100). The default is 20, meaning amux sends /compact when Claude Code's context falls below 20% remaining capacity. Lower values trigger compaction later; higher values trigger it earlier."}},{"@type":"Question","name":"Can amux self-healing run completely unattended overnight?","acceptedAnswer":{"@type":"Answer","text":"Yes. Enable YOLO mode and set your watchdog thresholds in ~/.amux/server.env, then start your agents with amux start. The watchdog handles all four failure modes — context exhaustion, thinking-block corruption, tool-approval blocks, and silent hangs — without any human intervention."}},{"@type":"Question","name":"What happens if last-message replay causes an infinite loop?","acceptedAnswer":{"@type":"Answer","text":"The amux watchdog tracks restart counts per session. After consecutive restarts without forward progress (no new output), it marks the session as failed and stops auto-restarting. The session is flagged in the dashboard with a red status dot so you can investigate manually."}}]}</script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -39,23 +40,109 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/features/">Features</a> <span class="sep">›</span> <span>Self-Healing AI Agents</span></div>
+
     <h1>Self-Healing AI Agents</h1>
-<p class="subtitle">The #1 reason to use amux: your agents never silently die.</p>
-<p>Claude Code sessions fail in predictable ways. amux's background watchdog detects every known failure mode and recovers automatically — no human intervention needed.</p>
-<h2>Failure modes and responses</h2>
-<table>
-<thead><tr><th>Failure</th><th>Detection</th><th>Recovery</th></tr></thead>
-<tbody>
-<tr><td>Context exhaustion</td><td>Context below 20%</td><td>Auto-send <code>/compact</code></td></tr>
-<tr><td>Thinking-block corruption</td><td>Error message pattern</td><td>Restart + replay last message</td></tr>
-<tr><td>Tool-approval stuck</td><td>"Esc to cancel" marker</td><td>Auto-respond (YOLO mode)</td></tr>
-<tr><td>Silent hang</td><td>No output for extended period</td><td>Continue signal</td></tr>
-</tbody>
-</table>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+    <p class="subtitle">amux runs a background watchdog that recovers from every known Claude Code failure mode — automatically, overnight, without you.</p>
+
+    <div class="quick-answer" style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:8px;padding:1.25rem 1.5rem;margin:1.5rem 0">
+      <div class="kicker" style="margin-bottom:0.35rem">// quick answer</div>
+      <p style="margin:0"><strong>Does amux restart Claude Code agents automatically?</strong> Yes. The watchdog monitors every session and recovers from four failure modes: context exhaustion (auto-compact), thinking-block corruption (restart + replay), tool-approval blocks (YOLO mode), and silent hangs (continue signal). Agents run unattended overnight.</p>
+    </div>
+
+    <h2>The four failure modes Claude Code sessions hit</h2>
+    <p>Most developers running multiple Claude Code agents overnight encounter the same four failures. amux is built around detecting and recovering from all of them automatically.</p>
+
+    <h3>1. Context exhaustion (most common)</h3>
+    <p>Claude Code has a finite context window. As a long-running session accumulates code edits, tool outputs, and conversation history, the context fills. When it reaches capacity, the session stalls — Claude can't continue because there's nowhere to put new tokens.</p>
+    <p><strong>amux recovery:</strong> When context falls below a configurable threshold (default: 20% remaining), the watchdog automatically sends <code>/compact</code>. Claude Code summarizes its full context into a compressed form and continues the task from where it left off.</p>
+    <pre><code># Configure the threshold in ~/.amux/server.env
+WATCHDOG_CONTEXT_THRESHOLD=20   # trigger /compact when below 20% remaining</code></pre>
+
+    <h3>2. Thinking-block corruption</h3>
+    <p>Certain Claude response patterns — particularly around extended thinking — can produce malformed output that hangs the UI. The session appears to be running but produces no more output. This failure mode is silent and easy to miss in a fleet of 10+ agents.</p>
+    <p><strong>amux recovery:</strong> The watchdog monitors output patterns. When it detects a thinking-block error signature, it kills and restarts the Claude Code process, then replays the last message sent to the session so the agent picks up where it left off.</p>
+
+    <h3>3. Tool-approval stuck</h3>
+    <p>Unless YOLO mode is enabled, Claude Code pauses at every tool call (file write, bash command, etc.) and waits for the user to press Enter to approve. In an unattended session, this pause is indefinite — the agent just stops working and waits forever.</p>
+    <p><strong>amux recovery (YOLO mode):</strong> The <code>--yolo</code> flag pre-approves all tool calls at session start. This is the recommended setup for overnight or background agents — register your session with <code>--yolo</code> and the failure mode doesn't exist.</p>
+    <pre><code>amux register myproject --dir ~/Dev/myproject --yolo</code></pre>
+
+    <h3>4. Silent hang</h3>
+    <p>Sometimes Claude Code produces no output for an extended period for reasons unrelated to the above — a stuck network call, a paused subprocess, a model timeout. The session isn't crashed; it's just frozen.</p>
+    <p><strong>amux recovery:</strong> When no output is detected for the idle timeout period (configurable), the watchdog sends a continue signal to kick the agent back into action.</p>
+    <pre><code># Configure in ~/.amux/server.env
+WATCHDOG_IDLE_TIMEOUT=900   # 15 minutes of silence triggers a continue signal</code></pre>
+
+    <h2>Last-message replay</h2>
+    <p>When a session is restarted after a crash or thinking-block corruption, amux replays the last message that was sent to it. This means the agent picks up the task it was working on, not a blank slate. Combined with context compaction history, agents lose very little progress even after a hard restart.</p>
+
+    <h2>Recovery vs. manual babysitting — comparison</h2>
+    <table>
+      <thead>
+        <tr><th>Failure scenario</th><th>Without amux</th><th>With amux self-healing</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Context fills overnight</td><td>Agent stops; you wake up to a dead session</td><td>Auto-compact; agent continues</td></tr>
+        <tr><td>Thinking-block corruption</td><td>Session hangs forever; requires manual kill + restart</td><td>Detected in ~2 s; auto-restart + replay</td></tr>
+        <tr><td>Tool-approval prompt</td><td>Agent waits indefinitely</td><td>Auto-approve (YOLO) or continue signal</td></tr>
+        <tr><td>Silent hang (&gt;15 min idle)</td><td>Session appears running but produces nothing</td><td>Watchdog sends continue signal</td></tr>
+        <tr><td>Process crash (exit code &ne;0)</td><td>Dead session until you notice</td><td>Auto-restart within ~5 s</td></tr>
+        <tr><td>Replay loop detection</td><td>N/A — you'd notice manually</td><td>Restart counter; marked failed after N consecutive restarts</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Configuration reference</h2>
+    <p>All watchdog settings live in <code>~/.amux/server.env</code>. The server reads this file at startup (and after an auto-restart).</p>
+    <table>
+      <thead>
+        <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>WATCHDOG_CONTEXT_THRESHOLD</code></td><td>20</td><td>% context remaining that triggers auto-compact</td></tr>
+        <tr><td><code>WATCHDOG_IDLE_TIMEOUT</code></td><td>900</td><td>Seconds of silence before a continue signal is sent</td></tr>
+        <tr><td><code>YOLO</code></td><td>0</td><td>Set to 1 to auto-approve all tool calls globally</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Frequently asked questions</h2>
+
+    <div class="faq-list">
+      <details open>
+        <summary><strong>Does amux automatically restart Claude Code when it crashes?</strong></summary>
+        <p>Yes. The amux watchdog detects process exits and automatically restarts the Claude Code session within ~5 seconds. When YOLO mode is enabled, the agent resumes where it left off without any human intervention.</p>
+      </details>
+      <details>
+        <summary><strong>What is YOLO mode?</strong></summary>
+        <p>YOLO mode (<code>--yolo</code> flag) auto-approves all Claude Code tool calls, preventing the tool-approval stuck failure mode entirely. Enable it with <code>amux register myproject --dir ~/Dev/myproject --yolo</code>, or set <code>YOLO=1</code> in <code>~/.amux/server.env</code> to apply globally to all sessions.</p>
+      </details>
+      <details>
+        <summary><strong>How do I configure the context threshold for auto-compact?</strong></summary>
+        <p>Set <code>WATCHDOG_CONTEXT_THRESHOLD</code> in <code>~/.amux/server.env</code> as a percentage (0–100). The default is 20, meaning amux sends <code>/compact</code> when Claude Code's context falls below 20% remaining capacity. Lower values trigger compaction later (less frequent); higher values trigger it earlier (more frequent).</p>
+      </details>
+      <details>
+        <summary><strong>Can amux self-healing run completely unattended overnight?</strong></summary>
+        <p>Yes. Enable YOLO mode and set your watchdog thresholds in <code>~/.amux/server.env</code>, then start your agents with <code>amux start</code>. The watchdog handles all four failure modes without any human intervention. Thousands of developers run amux fleets overnight this way.</p>
+      </details>
+      <details>
+        <summary><strong>What happens if last-message replay causes an infinite loop?</strong></summary>
+        <p>The amux watchdog tracks restart counts per session. After consecutive restarts without forward progress (no new output), it marks the session as failed and stops auto-restarting. The session is flagged in the dashboard with a red status dot so you can investigate manually.</p>
+      </details>
+    </div>
+
+    <p style="margin-top:2rem">See also: <a href="/guides/claude-code-plan-monitoring/">Monitor Claude Code plan progress</a> · <a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep</a> · <a href="/features/web-dashboard/">Web dashboard</a></p>
+
+    <div class="cta-box">
+      <h3>Run Claude Code agents that never die overnight</h3>
+      <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. MIT licensed, single Python file.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8822</code></pre>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
+        <a class="btn" href="/guides/getting-started/">Get started</a>
+      </div>
+    </div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -102,7 +189,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
       </div>
     </div>
   </footer>
-
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Agent Coordination — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="How amux agents discover peers, delegate tasks, and coordinate work via REST API and shared board.">
-  <meta name="keywords" content="agent coordination, multi-agent orchestration, agent REST API, task delegation AI">
+  <title>AI Agent Coordination — amux Multi-Agent REST API &amp; Atomic Task Claiming (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux gives every Claude Code agent a REST API at startup. Agents coordinate without a framework — atomic task claiming via SQLite CAS, inter-agent messaging, peer discovery, and shared memory.">
+  <meta name="keywords" content="multi-agent coordination REST API, atomic task claiming AI agents, agent-to-agent orchestration, Claude Code agent coordination, parallel AI agent task distribution, producer-consumer AI agents">
   <link rel="canonical" href="https://amux.io/features/agent-coordination/">
-  <meta property="og:title" content="Agent Coordination — amux">
-  <meta property="og:description" content="How amux agents discover peers, delegate tasks, and coordinate work via REST API and shared board.">
+  <meta property="og:title" content="AI Agent Coordination — amux Multi-Agent REST API &amp; Atomic Task Claiming (2026)">
+  <meta property="og:description" content="amux gives every Claude Code agent a REST API at startup. Agents coordinate without a framework — atomic task claiming via SQLite CAS, inter-agent messaging, peer discovery, and shared memory.">
   <meta property="og:url" content="https://amux.io/features/agent-coordination/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -22,8 +22,9 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Features","item":"https://amux.io/features/"},{"@type":"ListItem","position":3,"name":"Agent Coordination","item":"https://amux.io/features/agent-coordination/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Agent Coordination","description":"How amux agents discover peers, delegate tasks, and coordinate work via REST API and shared board.","url":"https://amux.io/features/agent-coordination/","about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","featureList":"Agent Coordination"}}</script>
-  </head>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Coordination — amux Multi-Agent REST API & Atomic Task Claiming (2026)","description":"amux gives every Claude Code agent a REST API at startup. Agents coordinate via HTTP — atomic SQLite CAS task claiming, inter-agent messaging, peer discovery, and shared memory.","url":"https://amux.io/features/agent-coordination/","datePublished":"2026-07-11","dateModified":"2026-07-11","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How do amux agents avoid working on the same task?","acceptedAnswer":{"@type":"Answer","text":"Atomic SQLite compare-and-swap (CAS) claim: POST /api/board/:id/claim. Returns HTTP 200 if the agent won the claim, HTTP 409 if another agent already claimed it. The claim is atomic at the database level — no two agents can win the same task even when dozens call simultaneously."}},{"@type":"Question","name":"Can agents send instructions to each other in amux?","acceptedAnswer":{"@type":"Answer","text":"Yes. POST /api/sessions/:name/send delivers text to another session's steering queue, delivered at the next turn boundary. This works mid-run — agent A can redirect agent B while B is still actively working."}},{"@type":"Question","name":"How does an agent know about other agents in the fleet?","acceptedAnswer":{"@type":"Answer","text":"amux injects $AMUX_URL and $AMUX_SESSION into every session environment at startup. The global memory (GET /api/memory/global) contains the full REST API reference including all coordination endpoints. Agents call GET /api/sessions to list all registered peers and their status."}},{"@type":"Question","name":"Does agent coordination require a custom framework?","acceptedAnswer":{"@type":"Answer","text":"No. All coordination is plain HTTP — standard curl commands or Python requests calls inside any Claude Code session. No SDK, no framework, no custom protocol. The full API contract is in the global memory that every session reads at startup."}},{"@type":"Question","name":"What is the amux producer-consumer pattern?","acceptedAnswer":{"@type":"Answer","text":"One orchestrator agent creates tasks on the board; N worker agents each loop POST /api/board/:id/claim until they win a task, execute it, mark it done with PATCH /api/board/:id, and repeat. The SQLite CAS claim ensures only one agent wins each task even at 50+ concurrency. No race conditions, no shared filesystem state."}}]}</script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -39,20 +40,146 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/features/">Features</a> <span class="sep">›</span> <span>Agent Coordination</span></div>
-    <h1>Agent Coordination</h1>
-<p class="subtitle">Agents discover peers and delegate work automatically.</p>
-<p>Every agent gets <code>$AMUX_URL</code> and <code>$AMUX_SESSION</code> at startup. Global memory contains the full API reference. Agents coordinate via HTTP — no special framework needed.</p>
-<h2>Coordination primitives</h2>
-<ul>
-<li><strong>Send message:</strong> <code>POST /api/sessions/:name/send</code></li>
-<li><strong>Peek output:</strong> <code>GET /api/sessions/:name/peek</code></li>
-<li><strong>Claim task:</strong> <code>POST /api/board/:id/claim</code></li>
-<li><strong>Read memory:</strong> <code>GET /api/memory/global</code></li>
-</ul>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+
+    <h1>AI Agent Coordination</h1>
+    <p class="subtitle">Every amux agent gets a REST API at startup. They coordinate in HTTP — no framework, no shared filesystem, no race conditions.</p>
+
+    <div class="quick-answer" style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:8px;padding:1.25rem 1.5rem;margin:1.5rem 0">
+      <div class="kicker" style="margin-bottom:0.35rem">// quick answer</div>
+      <p style="margin:0"><strong>How do amux agents coordinate without race conditions?</strong> amux injects <code>$AMUX_URL</code> and <code>$AMUX_SESSION</code> into every session at startup, plus the full REST API contract in global memory. Agents POST tasks to the board, claim them via SQLite compare-and-swap (<code>POST /api/board/:id/claim</code> — 200 if won, 409 if taken), peek at each other's output, and send mid-run messages. No framework, no file locks, no races.</p>
+    </div>
+
+    <h2>The coordination primitives</h2>
+    <p>amux exposes five primitives that any agent session can call via <code>curl</code> or <code>requests</code>. These are documented in the global memory that every session reads at startup — agents don't need to be told how to coordinate; they already know.</p>
+
+    <h3>1. Atomic task claiming — the core primitive</h3>
+    <p>The shared board (<code>GET/POST /api/board</code>) is a SQLite-backed kanban accessible to all agents. The claim endpoint is the key to race-free parallel work:</p>
+    <pre><code># Create a task (orchestrator agent)
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Migrate users table","status":"todo"}' \
+  $AMUX_URL/api/board
+
+# Claim it atomically (worker agent)
+# Returns 200 if won, 409 if another agent already claimed it
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"session":"'$AMUX_SESSION'"}' \
+  $AMUX_URL/api/board/TASK-5/claim
+
+# Mark done with result
+curl -s -X PATCH -H 'Content-Type: application/json' \
+  -d '{"status":"done","desc":"Migrated 1.2M rows in 4m32s"}' \
+  $AMUX_URL/api/board/TASK-5</code></pre>
+    <p>The claim is atomic at the SQLite transaction level. Two agents can <code>POST /claim</code> simultaneously — exactly one gets 200, the other gets 409. Safe at 50+ concurrency with zero coordination overhead.</p>
+
+    <h3>2. Inter-agent messaging</h3>
+    <p>Send text to another agent's steering queue — delivered at its next turn boundary:</p>
+    <pre><code># Agent A redirects agent B mid-run
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"text":"Focus on the auth module first, skip payments for now"}' \
+  $AMUX_URL/api/sessions/worker-b/send</code></pre>
+    <p>This works during active agent turns (it queues and delivers at the next natural pause) and between turns. Useful for orchestrators redirecting workers based on new information, or for human-in-the-loop steering without interrupting the agent's flow.</p>
+
+    <h3>3. Peer output inspection</h3>
+    <p>Read another agent's recent terminal output — the last N lines of its tmux pane:</p>
+    <pre><code># Check if agent B has finished its current task
+curl -s "$AMUX_URL/api/sessions/worker-b/peek?lines=20" | \
+  python3 -c "import json,sys; print(json.load(sys.stdin).get('output',''))"</code></pre>
+    <p>Use this for lightweight polling ("is agent B done yet?"), debugging ("what is agent B actually doing?"), or for orchestrators that want to consume an agent's output programmatically.</p>
+
+    <h3>4. Shared global memory</h3>
+    <p>A CLAUDE.md-style scratchpad that all sessions can read and write. Every session reads this at startup — it's how agents know about the API contract, the project context, and the coordination rules without being explicitly told:</p>
+    <pre><code>curl -s $AMUX_URL/api/memory/global       # read
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"content":"# Updated project context\n..."}' \
+  $AMUX_URL/api/memory/global              # write</code></pre>
+
+    <h3>5. Agent discovery</h3>
+    <p>List all registered sessions and their current status:</p>
+    <pre><code>curl -s $AMUX_URL/api/sessions | python3 -c "
+import json, sys
+for s in json.load(sys.stdin):
+    print(s['name'], s.get('status','unknown'), '-', s.get('desc',''))
+"</code></pre>
+    <p>amux injects <code>$AMUX_URL</code> and <code>$AMUX_SESSION</code> into every session at startup. Every agent knows its own identity and can reach all peers via these two env vars — no hardcoded hostnames or session lists.</p>
+
+    <h2>Common coordination patterns</h2>
+
+    <h3>Producer-consumer (most common)</h3>
+    <p>One orchestrator agent creates tasks on the board; N worker agents race to claim and execute them. The SQLite CAS claim is the only synchronization primitive needed — no message queue, no lock files, no Redis.</p>
+    <pre><code># Orchestrator: create 10 tasks
+for i in $(seq 1 10); do
+  curl -s -X POST -H 'Content-Type: application/json' \
+    -d "{\"title\":\"Process batch $i\",\"status\":\"todo\"}" \
+    $AMUX_URL/api/board
+done
+
+# Worker (runs in each of N agents in a loop):
+# 1. List todo tasks
+# 2. Try to claim the first unclaimed one (POST /api/board/:id/claim)
+# 3. Execute the task
+# 4. Mark done
+# 5. Repeat until no tasks remain</code></pre>
+
+    <h3>Pipeline (agent A → agent B → agent C)</h3>
+    <p>Agent A creates a draft PR. Agent B reviews it and posts comments via the board. Agent C runs tests and reports results. Each stage creates a board task for the next stage to claim — the board is the handoff mechanism.</p>
+
+    <h3>Role-based routing</h3>
+    <p>Tag tasks with role annotations (<code>[security]</code>, <code>[docs]</code>, <code>[backend]</code>). Each specialized agent filters the board for tasks matching its role before claiming. The orchestrator doesn't need to know which agent handles which role — agents self-select.</p>
+
+    <h2>Agent coordination approaches compared</h2>
+    <table>
+      <thead>
+        <tr><th>Approach</th><th>Setup overhead</th><th>Atomic tasks</th><th>Inter-agent messaging</th><th>Observability</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>amux board + REST API</td><td>Zero — built in</td><td>✓ SQLite CAS</td><td>✓ send / peek</td><td>Dashboard + board view</td></tr>
+        <tr><td>Custom orchestrator (LangGraph)</td><td>Build &amp; maintain</td><td>Custom</td><td>Custom</td><td>Custom</td></tr>
+        <tr><td>File-based coordination</td><td>Low</td><td>✗ race conditions</td><td>✗</td><td>✗</td></tr>
+        <tr><td>Claude Code Agent Teams (experimental)</td><td>Feature flag</td><td>Partial</td><td>Limited</td><td>Limited</td></tr>
+        <tr><td>Separate message queue (Redis, SQS)</td><td>Infra to provision + run</td><td>✓</td><td>✓</td><td>Separate tooling</td></tr>
+        <tr><td>Shared SQLite (direct DB access)</td><td>Schema to design</td><td>✓</td><td>✗</td><td>✗</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Frequently asked questions</h2>
+
+    <div class="faq-list">
+      <details open>
+        <summary><strong>How do amux agents avoid working on the same task?</strong></summary>
+        <p>Atomic SQLite compare-and-swap claim: <code>POST /api/board/:id/claim</code>. Returns HTTP 200 if the agent won the claim, HTTP 409 if another agent already claimed it. The claim is atomic at the database level — no two agents can win the same task even when dozens call simultaneously.</p>
+      </details>
+      <details>
+        <summary><strong>Can agents send instructions to each other?</strong></summary>
+        <p>Yes. <code>POST /api/sessions/:name/send</code> delivers text to another session's steering queue, delivered at the next turn boundary. This works mid-run — agent A can redirect agent B while B is still actively working.</p>
+      </details>
+      <details>
+        <summary><strong>How does an agent know about other agents in the fleet?</strong></summary>
+        <p>amux injects <code>$AMUX_URL</code> and <code>$AMUX_SESSION</code> into every session environment at startup. The global memory contains the full REST API reference. Agents call <code>GET /api/sessions</code> to list all registered peers and their status.</p>
+      </details>
+      <details>
+        <summary><strong>Does agent coordination require a custom framework?</strong></summary>
+        <p>No. All coordination is plain HTTP — standard <code>curl</code> commands or Python <code>requests</code> calls inside any Claude Code session. No SDK, no framework, no custom protocol. The full API contract is in the global memory that every session reads at startup.</p>
+      </details>
+      <details>
+        <summary><strong>What is the amux producer-consumer pattern?</strong></summary>
+        <p>One orchestrator agent creates tasks on the board; N worker agents each loop <code>POST /api/board/:id/claim</code> until they win a task, execute it, mark it done, and repeat. The SQLite CAS claim ensures only one agent wins each task even at 50+ concurrency. No race conditions, no shared filesystem state.</p>
+      </details>
+    </div>
+
+    <p style="margin-top:2rem">See also: <a href="/guides/kanban-board-for-agents/">Kanban board for AI agents</a> · <a href="/guides/running-10-plus-agents/">Running 10+ agents in parallel</a> · <a href="/features/web-dashboard/">Web dashboard</a></p>
+
+    <div class="cta-box">
+      <h3>Coordinate dozens of Claude Code agents without a framework</h3>
+      <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. MIT licensed, single Python file.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8822</code></pre>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
+        <a class="btn" href="/guides/getting-started/">Get started</a>
+      </div>
+    </div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -99,7 +226,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
       </div>
     </div>
   </footer>
-
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

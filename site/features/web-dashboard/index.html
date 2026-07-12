@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Web Dashboard — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="amux's web dashboard for monitoring AI agents — session cards, peek mode, workspace, board, and reports.">
-  <meta name="keywords" content="AI agent dashboard, agent monitoring UI, web dashboard agents, session management UI">
+  <title>AI Agent Dashboard — amux Web Dashboard &amp; iOS App (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux's web dashboard shows all your running Claude Code agents in real time — live output, task plans, kanban board, CRM, scheduler, and more. Also available as a native iOS app.">
+  <meta name="keywords" content="AI agent dashboard, Claude Code monitoring dashboard, manage AI agents from browser, multi-agent web UI, agent monitoring iOS app, real-time agent dashboard">
   <link rel="canonical" href="https://amux.io/features/web-dashboard/">
-  <meta property="og:title" content="Web Dashboard — amux">
-  <meta property="og:description" content="amux's web dashboard for monitoring AI agents — session cards, peek mode, workspace, board, and reports.">
+  <meta property="og:title" content="AI Agent Dashboard — amux Web Dashboard &amp; iOS App (2026)">
+  <meta property="og:description" content="amux's web dashboard shows all your running Claude Code agents in real time — live output, task plans, kanban board, CRM, scheduler, and more. Also available as a native iOS app.">
   <meta property="og:url" content="https://amux.io/features/web-dashboard/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -22,8 +22,9 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Features","item":"https://amux.io/features/"},{"@type":"ListItem","position":3,"name":"Web Dashboard","item":"https://amux.io/features/web-dashboard/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Web Dashboard","description":"amux's web dashboard for monitoring AI agents — session cards, peek mode, workspace, board, and reports.","url":"https://amux.io/features/web-dashboard/","about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","featureList":"Web Dashboard"}}</script>
-  </head>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Dashboard — amux Web Dashboard & iOS App (2026)","description":"amux's web dashboard shows all your running Claude Code agents in real time — live output, task plans, kanban board, CRM, scheduler, and more.","url":"https://amux.io/features/web-dashboard/","datePublished":"2026-07-11","dateModified":"2026-07-11","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Does amux have a native iOS app?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux – Agent Multiplexer is available on the App Store (id6760410435). It's a native SwiftUI app with push notifications. The same dashboard also works as a PWA — tap Share → Add to Home Screen in Safari on iOS, or Install in Chrome on Android."}},{"@type":"Question","name":"Can I monitor multiple Claude Code agents at the same time in the dashboard?","acceptedAnswer":{"@type":"Answer","text":"Yes. The Sessions tab shows all registered agents simultaneously with live status dots, last output snippets, and token spend. Tap or click any session card to open the Peek panel and see that agent's live terminal output stream."}},{"@type":"Question","name":"Is the amux dashboard real-time?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux uses Server-Sent Events (SSE) — all connected clients, including your phone and desktop, see changes within ~2 seconds of any agent update. A 10-second server ping keeps zombie connections from silently dying and triggering a reconnect delay."}},{"@type":"Question","name":"What is the peek panel?","acceptedAnswer":{"@type":"Answer","text":"The peek panel is a slide-out drawer showing live terminal output for a specific agent session. It includes the plan strip (Claude Code's active task list), subagent switcher (navigate between main agent and subagent transcripts), load-earlier-output bar (scroll back through the full session log), quick-action chips (compact, continue, status), saved messages, and a steering bar for sending instructions mid-run."}},{"@type":"Question","name":"Can I use the amux dashboard from my phone while my agents run on my laptop?","acceptedAnswer":{"@type":"Answer","text":"Yes. Connect over your home network via the iOS app or PWA at https://[your-laptop-ip]:8822. For remote access, use Tailscale (free, works over any network) or the amux tunnel cloud feature which gives you a stable public HTTPS URL without opening firewall ports."}}]}</script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -39,20 +40,117 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/features/">Features</a> <span class="sep">›</span> <span>Web Dashboard</span></div>
-    <h1>Web Dashboard</h1>
-<p class="subtitle">Everything you need to manage a fleet of AI agents from your browser.</p>
-<ul>
-<li><strong>Session cards</strong> — live status, token spend, model, current task</li>
-<li><strong>Peek mode</strong> — full scrollback, search, file previews, send bar</li>
-<li><strong>Workspace</strong> — tiled layout for watching multiple agents</li>
-<li><strong>Board</strong> — kanban with atomic claiming and iCal sync</li>
-<li><strong>Calendar</strong> — due dates and scheduled commands</li>
-<li><strong>Reports</strong> — spend dashboards from vendor billing APIs</li>
-</ul>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+
+    <h1>AI Agent Dashboard</h1>
+    <p class="subtitle">One browser tab — or your phone — to manage every Claude Code agent running on your machine.</p>
+
+    <div class="quick-answer" style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:8px;padding:1.25rem 1.5rem;margin:1.5rem 0">
+      <div class="kicker" style="margin-bottom:0.35rem">// quick answer</div>
+      <p style="margin:0"><strong>What does the amux dashboard show?</strong> Every running Claude Code agent with live status, token spend, and current task — all in one view. Tap any session to open the peek panel: live terminal output, the agent's task list (plan strip), subagent transcripts, historical scrollback, and a steering bar to send instructions mid-run. Also available as a native iOS app and installable PWA.</p>
+    </div>
+
+    <h2>What's in the dashboard</h2>
+
+    <h3>Sessions tab — fleet health at a glance</h3>
+    <p>The Sessions tab is the main view: one card per registered agent, each showing a live status dot (green = active, amber = idle, red = failed), the last output snippet, current token spend, and the active task from the plan strip. All cards update in real time via Server-Sent Events — no manual refresh needed.</p>
+    <p>Tap or click any session card to open the <strong>peek panel</strong> for that agent.</p>
+
+    <h3>Peek panel — live terminal output from your phone</h3>
+    <p>The peek panel is the core monitoring surface. It streams live terminal output from Claude Code via SSE. Key elements:</p>
+    <ul>
+      <li><strong>Plan strip</strong> — Claude Code's active task list, updated as the agent checks off items. See exactly what the agent is working on without reading raw output.</li>
+      <li><strong>Subagent switcher</strong> — ▲/▼ buttons to navigate between the main agent transcript and any subagent transcripts spawned during the session (e.g. Claude Code Agent tool runs). Added in v0.9.79.</li>
+      <li><strong>Load earlier output</strong> — "Load earlier output" bar at the top fetches older log pages. Scroll back through the complete session history, not just recent output. Added in v0.9.82.</li>
+      <li><strong>Responsive layout</strong> — the peek panel measures your screen's real character width and adjusts the tmux pane to match, so text wraps correctly on any device width. Added in v0.9.85.</li>
+      <li><strong>Quick-action chips</strong> — one-tap buttons for <code>/compact</code>, <code>/continue</code>, <code>/status</code>, and other common commands.</li>
+      <li><strong>Steering bar</strong> — send any text to the agent mid-run. Works during active turns (steers the agent) and between turns (queued for next turn).</li>
+      <li><strong>Saved messages</strong> — store frequently-sent instructions and replay them in one tap.</li>
+    </ul>
+
+    <h3>Board tab — shared kanban for agents and humans</h3>
+    <p>A SQLite-backed kanban board accessible to every agent session and to you in the dashboard. Agents create tasks (<code>POST /api/board</code>), claim them atomically (<code>POST /api/board/:id/claim</code> — returns 409 if already claimed), and mark them done. No two agents can work the same task. You can also create, move, and comment on tasks from the dashboard UI.</p>
+
+    <h3>Notes tab — shared agent memory</h3>
+    <p>A document store that every session can read and write. Use it for shared context, research notes, and handoff documents between agents. Notes are plain text or Quill HTML, stored in SQLite, and visible in the dashboard.</p>
+
+    <h3>CRM tab — contacts and interactions</h3>
+    <p>A lightweight CRM built into the dashboard. Agents and humans can add contacts, log interactions (call, email, meeting, DM), and query the contact graph. Useful when agents are handling outreach, follow-ups, or anything relationship-driven.</p>
+
+    <h3>Scheduler tab — recurring agent tasks</h3>
+    <p>Create recurring tasks with plain-English schedule expressions (<code>daily at 9am</code>, <code>every 15m</code>, <code>weekly on Monday at 9am</code>) or 5-field cron. The scheduler sends a prompt to a specific session at the scheduled time. An iCal feed exports scheduled tasks to Google Calendar or Apple Calendar.</p>
+
+    <h3>Calendar tab — three-layer view</h3>
+    <p>A unified calendar showing: calendar events you've created via the API, scheduled tasks from the scheduler, and board items with due dates. Exports to iCal and subscribes to Google Calendar.</p>
+
+    <h2>Mobile access — iOS app and PWA</h2>
+    <p>The full dashboard is designed to work on a 375px screen (iPhone SE width). Touch targets are ≥44×44px per Apple HIG. All tabs are accessible on mobile.</p>
+    <ul>
+      <li><strong>Native iOS app:</strong> <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux – Agent Multiplexer on the App Store</a> — native SwiftUI, push notifications when agents need attention, full dashboard surface.</li>
+      <li><strong>PWA (Android + iOS):</strong> Open <code>https://[your-machine-ip]:8822</code> in Chrome (Android) or Safari (iOS), then install. Runs as a standalone app, works offline for cached views.</li>
+      <li><strong>Remote access:</strong> Use Tailscale for access from anywhere, or the amux tunnel cloud feature for a stable public HTTPS URL.</li>
+    </ul>
+
+    <h2>Live updates — SSE backbone</h2>
+    <p>Every open dashboard client (desktop + phone) receives updates via a persistent Server-Sent Events connection. The server sends a real <code>{type:"ping"}</code> event every 10 seconds — clients declare the connection stale after 18 seconds of silence and force-reconnect. On mobile, <code>visibilitychange</code>, <code>pageshow</code>, <code>focus</code>, and <code>online</code> events all trigger a resume that refetches if data is more than 4 seconds old.</p>
+
+    <h2>Dashboard features vs. alternatives</h2>
+    <table>
+      <thead>
+        <tr><th>Capability</th><th>amux dashboard</th><th>DIY tmux scripts</th><th>Claude Code alone</th><th>Devin</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Fleet health overview</td><td>✓ live status dots</td><td>✗</td><td>✗</td><td>✓ (cloud only)</td></tr>
+        <tr><td>Live terminal output from browser</td><td>✓ peek panel</td><td>✗</td><td>✗</td><td>✓ (cloud only)</td></tr>
+        <tr><td>Agent plan / task list</td><td>✓ plan strip</td><td>✗</td><td>Terminal only</td><td>✓ (cloud only)</td></tr>
+        <tr><td>Subagent transcript switcher</td><td>✓ v0.9.79+</td><td>✗</td><td>✗</td><td>✗</td></tr>
+        <tr><td>Historical output scrollback</td><td>✓ v0.9.82+</td><td>✗</td><td>✗</td><td>✗</td></tr>
+        <tr><td>Kanban board with atomic task claiming</td><td>✓</td><td>✗</td><td>✗</td><td>✗</td></tr>
+        <tr><td>Mobile app (iOS native + PWA)</td><td>✓</td><td>✗</td><td>✗</td><td>✗</td></tr>
+        <tr><td>CRM + email + notes + scheduler</td><td>✓ built-in</td><td>✗</td><td>✗</td><td>✗</td></tr>
+        <tr><td>Real-time updates (&lt;2 s latency)</td><td>✓ SSE</td><td>✗</td><td>✗</td><td>✓ (cloud only)</td></tr>
+        <tr><td>Self-hosted</td><td>✓</td><td>✓</td><td>✓</td><td>✗</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Frequently asked questions</h2>
+
+    <div class="faq-list">
+      <details open>
+        <summary><strong>Does amux have a native iOS app?</strong></summary>
+        <p>Yes. <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux – Agent Multiplexer on the App Store</a> (id6760410435) is a native SwiftUI app with push notifications. The same dashboard also works as a PWA — tap Share → Add to Home Screen in Safari on iOS, or Install in Chrome on Android.</p>
+      </details>
+      <details>
+        <summary><strong>Can I monitor multiple Claude Code agents at the same time?</strong></summary>
+        <p>Yes. The Sessions tab shows all registered agents simultaneously with live status dots, last output snippets, and token spend. Tap or click any session card to open the Peek panel and see that agent's live terminal output stream.</p>
+      </details>
+      <details>
+        <summary><strong>Is the amux dashboard real-time?</strong></summary>
+        <p>Yes. amux uses Server-Sent Events (SSE) — all connected clients, including your phone and desktop, see changes within ~2 seconds of any agent update. A 10-second server ping keeps zombie connections from silently dying.</p>
+      </details>
+      <details>
+        <summary><strong>What is the peek panel?</strong></summary>
+        <p>The peek panel is a slide-out drawer showing live terminal output for a specific agent session. It includes the plan strip (Claude Code's active task list), subagent switcher (v0.9.79), load-earlier-output bar (v0.9.82), quick-action chips, saved messages, and a steering bar for sending instructions mid-run.</p>
+      </details>
+      <details>
+        <summary><strong>Can I use the amux dashboard from my phone while agents run on my laptop?</strong></summary>
+        <p>Yes. Connect over your home network via the iOS app or PWA. For remote access from anywhere, use Tailscale (free) or the amux tunnel cloud feature which gives a stable public HTTPS URL without opening firewall ports.</p>
+      </details>
+    </div>
+
+    <p style="margin-top:2rem">See also: <a href="/guides/claude-code-plan-monitoring/">Monitor Claude Code plan progress in real time</a> · <a href="/guides/agent-fleet-operations/">AI agent fleet operations</a> · <a href="/features/mobile-pwa/">Mobile PWA feature</a> · <a href="/features/self-healing/">Self-healing watchdog</a></p>
+
+    <div class="cta-box">
+      <h3>Monitor your Claude Code agents from one dashboard</h3>
+      <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. MIT licensed, single Python file.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # → https://localhost:8822</code></pre>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
+        <a class="btn" href="/guides/getting-started/">Get started</a>
+      </div>
+    </div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -99,7 +197,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
       </div>
     </div>
   </footer>
-
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>
