@@ -14064,6 +14064,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     #peek-overlay #peek-task-row { display: none !important; }
     #peek-overlay .peek-dir-bar { display: none !important; }
     #peek-overlay .peek-tabs { padding: 0 8px; }
+    /* Reclaim the "Updated … · vX" status line on mobile — its ~20px is
+       better spent on the terminal. (The version/updated info is still
+       visible on desktop and via the layout-debug tap on the body.) */
+    #peek-overlay #peek-status { display: none !important; }
   }
   /* Split pane wrapper — reuses fe-row / fe-cell-* from the Files tab */
   .peek-split-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -23119,7 +23123,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.97';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.98';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -31102,6 +31106,23 @@ function timeAgo(ts) {
   return Math.floor(diff / 86400) + 'd ago';
 }
 
+// Sanitize HTML before inserting into the DOM. Notes (which may contain raw
+// Obsidian HTML), rendered markdown, and graph node bodies are attacker-
+// influenceable (any session can POST a note), and the dashboard embeds the
+// API token — so unsanitized HTML = stored XSS → RCE. DOMPurify strips
+// scripts, event handlers, and javascript: URLs while keeping normal
+// formatting. If it failed to load, fall back to a conservative strip.
+function _sanitizeHtml(html) {
+  if (html == null) return '';
+  if (typeof DOMPurify !== 'undefined' && DOMPurify.sanitize) {
+    return DOMPurify.sanitize(String(html), { ADD_ATTR: ['target'] });
+  }
+  // Fallback: drop <script>/<style>, on*= handlers, and javascript:/data: URLs.
+  return String(html)
+    .replace(/<\s*(script|style|iframe|object|embed|link|meta)\b[\s\S]*?(<\/\s*\1\s*>|$)/gi, '')
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/(href|src)\s*=\s*("|')?\s*(javascript|data|vbscript):/gi, '$1=$2#blocked:');
+}
 function renderMarkdown(raw) {
   if (!raw) return '';
   // Use marked.js for full GFM support (tables, task lists, strikethrough, etc.)
@@ -31117,7 +31138,7 @@ function renderMarkdown(raw) {
       };
       let html = marked.parse(raw, { gfm: true, breaks: false, renderer });
       html = html.replace(/<table>/g, '<div class="table-scroll"><table>').replace(/<\/table>/g, '</table></div>');
-      return html;
+      return _sanitizeHtml(html);
     } catch(e) { /* fall through to basic renderer */ }
   }
   // Fallback: basic renderer if marked.js failed to load
@@ -38070,7 +38091,7 @@ function _pinnedNotesRender() {
   if (!_pinnedNotesCache.length) { container.innerHTML = ''; return; }
   container.innerHTML = _pinnedNotesCache.map(n => {
     const isHtml = /<[a-z][\s\S]*>/i.test(n.content);
-    const body = isHtml ? n.content : renderMarkdown(n.content);
+    const body = isHtml ? _sanitizeHtml(n.content) : renderMarkdown(n.content);
     return `<div class="pinned-note-card" onclick="_pinnedNoteOpen('${esc(n.path)}')" data-path="${esc(n.path)}">
       <div class="pinned-note-header">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>
@@ -39365,9 +39386,9 @@ function _graphOpenPanel(node) {
   }
   // Render markdown body
   if (typeof marked !== 'undefined' && node.body) {
-    html += marked.parse(node.body);
+    html += _sanitizeHtml(marked.parse(node.body));
   } else {
-    html += '<p>' + (node.body || '(no content)') + '</p>';
+    html += '<p>' + esc(node.body || '(no content)') + '</p>';
   }
   body.innerHTML = html;
   // Linked nodes
@@ -40260,6 +40281,7 @@ window.addEventListener('load', _pinnedNotesRefresh);
 
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/quilljs-markdown@latest/dist/quilljs-markdown.js"></script>
@@ -40371,7 +40393,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.97';
+const CACHE = 'amux-v0.9.98';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
