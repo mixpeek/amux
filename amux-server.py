@@ -23365,7 +23365,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.100';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.101';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -23732,6 +23732,15 @@ function _syncPeekOverlayToVisualViewport() {
   // visual viewport), which left a permanent dead strip under the cmd bar.
   // A real keyboard is never under ~260px — ignore small deltas.
   if (kb < 100) kb = 0;
+  // A keyboard can only be up while a text field INSIDE the peek is focused.
+  // If nothing here is focused, force kb=0 — iOS PWA doesn't always fire a
+  // settled resize when the keyboard is dismissed, which otherwise left
+  // padding-bottom + vv-compact stuck on (dead strip below the composer, dir
+  // bar hidden) even with the keyboard long gone.
+  const ae = document.activeElement;
+  const kbdPossible = ae && ov.contains(ae) &&
+    (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.isContentEditable);
+  if (!kbdPossible) kb = 0;
   const sig = 'kb' + kb;
   if (ov._vvSig === sig) return;
   ov._vvSig = sig;
@@ -40635,7 +40644,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.100';
+const CACHE = 'amux-v0.9.101';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
