@@ -4241,17 +4241,40 @@ def _steer_enqueue(name: str, text: str) -> str:
     return msg_id
 
 
+# A single tmux frame that momentarily reads idle is not proof a session
+# finished its task — captures tear, and a session pauses briefly between steps.
+# Before delivering steering we require the session to read idle/waiting
+# *continuously* for this settle window; any active/unknown frame in between
+# resets the timer. This trades a few seconds of latency for not interrupting a
+# session that only looked done for one frame. Tunable via env.
+_STEER_SETTLE_SECS = float(os.environ.get("AMUX_STEER_SETTLE_SECS", "6"))
+_steer_settle_since: dict = {}   # name -> monotonic ts of first deliverable observation
+
+
 def _steer_try_deliver(name: str, status: str) -> None:
-    """Deliver the head of a session's steering queue if it sits at a turn
-    boundary (raw status idle/waiting). Shared by the 60s snapshot loop and
-    the fast steering tick; the in-flight marker under the lock prevents the
-    two loops from double-delivering the same message."""
-    if status not in ("waiting", "idle"):
-        return
+    """Deliver the head of a session's steering queue once it has sat at a turn
+    boundary (raw status idle/waiting) *continuously* for _STEER_SETTLE_SECS.
+
+    The settle window is the accuracy guard: a lone torn/between-task frame that
+    momentarily reads idle only starts the timer — the session must STILL be
+    idle on a later confirming tick before anything is sent, and any active
+    frame in the meantime resets it. Shared by the 60s snapshot loop and the 4s
+    steering tick; the in-flight marker under the lock prevents the two loops
+    from double-delivering the same message."""
+    now = time.monotonic()
     with _steering_lock:
         queue = _steering_queue.get(name, [])
-        if not queue:
+        if not queue or status not in ("waiting", "idle"):
+            # Working again (active/unknown) or nothing queued → drop the timer
+            # so the next idle stretch has to settle again from scratch.
+            _steer_settle_since.pop(name, None)
             return
+        first = _steer_settle_since.get(name)
+        if first is None:
+            _steer_settle_since[name] = now
+            return  # start settling; a later confirming tick delivers
+        if (now - first) < _STEER_SETTLE_SECS:
+            return  # idle, but not for long enough yet — keep waiting
         msg = queue[0]
         if msg.get("_inflight"):
             return
@@ -4261,6 +4284,9 @@ def _steer_try_deliver(name: str, status: str) -> None:
         with _steering_lock:
             q = _steering_queue.get(name, [])
             _steering_queue[name] = [m for m in q if m["id"] != msg["id"]]
+            # Reset settle: the session is now busy handling what we just sent,
+            # and any following message must settle against a fresh idle stretch.
+            _steer_settle_since.pop(name, None)
         try:
             db = get_db()
             db.execute("DELETE FROM steering_queue WHERE id=?", (msg["id"],))
