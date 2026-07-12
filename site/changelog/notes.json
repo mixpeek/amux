@@ -1,5 +1,41 @@
 [
   {
+    "hash": "9ae0ee1c294eb94b3e958629b71289b4a5fc273a",
+    "short": "9ae0ee1",
+    "title": "Steering queue waits for the agent to settle before delivering",
+    "date": "2026-07-12",
+    "type": "feat",
+    "tags": ["steering", "ux", "agents", "reliability"],
+    "description": "When you queue a message for a running agent (via the steering bar or saved chips), amux now waits for the agent to actually go idle before delivering it — instead of injecting the text immediately, which could interrupt the agent mid-thought. The settle window (default 6s, configurable via AMUX_STEER_SETTLE_S) checks that the agent's output has been quiet before delivery. This prevents the common failure mode where a steering instruction arrives while the agent is mid-tool-call and gets ignored or corrupts the input buffer."
+  },
+  {
+    "hash": "ca8acccee11aee92e5988f4497eb61469681abe1",
+    "short": "ca8accc",
+    "title": "Security hardening — XSS, CSRF, DOMPurify, and RCE patches (v0.9.97–v0.9.98)",
+    "date": "2026-07-12",
+    "type": "fix",
+    "tags": ["security", "xss", "csrf", "hardening"],
+    "description": "Five security patches shipped in a batch: (1) Notes and markdown content are now sanitized with DOMPurify before DOM insertion — a malicious note couldn't inject scripts. (2) Email HTML is rendered in a sandboxed iframe with no scripting allowed. (3) Attribute values are server-side escaped to close reflected XSS vectors. (4) A CSRF guard now rejects state-changing API calls from cross-origin sources. (5) Path traversal, write escalation, and git argument injection vectors were closed — an attacker with API access couldn't write outside the allowed directory or inject shell arguments via git endpoints. These patches apply to all amux users. Update recommended."
+  },
+  {
+    "hash": "f40f107092ab292fb778bff944c90bdfbc9c0264",
+    "short": "f40f107",
+    "title": "Tunnel rate limiting — your tunneled service is protected from traffic spikes",
+    "date": "2026-07-11",
+    "type": "feat",
+    "tags": ["proxies", "tunnel", "security", "reliability"],
+    "description": "The amux tunnel proxy now enforces a per-connection rate limit on the requests it forwards to your local service. Previously, anyone who discovered a tunnel URL (or deliberately tested it) could hammer your local server with rapid requests — your development server had no built-in protection. Now the relay throttles incoming connections, giving your local service breathing room. The rate limit is applied at the relay layer, before traffic reaches your machine. This is part of the Proxies feature (v0.9.95+, accessible from the new Proxies tab in the dashboard)."
+  },
+  {
+    "hash": "4a6f37f216e9ff5d63ef063d15dddabde49e7f90",
+    "short": "4a6f37f",
+    "title": "Proxies now a first-class dashboard tab — manage your tunnels from the UI",
+    "date": "2026-07-11",
+    "type": "feat",
+    "tags": ["proxies", "tunnel", "dashboard", "ux"],
+    "description": "The tunnel/proxies feature is now accessible from a dedicated tab in the amux dashboard tab bar. Previously, tunnels were managed only via CLI or API. The new Proxies tab shows all active proxy configurations, their public URLs, and status. The file list row context menu also got a positioning fix — it now appears next to the button rather than in a fixed position, so it's no longer clipped on smaller screens or partially off-screen. SW v0.9.95."
+  },
+  {
     "hash": "4ba9266124e919ca6de13988ac8a2dcab88861e1",
     "short": "4ba9266",
     "title": "Peek reflows to your screen — no more double-wrapped text on phones",
