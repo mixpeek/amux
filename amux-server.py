@@ -17393,27 +17393,67 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 
 <!-- Terminal view -->
 <div id="terminal-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
-  <div class="term-toolbar" style="display:flex;align-items:center;gap:8px;padding:0 0 6px 0;flex-wrap:wrap;">
-    <select id="term-profile" style="font-size:0.78rem;padding:4px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-family:inherit;">
-      <option value="local">Local Shell</option>
-    </select>
-    <input id="term-host" type="text" placeholder="user@host" style="width:180px;font-size:0.78rem;padding:4px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-family:inherit;">
-    <button id="term-connect-btn" onclick="_termConnect()" style="padding:4px 12px;background:var(--accent);color:#fff;border:none;border-radius:4px;font-size:0.78rem;cursor:pointer;">Connect</button>
-    <button id="term-disconnect-btn" onclick="_termDisconnect()" style="display:none;padding:4px 12px;background:var(--danger,#e74c3c);color:#fff;border:none;border-radius:4px;font-size:0.78rem;cursor:pointer;">Disconnect</button>
+  <style>
+    #terminal-view .term-toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+      padding:7px 10px; margin-bottom:8px; background:var(--card); border:1px solid var(--border); border-radius:8px; }
+    #terminal-view .term-conn { display:flex; align-items:center; gap:6px; min-width:0; }
+    #terminal-view .term-tools { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+    #terminal-view .term-select, #terminal-view .term-input {
+      font-size:0.8rem; height:30px; padding:0 9px; box-sizing:border-box; background:var(--bg);
+      border:1px solid var(--border); border-radius:6px; color:var(--text); font-family:inherit; }
+    #terminal-view .term-input { width:210px; max-width:44vw; }
+    #terminal-view .term-input::placeholder { color:var(--muted); }
+    #terminal-view .term-select:focus, #terminal-view .term-input:focus { border-color:var(--accent); outline:none; }
+    #terminal-view .term-toolbar .btn { height:30px; padding:0 14px; font-size:0.8rem; }
+    #terminal-view .term-danger { color:#f85149; border-color:rgba(248,81,73,0.45); }
+    #terminal-view .term-danger:hover { background:rgba(248,81,73,0.12); border-color:#f85149; }
+    #terminal-view .term-status-pill { display:inline-flex; align-items:center; gap:6px; font-size:0.72rem;
+      color:var(--dim); padding:4px 10px; border-radius:9999px; background:var(--bg); border:1px solid var(--border); white-space:nowrap; }
+    #terminal-view .term-dot { width:7px; height:7px; border-radius:50%; background:var(--muted); transition:background .2s; }
+    #terminal-view .term-status-pill.connected { color:var(--green); border-color:rgba(74,222,128,0.35); }
+    #terminal-view .term-status-pill.connected .term-dot { background:var(--green); box-shadow:0 0 7px var(--green); }
+    #terminal-view .term-status-pill.error { color:#f85149; border-color:rgba(248,81,73,0.4); }
+    #terminal-view .term-status-pill.error .term-dot { background:#f85149; }
+    #terminal-view .term-container { flex:1; min-height:0; background:#0d1117; border:1px solid var(--border);
+      border-radius:8px; overflow:hidden; position:relative; padding:8px 6px 8px 10px; box-sizing:border-box; }
+    #terminal-view .term-container .xterm { height:100%; }
+    #terminal-view .term-container .xterm-viewport::-webkit-scrollbar { width:9px; }
+    #terminal-view .term-container .xterm-viewport::-webkit-scrollbar-thumb { background:var(--border); border-radius:6px; }
+    #terminal-view .term-placeholder { display:flex; flex-direction:column; align-items:center; justify-content:center;
+      gap:8px; height:100%; color:var(--dim); font-size:0.88rem; text-align:center; padding:20px; }
+    @media (max-width:600px) {
+      #terminal-view .term-input { width:150px; }
+      #terminal-view .term-status-pill { display:none; }
+    }
+  </style>
+  <div class="term-toolbar">
+    <div class="term-conn">
+      <select id="term-profile" class="term-select" title="Saved hosts / local shell">
+        <option value="local">Local Shell</option>
+      </select>
+      <input id="term-host" class="term-input" type="text" placeholder="user@host" autocomplete="off" autocapitalize="off" spellcheck="false"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();_termConnect();}">
+      <button id="term-connect-btn" class="btn primary" onclick="_termConnect()">Connect</button>
+      <button id="term-disconnect-btn" class="btn term-danger" style="display:none;" onclick="_termDisconnect()">Disconnect</button>
+    </div>
     <div style="flex:1;"></div>
-    <span id="term-status" style="font-size:0.68rem;color:var(--dim);"></span>
-    <select id="term-fontsize" onchange="_termSetFontSize(this.value)" style="font-size:0.72rem;padding:2px 4px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--fg);">
-      <option value="12">12px</option>
-      <option value="13">13px</option>
-      <option value="14" selected>14px</option>
-      <option value="15">15px</option>
-      <option value="16">16px</option>
-      <option value="18">18px</option>
-    </select>
+    <div class="term-tools">
+      <span id="term-status" class="term-status-pill"><span class="term-dot"></span><span id="term-status-text">Not connected</span></span>
+      <button class="btn" onclick="_termClear()" title="Clear screen">Clear</button>
+      <select id="term-fontsize" class="term-select" onchange="_termSetFontSize(this.value)" title="Font size">
+        <option value="12">12</option>
+        <option value="13">13</option>
+        <option value="14" selected>14</option>
+        <option value="15">15</option>
+        <option value="16">16</option>
+        <option value="18">18</option>
+      </select>
+    </div>
   </div>
-  <div id="term-container" style="flex:1;min-height:0;background:#0d1117;border-radius:6px;overflow:hidden;position:relative;">
-    <div id="term-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--dim);font-size:0.9rem;">
-      Enter a host above and click Connect, or leave blank for a local shell
+  <div id="term-container" class="term-container">
+    <div id="term-placeholder" class="term-placeholder">
+      <div style="font-size:1.7rem;opacity:0.5;">&#x2318;</div>
+      <div>Pick <b>Local Shell</b> or enter <b>user@host</b>, then <b>Connect</b>.</div>
     </div>
   </div>
 </div>
@@ -23391,7 +23431,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.103';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.104';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -37003,12 +37043,44 @@ let _termId = null;     // server PTY session id
 let _termPoll = null;   // polling interval
 let _termInited = false;
 
+// Make the terminal fill the viewport: body is normal flow (not a full-height
+// flex column), so terminal-view's flex:1 does nothing on its own — pin an
+// explicit height from its top to the bottom of the window, then refit xterm.
+function _termLayout() {
+  if (activeView !== 'terminal') return;
+  const view = document.getElementById('terminal-view');
+  if (!view) return;
+  const top = view.getBoundingClientRect().top;
+  view.style.height = Math.max(240, Math.round(window.innerHeight - top - 12)) + 'px';
+  if (_term && _termFit) { try { _termFit.fit(); } catch (e) {} }
+}
+
+function _termStatus(state, text) {
+  const pill = document.getElementById('term-status');
+  const t = document.getElementById('term-status-text');
+  if (t) t.textContent = text;
+  if (pill) { pill.classList.remove('connected', 'error'); if (state) pill.classList.add(state); }
+}
+
+function _termClear() { if (_term) { _term.clear(); _term.focus(); } }
+
 function _termInit() {
   if (_termInited) {
-    if (_term && _termFit) setTimeout(() => _termFit.fit(), 50);
+    _termLayout();
+    if (_term && _termFit) setTimeout(() => { try { _termFit.fit(); } catch (e) {} }, 60);
     return;
   }
   _termInited = true;
+  // Fill the viewport now, and keep xterm fit to the container on any size
+  // change (tab switch, window resize, toolbar wrap) — the ResizeObserver is the
+  // robust catch-all the old window-resize-only listener missed.
+  requestAnimationFrame(_termLayout);
+  const _tc = document.getElementById('term-container');
+  if (_tc && window.ResizeObserver) {
+    new ResizeObserver(() => {
+      if (_term && _termFit && activeView === 'terminal') { try { _termFit.fit(); } catch (e) {} }
+    }).observe(_tc);
+  }
   // Load saved font size
   const savedSize = localStorage.getItem('amux_term_fontsize');
   if (savedSize) document.getElementById('term-fontsize').value = savedSize;
@@ -37099,13 +37171,14 @@ async function _termConnect() {
   _term.loadAddon(new WebLinksAddon.WebLinksAddon());
 
   _term.open(container);
+  _termLayout();   // pin container to full viewport height BEFORE measuring cols/rows
   _termFit.fit();
 
   const dims = _termFit.proposeDimensions();
   const cols = dims ? dims.cols : 120;
   const rows = dims ? dims.rows : 40;
 
-  document.getElementById('term-status').textContent = host ? 'Connecting to ' + host + '...' : 'Starting local shell...';
+  _termStatus('', host ? 'Connecting to ' + host + '…' : 'Starting local shell…');
 
   try {
     const r = await fetch(API + '/api/terminal/create', {
@@ -37116,17 +37189,17 @@ async function _termConnect() {
     const data = await r.json();
     if (data.error) {
       _term.writeln('\r\n\x1b[31mError: ' + data.error + '\x1b[0m');
-      document.getElementById('term-status').textContent = 'Error';
+      _termStatus('error', 'Error');
       return;
     }
     _termId = data.id;
   } catch (e) {
     _term.writeln('\r\n\x1b[31mFailed to create terminal: ' + e.message + '\x1b[0m');
-    document.getElementById('term-status').textContent = 'Error';
+    _termStatus('error', 'Error');
     return;
   }
 
-  document.getElementById('term-status').textContent = host ? 'Connected: ' + host : 'Local shell';
+  _termStatus('connected', host ? host : 'Local shell');
   document.getElementById('term-connect-btn').style.display = 'none';
   document.getElementById('term-disconnect-btn').style.display = '';
 
@@ -37164,7 +37237,7 @@ async function _termConnect() {
       }
       if (!d.alive) {
         _term.writeln('\r\n\x1b[33m[Process exited]\x1b[0m');
-        document.getElementById('term-status').textContent = 'Disconnected';
+        _termStatus('', 'Disconnected');
         _termPoll = null;
         document.getElementById('term-connect-btn').style.display = '';
         document.getElementById('term-disconnect-btn').style.display = 'none';
@@ -37190,7 +37263,7 @@ function _termDisconnect() {
   if (_term) {
     _term.writeln('\r\n\x1b[33m[Disconnected]\x1b[0m');
   }
-  document.getElementById('term-status').textContent = 'Disconnected';
+  _termStatus('', 'Disconnected');
   document.getElementById('term-connect-btn').style.display = '';
   document.getElementById('term-disconnect-btn').style.display = 'none';
 }
@@ -37203,11 +37276,9 @@ function _termSetFontSize(size) {
   }
 }
 
-// Refit terminal on window resize
+// Recompute the terminal's viewport-fill height (and refit xterm) on resize.
 window.addEventListener('resize', () => {
-  if (_term && _termFit && activeView === 'terminal') {
-    _termFit.fit();
-  }
+  if (activeView === 'terminal') _termLayout();
 });
 
 // ── Notes tab ─────────────────────────────────────────────────────────────────
@@ -40640,7 +40711,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.103';
+const CACHE = 'amux-v0.9.104';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
