@@ -67,6 +67,14 @@ CC_MAP = CC_HOME / "map.json"
 CC_NOTIFICATIONS = CC_HOME / "notifications.json"
 CC_HABITS = CC_HOME / "habits.json"
 CC_TRANSCRIPTS = CC_HOME / "transcripts"  # per-session JSONL backups
+
+# The served client version (the JS `const APP_VER` below) parsed once at boot —
+# pushed in SSE pings so long-lived clients detect they're stale and self-reload.
+try:
+    _APP_VER_PY = (re.search(r"const APP_VER = '([0-9.]+)'",
+                             open(__file__, encoding="utf-8", errors="replace").read()) or [None]).group(1)
+except Exception:
+    _APP_VER_PY = ""
 CC_GMAIL = CC_HOME / "gmail-tokens"        # per-account Gmail OAuth tokens
 CC_BRANDING = CC_HOME / "branding"         # white-label assets (icon, logo)
 CC_JOURNAL_MEDIA = CC_HOME / "journal-media"  # journal photo/media files
@@ -20993,9 +21001,17 @@ function _renderBranchBadge(name, sessionBranch) {
   return `<div class="card-dir"><span class="branch-badge ${cls}" onclick="event.stopPropagation();showBranchPopover('${name}',event)" title="${tip}">⎇ ${esc(displayBranch)}${conflictWarn}</span></div>`;
 }
 
+let _gitBranchesLast = 0;
 async function _fetchGitBranches(sess) {
   const withDir = (sess || []).filter(s => s.dir);
   if (!withDir.length) return;
+  // Throttle: fetchSessions() calls this on EVERY refresh (SSE tick, poll,
+  // resume) and each open client multiplies it — that added up to a steady
+  // stream of /api/sessions-git hits riding 1.4s server-side git refreshes.
+  // Branch info changes on commit cadence, not seconds — 20s is plenty.
+  const _now = Date.now();
+  if (_now - _gitBranchesLast < 20000) return;
+  _gitBranchesLast = _now;
   // Single bulk request — server handles concurrency control
   let newInfo = {};
   try {
@@ -23698,7 +23714,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.109';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.110';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -34685,7 +34701,25 @@ function connectSSE() {
           }
         }
       } else if (msg.type === 'ping') {
-        // Liveness signal — _lastDataTime already updated above. Nothing else to do.
+        // Liveness signal — _lastDataTime already updated above. Also carries the
+        // served app version: if the server moved on, this window is running stale
+        // code (SW app shells live for DAYS in PWAs / Chrome app-mode windows and
+        // old poll loops have hammered the server before) — reload to pick up the
+        // new shell. Rate-limited so a broken SW can't cause a reload storm.
+        if (msg.v && typeof APP_VER !== 'undefined' && msg.v !== APP_VER) {
+          const last = parseInt(sessionStorage.getItem('amux_ver_reload') || '0');
+          if (Date.now() - last > 600000) {
+            sessionStorage.setItem('amux_ver_reload', String(Date.now()));
+            console.warn('amux: server is v' + msg.v + ', client is v' + APP_VER + ' — updating');
+            // Nudge the SW first (it skipWaiting()s + claims on install), so the
+            // reload serves the NEW shell in one cycle instead of two.
+            const _upd = (navigator.serviceWorker && navigator.serviceWorker.getRegistration)
+              ? navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => {})
+              : Promise.resolve();
+            _upd.finally ? _upd.finally(() => setTimeout(() => location.reload(), 2500))
+                         : setTimeout(() => location.reload(), 2500);
+          }
+        }
       }
     } catch(err) { console.error('SSE parse:', err); }
   };
@@ -41216,7 +41250,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.109';
+const CACHE = 'amux-v0.9.110';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -41759,7 +41793,10 @@ class CCHandler(BaseHTTPRequestHandler):
                 # in the background without firing error).
                 heartbeat_counter += 1
                 if heartbeat_counter >= 5:
-                    self.wfile.write(f"data: {json.dumps({'type': 'ping', 'ts': int(now)})}\n\n".encode())
+                    # `v` = served app version: clients self-reload on mismatch, so a
+                    # long-lived window (PWA / Chrome app-mode / phone) can't sit on
+                    # stale code for days hammering old poll loops.
+                    self.wfile.write(f"data: {json.dumps({'type': 'ping', 'ts': int(now), 'v': _APP_VER_PY})}\n\n".encode())
                     self.wfile.flush()
                     heartbeat_counter = 0
 
