@@ -90,14 +90,25 @@
 - **Measure after:** 2026-07-19 (7 days minimum)
 
 ### EXP-006 — GitHub README → iOS CTA
-- **Hypothesis:** Adding an App Store badge to the README (near the top, before the feature table) increases iOS installs from GitHub traffic
+- **Status:** `running`
+- **Started:** 2026-07-13
+- **Change:** Added official Apple "Download on the App Store" badge image below the shields badges row in README.md, above the concierge CTA. Upgrades from the existing shields.io iOS pill badge to the official Apple App Store badge for more visual prominence.
+- **Hypothesis:** A more visually distinctive official App Store badge increases iOS installs from GitHub traffic.
+- **KPI:** iOS downloads (App Store link clicks)
+- **Measure after:** 2026-07-20 (7 days minimum)
+
+**Upcoming score windows:** EXP-001 → 2026-07-14 · EXP-002 → 2026-07-15 · EXP-003 → 2026-07-16 (all reach 7-day minimum on those dates — query PostHog then).
+
+### EXP-006 — GitHub README → iOS CTA
+- **Hypothesis:** Adding an official App Store badge to the README increases iOS installs from GitHub traffic
 - **Page:** README.md
 - **KPI:** iOS downloads
-- **Status:** `queued`
-- **Implementation:** Add `[![App Store](badge)](appstore-link)` to badges row
+- **Status:** `running` — started 2026-07-13
+- **Implementation:** Added official Apple "Download on the App Store" badge (from tools.applemediaservices.com) below the shields badges `</p>`, above the concierge CTA. More visually prominent than the existing shields.io iOS pill badge.
 - **Effort:** XS
+- **Measure after:** 2026-07-20
 
-### EXP-007 — Compare pages → GitHub CTA
+### EXP-007 — Compare pages → GitHub CTA (next in queue)
 - **Hypothesis:** Compare pages get high-intent "alternative" traffic. Adding a prominent "Try it free — ⭐ on GitHub" CTA box at the top of each compare page (not just the bottom) increases star clicks from comparison traffic
 - **Page:** All `/compare/amux-vs-*/` pages
 - **KPI:** GitHub stars
