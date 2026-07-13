@@ -8,6 +8,11 @@
   <a href="https://amux.io/changelog/"><img src="https://img.shields.io/badge/changelog-amux.io%2Fchangelog-green?style=flat-square" alt="Changelog"/></a>
 </p>
 
+<!-- EXP-006: official App Store badge for iOS CTA (started 2026-07-13) -->
+<p align="center">
+  <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435"><img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83&releaseDate=1736899200" alt="Download on the App Store" height="44"/></a>
+</p>
+
 <h3 align="center">💼 Want it done for you? → <a href="https://amux.io/concierge/">amux.io/concierge</a></h3>
 
 <p align="center">
