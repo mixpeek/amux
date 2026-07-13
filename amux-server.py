@@ -16883,7 +16883,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-notes" onclick="switchView('notes')">Notes</button>
   <button id="tab-skills" onclick="switchView('skills')">Skills</button>
   <button id="tab-crm" onclick="switchView('crm')">People</button>
-  <button id="tab-sql" onclick="switchView('sql')">SQL</button>
+  <button id="tab-sql" onclick="switchView('sql')">Database</button>
   <button id="tab-map" onclick="switchView('map')">Map</button>
   <button id="tab-metrics" onclick="switchView('metrics')">Metrics</button>
   <button id="tab-torrents" onclick="switchView('torrents')">Torrents</button>
@@ -17439,49 +17439,89 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <!-- Terminal view -->
 <div id="sql-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
   <style>
-    #sql-view .sql-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+    #sql-view .db-wrap { display:flex; gap:10px; align-items:flex-start; }
+    #sql-view .db-side { width:230px; flex-shrink:0; max-height:calc(100vh - 200px); overflow-y:auto;
+      background:var(--card); border:1px solid var(--border); border-radius:8px; padding:8px; }
+    #sql-view .db-filter { width:100%; box-sizing:border-box; margin-bottom:8px; font-size:0.76rem; padding:6px 9px;
+      background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text); }
+    #sql-view .db-filter:focus { outline:none; border-color:var(--accent); }
+    #sql-view .db-side h4 { margin:2px 0 6px; font-size:0.64rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--dim); }
+    #sql-view .db-tbl { padding:5px 7px; border-radius:5px; cursor:pointer; font-size:0.76rem; font-family:var(--mono);
+      display:flex; align-items:center; justify-content:space-between; gap:6px; }
+    #sql-view .db-tbl:hover { background:var(--bg); }
+    #sql-view .db-tbl.active { background:var(--accent); color:#fff; }
+    #sql-view .db-tbl.active .c { color:rgba(255,255,255,0.8); }
+    #sql-view .db-tbl .c { color:var(--dim); font-size:0.64rem; flex-shrink:0; }
+    #sql-view .db-tbl .n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    #sql-view .db-tbl.wb .n { color:var(--green); }
+    #sql-view .db-tbl.active .n, #sql-view .db-tbl.active.wb .n { color:#fff; }
+    #sql-view .db-main { flex:1; min-width:0; display:flex; flex-direction:column; gap:8px; }
+    #sql-view .db-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    #sql-view .db-title { font-size:0.95rem; font-weight:700; font-family:var(--mono); }
+    #sql-view .db-title .sub { font-size:0.72rem; color:var(--dim); font-weight:400; margin-left:6px; }
+    #sql-view .db-modes { display:inline-flex; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
+    #sql-view .db-mode { padding:5px 12px; font-size:0.76rem; background:var(--card); color:var(--dim); border:none; border-left:1px solid var(--border); cursor:pointer; }
+    #sql-view .db-mode:first-child { border-left:none; }
+    #sql-view .db-mode.active { background:var(--accent); color:#fff; }
+    #sql-view .db-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    #sql-view .db-pager { display:inline-flex; align-items:center; gap:6px; font-size:0.74rem; color:var(--dim); }
+    #sql-view .db-pager button { padding:3px 9px; }
+    #sql-view .db-pager select { font-size:0.72rem; padding:2px 4px; background:var(--bg); border:1px solid var(--border); border-radius:5px; color:var(--text); }
+    #sql-view .db-grid { max-height:calc(100vh - 270px); min-height:220px; overflow:auto; border:1px solid var(--border); border-radius:8px; background:var(--card); }
+    #sql-view .sql-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
     #sql-view .sql-toggle { display:inline-flex; align-items:center; gap:6px; font-size:0.75rem; color:var(--dim); cursor:pointer; user-select:none; }
     #sql-view .sql-status { font-size:0.72rem; color:var(--dim); font-family:var(--mono); }
     #sql-view .sql-status.err { color:#f85149; }
-    #sql-view .sqlw { display:flex; gap:10px; align-items:flex-start; }
-    #sql-view .sql-side { width:220px; flex-shrink:0; max-height:calc(100vh - 300px); overflow-y:auto;
-      background:var(--card); border:1px solid var(--border); border-radius:8px; padding:8px; }
-    #sql-view .sql-side h4 { margin:0 0 6px; font-size:0.66rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--dim); }
-    #sql-view .sql-tbl { padding:4px 6px; border-radius:5px; cursor:pointer; font-size:0.76rem; font-family:var(--mono);
-      display:flex; align-items:center; justify-content:space-between; gap:6px; }
-    #sql-view .sql-tbl:hover { background:var(--bg); }
-    #sql-view .sql-tbl .c { color:var(--dim); font-size:0.66rem; flex-shrink:0; }
-    #sql-view .sql-tbl .n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    #sql-view .sql-tbl.wb .n { color:var(--green); }
-    #sql-view .sql-main { flex:1; min-width:0; display:flex; flex-direction:column; gap:8px; }
-    #sql-view .sql-editor { width:100%; min-height:92px; max-height:38vh; resize:vertical; box-sizing:border-box;
-      font-family:var(--mono); font-size:0.82rem; line-height:1.5; padding:10px; background:#0d1117; color:var(--text);
-      border:1px solid var(--border); border-radius:8px; }
+    #sql-view .sql-editor { width:100%; min-height:100px; max-height:36vh; resize:vertical; box-sizing:border-box;
+      font-family:var(--mono); font-size:0.82rem; line-height:1.5; padding:10px; background:#0d1117; color:var(--text); border:1px solid var(--border); border-radius:8px; }
     #sql-view .sql-editor:focus { outline:none; border-color:var(--accent); }
-    #sql-view .sql-results { max-height:calc(100vh - 340px); min-height:220px; overflow:auto;
-      border:1px solid var(--border); border-radius:8px; background:var(--card); }
+    #sql-view .sql-results { max-height:calc(100vh - 340px); min-height:200px; overflow:auto; border:1px solid var(--border); border-radius:8px; background:var(--card); }
     #sql-view table.sqlr { border-collapse:collapse; width:100%; font-size:0.76rem; font-family:var(--mono); }
-    #sql-view table.sqlr th { position:sticky; top:0; background:var(--bg); text-align:left; padding:6px 10px;
-      border-bottom:1px solid var(--border); color:var(--dim); white-space:nowrap; z-index:1; }
-    #sql-view table.sqlr td { padding:5px 10px; border-bottom:1px solid var(--border); white-space:pre;
-      max-width:440px; overflow:hidden; text-overflow:ellipsis; vertical-align:top; }
+    #sql-view table.sqlr th { position:sticky; top:0; background:var(--bg); text-align:left; padding:6px 10px; border-bottom:1px solid var(--border); color:var(--dim); white-space:nowrap; z-index:1; }
+    #sql-view table.sqlr th.sortable { cursor:pointer; user-select:none; }
+    #sql-view table.sqlr th.sortable:hover { color:var(--text); }
+    #sql-view table.sqlr td { padding:5px 10px; border-bottom:1px solid var(--border); white-space:pre; max-width:440px; overflow:hidden; text-overflow:ellipsis; vertical-align:top; }
     #sql-view table.sqlr tr:hover td { background:var(--bg); }
     #sql-view .sql-null { color:var(--muted); font-style:italic; }
-    @media (max-width:600px){ #sql-view .sql-side{ display:none; } #sql-view .sql-results{ max-height:none; } }
+    @media (max-width:600px){ #sql-view .db-side{ width:150px; } #sql-view .db-grid,#sql-view .sql-results{ max-height:none; } }
   </style>
-  <div class="sql-bar">
-    <button class="btn primary" onclick="_sqlRun()" style="font-size:0.8rem;">&#x25B6; Run <span style="opacity:0.55;font-size:0.68rem;">&#8984;&#8629;</span></button>
-    <label class="sql-toggle"><input type="checkbox" id="sql-write" onchange="_sqlWriteToggle()"> Allow writes <span style="color:var(--muted);">(wb_* tables)</span></label>
-    <div style="flex:1;"></div>
-    <span class="sql-status" id="sql-status">Read-only &middot; amux.db</span>
-  </div>
-  <div class="sqlw">
-    <div class="sql-side" id="sql-side"></div>
-    <div class="sql-main">
-      <textarea class="sql-editor" id="sql-editor" spellcheck="false" autocomplete="off" autocapitalize="off"
-        placeholder="SELECT name, company, email FROM crm_contacts ORDER BY updated DESC LIMIT 20;"
-        onkeydown="if((event.metaKey||event.ctrlKey)&&event.key==='Enter'){event.preventDefault();_sqlRun();}"></textarea>
-      <div class="sql-results" id="sql-results"><div style="padding:18px;color:var(--dim);font-size:0.84rem;">Run a query to see results. Reads are safe (read-only over <code>amux.db</code>); toggle <b>Allow writes</b> to create &amp; manage your own <code>wb_*</code> tables.</div></div>
+  <div class="db-wrap">
+    <div class="db-side">
+      <input class="db-filter" id="db-filter" placeholder="Filter tables&#8230;" oninput="_dbFilter(this.value)" autocomplete="off">
+      <div id="db-tables"></div>
+    </div>
+    <div class="db-main">
+      <div class="db-head">
+        <div class="db-title" id="db-title">Database <span class="sub">amux.db</span></div>
+        <div class="db-modes">
+          <button class="db-mode active" id="db-mode-data" onclick="_dbSetMode('data')">Data</button>
+          <button class="db-mode" id="db-mode-structure" onclick="_dbSetMode('structure')">Structure</button>
+          <button class="db-mode" id="db-mode-query" onclick="_dbSetMode('query')">Query</button>
+        </div>
+        <div style="flex:1;"></div>
+        <span class="sql-status" id="sql-status">Read-only</span>
+      </div>
+      <div id="db-pane-data" class="db-pane">
+        <div class="db-toolbar">
+          <button class="btn" onclick="_dbLoadData()" title="Refresh">&#x21BB; Refresh</button>
+          <div style="flex:1;"></div>
+          <div class="db-pager" id="db-pager"></div>
+        </div>
+        <div class="db-grid" id="db-grid" style="margin-top:8px;"><div style="padding:20px;color:var(--dim);font-size:0.84rem;">&#x2190; Select a table to browse its rows.</div></div>
+      </div>
+      <div id="db-pane-structure" class="db-pane" style="display:none;">
+        <div class="db-grid" id="db-structure"><div style="padding:20px;color:var(--dim);font-size:0.84rem;">Select a table to see its columns.</div></div>
+      </div>
+      <div id="db-pane-query" class="db-pane" style="display:none;">
+        <div class="sql-bar" style="margin-bottom:8px;">
+          <button class="btn primary" onclick="_sqlRun()" style="font-size:0.8rem;">&#x25B6; Run <span style="opacity:0.55;font-size:0.68rem;">&#8984;&#8629;</span></button>
+          <label class="sql-toggle"><input type="checkbox" id="sql-write" onchange="_sqlWriteToggle()"> Allow writes <span style="color:var(--muted);">(wb_* tables)</span></label>
+        </div>
+        <textarea class="sql-editor" id="sql-editor" spellcheck="false" autocomplete="off" autocapitalize="off"
+          placeholder="SELECT name, company, email FROM crm_contacts ORDER BY updated DESC LIMIT 20;"
+          onkeydown="if((event.metaKey||event.ctrlKey)&&event.key==='Enter'){event.preventDefault();_sqlRun();}"></textarea>
+        <div class="sql-results" id="sql-results" style="margin-top:8px;"><div style="padding:18px;color:var(--dim);font-size:0.84rem;">Run a query. Reads are read-only over <code>amux.db</code>; toggle <b>Allow writes</b> to manage your own <code>wb_*</code> tables.</div></div>
+      </div>
     </div>
   </div>
 </div>
@@ -21066,7 +21106,7 @@ const ALL_TABS = [
   { id: 'notes',         label: 'Notes' },
   { id: 'skills',        label: 'Skills' },
   { id: 'crm',           label: 'People' },
-  { id: 'sql',           label: 'SQL' },
+  { id: 'sql',           label: 'Database' },
   { id: 'map',           label: 'Map' },
   { id: 'metrics',       label: 'Metrics' },
   { id: 'torrents',      label: 'Torrents' },
@@ -23526,7 +23566,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.105';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.106';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -37377,35 +37417,130 @@ window.addEventListener('resize', () => {
   if (activeView === 'terminal') _termLayout();
 });
 
-// ── SQL workbench tab ───────────────────────────────────────────────────────
+// ── Database workbench tab ──────────────────────────────────────────────────
+let _dbTables = [];
+let _dbTable = null;
+let _dbMode = 'data';
+let _dbLimit = 50, _dbOffset = 0, _dbSort = '', _dbDir = 'asc';
 let _sqlSchemaLoaded = false;
-function _sqlInit() {
-  if (!_sqlSchemaLoaded) { _sqlSchemaLoaded = true; _sqlLoadSchema(); }
-}
-async function _sqlLoadSchema() {
-  const side = document.getElementById('sql-side');
-  if (!side) return;
-  side.innerHTML = '<div style="color:var(--dim);font-size:0.74rem;padding:6px;">Loading…</div>';
+
+function _sqlInit() { if (!_sqlSchemaLoaded) { _sqlSchemaLoaded = true; _dbLoadSchema(); } }
+
+async function _dbLoadSchema() {
+  const side = document.getElementById('db-tables');
+  if (side) side.innerHTML = '<div style="color:var(--dim);font-size:0.74rem;padding:6px;">Loading…</div>';
   try {
     const d = await fetch(API + '/api/sql/schema').then(r => r.json());
-    if (d.error) { side.innerHTML = '<div style="color:#f85149;font-size:0.74rem;padding:6px;">' + esc(d.error) + '</div>'; return; }
-    const tabs = d.tables || [];
-    side.innerHTML = '<h4>Tables (' + tabs.length + ')</h4>' + tabs.map(t => {
-      const cols = t.columns.map(c => c.name + ' ' + c.type).join(', ');
-      return '<div class="sql-tbl' + (t.writable ? ' wb' : '') + '" title="' + esc(cols) + '" onclick="_sqlPick(\'' + esc(t.name) + '\')">' +
-        '<span class="n">' + esc(t.name) + '</span>' +
-        '<span class="c">' + (t.rows == null ? '' : t.rows) + '</span></div>';
-    }).join('');
-  } catch (e) { side.innerHTML = '<div style="color:#f85149;font-size:0.74rem;padding:6px;">schema failed</div>'; }
+    if (d.error) { if (side) side.innerHTML = '<div style="color:#f85149;font-size:0.74rem;padding:6px;">' + esc(d.error) + '</div>'; return; }
+    _dbTables = d.tables || [];
+    const f = document.getElementById('db-filter');
+    _dbRenderSidebar(f ? f.value : '');
+    if (_dbTable) _dbRenderStructure();
+  } catch (e) { if (side) side.innerHTML = '<div style="color:#f85149;font-size:0.74rem;padding:6px;">schema failed</div>'; }
 }
-function _sqlPick(t) {
-  document.getElementById('sql-editor').value = 'SELECT * FROM ' + t + ' LIMIT 100;';
-  _sqlRun();
+
+function _dbFilter(q) { _dbRenderSidebar(q); }
+
+function _dbRenderSidebar(q) {
+  const el = document.getElementById('db-tables');
+  if (!el) return;
+  const ql = (q || '').toLowerCase();
+  const list = _dbTables.filter(t => !ql || t.name.toLowerCase().includes(ql));
+  el.innerHTML = '<h4>Tables (' + list.length + ')</h4>' + list.map(t =>
+    '<div class="db-tbl' + (t.writable ? ' wb' : '') + (t.name === _dbTable ? ' active' : '') + '" ' +
+      'title="' + esc(t.columns.map(c => c.name + ' ' + c.type).join(', ')) + '" onclick="_dbSelectTable(\'' + esc(t.name) + '\')">' +
+      '<span class="n">' + esc(t.name) + '</span><span class="c">' + (t.rows == null ? '' : t.rows) + '</span></div>').join('');
 }
+
+function _dbSelectTable(name) {
+  _dbTable = name; _dbOffset = 0; _dbSort = ''; _dbDir = 'asc';
+  const f = document.getElementById('db-filter');
+  _dbRenderSidebar(f ? f.value : '');
+  const t = _dbTables.find(x => x.name === name);
+  document.getElementById('db-title').innerHTML = esc(name) +
+    '<span class="sub">' + (t && t.rows != null ? t.rows + ' rows · ' : '') + (t && t.writable ? 'writable' : 'read-only') + '</span>';
+  if (_dbMode === 'query') _dbSetMode('data');
+  _dbLoadData();
+  _dbRenderStructure();
+}
+
+function _dbSetMode(mode) {
+  _dbMode = mode;
+  ['data', 'structure', 'query'].forEach(m => {
+    const pane = document.getElementById('db-pane-' + m);
+    if (pane) pane.style.display = m === mode ? '' : 'none';
+    document.getElementById('db-mode-' + m).classList.toggle('active', m === mode);
+  });
+  if (mode === 'query') {
+    const ta = document.getElementById('sql-editor');
+    if (ta && !ta.value.trim() && _dbTable) ta.value = 'SELECT * FROM ' + _dbTable + ' LIMIT 100;';
+    setTimeout(() => ta && ta.focus(), 30);
+  }
+}
+
+async function _dbLoadData() {
+  if (!_dbTable) return;
+  const grid = document.getElementById('db-grid');
+  const status = document.getElementById('sql-status');
+  status.classList.remove('err');
+  try {
+    const q = '?table=' + encodeURIComponent(_dbTable) + '&limit=' + _dbLimit + '&offset=' + _dbOffset +
+      (_dbSort ? '&sort=' + encodeURIComponent(_dbSort) + '&dir=' + _dbDir : '');
+    const d = await fetch(API + '/api/sql/rows' + q).then(r => r.json());
+    if (d.error) { status.classList.add('err'); status.textContent = d.error; grid.innerHTML = '<div style="padding:16px;color:#f85149;">' + esc(d.error) + '</div>'; return; }
+    _dbRenderGrid(grid, d.columns, d.rows, true);
+    _dbRenderPager(d);
+    const t = _dbTables.find(x => x.name === _dbTable);
+    status.textContent = t && t.writable ? 'Read/write · wb_*' : 'Read-only';
+  } catch (e) { status.classList.add('err'); status.textContent = 'load failed'; }
+}
+
+function _dbRenderPager(d) {
+  const p = document.getElementById('db-pager');
+  if (!p) return;
+  const from = d.total === 0 ? 0 : d.offset + 1, to = Math.min(d.offset + d.limit, d.total);
+  p.innerHTML =
+    '<select onchange="_dbLimit=parseInt(this.value);_dbOffset=0;_dbLoadData()">' +
+      [25, 50, 100, 200].map(n => '<option value="' + n + '"' + (n === _dbLimit ? ' selected' : '') + '>' + n + '/pg</option>').join('') + '</select>' +
+    '<button class="btn" ' + (d.offset <= 0 ? 'disabled' : '') + ' onclick="_dbOffset=Math.max(0,_dbOffset-_dbLimit);_dbLoadData()">&#8249;</button>' +
+    '<span>' + from + '&ndash;' + to + ' of ' + d.total + '</span>' +
+    '<button class="btn" ' + (to >= d.total ? 'disabled' : '') + ' onclick="_dbOffset+=_dbLimit;_dbLoadData()">&#8250;</button>';
+}
+
+function _dbSortBy(col) {
+  if (_dbSort === col) _dbDir = _dbDir === 'asc' ? 'desc' : 'asc';
+  else { _dbSort = col; _dbDir = 'asc'; }
+  _dbOffset = 0; _dbLoadData();
+}
+
+function _dbRenderGrid(grid, columns, rows, sortable) {
+  if (!columns || !columns.length) { grid.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.82rem;">(statement ran — no result set)</div>'; return; }
+  if (!rows.length) { grid.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.82rem;">0 rows.</div>'; return; }
+  const th = columns.map(c => {
+    const arrow = sortable && _dbSort === c ? (_dbDir === 'asc' ? ' ▲' : ' ▼') : '';
+    return '<th' + (sortable ? ' class="sortable" onclick="_dbSortBy(\'' + esc(c) + '\')"' : '') + '>' + esc(c) + arrow + '</th>';
+  }).join('');
+  const body = rows.map(r => '<tr>' + r.map(v => '<td>' + (v === null ? '<span class="sql-null">NULL</span>' : esc(String(v))) + '</td>').join('') + '</tr>').join('');
+  grid.innerHTML = '<table class="sqlr"><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody></table>';
+}
+
+function _dbRenderStructure() {
+  const el = document.getElementById('db-structure');
+  if (!el || !_dbTable) return;
+  const t = _dbTables.find(x => x.name === _dbTable);
+  if (!t) return;
+  const rows = t.columns.map(c => '<tr>' +
+    '<td>' + esc(c.name) + '</td><td>' + esc(c.type || '') + '</td>' +
+    '<td>' + (c.notnull ? 'NOT NULL' : '') + '</td><td>' + (c.pk ? 'PK' : '') + '</td>' +
+    '<td>' + (c.dflt == null ? '' : esc(String(c.dflt))) + '</td></tr>').join('');
+  el.innerHTML = '<table class="sqlr"><thead><tr><th>Column</th><th>Type</th><th>Null</th><th>Key</th><th>Default</th></tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+// ── Query pane ──
 function _sqlWriteToggle() {
   const on = document.getElementById('sql-write').checked;
   const s = document.getElementById('sql-status');
-  if (s && !s.classList.contains('err')) s.textContent = on ? 'Read/write · wb_* writable' : 'Read-only · amux.db';
+  if (s && !s.classList.contains('err')) s.textContent = on ? 'Read/write · wb_*' : 'Read-only';
 }
 async function _sqlRun() {
   const sql = document.getElementById('sql-editor').value.trim();
@@ -37416,26 +37551,17 @@ async function _sqlRun() {
   status.classList.remove('err'); status.textContent = 'Running…';
   try {
     const d = await fetch(API + '/api/sql', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sql, write }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sql, write }),
     }).then(r => r.json());
     if (d.error) {
       status.classList.add('err'); status.textContent = d.error;
       results.innerHTML = '<div style="padding:16px;color:#f85149;font-size:0.82rem;font-family:var(--mono);white-space:pre-wrap;">' + esc(d.error) + '</div>';
       return;
     }
-    if (d.write) { status.textContent = d.message + ' · ' + d.ms + 'ms'; _sqlLoadSchema(); return; }
-    _sqlRenderResults(d);
+    if (d.write) { status.textContent = d.message + ' · ' + d.ms + 'ms'; _dbLoadSchema(); return; }
+    _dbRenderGrid(results, d.columns, d.rows, false);
     status.textContent = d.rowcount + (d.truncated ? '+ (capped)' : '') + ' row' + (d.rowcount === 1 ? '' : 's') + ' · ' + d.ms + 'ms';
   } catch (e) { status.classList.add('err'); status.textContent = 'request failed'; }
-}
-function _sqlRenderResults(d) {
-  const results = document.getElementById('sql-results');
-  if (!d.columns || !d.columns.length) { results.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.82rem;">(statement ran — no result set)</div>'; return; }
-  if (!d.rows.length) { results.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.82rem;">0 rows.</div>'; return; }
-  let h = '<table class="sqlr"><thead><tr>' + d.columns.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr></thead><tbody>';
-  h += d.rows.map(r => '<tr>' + r.map(v => '<td>' + (v === null ? '<span class="sql-null">NULL</span>' : esc(String(v))) + '</td>').join('') + '</tr>').join('');
-  results.innerHTML = h + '</tbody></table>';
 }
 
 // ── Notes tab ─────────────────────────────────────────────────────────────────
@@ -40868,7 +40994,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.105';
+const CACHE = 'amux-v0.9.106';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -42647,7 +42773,9 @@ class CCHandler(BaseHTTPRequestHandler):
                     "AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()
                 for r in rows:
                     tname = r["name"]
-                    cols = [{"name": c["name"], "type": c["type"]}
+                    cols = [{"name": c["name"], "type": c["type"] or "",
+                             "pk": bool(c["pk"]), "notnull": bool(c["notnull"]),
+                             "dflt": c["dflt_value"]}
                             for c in conn.execute(f'PRAGMA table_info("{tname}")').fetchall()]
                     try:
                         n = conn.execute(f'SELECT COUNT(*) AS n FROM "{tname}"').fetchone()["n"]
@@ -42659,6 +42787,37 @@ class CCHandler(BaseHTTPRequestHandler):
                 return self._json({"tables": tabs})
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
+
+        # GET /api/sql/rows?table=&limit=&offset=&sort=&dir= — paginated table browse
+        if method == "GET" and path == "/api/sql/rows":
+            table = qs.get("table", [""])[0]
+            try:
+                limit = min(500, max(1, int(qs.get("limit", ["50"])[0])))
+                offset = max(0, int(qs.get("offset", ["0"])[0]))
+            except Exception:
+                limit, offset = 50, 0
+            sort = qs.get("sort", [""])[0]
+            direction = "DESC" if qs.get("dir", ["asc"])[0].lower() == "desc" else "ASC"
+            try:
+                conn = _sql_readonly_conn()
+                valid = {r["name"] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
+                if table not in valid:
+                    conn.close()
+                    return self._json({"error": "unknown table"}, 400)
+                colnames = [c["name"] for c in conn.execute(f'PRAGMA table_info("{table}")').fetchall()]
+                order = f' ORDER BY "{sort}" {direction}' if sort in colnames else ""
+                total = conn.execute(f'SELECT COUNT(*) AS n FROM "{table}"').fetchone()["n"]
+                cur = conn.execute(f'SELECT * FROM "{table}"{order} LIMIT ? OFFSET ?', (limit, offset))
+                cols = [d[0] for d in cur.description]
+                out = [[(None if v is None else (v if isinstance(v, (int, float, str)) else str(v)))
+                        for v in row] for row in cur.fetchall()]
+                conn.close()
+                return self._json({"table": table, "columns": cols, "rows": out, "total": total,
+                                   "limit": limit, "offset": offset,
+                                   "sort": sort if sort in colnames else "", "dir": direction.lower()})
+            except Exception as e:
+                return self._json({"error": str(e)}, 400)
 
         # POST /api/sql — run a query. {sql, write?} Reads run read-only; writes are
         # opt-in and confined to wb_* tables.
