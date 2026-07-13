@@ -16970,6 +16970,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-logs" onclick="switchView('logs')">Logs</button>
   <button id="tab-grid" onclick="enterGridMode()">Workspace</button>
   <button id="tab-notes" onclick="switchView('notes')">Notes</button>
+  <button id="tab-messages" onclick="switchView('messages')">Messages</button>
   <button id="tab-skills" onclick="switchView('skills')">Skills</button>
   <button id="tab-crm" onclick="switchView('crm')">People</button>
   <button id="tab-sql" onclick="switchView('sql')">Database</button>
@@ -17612,6 +17613,37 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <div class="sql-results" id="sql-results" style="margin-top:8px;"><div style="padding:18px;color:var(--dim);font-size:0.84rem;">Run a query. Reads are read-only over <code>amux.db</code>; toggle <b>Allow writes</b> to manage your own <code>wb_*</code> tables.</div></div>
       </div>
     </div>
+  </div>
+</div>
+
+<div id="messages-view" style="display:none;flex-direction:column;flex:1;min-height:0;padding:12px 16px;">
+  <style>
+    #messages-view .msg-row { display:flex; align-items:flex-start; gap:10px; padding:9px 12px; background:var(--card);
+      border:1px solid var(--border); border-radius:8px; cursor:pointer; transition:border-color .15s; }
+    #messages-view .msg-row:hover { border-color:var(--accent); }
+    #messages-view .msg-main { flex:1; min-width:0; }
+    #messages-view .msg-meta { display:flex; align-items:center; gap:8px; margin-bottom:3px; flex-wrap:wrap; }
+    #messages-view .msg-sess { font-size:0.72rem; font-weight:600; color:var(--accent); }
+    #messages-view .msg-ts { font-size:0.7rem; color:var(--dim); }
+    #messages-view .msg-tag { font-size:0.66rem; padding:1px 6px; border-radius:3px; background:rgba(128,128,128,0.12); color:var(--dim); }
+    #messages-view .msg-tag.steering { background:rgba(137,87,229,0.15); color:var(--purple,#8957e5); }
+    #messages-view .msg-text { font-size:0.84rem; color:var(--text); white-space:pre-wrap; word-break:break-word;
+      line-height:1.45; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+    #messages-view .msg-locate { flex-shrink:0; font-size:0.72rem; padding:4px 10px; align-self:center; }
+  </style>
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-shrink:0;flex-wrap:wrap;">
+    <div class="search-wrap" style="flex:1;min-width:180px;">
+      <input class="search-input" id="msgs-search" type="text" placeholder="Search messages..." autocomplete="off" oninput="_messagesRender()">
+    </div>
+    <select id="msgs-session-filter" onchange="_messagesRender()" style="max-width:190px;font-size:0.82rem;padding:6px 9px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);">
+      <option value="">All sessions</option>
+    </select>
+    <span id="msgs-count" style="font-size:0.75rem;color:var(--dim);white-space:nowrap;"></span>
+    <button class="btn" onclick="_messagesLoad(true)" title="Refresh" style="font-size:0.78rem;padding:5px 10px;">&#x21BB;</button>
+  </div>
+  <div id="msgs-list" style="overflow-y:auto;flex:1;min-height:0;display:flex;flex-direction:column;gap:6px;-webkit-overflow-scrolling:touch;"></div>
+  <div style="flex-shrink:0;padding-top:8px;text-align:center;">
+    <button class="btn" id="msgs-more-btn" style="display:none;font-size:0.78rem;" onclick="_messagesLoad(false)">Load older</button>
   </div>
 </div>
 
@@ -21193,6 +21225,7 @@ const ALL_TABS = [
   { id: 'browser',       label: 'Browser' },
   { id: 'grid',          label: 'Workspace' },
   { id: 'notes',         label: 'Notes' },
+  { id: 'messages',      label: 'Messages' },
   { id: 'skills',        label: 'Skills' },
   { id: 'crm',           label: 'People' },
   { id: 'sql',           label: 'Database' },
@@ -23665,7 +23698,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.108';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.109';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -26855,14 +26888,21 @@ function _renderCmdHistoryList() {
     const meta = (type ? '<span style="display:inline-block;font-size:0.7rem;padding:1px 6px;border-radius:3px;background:' + tagBg + ';color:' + tagColor + ';margin-right:6px;">' + tagLabel + '</span>' : '')
       + (session ? '<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">' + session.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>' : '')
       + (ts ? '<span style="color:var(--dim);font-size:0.7rem;">' + ts + '</span>' : '');
+    const locSess = (session || peekSession || '').replace(/\u0027/g, '');
+    const locate = locSess
+      ? '<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" '
+        + 'title="Open the peek and scroll to where this was sent" '
+        + 'onclick="event.stopPropagation();_msgLocate(\u0027' + locSess + '\u0027,\u0027' + enc + '\u0027)">&#x2316;</button>'
+      : '';
     return '<div onclick="_pickCmdHistory(decodeURIComponent(\u0027' + enc + '\u0027))" '
       + 'style="cursor:pointer;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;'
-      + 'font-size:0.85rem;color:var(--text);white-space:pre-wrap;word-break:break-word;line-height:1.45;'
-      + 'transition:border-color 0.15s;" '
+      + 'font-size:0.85rem;color:var(--text);'
+      + 'transition:border-color 0.15s;display:flex;gap:10px;align-items:flex-start;" '
       + 'onmouseenter="this.style.borderColor=\u0027var(--accent)\u0027" '
       + 'onmouseleave="this.style.borderColor=\u0027var(--border)\u0027">'
+      + '<div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">'
       + (meta ? '<div style="margin-bottom:4px;">' + meta + '</div>' : '')
-      + safe + '</div>';
+      + safe + '</div>' + locate + '</div>';
   }).join('');
 }
 function _pickCmdHistory(text) {
@@ -30233,9 +30273,9 @@ function _chromeSave() {
 function switchView(view) {
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
   activeView = view;
-  const _svIds = ['session','board','calendar','scheduler','files','proxies','logs','notes','skills','crm','sql','map','metrics','torrents','terminal','browser','graph'];
-  const _svNames = ['sessions','board','calendar','scheduler','files','proxies','logs','notes','skills','crm','sql','map','metrics','torrents','terminal','browser','graph'];
-  const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','','flex'];
+  const _svIds = ['session','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','torrents','terminal','browser','graph'];
+  const _svNames = ['sessions','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','torrents','terminal','browser','graph'];
+  const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','','flex'];
   for (let i = 0; i < _svIds.length; i++) {
     const ve = document.getElementById(_svIds[i] + '-view');
     if (ve) ve.style.display = view === _svNames[i] ? (_svDisplay[i] || '') : 'none';
@@ -30254,6 +30294,7 @@ function switchView(view) {
   if (view === 'habits') _habitsLoad();
   if (view === 'skills') _skillsTabLoad();
   if (view === 'sql') _sqlInit();
+  if (view === 'messages') _messagesLoad(true);
   if (view === 'files') loadFiles(_filesPath);
   if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
   if (view !== 'files') {
@@ -37517,6 +37558,87 @@ window.addEventListener('resize', () => {
   if (activeView === 'terminal') _termLayout();
 });
 
+// ── Messages tab (global send history across all sessions) ──────────────────
+let _msgsData = [];
+let _msgsOffset = 0;
+const _MSGS_PAGE = 200;
+let _msgsDone = false;
+
+async function _messagesLoad(reset) {
+  if (reset !== false) { _msgsData = []; _msgsOffset = 0; _msgsDone = false; }
+  try {
+    const r = await fetch(API + '/api/history?limit=' + _MSGS_PAGE + '&offset=' + _msgsOffset);
+    const rows = await r.json();
+    if (!Array.isArray(rows)) return;
+    _msgsData = _msgsData.concat(rows);
+    _msgsOffset += rows.length;
+    _msgsDone = rows.length < _MSGS_PAGE;
+    // Session filter options (from loaded data)
+    const sel = document.getElementById('msgs-session-filter');
+    if (sel) {
+      const cur = sel.value;
+      const names = [...new Set(_msgsData.map(m => m.session).filter(Boolean))].sort();
+      sel.innerHTML = '<option value="">All sessions</option>' +
+        names.map(n => '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
+    }
+    _messagesRender();
+  } catch (e) {
+    const list = document.getElementById('msgs-list');
+    if (list && !_msgsData.length) list.innerHTML = '<div style="color:var(--red);font-size:0.85rem;padding:20px;text-align:center;">Failed to load messages</div>';
+  }
+}
+
+function _msgsFmtTs(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleString([], { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }), hour: 'numeric', minute: '2-digit' });
+}
+
+// Open the session's peek and scroll to where the message was sent: prefill the
+// peek search with a short snippet (the terminal hard-wraps long lines, so only
+// a SHORT prefix can match the rendered pane) — same jump flow as card log-hits.
+function _msgLocate(session, encText) {
+  if (!session) { showToast('No session recorded for this message'); return; }
+  const text = decodeURIComponent(encText);
+  const snippet = (text.split('\n')[0] || '').slice(0, 32).trim();
+  if (typeof closeCmdHistoryModal === 'function') closeCmdHistoryModal();
+  openPeek(session, { query: snippet });
+}
+
+function _messagesRender() {
+  const list = document.getElementById('msgs-list');
+  if (!list) return;
+  const q = (document.getElementById('msgs-search')?.value || '').trim().toLowerCase();
+  const sessF = document.getElementById('msgs-session-filter')?.value || '';
+  let rows = _msgsData;
+  if (sessF) rows = rows.filter(m => (m.session || '') === sessF);
+  if (q) rows = rows.filter(m => (m.text || '').toLowerCase().includes(q) || (m.session || '').toLowerCase().includes(q));
+  const count = document.getElementById('msgs-count');
+  if (count) count.textContent = rows.length + ' message' + (rows.length === 1 ? '' : 's') + (_msgsDone ? '' : ' (more available)');
+  const more = document.getElementById('msgs-more-btn');
+  if (more) more.style.display = _msgsDone ? 'none' : '';
+  if (!rows.length) {
+    list.innerHTML = '<div style="color:var(--dim);font-size:0.85rem;padding:24px;text-align:center;">' + (q || sessF ? 'No matches.' : 'No messages yet.') + '</div>';
+    return;
+  }
+  list.innerHTML = rows.map(m => {
+    const enc = encodeURIComponent(m.text || '');
+    const sess = m.session || '';
+    const tag = m.type === 'steering' ? '<span class="msg-tag steering">queued</span>' : '';
+    return '<div class="msg-row" onclick="openPeek(\'' + escJs(sess) + '\')" title="Open ' + esc(sess) + '">' +
+      '<div class="msg-main">' +
+        '<div class="msg-meta">' +
+          (sess ? '<span class="msg-sess">' + esc(sess) + '</span>' : '<span class="msg-sess" style="color:var(--dim);">(unknown)</span>') +
+          '<span class="msg-ts">' + _msgsFmtTs(m.ts) + '</span>' + tag +
+        '</div>' +
+        '<div class="msg-text">' + esc(m.text || '') + '</div>' +
+      '</div>' +
+      '<button class="btn msg-locate" onclick="event.stopPropagation();_msgLocate(\'' + escJs(sess) + '\',\'' + enc + '\')" title="Open the peek and scroll to where this was sent">&#x2316; Locate</button>' +
+    '</div>';
+  }).join('');
+}
+
 // ── Database workbench tab ──────────────────────────────────────────────────
 let _dbTables = [];
 let _dbTable = null;
@@ -41094,7 +41216,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.108';
+const CACHE = 'amux-v0.9.109';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
