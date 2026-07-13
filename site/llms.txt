@@ -6,8 +6,10 @@ amux (Agent Multiplexer) is the open-source control plane for AI agent systems. 
 
 ## Quick Start
 
+Install via Homebrew (`brew install mixpeek/amux/amux`), PyPI (`pipx install amux`), zero-install trial (`uvx amux serve`), or from source (`git clone https://github.com/mixpeek/amux && cd amux && ./install.sh`).
+
 ```bash
-git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+brew install mixpeek/amux/amux
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # → https://localhost:8822

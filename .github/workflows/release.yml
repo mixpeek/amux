@@ -1,0 +1,27 @@
+# Publish amux to PyPI when a release tag (vX.Y.Z) is pushed.
+# Requires the PYPI_API_TOKEN repo secret (a pypi.org API token).
+name: release
+on:
+  push:
+    tags: ["v[0-9]*"]
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check version matches tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PYVER=$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)"/\1/')
+          if [ "$TAG" != "$PYVER" ]; then
+            echo "tag v$TAG != pyproject version $PYVER" >&2; exit 1
+          fi
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine upload dist/*
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}

@@ -3018,6 +3018,25 @@ def _session_work_dir_early(name: str) -> str:
     return ""
 
 
+def _install_channel() -> str:
+    """How this copy of amux was installed: 'source' (git checkout — updates via
+    git pull), 'brew' (Homebrew cellar), 'pip' (site-packages via pip/pipx), or
+    'standalone' (a bare copied file). Drives update routing — package-managed
+    copies must not git-pull themselves."""
+    here = Path(__file__).resolve()
+    p = str(here)
+    d = here.parent
+    while d != d.parent:
+        if (d / ".git").exists():
+            return "source"
+        d = d.parent
+    if "/Cellar/" in p or "/homebrew/" in p or "/Homebrew/" in p:
+        return "brew"
+    if "site-packages" in p or "dist-packages" in p:
+        return "pip"
+    return "standalone"
+
+
 def backup_session_jsonl(session: str, reason: str = "manual") -> str | None:
     """Copy the latest JSONL conversation file for a session to ~/.amux/transcripts/<session>/.
 
@@ -43244,6 +43263,15 @@ class CCHandler(BaseHTTPRequestHandler):
 
         # POST /api/pull — git pull in the repo directory
         if method == "POST" and path == "/api/pull":
+            # Package-managed installs (Homebrew / pip) are not git checkouts —
+            # route the update to the right channel instead of a doomed git pull.
+            _chan = _install_channel()
+            if _chan == "brew":
+                return self._json({"ok": False, "channel": "brew",
+                                   "output": "Installed via Homebrew — update with: brew upgrade amux"})
+            if _chan == "pip":
+                return self._json({"ok": False, "channel": "pip",
+                                   "output": "Installed via pip/pipx — update with: pipx upgrade amux (or pip install -U amux)"})
             # Walk up from __file__ to find nearest .git directory
             _candidate = Path(__file__).resolve().parent
             repo_dir = _candidate

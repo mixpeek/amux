@@ -52,7 +52,7 @@
 <h2>Can I use it with models other than Claude?</h2><p>amux is specifically built for Claude Code (the <code>claude</code> CLI). It relies on Claude Code's specific terminal output patterns for status detection and self-healing. → <a href="/compare/amux-vs-aider/">amux vs Aider</a> (Aider supports more models)</p>
 <h2>How is amux different from Claude Code Agent Teams?</h2><p>Agent Teams spawns short-lived sub-agents from a parent. amux manages long-running independent sessions with a web dashboard, self-healing, and shared task board. <a href="/compare/amux-vs-claude-code-agent-teams/">See detailed comparison</a> · <a href="/guides/running-10-plus-agents/">Running 10+ agents guide</a></p>
 <h2>Can I self-host it?</h2><p>Yes — that's the only way to run it. amux runs on your own machine or server. No cloud service, no account needed. → <a href="/compare/amux-vs-claude-managed-agents/">Compare with Anthropic's hosted option</a></p>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>brew install mixpeek/amux/amux   # or: pipx install amux
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>

@@ -411,12 +411,38 @@ launchd job to keep it alive across reboots.
 
 ## Install
 
-Requires `tmux` and `python3`.
+### Homebrew (macOS / Linux)
+
+```bash
+brew install mixpeek/amux/amux
+brew services start amux    # optional: run the dashboard as an always-on service
+```
+
+### pipx / uv
+
+```bash
+pipx install amux           # or: pip install amux
+amux serve
+```
+
+Try it without installing anything:
+
+```bash
+uvx amux serve
+```
+
+Requires `tmux` (`brew install tmux`). Homebrew installs it for you.
+
+### From source (the hackable way)
+
+The whole product is [one Python file](https://amux.io/features/single-file-architecture/) — clone it and it's yours to read and modify:
 
 ```bash
 git clone https://github.com/mixpeek/amux && cd amux
 ./install.sh   # installs amux to /usr/local/bin
 ```
+
+Source installs update with `git pull` (or the dashboard's update button); Homebrew with `brew upgrade amux`; pipx with `pipx upgrade amux` — the server detects its install channel and points you at the right one.
 
 ### HTTPS
 

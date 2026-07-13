@@ -91,10 +91,20 @@
 
 <h3>Install</h3>
 
+<p><strong>Homebrew</strong> (macOS/Linux &mdash; installs tmux for you; <code>brew services start amux</code> runs the dashboard as an always-on service):</p>
+
+<pre><code>brew install mixpeek/amux/amux</code></pre>
+
+<p><strong>pipx / uv</strong> (any platform; <code>uvx amux serve</code> tries it with zero install):</p>
+
+<pre><code>pipx install amux</code></pre>
+
+<p><strong>From source</strong> (the hackable single-file way):</p>
+
 <pre><code>git clone https://github.com/mixpeek/amux && cd amux
 ./install.sh</code></pre>
 
-<p>This symlinks <code>amux</code> and <code>amux-server.py</code> to <code>/usr/local/bin</code>. Also installs a <code>cc</code> alias for convenience.</p>
+<p>Source install symlinks <code>amux</code> and <code>amux-server.py</code> to <code>/usr/local/bin</code>. Also installs a <code>cc</code> alias for convenience.</p>
 
 <p>Verify the installation:</p>
 
@@ -102,7 +112,11 @@
 
 <h3>Updating</h3>
 
-<pre><code>cd ~/path/to/amux && git pull && ./install.sh</code></pre>
+<pre><code>brew upgrade amux          # Homebrew installs
+pipx upgrade amux          # pipx installs
+cd ~/path/to/amux && git pull && ./install.sh   # source installs</code></pre>
+
+<p>The server knows its install channel and the dashboard&rsquo;s update button points you at the right command.</p>
 
 <p>The server auto-restarts when <code>amux-server.py</code> changes, so updates take effect immediately if the dashboard is running.</p>
 

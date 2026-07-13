@@ -1004,8 +1004,8 @@
         <span class="install-title">~/dev &mdash; bash</span>
         <span class="install-copy">cmd &middot; c</span>
       </div>
-<pre><span class="cmt"># clone, install, register a project</span>
-<span class="pmt">$</span> git clone https://github.com/mixpeek/amux <span class="kw">&amp;&amp;</span> cd amux <span class="kw">&amp;&amp;</span> ./install.sh
+<pre><span class="cmt"># install (or: pipx install amux &middot; or clone the repo)</span>
+<span class="pmt">$</span> brew install mixpeek/amux/amux
 <span class="pmt">$</span> amux register myproject --dir <span class="str">~/Dev/myproject</span> --yolo
 <span class="pmt">$</span> amux start myproject
 <span class="pmt">$</span> amux serve   <span class="cmt"># &rarr; https://localhost:8822</span></pre>

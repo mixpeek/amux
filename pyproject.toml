@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "amux"
+# Keep in lockstep with APP_VER in amux-server.py (release tags are vX.Y.Z).
+version = "0.9.108"
+description = "Open-source control plane for AI coding agents — run, monitor & orchestrate parallel Claude Code, Codex & Gemini sessions from one web dashboard or your phone."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Mixpeek", email = "info@mixpeek.com" }]
+keywords = ["ai", "agents", "claude-code", "codex", "gemini", "tmux", "orchestration", "dashboard"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development",
+    "Topic :: Terminals",
+]
+
+[project.urls]
+Homepage = "https://amux.io"
+Repository = "https://github.com/mixpeek/amux"
+Issues = "https://github.com/mixpeek/amux/issues"
+
+[project.scripts]
+amux = "amux_cli:main"
+
+# The product is intentionally a single file (amux-server.py) plus a bash CLI.
+# The wheel ships them verbatim inside the amux_cli package; the console-script
+# shim just exec's the bash CLI, which finds amux-server.py adjacent to it.
+[tool.hatch.build.targets.wheel]
+packages = ["packaging/amux_cli"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"amux" = "amux_cli/amux"
+"amux-remote" = "amux_cli/amux-remote"
+"amux-server.py" = "amux_cli/amux-server.py"
+"assets/icon.svg" = "amux_cli/assets/icon.svg"
+"assets/icon.png" = "amux_cli/assets/icon.png"
+"assets/icon-192.png" = "amux_cli/assets/icon-192.png"
+"assets/icon-512.png" = "amux_cli/assets/icon-512.png"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "packaging/amux_cli",
+    "amux",
+    "amux-remote",
+    "amux-server.py",
+    "assets/icon.svg",
+    "assets/icon.png",
+    "assets/icon-192.png",
+    "assets/icon-512.png",
+    "README.md",
+    "LICENSE",
+]
