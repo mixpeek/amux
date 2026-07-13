@@ -102,3 +102,12 @@ Track query gaps, target sections, priority, and status. Update every run.
 | AI agent security hardening 2026 | /guides/ai-agent-security-hardening/ | H | enriched 2026-07-12 (817→~880 lines, new v0.9.95–v0.9.98 security section, updated dateModified) |
 | XSS CSRF protection AI agent dashboard | /guides/ai-agent-security-hardening/ | M | enriched 2026-07-12 |
 | amux tunnel rate limiting ngrok comparison | /compare/amux-vs-ngrok/ | M | updated 2026-07-12 (rate limiting v0.9.96, proxies tab v0.9.95 added) |
+| how to install amux getting started tutorial | /guides/getting-started/ | H | enriched 2026-07-13 (112→278 lines, HowTo+FAQPage JSON-LD, comparison table, answer-first framing, dateModified updated) |
+| custom commands AI coding agents 2026 | /guides/ai-agent-skills/ | H | shipped 2026-07-13 (new page, 303 lines, model-agnostic Skills tab, HowTo+FAQPage JSON-LD, cross-provider sync, 3 example skills) |
+| Claude Code slash commands custom 2026 | /guides/ai-agent-skills/ | H | shipped 2026-07-13 |
+| model-agnostic AI agent skills amux | /guides/ai-agent-skills/ | M | shipped 2026-07-13 |
+| amux vs n8n workflow automation AI agents | /compare/amux-vs-n8n/ | H | shipped 2026-07-13 (new page, 343 lines, 13-row comparison table, FAQPage JSON-LD, "use both together" section) |
+| n8n alternative AI agent orchestration | /compare/amux-vs-n8n/ | H | shipped 2026-07-13 |
+| query AI agent data SQL workbench | /guides/ai-agent-database-workbench/ | H | shipped 2026-07-13 (new page, 356 lines, all 7 table schemas, 10 power queries, HowTo+FAQPage JSON-LD) |
+| amux database workbench SQL amux.db | /guides/ai-agent-database-workbench/ | H | shipped 2026-07-13 |
+| inspect Claude Code session data SQLite | /guides/ai-agent-database-workbench/ | M | shipped 2026-07-13 |
