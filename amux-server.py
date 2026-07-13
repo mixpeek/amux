@@ -4366,11 +4366,29 @@ def _snapshot_all_sessions():
 
 def _steer_enqueue(name: str, text: str) -> str:
     """Append a message to a session's durable steering queue (memory + DB).
-    Delivered at the next turn boundary by _steer_try_deliver."""
+    Delivered (batched) at the next turn boundary by _steer_try_deliver.
+
+    Dedup-on-enqueue: an identical text already waiting is REPLACED, not
+    stacked — observed live on mvs-infra: recurring scheduled prompts piled up
+    behind a busy session (the same PULSE health-loop queued twice runs the
+    same loop back-to-back for nothing), and sender retries queued literal
+    duplicates ("YES to the census" ×2)."""
     msg_id = f"steer-{int(time.time()*1000)}"
     entry = {"id": msg_id, "text": text, "queued_at": time.time()}
     with _steering_lock:
-        _steering_queue.setdefault(name, []).append(entry)
+        q = _steering_queue.setdefault(name, [])
+        stale = [m for m in q if m["text"] == text and not m.get("_inflight")]
+        if stale:
+            _steering_queue[name] = [m for m in q if m not in stale]
+        _steering_queue[name].append(entry)
+    if stale:
+        try:
+            db = get_db()
+            for m in stale:
+                db.execute("DELETE FROM steering_queue WHERE id=?", (m["id"],))
+            db.commit()
+        except Exception:
+            pass
     try:
         db = get_db()
         db.execute(
@@ -4452,30 +4470,57 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
             return  # start settling; a later confirming tick delivers
         if (now - first) < _STEER_SETTLE_SECS:
             return  # idle, but not for long enough yet — keep waiting
-        msg = queue[0]
-        if msg.get("_inflight"):
+        if any(m.get("_inflight") for m in queue):
             return
-        msg["_inflight"] = True
-    ok, err = send_text(name, msg["text"])
+        # Deliver the WHOLE queue as ONE turn (size-capped), not one message per
+        # turn boundary. Observed live on mvs-infra: per-message delivery let a
+        # busy session backlog 5+ messages, so a correction ("⚠️ before you act
+        # on my ruling") sat queued while the session could act on the wrong
+        # ruling for a full turn — and each drained message cost its own
+        # full-context turn. One batched turn delivers corrections WITH what
+        # they correct and costs 1× context instead of N×.
+        batch, size = [], 0
+        for m in queue:
+            if batch and size + len(m["text"]) > 12000:
+                break  # leave the rest for the next boundary
+            batch.append(m)
+            size += len(m["text"])
+        for m in batch:
+            m["_inflight"] = True
+    if len(batch) == 1:
+        combined = batch[0]["text"]
+    else:
+        now_t = time.time()
+        parts = [f"You have {len(batch)} queued messages (oldest first — read ALL "
+                 f"before acting; later ones may correct earlier ones):"]
+        for i, m in enumerate(batch, 1):
+            age = max(0, int((now_t - m.get("queued_at", now_t)) / 60))
+            parts.append(f"--- [{i}/{len(batch)}] queued {age}m ago ---\n{m['text']}")
+        combined = "\n\n".join(parts)
+    ok, err = send_text(name, combined)
     if ok:
+        ids = {m["id"] for m in batch}
         with _steering_lock:
             q = _steering_queue.get(name, [])
-            _steering_queue[name] = [m for m in q if m["id"] != msg["id"]]
+            _steering_queue[name] = [m for m in q if m["id"] not in ids]
             # Reset settle: the session is now busy handling what we just sent,
             # and any following message must settle against a fresh idle stretch.
             _steer_settle_since.pop(name, None)
         try:
             db = get_db()
-            db.execute("DELETE FROM steering_queue WHERE id=?", (msg["id"],))
+            for mid in ids:
+                db.execute("DELETE FROM steering_queue WHERE id=?", (mid,))
             db.commit()
         except Exception:
             pass
-        _steer_record_history(name, msg["text"], msg.get("queued_at"), msg["id"])
+        for m in batch:
+            _steer_record_history(name, m["text"], m.get("queued_at"), m["id"])
         _push_alert("steering_delivered", name,
-                    f"Steering message delivered to '{name}'")
+                    f"{len(batch)} steering message{'s' if len(batch) > 1 else ''} delivered to '{name}'")
     else:
         with _steering_lock:
-            msg.pop("_inflight", None)
+            for m in batch:
+                m.pop("_inflight", None)
 
 
 def _steering_fast_tick():
@@ -6518,9 +6563,24 @@ _VAGUE_INPUTS = {
     "sounds good", "looks good", "perfect", "lgtm", "go ahead", "keep going",
 }
 
+_task_summary_last: dict = {}   # session -> monotonic ts of last label call
+_TASK_SUMMARY_MIN_GAP = float(os.environ.get("AMUX_TASK_LABEL_GAP_SECS", "600"))
+
+
 def _summarize_task_bg(session_name: str, text: str):
     """Summarize a message into a 3-word task label via `claude -p`, then auto-create a board issue.
-    For vague one-word inputs (continue, yeah, etc.) supplements with recent terminal output."""
+    For vague one-word inputs (continue, yeah, etc.) supplements with recent terminal output.
+
+    Throttled to one call per session per _TASK_SUMMARY_MIN_GAP: each `claude -p`
+    one-shot pays the full CLI boot (system prompt + tool schemas + global
+    CLAUDE.md ≈ 12-15k input tokens, and Plan quota) for a 3-word label — doing
+    that on EVERY send was the most wasteful per-call model touchpoint in the
+    2026-07-13 token audit. A session's task doesn't change per message."""
+    now_m = time.monotonic()
+    last = _task_summary_last.get(session_name, 0.0)
+    if now_m - last < _TASK_SUMMARY_MIN_GAP:
+        return
+    _task_summary_last[session_name] = now_m
     def _run():
         try:
             # Strip timestamp prefix like "[03:47 PM] " before checking vagueness
@@ -8595,6 +8655,8 @@ def _parse_task_time(raw_output: str) -> str:
 
 _session_prev_status: dict[str, str] = {}  # track status changes for board auto-updates
 _commit_guard_nudged: dict[str, bool] = {}  # session -> nudged this dirty episode (re-armed when clean)
+_commit_guard_daily: dict = {}   # (session, YYYYMMDD) -> nudges sent that day
+_COMMIT_GUARD_MAX_PER_DAY = int(os.environ.get("AMUX_COMMIT_NUDGES_PER_DAY", "3"))
 
 
 def _session_dirty_files(name: str, work_dir: str) -> list:
@@ -8832,8 +8894,24 @@ def _commit_guard(name: str) -> bool:
                "Commit completed work now with a clear, descriptive message (group related changes). "
                "If something is intentionally incomplete, commit a WIP checkpoint and say so. "
                "Don't leave the working tree dirty.")
+        # Token-efficiency (audit 2026-07-13: 87 commit nudges/day vs 75 human
+        # sends — each nudge was its own full-context turn into a cold-cache
+        # idle session, the single largest automated token stream):
+        # 1) Cap nudges per session per UTC day — each commit re-arms the
+        #    guard, so one busy session collected a dozen nudges/day.
+        # 2) Deliver via the steering queue, not a dedicated send: batched
+        #    delivery folds the reminder into the session's next queued turn.
+        import datetime as _dt
+        _day = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d")
+        _cnt = _commit_guard_daily.get((name, _day), 0)
+        if _cnt >= _COMMIT_GUARD_MAX_PER_DAY:
+            slog(f"[commit-guard] {name}: dirty but daily nudge cap reached "
+                 f"({_cnt}/{_COMMIT_GUARD_MAX_PER_DAY}) — alert only")
+            _push_alert("uncommitted", name, f"{n} uncommitted file(s) under {wd} — nudge cap reached")
+            return False
         if is_running(name):
-            send_text(name, msg)
+            _commit_guard_daily[(name, _day)] = _cnt + 1
+            _steer_enqueue(name, msg)
         _push_alert("uncommitted", name, f"{n} uncommitted file(s) under {wd} — nudged to commit")
         slog(f"[commit-guard] {name}: nudged ({n} uncommitted)")
         return True
