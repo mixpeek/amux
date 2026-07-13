@@ -5500,6 +5500,50 @@ def get_db() -> sqlite3.Connection:
     return _db_local.conn
 
 
+# ── SQL workbench ────────────────────────────────────────────────────────────
+# A lightweight query surface over amux.db. Reads run on a READ-ONLY connection
+# (bulletproof — the app's ~40 internal tables can't be mutated). Writes are
+# opt-in AND confined to user tables named `wb_*`, so the workbench is a real
+# sandbox (create/insert/edit your own tables) while amux's own data is safe by
+# construction, no matter what tables get added later.
+_SQL_ROW_CAP = 1000
+_SQL_READ_KEYWORDS = {"select", "with", "pragma", "explain", "values"}
+_SQL_WRITE_TARGET_RE = re.compile(
+    r"\b(?:insert\s+into|insert\s+or\s+\w+\s+into|replace\s+into|update|delete\s+from|"
+    r"create\s+(?:temp\s+|temporary\s+)?table(?:\s+if\s+not\s+exists)?|"
+    r"drop\s+table(?:\s+if\s+exists)?|alter\s+table|create\s+index(?:\s+if\s+not\s+exists)?\s+\w+\s+on)"
+    r"\s+[\"'`]?([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
+
+
+def _sql_is_write(sql: str) -> bool:
+    s = re.sub(r"--[^\n]*|/\*.*?\*/", "", sql, flags=re.DOTALL).strip()
+    m = re.match(r"[A-Za-z]+", s)
+    return not (m and m.group(0).lower() in _SQL_READ_KEYWORDS)
+
+
+def _sql_write_guard(sql: str):
+    """Return an error string if a write statement targets a non-`wb_` table."""
+    targets = _SQL_WRITE_TARGET_RE.findall(sql)
+    bad = [t for t in targets if not t.lower().startswith("wb_")]
+    if bad:
+        return (f"Write blocked: only tables named wb_* are writable "
+                f"(protects amux's own data). Offending: {', '.join(sorted(set(bad)))}")
+    if not targets:
+        return ("Write blocked: could not identify a wb_* target table. "
+                "Workbench writes must target tables named wb_*.")
+    return None
+
+
+def _sql_readonly_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(f"file:{_DB_PATH}?mode=ro", uri=True, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
+    conn.execute("PRAGMA busy_timeout=3000")
+    return conn
+
+
 def _init_claude_config():
     """Pre-configure ~/.claude.json to skip the interactive setup wizard.
 
@@ -16839,6 +16883,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-notes" onclick="switchView('notes')">Notes</button>
   <button id="tab-skills" onclick="switchView('skills')">Skills</button>
   <button id="tab-crm" onclick="switchView('crm')">People</button>
+  <button id="tab-sql" onclick="switchView('sql')">SQL</button>
   <button id="tab-map" onclick="switchView('map')">Map</button>
   <button id="tab-metrics" onclick="switchView('metrics')">Metrics</button>
   <button id="tab-torrents" onclick="switchView('torrents')">Torrents</button>
@@ -17392,6 +17437,55 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 
 <!-- Terminal view -->
+<div id="sql-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
+  <style>
+    #sql-view .sql-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+    #sql-view .sql-toggle { display:inline-flex; align-items:center; gap:6px; font-size:0.75rem; color:var(--dim); cursor:pointer; user-select:none; }
+    #sql-view .sql-status { font-size:0.72rem; color:var(--dim); font-family:var(--mono); }
+    #sql-view .sql-status.err { color:#f85149; }
+    #sql-view .sqlw { display:flex; gap:10px; align-items:flex-start; }
+    #sql-view .sql-side { width:220px; flex-shrink:0; max-height:calc(100vh - 300px); overflow-y:auto;
+      background:var(--card); border:1px solid var(--border); border-radius:8px; padding:8px; }
+    #sql-view .sql-side h4 { margin:0 0 6px; font-size:0.66rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--dim); }
+    #sql-view .sql-tbl { padding:4px 6px; border-radius:5px; cursor:pointer; font-size:0.76rem; font-family:var(--mono);
+      display:flex; align-items:center; justify-content:space-between; gap:6px; }
+    #sql-view .sql-tbl:hover { background:var(--bg); }
+    #sql-view .sql-tbl .c { color:var(--dim); font-size:0.66rem; flex-shrink:0; }
+    #sql-view .sql-tbl .n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    #sql-view .sql-tbl.wb .n { color:var(--green); }
+    #sql-view .sql-main { flex:1; min-width:0; display:flex; flex-direction:column; gap:8px; }
+    #sql-view .sql-editor { width:100%; min-height:92px; max-height:38vh; resize:vertical; box-sizing:border-box;
+      font-family:var(--mono); font-size:0.82rem; line-height:1.5; padding:10px; background:#0d1117; color:var(--text);
+      border:1px solid var(--border); border-radius:8px; }
+    #sql-view .sql-editor:focus { outline:none; border-color:var(--accent); }
+    #sql-view .sql-results { max-height:calc(100vh - 340px); min-height:220px; overflow:auto;
+      border:1px solid var(--border); border-radius:8px; background:var(--card); }
+    #sql-view table.sqlr { border-collapse:collapse; width:100%; font-size:0.76rem; font-family:var(--mono); }
+    #sql-view table.sqlr th { position:sticky; top:0; background:var(--bg); text-align:left; padding:6px 10px;
+      border-bottom:1px solid var(--border); color:var(--dim); white-space:nowrap; z-index:1; }
+    #sql-view table.sqlr td { padding:5px 10px; border-bottom:1px solid var(--border); white-space:pre;
+      max-width:440px; overflow:hidden; text-overflow:ellipsis; vertical-align:top; }
+    #sql-view table.sqlr tr:hover td { background:var(--bg); }
+    #sql-view .sql-null { color:var(--muted); font-style:italic; }
+    @media (max-width:600px){ #sql-view .sql-side{ display:none; } #sql-view .sql-results{ max-height:none; } }
+  </style>
+  <div class="sql-bar">
+    <button class="btn primary" onclick="_sqlRun()" style="font-size:0.8rem;">&#x25B6; Run <span style="opacity:0.55;font-size:0.68rem;">&#8984;&#8629;</span></button>
+    <label class="sql-toggle"><input type="checkbox" id="sql-write" onchange="_sqlWriteToggle()"> Allow writes <span style="color:var(--muted);">(wb_* tables)</span></label>
+    <div style="flex:1;"></div>
+    <span class="sql-status" id="sql-status">Read-only &middot; amux.db</span>
+  </div>
+  <div class="sqlw">
+    <div class="sql-side" id="sql-side"></div>
+    <div class="sql-main">
+      <textarea class="sql-editor" id="sql-editor" spellcheck="false" autocomplete="off" autocapitalize="off"
+        placeholder="SELECT name, company, email FROM crm_contacts ORDER BY updated DESC LIMIT 20;"
+        onkeydown="if((event.metaKey||event.ctrlKey)&&event.key==='Enter'){event.preventDefault();_sqlRun();}"></textarea>
+      <div class="sql-results" id="sql-results"><div style="padding:18px;color:var(--dim);font-size:0.84rem;">Run a query to see results. Reads are safe (read-only over <code>amux.db</code>); toggle <b>Allow writes</b> to create &amp; manage your own <code>wb_*</code> tables.</div></div>
+    </div>
+  </div>
+</div>
+
 <div id="terminal-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
   <style>
     #terminal-view .term-toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
@@ -20972,6 +21066,7 @@ const ALL_TABS = [
   { id: 'notes',         label: 'Notes' },
   { id: 'skills',        label: 'Skills' },
   { id: 'crm',           label: 'People' },
+  { id: 'sql',           label: 'SQL' },
   { id: 'map',           label: 'Map' },
   { id: 'metrics',       label: 'Metrics' },
   { id: 'torrents',      label: 'Torrents' },
@@ -23431,7 +23526,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.104';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.105';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -29999,9 +30094,9 @@ function _chromeSave() {
 function switchView(view) {
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
   activeView = view;
-  const _svIds = ['session','board','calendar','scheduler','files','proxies','logs','notes','skills','crm','map','metrics','torrents','terminal','browser','graph'];
-  const _svNames = ['sessions','board','calendar','scheduler','files','proxies','logs','notes','skills','crm','map','metrics','torrents','terminal','browser','graph'];
-  const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','','flex'];
+  const _svIds = ['session','board','calendar','scheduler','files','proxies','logs','notes','skills','crm','sql','map','metrics','torrents','terminal','browser','graph'];
+  const _svNames = ['sessions','board','calendar','scheduler','files','proxies','logs','notes','skills','crm','sql','map','metrics','torrents','terminal','browser','graph'];
+  const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','','flex'];
   for (let i = 0; i < _svIds.length; i++) {
     const ve = document.getElementById(_svIds[i] + '-view');
     if (ve) ve.style.display = view === _svNames[i] ? (_svDisplay[i] || '') : 'none';
@@ -30019,6 +30114,7 @@ function switchView(view) {
   if (view === 'journal') _journalInit();
   if (view === 'habits') _habitsLoad();
   if (view === 'skills') _skillsTabLoad();
+  if (view === 'sql') _sqlInit();
   if (view === 'files') loadFiles(_filesPath);
   if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
   if (view !== 'files') {
@@ -37281,6 +37377,67 @@ window.addEventListener('resize', () => {
   if (activeView === 'terminal') _termLayout();
 });
 
+// ── SQL workbench tab ───────────────────────────────────────────────────────
+let _sqlSchemaLoaded = false;
+function _sqlInit() {
+  if (!_sqlSchemaLoaded) { _sqlSchemaLoaded = true; _sqlLoadSchema(); }
+}
+async function _sqlLoadSchema() {
+  const side = document.getElementById('sql-side');
+  if (!side) return;
+  side.innerHTML = '<div style="color:var(--dim);font-size:0.74rem;padding:6px;">Loading…</div>';
+  try {
+    const d = await fetch(API + '/api/sql/schema').then(r => r.json());
+    if (d.error) { side.innerHTML = '<div style="color:#f85149;font-size:0.74rem;padding:6px;">' + esc(d.error) + '</div>'; return; }
+    const tabs = d.tables || [];
+    side.innerHTML = '<h4>Tables (' + tabs.length + ')</h4>' + tabs.map(t => {
+      const cols = t.columns.map(c => c.name + ' ' + c.type).join(', ');
+      return '<div class="sql-tbl' + (t.writable ? ' wb' : '') + '" title="' + esc(cols) + '" onclick="_sqlPick(\'' + esc(t.name) + '\')">' +
+        '<span class="n">' + esc(t.name) + '</span>' +
+        '<span class="c">' + (t.rows == null ? '' : t.rows) + '</span></div>';
+    }).join('');
+  } catch (e) { side.innerHTML = '<div style="color:#f85149;font-size:0.74rem;padding:6px;">schema failed</div>'; }
+}
+function _sqlPick(t) {
+  document.getElementById('sql-editor').value = 'SELECT * FROM ' + t + ' LIMIT 100;';
+  _sqlRun();
+}
+function _sqlWriteToggle() {
+  const on = document.getElementById('sql-write').checked;
+  const s = document.getElementById('sql-status');
+  if (s && !s.classList.contains('err')) s.textContent = on ? 'Read/write · wb_* writable' : 'Read-only · amux.db';
+}
+async function _sqlRun() {
+  const sql = document.getElementById('sql-editor').value.trim();
+  if (!sql) return;
+  const write = document.getElementById('sql-write').checked;
+  const status = document.getElementById('sql-status');
+  const results = document.getElementById('sql-results');
+  status.classList.remove('err'); status.textContent = 'Running…';
+  try {
+    const d = await fetch(API + '/api/sql', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sql, write }),
+    }).then(r => r.json());
+    if (d.error) {
+      status.classList.add('err'); status.textContent = d.error;
+      results.innerHTML = '<div style="padding:16px;color:#f85149;font-size:0.82rem;font-family:var(--mono);white-space:pre-wrap;">' + esc(d.error) + '</div>';
+      return;
+    }
+    if (d.write) { status.textContent = d.message + ' · ' + d.ms + 'ms'; _sqlLoadSchema(); return; }
+    _sqlRenderResults(d);
+    status.textContent = d.rowcount + (d.truncated ? '+ (capped)' : '') + ' row' + (d.rowcount === 1 ? '' : 's') + ' · ' + d.ms + 'ms';
+  } catch (e) { status.classList.add('err'); status.textContent = 'request failed'; }
+}
+function _sqlRenderResults(d) {
+  const results = document.getElementById('sql-results');
+  if (!d.columns || !d.columns.length) { results.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.82rem;">(statement ran — no result set)</div>'; return; }
+  if (!d.rows.length) { results.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.82rem;">0 rows.</div>'; return; }
+  let h = '<table class="sqlr"><thead><tr>' + d.columns.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr></thead><tbody>';
+  h += d.rows.map(r => '<tr>' + r.map(v => '<td>' + (v === null ? '<span class="sql-null">NULL</span>' : esc(String(v))) + '</td>').join('') + '</tr>').join('');
+  results.innerHTML = h + '</tbody></table>';
+}
+
 // ── Notes tab ─────────────────────────────────────────────────────────────────
 let _notesActive = null; // { path, title }
 let _notesTrashOpen = false;
@@ -40711,7 +40868,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.104';
+const CACHE = 'amux-v0.9.105';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -42479,6 +42636,67 @@ class CCHandler(BaseHTTPRequestHandler):
             # showing up as a /command in Claude/Codex/Gemini.
             _remove_skill_from_providers(name)
             return self._json({"ok": True})
+
+        # GET /api/sql/schema — tables + columns in amux.db (for the workbench sidebar)
+        if method == "GET" and path == "/api/sql/schema":
+            try:
+                conn = _sql_readonly_conn()
+                tabs = []
+                rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table','view') "
+                    "AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()
+                for r in rows:
+                    tname = r["name"]
+                    cols = [{"name": c["name"], "type": c["type"]}
+                            for c in conn.execute(f'PRAGMA table_info("{tname}")').fetchall()]
+                    try:
+                        n = conn.execute(f'SELECT COUNT(*) AS n FROM "{tname}"').fetchone()["n"]
+                    except Exception:
+                        n = None
+                    tabs.append({"name": tname, "columns": cols, "rows": n,
+                                 "writable": tname.lower().startswith("wb_")})
+                conn.close()
+                return self._json({"tables": tabs})
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
+
+        # POST /api/sql — run a query. {sql, write?} Reads run read-only; writes are
+        # opt-in and confined to wb_* tables.
+        if method == "POST" and path == "/api/sql":
+            body = self._read_body()
+            sql = (body.get("sql") or "").strip().rstrip(";").strip()
+            allow_write = bool(body.get("write"))
+            if not sql:
+                return self._json({"error": "empty query"}, 400)
+            is_write = _sql_is_write(sql)
+            t0 = time.time()
+            try:
+                if is_write:
+                    if not allow_write:
+                        return self._json({"error": "Read-only mode — enable “Allow writes” to run this statement."}, 400)
+                    guard = _sql_write_guard(sql)
+                    if guard:
+                        return self._json({"error": guard}, 400)
+                    conn = get_db()
+                    cur = conn.execute(sql)
+                    conn.commit()
+                    ms = round((time.time() - t0) * 1000)
+                    msg = (f"OK — {cur.rowcount} row(s) affected" if cur.rowcount is not None and cur.rowcount >= 0
+                           else "OK — statement executed")
+                    return self._json({"write": True, "rowcount": cur.rowcount, "ms": ms, "message": msg})
+                conn = _sql_readonly_conn()
+                cur = conn.execute(sql)
+                cols = [d[0] for d in cur.description] if cur.description else []
+                rows = cur.fetchmany(_SQL_ROW_CAP + 1)
+                truncated = len(rows) > _SQL_ROW_CAP
+                out = [[(None if v is None else (v if isinstance(v, (int, float, str)) else str(v)))
+                        for v in row] for row in rows[:_SQL_ROW_CAP]]
+                conn.close()
+                ms = round((time.time() - t0) * 1000)
+                return self._json({"columns": cols, "rows": out, "rowcount": len(out),
+                                   "truncated": truncated, "ms": ms})
+            except Exception as e:
+                return self._json({"error": str(e)}, 400)
 
         # GET /api/prefs — read all prefs (or ?key=X for one)
         if method == "GET" and path == "/api/prefs":
