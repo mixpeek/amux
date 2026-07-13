@@ -10999,7 +10999,55 @@ def _pending_input(clean: str):
     return "".join("".join(b.split()) for b in buf)
 
 
-def _verify_submitted(name: str, target: str, text: str, esc_at: float = 0.0) -> bool:
+def _jsonl_user_msg_since(name: str, text: str, since: float) -> bool:
+    """Durable submission evidence: True if `text` already landed in the session's
+    conversation JSONL as a user message stamped AFTER `since`. The pane can lie
+    mid-repaint (resize rewrap; the ~1s gap before the spinner paints after a
+    submit), but the JSONL append happens at submission and cannot. The `since`
+    gate (message's own timestamp, not file mtime) keeps an OLDER identical text
+    — e.g. a second "continue" minutes later — from counting as this send."""
+    try:
+        p = _session_jsonl_path(name)
+        if not p or not p.is_file():
+            return False
+        needle = text.strip()
+        if not needle:
+            return False
+        size = p.stat().st_size
+        with open(p, "rb") as f:
+            f.seek(max(0, size - 262144))
+            tail = f.read().decode("utf-8", errors="replace")
+        import datetime as _dt
+        for line in reversed(tail.splitlines()):
+            if needle[:40] not in line and json.dumps(needle[:40])[1:-1] not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            m = d.get("message") or {}
+            if (m.get("role") or d.get("type")) != "user":
+                continue
+            content = m.get("content")
+            hit = (isinstance(content, str) and needle in content) or (
+                isinstance(content, list) and any(
+                    isinstance(c, dict) and needle in str(c.get("text", "")) for c in content))
+            if not hit:
+                continue
+            try:
+                ts = _dt.datetime.fromisoformat(
+                    str(d.get("timestamp", "")).replace("Z", "+00:00")).timestamp()
+            except Exception:
+                continue
+            if ts >= since - 2:   # small slack for clock/rounding
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _verify_submitted(name: str, target: str, text: str, esc_at: float = 0.0,
+                      sent_at: float = 0.0) -> bool:
     """Confirm a just-sent message actually submitted. `send-keys` succeeding only
     means the keystrokes reached the pane — an autocomplete picker (opened by an
     @mention) can swallow the Enter, leaving the message unsent in the input box.
@@ -11019,7 +11067,8 @@ def _verify_submitted(name: str, target: str, text: str, esc_at: float = 0.0) ->
     tail_sq = "".join(tail.split())
 
     cleared_once = False
-    for _ in range(4):
+    stuck_looks = 0
+    for _ in range(5):
         time.sleep(0.3)
         raw = tmux_capture(name, 25) or ""
         pend = _pending_input(_STRIP_ANSI.sub("", raw))
@@ -11037,12 +11086,27 @@ def _verify_submitted(name: str, target: str, text: str, esc_at: float = 0.0) ->
         # submit when the turn ends — don't touch it (Escape would interrupt).
         if _detect_claude_status(raw) == "active":
             return True
-        # Idle with our text stuck → the autocomplete picker ate the Enter. Escape
-        # closes the picker WITHOUT selecting an entry (a bare Enter would pick one
-        # and rewrite an @path), then Enter submits the literal text. Any two
-        # Escapes within ~1s read as a double-press and EAT the pending message
-        # (v2.1.205) — so space each retry's Escape ≥1.3s from the previous one,
-        # including the one send_text itself sent before calling us.
+        # ONE stuck look is not proof either: for ~1s after a successful submit
+        # the pane still shows the echoed text and no spinner yet (worse during
+        # a resize repaint), which reads exactly like "stuck + idle". Acting on
+        # that single torn look sent Escape — INTERRUPTING the just-started
+        # turn, which restores the message into the input box — then Enter,
+        # RESUBMITTING it (ts-gke duplicate, 2026-07-13, copies 1.65s apart).
+        stuck_looks += 1
+        if stuck_looks < 2:
+            continue
+        # Durable evidence beats the pane: the conversation JSONL gets the user
+        # message appended at submission. If it's there (stamped after this
+        # send began), it submitted — the pane read is a repaint lie.
+        if sent_at and _jsonl_user_msg_since(name, text, sent_at):
+            return True
+        # Idle with our text genuinely stuck → the autocomplete picker ate the
+        # Enter. Escape closes the picker WITHOUT selecting an entry (a bare
+        # Enter would pick one and rewrite an @path), then Enter submits the
+        # literal text. Any two Escapes within ~1s read as a double-press and
+        # EAT the pending message (v2.1.205) — so space each retry's Escape
+        # ≥1.3s from the previous one, including the one send_text itself sent
+        # before calling us.
         try:
             if esc_at:
                 time.sleep(max(0.0, 1.3 - (time.monotonic() - esc_at)))
@@ -11054,9 +11118,14 @@ def _verify_submitted(name: str, target: str, text: str, esc_at: float = 0.0) ->
                            capture_output=True, timeout=5)
         except Exception:
             break
+        stuck_looks = 0
     raw = tmux_capture(name, 25) or ""
     pend = _pending_input(_STRIP_ANSI.sub("", raw))
-    return pend is None or tail_sq not in pend or _detect_claude_status(raw) == "active"
+    if pend is None or tail_sq not in pend or _detect_claude_status(raw) == "active":
+        return True
+    # Last resort before reporting "not submitted" (which makes callers re-send):
+    # trust the durable JSONL record over a possibly-torn final frame.
+    return bool(sent_at and _jsonl_user_msg_since(name, text, sent_at))
 
 
 def send_text(name: str, text: str) -> tuple[bool, str]:
@@ -11164,6 +11233,7 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
                 _steer_enqueue(name, text)
                 return True, "queued (steering) until turn end — @/slash needs the picker closed"
             _esc_at = 0.0
+            _sent_at = time.time()   # JSONL evidence gate: only messages stamped after this count
             if not _generating:
                 # Close any picker left open by a previous attempt, so the C-u below
                 # actually reaches the input. Without this a retry appends and the
@@ -11227,7 +11297,7 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
             # send-keys succeeding only means the keystrokes reached the pane. Confirm
             # the input actually cleared; otherwise report failure so the caller keeps
             # the message queued rather than treating a drop as sent.
-            if _verify_submitted(name, t, text, _esc_at):
+            if _verify_submitted(name, t, text, _esc_at, _sent_at):
                 return True, "sent"
             return False, "not submitted (autocomplete popup ate the Enter?)"
         except subprocess.CalledProcessError as e:
