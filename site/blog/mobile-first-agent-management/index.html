@@ -41,7 +41,25 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/blog/">Blog</a> <span class="sep">›</span> <span>Mobile-First AI Agent Management</span></div>
     <h1>Mobile-First Agent Management</h1>
 <p class="subtitle">Your agents work 24/7. You should be able to check on them from anywhere.</p>
-<p>amux's PWA works on iOS and Android. Check agent status, peek at output, send commands, and manage the board — all from your phone. Offline support means queued commands replay when you reconnect.</p>
+<p>amux is the remote control for your AI engineering team. Think of it like GitHub Mobile or Tailscale — the work happens on your machine; amux puts the dashboard in your pocket. Monitor live Claude Code sessions, approve pending actions, peek at terminal output, steer agents, and recover problems from your iPhone or Android — without SSH, without going back to your desk.</p>
+
+<p>Two ways to access it: install the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">native iOS app</a> from the App Store, or open your amux dashboard URL in Safari/Chrome and add it to your home screen as a PWA. Offline support means queued commands replay when you reconnect.</p>
+
+<p style="margin:1rem 0">
+  <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">
+    <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83" alt="Download on the App Store" height="40"/>
+  </a>
+</p>
+
+<h2>What you can do from your phone</h2>
+<ul>
+<li>Check overnight agent runs before getting out of bed</li>
+<li>Approve permission prompts so an agent doesn't stall for hours</li>
+<li>See exactly why an agent stopped</li>
+<li>Assign a new task to an idle session</li>
+<li>Peek into live terminal output</li>
+<li>Keep coding while commuting or traveling</li>
+</ul>
 <div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
