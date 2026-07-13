@@ -497,7 +497,7 @@ cmd_send() {
   # Check for --keys flag
   if [[ "${1:-}" == "--keys" ]]; then
     shift
-    tmux send-keys -t "=$tname" "$@"
+    tmux send-keys -t "=$tname:" "$@"
     echo "${GREEN}sent keys${RESET} to $name"
   else
     local text="$*"
@@ -505,9 +505,9 @@ cmd_send() {
     # Send text literally (-l), then Enter as a separate key after a short
     # delay. Claude Code's TUI buffers/debounces input; sending text and Enter
     # in one send-keys call lets Enter arrive before the text is processed.
-    tmux send-keys -t "=$tname" -l "$text"
+    tmux send-keys -t "=$tname:" -l "$text"
     sleep 0.05
-    tmux send-keys -t "=$tname" Enter
+    tmux send-keys -t "=$tname:" Enter
     echo "${GREEN}sent${RESET} to $name: $text"
   fi
 }
