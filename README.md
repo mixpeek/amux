@@ -62,7 +62,7 @@ amux serve   # → https://localhost:8822
 | Claude Code crashes at 3am from context compaction | **[Self-healing watchdog](https://amux.io/features/self-healing/)** — auto-compacts, restarts, replays last message |
 | Can't monitor 10+ sessions from one place | **[Web dashboard](https://amux.io/features/web-dashboard/)** — live status, token spend, peek into any session |
 | Agents duplicate work on the same task | **Kanban board** with atomic task claiming (SQLite CAS) |
-| No way to manage agents from your phone | **[Mobile PWA](https://amux.io/features/mobile-pwa/)** + native iOS app — works anywhere, offline support |
+| No remote control for your agent fleet | **[Remote control iOS app](https://amux.io/features/mobile-pwa/)** ([App Store](https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435)) + PWA — monitor, steer, and recover agents from anywhere |
 | Agents can't coordinate with each other | **[REST API orchestration](https://amux.io/features/agent-coordination/)** — send messages, peek output, claim tasks between sessions |
 | Agents operate in a vacuum — no shared context | **Channels** — 1:1 inter-session chat with @mentions so agents can coordinate in real time |
 | No persistent knowledge between sessions | **Notes** — markdown documents agents can read, write, and reference across sessions |
@@ -84,8 +84,8 @@ amux serve   # → https://localhost:8822
 
 ### Dashboard & mobile
 - **Web dashboard** — session cards, live terminal peek, file explorer with markdown editor, search across all output. [Learn more →](https://amux.io/features/web-dashboard/)
-- **Mobile PWA** — installable on iOS/Android, Background Sync replays commands on reconnect. [Learn more →](https://amux.io/features/mobile-pwa/)
-- **Native iOS app** — [available on the App Store](https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435)
+- **Mobile PWA** — installable on iOS/Android, offline action queue via Background Sync. [Learn more →](https://amux.io/features/mobile-pwa/)
+- **iOS app** — [Download on the App Store](https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435) — the remote control for your AI engineering team. Monitor sessions, approve actions, steer agents from anywhere.
 
 ### Built-in tools
 - **Notes** — full markdown notes system with rich editor, find-in-page, and inter-session sharing
