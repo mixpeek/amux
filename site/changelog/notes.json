@@ -1,5 +1,77 @@
 [
   {
+    "hash": "502e9ebf20e5d4fa837003632800e877120de5ad",
+    "short": "502e9eb",
+    "title": "Tab order stays stable when you show or hide tabs",
+    "date": "2026-07-13",
+    "type": "fix",
+    "tags": ["tabs", "ux", "dashboard"],
+    "description": "Hiding and re-showing a tab (Proxies, Skills, Database, etc.) no longer creates a duplicate. Tab positions are deduplicated on update so your layout stays exactly where you left it."
+  },
+  {
+    "hash": "eb3f87105f7a9a44312e834b1eaa42e74bd70386",
+    "short": "eb3f871",
+    "title": "Database tab — full SQL workbench for your agent data",
+    "date": "2026-07-13",
+    "type": "feat",
+    "tags": ["database", "sql", "dashboard", "devtools"],
+    "description": "The SQL tab is now the Database tab with a full workbench UX: schema browser on the left, query editor, and a formatted results table. Query your sessions, board issues, schedules, CRM, and notes directly with SQL."
+  },
+  {
+    "hash": "56f8fbc27458df731025f37ee18f31ef3d567a4b",
+    "short": "56f8fbc",
+    "title": "SQL workbench — query amux.db directly from the dashboard",
+    "date": "2026-07-12",
+    "type": "feat",
+    "tags": ["database", "sql", "dashboard"],
+    "description": "New SQL tab connects directly to amux.db (SQLite). Run any read query against sessions, board_issues, notes, schedules, cal_events, and crm_contacts — results appear instantly in the dashboard."
+  },
+  {
+    "hash": "b1cbcf610c22d3de195b81ca6485950d46997f23",
+    "short": "b1cbcf6",
+    "title": "Terminal tab fills the full viewport with a clean toolbar",
+    "date": "2026-07-12",
+    "type": "feat",
+    "tags": ["terminal", "ux", "dashboard"],
+    "description": "The terminal tab now expands to fill your entire screen — no more wasted space. A new toolbar above shows the session name, status indicator, and quick-action buttons, leaving the full viewport for output."
+  },
+  {
+    "hash": "60b86bef28c82c6c2871cdaa5100e26da8d936b6",
+    "short": "60b86be",
+    "title": "Skills tab — model-agnostic slash commands sync across all sessions",
+    "date": "2026-07-12",
+    "type": "feat",
+    "tags": ["skills", "dashboard", "agents", "multi-provider"],
+    "description": "The Skills tab (now its own dedicated dashboard tab) shows all your custom slash commands. Skills are model-agnostic: the same /commit, /review, or /deploy skill works whether the session runs Claude Code, Codex CLI, or Gemini CLI. Cross-provider sync means new sessions pick them up automatically."
+  },
+  {
+    "hash": "8a9061df71ca6344957048d996c1a91577ed0540",
+    "short": "8a9061d",
+    "title": "Steering tab shows a history of steers you've delivered",
+    "date": "2026-07-12",
+    "type": "feat",
+    "tags": ["steering", "ux", "agents"],
+    "description": "The steering panel now shows every instruction you've sent to that session, newest first. Scroll back to see the full steering history without digging through transcript logs."
+  },
+  {
+    "hash": "a46390e5e0066723b0e1cbb006a6f0596f367d36",
+    "short": "a46390e",
+    "title": "Peek lookup uses your session's provider on its fastest model",
+    "date": "2026-07-12",
+    "type": "feat",
+    "tags": ["peek", "lookup", "agents", "multi-provider"],
+    "description": "The peek lookup feature (quick AI answer about a session's output) now automatically uses the same provider as the session and routes to that provider's fastest model, so lookups are as quick as possible without switching context."
+  },
+  {
+    "hash": "f03fa0e4e08cf2d4018a45edc0f3781ac692c836",
+    "short": "f03fa0e",
+    "title": "Send-keys lands on the active pane in tmux 3.7b",
+    "date": "2026-07-12",
+    "type": "fix",
+    "tags": ["tmux", "send", "compatibility"],
+    "description": "tmux 3.7b changed how send-keys targets panes when no pane is specified. amux now always targets the session's active pane explicitly, so amux send and all send-keys operations work correctly on tmux 3.7b+."
+  },
+  {
     "hash": "9ae0ee1c294eb94b3e958629b71289b4a5fc273a",
     "short": "9ae0ee1",
     "title": "Steering queue waits for the agent to settle before delivering",
