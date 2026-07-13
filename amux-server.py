@@ -18465,7 +18465,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <summary style="cursor:pointer;font-size:0.78rem;font-weight:600;color:var(--dim);padding:8px 0 4px;list-style:none;display:flex;align-items:center;gap:5px;">
         <span style="font-size:0.6rem;">&#x25B6;</span> Recent Runs
       </summary>
-      <div id="peek-schedules-runs"></div>
+      <div id="peek-schedules-runs" style="max-height:38vh;overflow-y:auto;-webkit-overflow-scrolling:touch;"></div>
     </details>
   </div>
   <!-- Notes panel -->
@@ -23576,7 +23576,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.107';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.108';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -41005,7 +41005,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.107';
+const CACHE = 'amux-v0.9.108';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
