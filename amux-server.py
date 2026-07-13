@@ -21127,9 +21127,13 @@ let tabOrder = (function() {
     const s = localStorage.getItem('amux_tab_order');
     if (s) {
       const saved = JSON.parse(s);
-      // Merge: keep saved order, append any new tabs not yet in saved
+      // Merge: keep saved order, append any new tabs not yet in saved.
+      // DEDUPE (new Set): a corrupted saved order with a repeated id — e.g.
+      // 'browser' twice from an earlier reorder bug — otherwise rendered two
+      // checkboxes for that tab and made hide/show behave inconsistently, and
+      // re-saved itself on every reorder. Set() heals it on load.
       const all = ALL_TABS.map(t => t.id);
-      return [...saved.filter(id => all.includes(id)), ...all.filter(id => !saved.includes(id))];
+      return [...new Set([...saved.filter(id => all.includes(id)), ...all.filter(id => !saved.includes(id))])];
     }
   } catch(e) {}
   return ALL_TABS.map(t => t.id);
@@ -21140,6 +21144,7 @@ function _saveHiddenTabs() {
 }
 
 function _saveTabOrder() {
+  tabOrder = [...new Set(tabOrder)];   // never persist duplicates
   localStorage.setItem('amux_tab_order', JSON.stringify(tabOrder));
 }
 
@@ -21159,6 +21164,7 @@ function _applyTabVisibility() {
 }
 
 let _tabCustomizerOpen = false;
+let _tabMenuSortable = null;
 
 function toggleTabCustomizer() {
   _tabCustomizerOpen = !_tabCustomizerOpen;
@@ -21207,15 +21213,19 @@ function _renderTabCustomizerMenu() {
       <button onclick="deleteLayoutPreset('${p.name.replace(/'/g,"\\'")}')" title="Delete" style="background:none;border:none;cursor:pointer;color:var(--dim);font-size:0.72rem;padding:2px;">&times;</button>
     </div>`).join('');
   }).catch(()=>{});
-  // Init Sortable on menu for drag-to-reorder (only on tab items, not preset section)
+  // Init Sortable on menu for drag-to-reorder (only on tab items, not preset
+  // section). Destroy any prior instance first — the menu re-renders on every
+  // toggle, and stacking a fresh Sortable each time left multiple drag handlers
+  // bound to the same node.
   if (window.Sortable) {
-    Sortable.create(menu, {
+    if (_tabMenuSortable) { try { _tabMenuSortable.destroy(); } catch(e) {} }
+    _tabMenuSortable = Sortable.create(menu, {
       handle: '.tab-drag-handle',
       draggable: '.tab-customizer-item',
       animation: 100,
       onEnd(evt) {
         const ids = [...menu.querySelectorAll('.tab-customizer-item[data-tab-id]')].map(el => el.dataset.tabId);
-        tabOrder = ids;
+        tabOrder = [...new Set(ids)];
         _saveTabOrder();
         _applyTabVisibility();
       }
@@ -23566,7 +23576,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.106';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.107';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -34459,6 +34469,7 @@ async function _runDeltaSync() {
 }
 // Run delta sync shortly after startup (after queue replay window)
 if (!window._peekEmbed) setTimeout(_runDeltaSync, 2500);
+_saveTabOrder();   // persist the deduped order once, healing any stored duplicate
 _applyTabVisibility();
 
 // ═══════ SSE — real-time push updates ═══════
@@ -40994,7 +41005,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.106';
+const CACHE = 'amux-v0.9.107';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
