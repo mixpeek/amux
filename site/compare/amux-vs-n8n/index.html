@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs n8n — Workflow Automation vs AI Agent Orchestration (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs n8n: these tools serve different jobs. n8n connects SaaS APIs in visual workflows. amux orchestrates AI coding agents (Claude Code, Codex, Gemini CLI) that write and ship software. Honest side-by-side comparison 2026.">
+  <meta name="keywords" content="amux vs n8n, n8n alternative AI agents, workflow automation vs agent orchestration, n8n vs AI coding agent manager, open source workflow automation AI agents 2026, n8n ai coding, amux workflow">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-n8n/">
+  <meta property="og:title" content="amux vs n8n — Workflow Automation vs AI Agent Orchestration (2026)">
+  <meta property="og:description" content="n8n connects APIs in visual workflows. amux runs and monitors a fleet of AI coding agents. They solve different problems — here is when to use each.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-n8n/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux vs n8n — Workflow Automation vs AI Agent Orchestration (2026)">
+  <meta name="twitter:description" content="n8n connects SaaS APIs visually. amux runs AI coding agents that write software. Different jobs, different tools.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"},
+      {"@type": "ListItem", "position": 3, "name": "amux vs n8n", "item": "https://amux.io/compare/amux-vs-n8n/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux vs n8n — Workflow Automation vs AI Agent Orchestration",
+    "description": "n8n connects SaaS APIs and webhooks in a visual node editor. amux orchestrates AI coding agents (Claude Code, Codex, Gemini CLI) that write, test, and ship software. They serve different jobs — here is when to use each, and how to compose them.",
+    "url": "https://amux.io/compare/amux-vs-n8n/",
+    "datePublished": "2026-07-13",
+    "dateModified": "2026-07-13",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
+    "image": "https://amux.io/og-image.png"
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Is amux a replacement for n8n?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. amux and n8n solve fundamentally different problems. n8n connects SaaS APIs, webhooks, and data pipelines in a visual node editor — think 'if Stripe payment → update Airtable → notify Slack'. amux orchestrates AI coding agents (Claude Code, Codex, Gemini CLI) that write, test, and ship software. If you want to automate SaaS data flows without writing code, n8n is the right tool. If you want to run and monitor a fleet of coding agents from your phone, use amux."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I use amux and n8n together?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes, they compose well. A common pattern: amux's scheduler triggers an agent every morning to ship a feature or run a code review. That agent posts a result to an amux board issue. A separate n8n workflow polls the board API, reads completed issues, and posts a summary to Slack or Notion. amux handles the coding-agent orchestration side; n8n handles the downstream data routing."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux have visual workflow editing like n8n?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. amux does not have a visual node editor for connecting APIs. amux is configured via a dashboard and REST API — you register sessions, create schedules (via the Scheduler tab), and define automations as Markdown SOPs in the Automations tab. For visual drag-and-drop API flows, n8n is the right tool."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does n8n run AI coding agents like Claude Code?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "n8n can call AI APIs (OpenAI, Anthropic) as nodes in a workflow — useful for text summarization, classification, or generating content. But it does not launch and manage persistent AI coding agent sessions (Claude Code, Codex CLI, Gemini CLI) that run interactively in a terminal, write files, run tests, and submit PRs. That is what amux does: orchestrate the full lifecycle of software-writing AI agents."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is cheaper — amux or n8n?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux is free and open source (MIT + Commons Clause) for self-hosting with no limits on sessions, board issues, notes, CRM, or schedules. The only paid piece is the tunnel relay (amux cloud, $20/month or $200/year). n8n is also open source and free to self-host. n8n cloud starts at approximately $24/month for 2,500 workflow executions. Both tools are cheap to run locally; both add cost if you want a hosted service."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs n8n</span></div>
+
+    <h1>amux vs n8n</h1>
+    <p class="subtitle">n8n is the leading open-source workflow automation platform — connect SaaS APIs, webhooks, and data pipelines in a visual editor. amux is an open-source control plane for AI coding agents — run and monitor dozens of Claude Code, Codex, and Gemini CLI sessions from your phone. These tools serve different jobs. Here is the honest comparison. <em>Updated July 2026.</em></p>
+
+    <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;border-left:3px solid var(--blue)">
+      <strong>Quick answer:</strong> amux and n8n solve different problems. n8n connects APIs and SaaS tools in visual workflows — no AI agents, no coding. amux orchestrates AI coding agents (Claude Code, Codex, Gemini CLI) that write, test, and ship software. If you need to automate SaaS data flows, use n8n. If you need to run and monitor a fleet of coding agents, use amux. The tools compose well together.
+    </div>
+
+    <h2>What Each Tool Is For</h2>
+
+    <p><strong>n8n</strong> is a visual workflow automation platform. You connect nodes in a drag-and-drop editor — "when a Stripe webhook fires, look up the customer in HubSpot, update their status, and post a Slack message." n8n handles triggers (webhooks, schedules, polling), transformations (code nodes, built-in data manipulation), and destinations (500+ integrations). The target user is often a non-developer who needs to automate repetitive data flows between SaaS tools without writing a full application. n8n is self-hostable and open source (fair-code license); n8n cloud is a hosted version. It has ~90k GitHub stars and strong adoption among operations teams, RevOps, and no-code/low-code practitioners.</p>
+
+    <p><strong>amux</strong> is a control plane for AI coding agents. You register software projects, start Claude Code (or Codex, Gemini CLI) sessions that write and commit code, monitor their progress from a web dashboard or phone, and let the self-healing watchdog restart agents that get stuck. amux's built-in kanban, notes, CRM, email (Gmail API), browser automation, and scheduler are coordination primitives for a team of AI agents — not a visual pipeline editor. The target user is a developer or engineering team that wants to run multiple AI coding sessions in parallel without babysitting each one. amux is fully open source (MIT + Commons Clause), a single Python file, and zero external dependencies.</p>
+
+    <h2>Side-by-Side Comparison</h2>
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Feature</th>
+            <th style="padding:10px 16px;text-align:center;">amux</th>
+            <th style="padding:10px 16px;text-align:center;">n8n</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;"><strong>Primary use case</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Orchestrate AI coding agents (Claude Code, Codex, Gemini CLI)</td>
+            <td style="padding:10px 16px;text-align:center;">Connect SaaS APIs and webhooks in visual workflows</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;"><strong>Who it's for</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Developers, engineering teams, indie founders building with AI agents</td>
+            <td style="padding:10px 16px;text-align:center;">Operations, RevOps, no-code/low-code practitioners automating data flows</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;"><strong>Programming interface</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Dashboard, REST API, CLI (<code>amux start</code>, <code>amux board</code>)</td>
+            <td style="padding:10px 16px;text-align:center;">Visual node editor + code nodes (JavaScript/Python)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;"><strong>AI coding agent execution</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Yes — full session lifecycle (start, monitor, self-heal, steer)</td>
+            <td style="padding:10px 16px;text-align:center;">No — can call AI APIs as nodes, but no persistent coding agent sessions</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;"><strong>Self-healing / watchdog</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Yes — detects crashes, context exhaustion, stuck agents, auto-restarts</td>
+            <td style="padding:10px 16px;text-align:center;">No — workflow errors trigger alerts or retries, not agent restart logic</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;"><strong>Web dashboard</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Yes — session cards, peek panel, board, CRM, notes, scheduler</td>
+            <td style="padding:10px 16px;text-align:center;">Yes — visual workflow editor, execution log, credential manager</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;"><strong>Mobile app</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Yes — native iOS app (App Store) + PWA, manage agents from phone</td>
+            <td style="padding:10px 16px;text-align:center;">No dedicated mobile app (mobile-responsive web UI)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;"><strong>Kanban / task tracking</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Yes — built-in board with todo/doing/done, session-tagged issues</td>
+            <td style="padding:10px 16px;text-align:center;">No — external integrations to Linear/Notion/Jira via nodes</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;"><strong>Scheduling</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Yes — natural language + 5-field cron, skip-next, phone monitoring</td>
+            <td style="padding:10px 16px;text-align:center;">Yes — cron trigger node, interval, webhook triggers</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;"><strong>SaaS integrations</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Limited — Gmail API (email), browser automation, REST webhooks</td>
+            <td style="padding:10px 16px;text-align:center;">500+ integrations — Slack, Stripe, HubSpot, Airtable, Notion, etc.</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;"><strong>AI model support</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Claude Code, OpenAI Codex, Gemini CLI, any tmux-based agent</td>
+            <td style="padding:10px 16px;text-align:center;">OpenAI, Anthropic, Google, Hugging Face as API call nodes</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;"><strong>Pricing</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Free (OSS). Tunnel relay: $20/mo or $200/yr</td>
+            <td style="padding:10px 16px;text-align:center;">Free (self-host). n8n cloud: ~$24/mo for 2,500 executions</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;"><strong>Open source</strong></td>
+            <td style="padding:10px 16px;text-align:center;">MIT + Commons Clause — single Python file, zero deps</td>
+            <td style="padding:10px 16px;text-align:center;">Sustainable Use License (source available, not OSI-approved)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Use Both Together — They Compose</h2>
+    <p>amux and n8n are not mutually exclusive. They sit at different layers and can be chained into a powerful pipeline:</p>
+    <ul>
+      <li><strong>amux handles the coding work.</strong> Your AI agents write features, run tests, and commit code. The amux board tracks what each agent did. The amux scheduler fires agents every morning without you touching a keyboard.</li>
+      <li><strong>n8n handles the downstream data routing.</strong> An n8n workflow polls the amux board API for completed issues, filters the ones tagged <code>ready-for-review</code>, and posts a Slack summary. Another n8n flow reads the amux notes API and pushes research notes into a Notion database.</li>
+    </ul>
+    <p>Concrete example — a daily agent report pipeline:</p>
+    <pre><code># amux: agents run all night, board issues accumulate
+# n8n: every morning at 9am
+GET https://localhost:8822/api/board?status=done&amp;since=yesterday
+  → filter issues tagged "shipped"
+  → post summary to Slack #dev-daily
+  → create Notion page with full issue list</code></pre>
+    <p>amux's <a href="/guides/scheduling-ai-agents/">scheduler</a> and <a href="/guides/ai-agent-automations/">automations</a> handle everything on the coding-agent side. n8n handles anything that needs 500+ SaaS connectors and a visual pipeline.</p>
+
+    <h2>When to Choose amux</h2>
+    <ul>
+      <li>You want to run Claude Code, Codex CLI, or Gemini CLI in parallel across multiple projects</li>
+      <li>You need a self-healing watchdog that restarts stuck AI coding sessions automatically</li>
+      <li>You want to manage AI agent sessions from your phone (iOS app or mobile PWA)</li>
+      <li>You need built-in CRM, notes, email, and a kanban board for an AI engineering team</li>
+      <li>You are an indie founder or small team building software autonomously with AI agents</li>
+      <li>You want a single Python file you can read, audit, and modify without a complex platform</li>
+    </ul>
+
+    <h2>When to Choose n8n</h2>
+    <ul>
+      <li>You need to connect Stripe, HubSpot, Airtable, Slack, Notion, or other SaaS tools without writing a full application</li>
+      <li>You want a visual drag-and-drop editor for building data flow pipelines</li>
+      <li>Your automation involves non-technical team members who need to build and manage workflows</li>
+      <li>You need 500+ pre-built integrations without hand-coding API calls</li>
+      <li>You are automating data ETL, customer onboarding flows, or RevOps pipelines rather than software development</li>
+      <li>You need enterprise features like role-based access control, SSO, and audit logging</li>
+    </ul>
+
+    <h2>Frequently Asked Questions</h2>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Is amux a replacement for n8n?</summary>
+      <p style="margin:0.8rem 0 0;">No. amux and n8n solve fundamentally different problems. n8n connects SaaS APIs, webhooks, and data pipelines in a visual node editor. amux orchestrates AI coding agents (Claude Code, Codex, Gemini CLI) that write, test, and ship software. If you want to automate SaaS data flows without writing code, n8n is the right tool. If you want to run and monitor a fleet of coding agents from your phone, use amux.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Can I use amux and n8n together?</summary>
+      <p style="margin:0.8rem 0 0;">Yes, they compose well. A common pattern: amux's scheduler fires coding agents every morning. The agents ship features and update board issues. An n8n workflow polls the amux board API, reads completed issues, and posts a summary to Slack or Notion. amux handles the coding side; n8n handles downstream data routing and SaaS notifications.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Does amux have visual workflow editing like n8n?</summary>
+      <p style="margin:0.8rem 0 0;">No. amux does not have a visual node editor. amux is configured via a dashboard, REST API, and CLI — you register sessions, create schedules, and define automations as Markdown SOPs. For visual drag-and-drop API flow editing, n8n is the right choice.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Does n8n run AI coding agents like Claude Code?</summary>
+      <p style="margin:0.8rem 0 0;">n8n can call AI APIs (OpenAI, Anthropic) as nodes — useful for text summarization, classification, or content generation. But it does not launch and manage persistent AI coding agent sessions (Claude Code, Codex CLI, Gemini CLI) that run interactively in a terminal, write files, run tests, and submit PRs. That is what amux does.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What is cheaper — amux or n8n?</summary>
+      <p style="margin:0.8rem 0 0;">Both are free to self-host. amux's only paid piece is the tunnel relay ($20/month or $200/year). n8n cloud starts at approximately $24/month for 2,500 workflow executions. For pure local use, both cost nothing beyond the machine they run on.</p>
+    </details>
+
+    <h2>How amux Fits Into the Bigger Picture</h2>
+    <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler. Self-healing, single Python file, zero external dependencies, MIT licensed.</p>
+    <p>If you landed here looking for workflow automation, n8n is probably what you want. If you landed here because you are building software with AI coding agents and need a way to orchestrate, monitor, and steer them at scale, that is amux. Read <a href="/guides/getting-started/">the getting-started guide</a> or browse <a href="/guides/ai-agent-automations/">the automations guide</a> to see what amux's built-in automation layer can do.</p>
+
+    <div class="cta-box">
+      <h3>Run your AI engineering team — not just your SaaS flows</h3>
+      <p>amux is an open-source control plane for AI agent teams. Kanban, CRM, email, scheduler, browser automation, and self-healing watchdog — all in a single Python file. Claude Code, Codex, Gemini CLI. Free to use, MIT licensed.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <a class="btn" href="/guides/getting-started/" style="margin-left:0.75rem;">Getting started →</a>
+    </div>
+
+    <p style="margin-top:2rem;"><strong>Related:</strong>
+      <a href="/guides/ai-agent-automations/">AI agent automations</a> ·
+      <a href="/features/agent-coordination/">Agent coordination</a> ·
+      <a href="/guides/scheduling-ai-agents/">Scheduling AI agents</a> ·
+      <a href="/compare/">All comparisons →</a>
+    </p>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-codex/">vs Codex</a></li>
+            <li><a href="/compare/amux-vs-jules/">vs Jules</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/pricing/">Pricing</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
