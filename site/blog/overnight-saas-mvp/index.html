@@ -59,7 +59,15 @@ amux register auth-agent --dir ~/mvp --yolo     # Auth flow
 amux register frontend-agent --dir ~/mvp --yolo # Pages + components
 amux register deploy-agent --dir ~/mvp --yolo   # Vercel config + CI</code></pre>
 <h2>Phase 3: Overnight Run (8-12 hours, agents)</h2>
-<p>This is the part where you sleep. amux's self-healing watchdog keeps agents running. By morning:</p>
+<p>This is the part where you sleep. amux's self-healing watchdog keeps agents running. The <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a> is your remote control if you want to check in — see which agents are active, peek at terminal output, and approve any stuck permission prompts before they stall for hours.</p>
+
+<p style="margin:1rem 0">
+  <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">
+    <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83" alt="Download on the App Store" height="40"/>
+  </a>
+</p>
+
+<p>By morning:</p>
 <ul>
 <li>Database schema is migrated and seeded</li>
 <li>API routes are implemented and tested</li>
