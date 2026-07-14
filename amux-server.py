@@ -46303,10 +46303,17 @@ return output
                 from_acct = body.get("from", "").strip()
                 if not to or not subject or not message:
                     return self._json({"error": "to, subject, and body are required"}, 400)
-                if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', to):
-                    return self._json({"error": f"invalid email address: {to}"}, 400)
-                if cc and not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', cc):
-                    return self._json({"error": f"invalid cc address: {cc}"}, 400)
+                # to/cc may be comma-separated lists (a meeting's attendees belong
+                # on ONE email, not split into per-recipient sends). The Gmail path
+                # sets msg["To"]/msg["Cc"] to these strings verbatim and Gmail fans
+                # out to every address, so validate each part rather than the whole.
+                _addr_re = r'^[^@\s]+@[^@\s]+\.[^@\s]+$'
+                bad_to = [a.strip() for a in to.split(",") if a.strip() and not re.match(_addr_re, a.strip())]
+                if bad_to:
+                    return self._json({"error": f"invalid email address: {', '.join(bad_to)}"}, 400)
+                bad_cc = [a.strip() for a in cc.split(",") if a.strip() and not re.match(_addr_re, a.strip())]
+                if bad_cc:
+                    return self._json({"error": f"invalid cc address: {', '.join(bad_cc)}"}, 400)
                 # Prefer the Gmail API when sending from a connected Gmail account:
                 # robust delivery, no AppleScript, and the real Gmail signature.
                 # Falls through to Mail.app/AppleScript for non-Gmail accounts.
