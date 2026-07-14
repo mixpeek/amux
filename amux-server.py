@@ -4497,7 +4497,7 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
             age = max(0, int((now_t - m.get("queued_at", now_t)) / 60))
             parts.append(f"--- [{i}/{len(batch)}] queued {age}m ago ---\n{m['text']}")
         combined = "\n\n".join(parts)
-    ok, err = send_text(name, combined)
+    ok, err = send_text(name, combined, _from_steering=True)
     if ok:
         ids = {m["id"] for m in batch}
         with _steering_lock:
@@ -11420,7 +11420,7 @@ def _verify_submitted(name: str, target: str, text: str, esc_at: float = 0.0,
     return bool(sent_at and _jsonl_user_msg_since(name, text, sent_at))
 
 
-def send_text(name: str, text: str) -> tuple[bool, str]:
+def send_text(name: str, text: str, _from_steering: bool = False) -> tuple[bool, str]:
     iterm2_id = _session_iterm2_id(name)
     if iterm2_id:
         return _iterm2_send(iterm2_id, text)
@@ -11522,6 +11522,17 @@ def send_text(name: str, text: str) -> tuple[bool, str]:
                 # queue instead: the fast tick delivers it at the turn
                 # boundary through this same function's IDLE path, which does
                 # handle pickers.
+                if _from_steering:
+                    # We ARE the steering delivery, already at what looked like a
+                    # turn boundary — the session just started generating in the
+                    # race between the settle capture and this send. Re-queuing
+                    # here would (a) wrap the batch in its own "You have N queued
+                    # messages" header, compounding on every retry, and (b) return
+                    # ok=True, so the caller DRAINS the queue and writes "delivered"
+                    # history for messages that were never delivered — a write that
+                    # reports success and did nothing. Report the truth instead: the
+                    # queue stays intact and retries at the next real boundary.
+                    return False, "session started generating — retry at next turn boundary"
                 _steer_enqueue(name, text)
                 return True, "queued (steering) until turn end — @/slash needs the picker closed"
             _esc_at = 0.0
@@ -18753,13 +18764,20 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <span id="peek-steering-count" style="flex:1;font-size:0.82rem;color:var(--dim);align-self:center;"></span>
       <button class="btn" style="font-size:0.8rem;padding:5px 12px;" onclick="_steeringClearAll()">Clear all</button>
     </div>
-    <div class="peek-tasks-list" id="peek-steering-list" style="gap:6px;flex:none;"></div>
-    <div id="peek-steering-history-wrap" style="margin-top:14px;display:none;">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-        <span style="font-size:0.8rem;font-weight:600;">Sent history</span>
-        <span id="peek-steering-history-count" style="font-size:0.72rem;color:var(--dim);flex:1;"></span>
+    <!-- ONE scroll region for the queue + sent history. The queue list carries
+         flex:none so it sizes to its content; without this wrapper the panel is a
+         fixed-height flex column and a long queue simply overflowed with nowhere
+         to scroll (reported: "I can't scroll inside the tab contents of queued
+         messages"). Standing instructions + the count/clear bar stay pinned. -->
+    <div id="peek-steering-scroll" style="flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;">
+      <div class="peek-tasks-list" id="peek-steering-list" style="gap:6px;flex:none;"></div>
+      <div id="peek-steering-history-wrap" style="margin-top:14px;display:none;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+          <span style="font-size:0.8rem;font-weight:600;">Sent history</span>
+          <span id="peek-steering-history-count" style="font-size:0.72rem;color:var(--dim);flex:1;"></span>
+        </div>
+        <div class="peek-tasks-list" id="peek-steering-history-list" style="gap:6px;flex:none;"></div>
       </div>
-      <div class="peek-tasks-list" id="peek-steering-history-list" style="gap:6px;"></div>
     </div>
   </div>
   <!-- Issues panel (board issues for this session) -->
@@ -23985,7 +24003,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.113';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.114';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -41524,7 +41542,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.113';
+const CACHE = 'amux-v0.9.114';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
