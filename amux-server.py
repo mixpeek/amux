@@ -6804,6 +6804,48 @@ _DEFAULT_STATUSES = [
 # ── Board staleness (in-progress cards on idle sessions) ────────────────────
 _BOARD_STALE_AGE = 1800                # 30 min without an update → stale
 _BOARD_STALE_STATUSES = ("doing", "review")
+
+# ── Stale-DOING detector (AMUX-1707) ────────────────────────────────────────
+# Distinct from _board_item_stale above, which unflags an item whenever its
+# session happens to be generating — so abandoned work hides behind momentary
+# liveness. That is the failure this detector exists to fix: a status field that
+# does not measure the thing it is trusted to measure. `doing` is supposed to
+# mean "a session is actively on this"; at 164 doing across 15 sessions it meant
+# nothing, and the board stopped being a source of truth a reviewer could read.
+#
+# This detector is EVIDENCE-based and liveness-independent: an item is rotting if
+# it has sat in `doing` for N days with no board update AND carries no evidence of
+# progress (commit sha / PR / merge reference) in its description.
+# Deliberately NOT fatal — nothing is auto-flipped. Mass-clearing would destroy
+# information (some stale doings are genuinely half-done and TRUE, and only the
+# owning session can tell which). Make the debris LOUD, let the owner reconcile.
+_STALE_DOING_DAYS = float(os.environ.get("AMUX_STALE_DOING_DAYS", "3"))
+_STALE_DOING_MAX_PER_SESSION = int(os.environ.get("AMUX_MAX_DOING_PER_SESSION", "1"))
+# Evidence that real work landed: a commit sha, a PR/issue link, or merge language.
+_BOARD_EVIDENCE_RE = re.compile(
+    r"\b[0-9a-f]{7,40}\b"                       # commit sha
+    r"|\bPR\s*#\d+|\bpull/\d+|#\d{2,}\b"        # PR / issue reference
+    r"|\bmerged\b|\bdeployed\b|\bshipped\b|\bcommit\b",
+    re.I,
+)
+
+
+def _board_has_evidence(item: dict) -> bool:
+    return bool(_BOARD_EVIDENCE_RE.search(item.get("desc") or ""))
+
+
+def _board_doing_rot(item: dict, now: float | None = None) -> bool:
+    """True when a `doing` item is rotting: N+ days since any board update AND no
+    evidence (commit/PR/merge) in its desc. Independent of session liveness."""
+    if item.get("status") != "doing":
+        return False
+    upd = item.get("updated") or 0
+    if not upd:
+        return False
+    now = now if now is not None else time.time()
+    if (now - upd) < _STALE_DOING_DAYS * 86400:
+        return False
+    return not _board_has_evidence(item)
 _BOARD_NUDGE_COOLDOWN = 6 * 3600       # min seconds between nudges for the same item
 _board_stale_nudged: dict[str, float] = {}   # item_id -> last nudge epoch
 
@@ -6833,6 +6875,61 @@ def _board_item_stale(item: dict, now: float, working_sessions=None) -> bool:
         return not working
     except Exception:
         return False
+
+
+_doing_digest_sent: dict = {}   # (session, YYYYMMDD) -> True
+
+
+def _board_doing_digest():
+    """Daily per-session digest of rotting `doing` items (AMUX-1707).
+
+    Makes the rot LOUD so it can't accumulate silently again — but cheap: one
+    message per session per UTC day, only for sessions that actually have rot,
+    delivered via the steering queue (batched into the session's next turn
+    rather than spending a dedicated full-context turn). Nothing is auto-flipped;
+    only the owning session can tell which of its stale doings are genuinely
+    half-done and TRUE."""
+    try:
+        import datetime as _dt
+        day = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d")
+        now = time.time()
+        rot_by_sess: dict = {}
+        doing_by_sess: dict = {}
+        for i in _load_board(done_limit=0):
+            if i.get("status") != "doing":
+                continue
+            s = i.get("session")
+            if not s:
+                continue
+            doing_by_sess.setdefault(s, []).append(i)
+            if i.get("doing_rot"):
+                rot_by_sess.setdefault(s, []).append(i)
+        for sess, items in sorted(rot_by_sess.items()):
+            if _doing_digest_sent.get((sess, day)):
+                continue
+            if not is_running(sess):
+                continue
+            _doing_digest_sent[(sess, day)] = True
+            held = len(doing_by_sess.get(sess, []))
+            lines = [
+                f"[board reconcile] You hold {held} item(s) in `doing`; "
+                f"{len(items)} are rotting — {int(_STALE_DOING_DAYS)}+ days with no board update "
+                f"and no commit/PR evidence in the description:",
+            ]
+            for i in sorted(items, key=lambda x: x.get("updated") or 0)[:10]:
+                age = int((now - (i.get("updated") or now)) / 86400)
+                lines.append(f"  {i['id']} ({age}d) — {i['title'][:70]}")
+            if len(items) > 10:
+                lines.append(f"  …and {len(items) - 10} more")
+            lines.append(
+                "\nReconcile YOUR lane (only you can tell which are genuinely half-done): for each, "
+                "either evidence it forward (PATCH the desc with the commit/PR, then status=done) "
+                "or demote it (status=todo). Nothing was auto-changed. "
+                f"Full list: GET /api/board/reconcile?session={sess}")
+            _steer_enqueue(sess, "\n".join(lines))
+            slog(f"[board-rot] {sess}: digest queued ({len(items)} rotting of {held} doing)")
+    except Exception as e:
+        slog(f"[board-rot] digest error: {e}")
 
 
 def _board_stale_nudge():
@@ -6956,6 +7053,11 @@ def _load_board(done_limit: int = 100) -> list:
         # for a while) so the UI can surface it; uses the cached session-status view.
         if _board_item_stale(item, _now):
             item["stale"] = True
+        # Rot flag (AMUX-1707): `doing` for N+ days with no evidence of progress.
+        # Liveness-independent — a busy session can't hide its abandoned cards.
+        if _board_doing_rot(item, _now):
+            item["doing_rot"] = True
+            item["doing_rot_days"] = round((_now - (item.get("updated") or _now)) / 86400, 1)
         result.append(item)
     result.sort(key=lambda x: (-x.get("pinned", 0),
                                 0 if x.get("pos", 0) == 0 else -1,
@@ -15323,6 +15425,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     font-weight: 500; font-size: 0.68rem; color: var(--dim);
     background: var(--border); border-radius: 8px; padding: 1px 6px;
   }
+  .board-card-rot { display:inline-block; font-size:0.62rem; font-weight:600; padding:1px 6px; margin-bottom:4px;
+    border-radius:4px; background:rgba(240,160,32,0.16); color:#f0a020; border:1px solid rgba(240,160,32,0.35); }
   .board-card {
     background: var(--card); border: 1px solid var(--border);
     border-radius: 8px; padding: 10px 12px;
@@ -23792,7 +23896,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.110';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.111';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -32025,6 +32129,7 @@ function _renderBoardCard(item) {
   h += '<div class="board-drag-handle" onclick="event.stopPropagation()" title="Drag to move"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="3.5" cy="2.5" r="1.25"/><circle cx="8.5" cy="2.5" r="1.25"/><circle cx="3.5" cy="6" r="1.25"/><circle cx="8.5" cy="6" r="1.25"/><circle cx="3.5" cy="9.5" r="1.25"/><circle cx="8.5" cy="9.5" r="1.25"/></svg></div>';
   h += '<button class="board-pin-btn' + (pinned ? ' active' : '') + '" onclick="event.stopPropagation();_togglePin(\'' + item.id + '\')" title="' + (pinned ? 'Unpin' : 'Pin to top') + '">&#x1F4CC;</button>';
   h += '<div class="board-card-key">' + esc(item.id) + '</div>';
+  if (item.doing_rot) h += '<div class="board-card-rot" title="Rotting: ' + item.doing_rot_days + 'd in doing with no board update and no commit/PR evidence. Evidence it forward or demote it.">&#x26A0; ' + Math.round(item.doing_rot_days) + 'd no evidence</div>';
   h += '<div class="board-card-title">';
   if (boardViewMode === 'session') { const _st = item.status || 'todo'; h += '<span class="board-status-dot" style="background:' + statusStyle(_st).dot + '"></span>'; }
   h += esc(item.title) + '</div>';
@@ -41328,7 +41433,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.110';
+const CACHE = 'amux-v0.9.111';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -43100,6 +43205,51 @@ class CCHandler(BaseHTTPRequestHandler):
             _remove_skill_from_providers(name)
             return self._json({"ok": True})
 
+        # GET /api/board/reconcile[?session=X] — the stale-doing reconcile view.
+        # Per-session by default (each session reconciles its OWN lane — only the
+        # owner can evidence an item); ?all=1 gives the fleet roll-up.
+        if method == "GET" and path == "/api/board/reconcile":
+            sess = qs.get("session", [""])[0]
+            want_all = qs.get("all", ["0"])[0] == "1"
+            now_r = time.time()
+            items = [i for i in _load_board(done_limit=0)
+                     if i.get("status") == "doing" and i.get("deleted") is None]
+            by_sess: dict = {}
+            for i in items:
+                by_sess.setdefault(i.get("session") or "(unassigned)", []).append(i)
+            def _pack(lst):
+                rot = [x for x in lst if x.get("doing_rot")]
+                return {
+                    "doing": len(lst),
+                    "rotting": len(rot),
+                    "over_limit": max(0, len(lst) - _STALE_DOING_MAX_PER_SESSION),
+                    "items": [{
+                        "id": x["id"], "title": x["title"],
+                        "days_since_update": round((now_r - (x.get("updated") or now_r)) / 86400, 1),
+                        "has_evidence": _board_has_evidence(x),
+                        "rotting": bool(x.get("doing_rot")),
+                    } for x in sorted(lst, key=lambda y: y.get("updated") or 0)],
+                }
+            if want_all:
+                return self._json({
+                    "threshold_days": _STALE_DOING_DAYS,
+                    "max_doing_per_session": _STALE_DOING_MAX_PER_SESSION,
+                    "total_doing": len(items),
+                    "total_rotting": sum(1 for i in items if i.get("doing_rot")),
+                    "sessions": {k: _pack(v) for k, v in
+                                 sorted(by_sess.items(), key=lambda kv: -len(kv[1]))},
+                })
+            if not sess:
+                return self._json({"error": "pass ?session=<name> or ?all=1"}, 400)
+            return self._json({
+                "session": sess, "threshold_days": _STALE_DOING_DAYS,
+                "max_doing_per_session": _STALE_DOING_MAX_PER_SESSION,
+                **_pack(by_sess.get(sess, [])),
+                "how_to_fix": "For each item: evidence it forward (PATCH desc with the commit/PR "
+                              "then status=done), or demote it (status=todo). Only you can tell "
+                              "which — nothing is auto-flipped.",
+            })
+
         # GET /api/sql/schema — tables + columns in amux.db (for the workbench sidebar)
         if method == "GET" and path == "/api/sql/schema":
             try:
@@ -44582,6 +44732,33 @@ class CCHandler(BaseHTTPRequestHandler):
                         "SELECT session, status, owner_type FROM issues WHERE id = ?", (bid,)
                     ).fetchone()
                     prior_session = prior["session"] if prior else None
+                    # ── One-doing-per-session soft cap (AMUX-1707) ──────────────
+                    # `doing` is only meaningful if it's HARD TO HOLD. Taking a 2nd
+                    # doing item is how 164 of them accumulated. Soft by design:
+                    # warn with the specifics and require an explicit override —
+                    # never silently reject (a session legitimately juggling two
+                    # things must be able to say so, on the record).
+                    if (body.get("status") == "doing" and prior
+                            and prior["status"] != "doing"
+                            and not body.get("force") and not body.get("override_doing")):
+                        _ds = body.get("session") if "session" in body else prior_session
+                        if _ds:
+                            _held = [i for i in _load_board(done_limit=0)
+                                     if i.get("status") == "doing" and i.get("session") == _ds
+                                     and i.get("id") != bid]
+                            if len(_held) >= _STALE_DOING_MAX_PER_SESSION:
+                                return self._json({
+                                    "error": "already holding doing",
+                                    "ok": False, "blocked": True,
+                                    "session": _ds,
+                                    "holding": [{"id": i["id"], "title": i["title"],
+                                                 "rotting": bool(i.get("doing_rot"))} for i in _held],
+                                    "message": (
+                                        f"'{_ds}' already has {len(_held)} item(s) in doing "
+                                        f"(limit {_STALE_DOING_MAX_PER_SESSION}). Finish or demote "
+                                        f"one first, or pass override_doing:true to hold both "
+                                        f"deliberately. See GET /api/board/reconcile?session={_ds}"),
+                                }, 409)
                     # Verify-gate: 'verified' means the work is committed & deployed, so block
                     # the transition while the owning session's tree is dirty. The orchestrator
                     # (or anyone) can override with {"force": true} if the dirt is unrelated to
@@ -49905,6 +50082,8 @@ def main():
     schedule_job(_cleanup_logs,             interval=86400,              name="log_rotation",       initial_delay=120)
     schedule_job(_cleanup_recordings,       interval=86400,              name="recording_cleanup",  initial_delay=180)
     schedule_job(_db_maintenance,           interval=86400,              name="db_maintenance",     initial_delay=240)
+    # Hourly tick, but self-limited to one digest per session per UTC day.
+    schedule_job(_board_doing_digest,       interval=3600,               name="board_doing_digest", initial_delay=900)
     schedule_job(_validate_api_key_job,     interval=300,                name="key_validate",       initial_delay=10)
     schedule_job(lambda: _log_resource_snapshot("heartbeat"), interval=300, name="resource_log", initial_delay=60)
     if _AUTO_UPDATE_REPO:
