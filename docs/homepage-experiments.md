@@ -108,13 +108,15 @@
 - **Effort:** XS
 - **Measure after:** 2026-07-20
 
-### EXP-007 — Compare pages → GitHub CTA (next in queue)
+### EXP-007 — Compare pages → GitHub CTA
 - **Hypothesis:** Compare pages get high-intent "alternative" traffic. Adding a prominent "Try it free — ⭐ on GitHub" CTA box at the top of each compare page (not just the bottom) increases star clicks from comparison traffic
-- **Page:** All `/compare/amux-vs-*/` pages
+- **Page:** All `/compare/amux-vs-*/` pages (7 pages: ngrok, codex, cursor, devin, diy-tmux, jules, n8n)
 - **KPI:** GitHub stars
-- **Status:** `queued`
-- **Implementation:** Add a compact top CTA block after the first paragraph on compare pages
-- **Effort:** M (bulk edit via Python)
+- **Status:** `running`
+- **Started:** 2026-07-14
+- **Implementation:** Added `<!-- EXP-007 -->` GitHub CTA `<div>` block (dark card with "Considering amux? See it in action before deciding →" + "⭐ Star amux on GitHub" button) after the subtitle `<p>` on all 7 compare pages. PostHog event: `exp007_compare_github_cta_click` with `{page: window.location.pathname}`.
+- **Effort:** M (7-file edit)
+- **Measure after:** 2026-07-21 (7 days minimum)
 
 ### EXP-008 — Dark/light mode preference → personalization signal
 - **Hypothesis:** Users who switch to light mode are more likely to be non-developers (less terminal-native) and may convert better on concierge/cloud vs GitHub. Track theme preference as a PostHog property.

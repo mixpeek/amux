@@ -41,6 +41,16 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs DIY tmux Scripts</span></div>
     <h1>amux vs DIY tmux Scripts</h1>
 <p class="subtitle">You can manage Claude Code in tmux manually. Here's why amux exists anyway.</p>
+
+    <!-- EXP-007: compare pages GitHub CTA -->
+    <div style="display:flex;align-items:center;gap:1rem;background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:0.875rem 1.125rem;margin:1.5rem 0;flex-wrap:wrap">
+      <span style="font-size:13px;color:var(--fg-mute,#8892a4);flex:1;min-width:180px">Considering amux? See it in action before deciding →</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="if(window.posthog) posthog.capture('exp007_compare_github_cta_click', {page: window.location.pathname})" style="display:inline-flex;align-items:center;gap:0.5rem;background:#24292e;color:#fff;text-decoration:none;padding:0.5rem 1rem;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5 3.3 9.3 7.9 10.8.6.1.8-.2.8-.6v-2.2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.7 1.2 3.4.9.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2.9-.3 1.9-.4 2.9-.4s2 .1 2.9.4c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.7.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.8C23.5 5.7 18.3.5 12 .5z"/></svg>
+        ⭐ Star amux on GitHub
+      </a>
+    </div>
+
 <p>Many developers start by writing bash scripts to manage Claude Code in tmux. It works — until you need self-healing, a dashboard, or coordination between agents.</p>
 <h2>What you get with DIY scripts</h2>
 <ul>
