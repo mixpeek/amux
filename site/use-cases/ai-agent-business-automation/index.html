@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agents for Business Automation Beyond Coding (2026) — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux turns AI agents into a complete business operations stack — CRM contacts, Gmail API email, browser automation, notes, and scheduled tasks. Run your full business from a single open-source dashboard, unattended overnight.">
+  <meta name="keywords" content="AI agents business automation 2026, AI agents beyond coding, automate business with AI agents, AI CRM automation, AI agent email automation, browser automation AI agents, AI business operations, run business with AI agents, amux business automation">
+  <link rel="canonical" href="https://amux.io/use-cases/ai-agent-business-automation/">
+  <meta property="og:title" content="AI Agents for Business Automation Beyond Coding (2026) — amux">
+  <meta property="og:description" content="CRM, email, browser automation, notes, and scheduled tasks — all driven by AI agents through amux. Your full business ops stack, unattended overnight.">
+  <meta property="og:url" content="https://amux.io/use-cases/ai-agent-business-automation/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Use Cases","item":"https://amux.io/use-cases/"},{"@type":"ListItem","position":3,"name":"AI Agent Business Automation","item":"https://amux.io/use-cases/ai-agent-business-automation/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agents for Business Automation Beyond Coding (2026)","description":"amux turns AI agents into a complete business operations stack — CRM, Gmail API email, browser automation, notes, and scheduled tasks, all running unattended.","url":"https://amux.io/use-cases/ai-agent-business-automation/","datePublished":"2026-07-14","dateModified":"2026-07-14","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Automate Your Business Operations with AI Agents","description":"Use amux to run CRM, email, browser automation, notes, and scheduled tasks through AI agents — your full business ops stack, unattended.","step":[{"@type":"HowToStep","name":"Install amux","text":"Install via Homebrew (brew install mixpeek/amux/amux), pipx (pipx install amux), or run directly (uvx amux serve). Start the dashboard at https://localhost:8822."},{"@type":"HowToStep","name":"Register a business operations session","text":"Run: amux register biz-ops --dir ~/Dev/ops --yolo. This creates a dedicated session for business automation tasks separate from your coding agents."},{"@type":"HowToStep","name":"Connect your Gmail account","text":"Connect Gmail via the amux email API — agents can then send, reply, search, and read email through the Gmail API with full threading and your account signature."},{"@type":"HowToStep","name":"Add tasks to the board","text":"Create board tasks for business automation: 'Follow up with leads from last week', 'Draft investor update', 'Research 5 competitors'. Agents claim and execute tasks from the shared kanban board."},{"@type":"HowToStep","name":"Launch and monitor from your phone","text":"Start agents with amux start biz-ops. Monitor progress from the iOS app — see live output, check the board, and steer agents via the Messages tab without sitting at your desk."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can AI agents automate business tasks beyond coding?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux includes built-in APIs for CRM contact management, Gmail API email (send, reply, search, read), browser automation via Playwright, notes/documents, and a scheduler for recurring tasks. AI agents running in amux sessions can access all of these capabilities through the REST API at $AMUX_URL, making them effective for sales follow-ups, investor updates, lead research, and document drafting — not just software development."}},{"@type":"Question","name":"How does amux handle email automation for AI agents?","acceptedAnswer":{"@type":"Answer","text":"amux includes a Gmail API integration at /api/email/*. Agents can send new emails, reply in-thread (with correct In-Reply-To/References headers), search by query, and read individual messages. The Gmail API backend auto-appends your account signature. Connected accounts (ethan@mixpeek.com, info@mixpeek.com) use the Gmail API directly — robust threading, no Mail.app fragility. Connect a new account with GET /api/gmail/auth?account=<email>."}},{"@type":"Question","name":"What is the amux CRM and how do AI agents use it?","acceptedAnswer":{"@type":"Answer","text":"amux includes a lightweight CRM at /api/crm/contacts with auto-assigned PPL-N IDs. AI agents can add contacts (name, company, email, phone, LinkedIn), update fields, log interactions (call, email, meeting, DM), and check pending follow-ups. Agents use this for tasks like 'add all speakers from last week's conference as CRM contacts' or 'log a follow-up interaction with every lead we emailed this month.'"}},{"@type":"Question","name":"How do AI agents do browser automation in amux?","acceptedAnswer":{"@type":"Answer","text":"amux includes a Playwright-based browser API at /api/browser/*. Agents start a browser session with a saved auth profile (no re-login needed), navigate to URLs, take screenshots, click, type, scroll, and evaluate JavaScript. The browser API uses persistent auth profiles from ~/.amux/playwright-auth/, so agents can access sites where you're already logged in — LinkedIn, Stripe, GitHub, internal tools."}},{"@type":"Question","name":"Can I schedule AI agents to run business tasks automatically?","acceptedAnswer":{"@type":"Answer","text":"Yes. The amux scheduler at /api/schedules runs tasks on a cron or natural-language schedule ('daily at 9am', 'every weekday at 8:30am'). Each schedule specifies which amux session receives the prompt and what it says. Example: daily at 9am, send 'Check the inbox, reply to any leads from the last 24 hours, and update CRM' to the biz-ops session."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/use-cases/">Use Cases</a> <span class="sep">&rsaquo;</span> <span>AI Agent Business Automation</span></div>
+    <h1>AI Agents for Business Automation Beyond Coding</h1>
+    <p class="subtitle">Most agent orchestrators are built for software development. amux includes a full business ops stack — CRM, Gmail API email, Playwright browser, notes, and scheduler — all accessible to AI agents through a single REST API. Run your business, not just your codebase.</p>
+
+    <div style="background:var(--surface-2,#1a1f2e);border-left:3px solid var(--accent,#6ee7b7);padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
+      <strong>Quick answer:</strong> amux agents can automate CRM contact management, send and reply to email via the Gmail API, drive real browsers with saved auth (Playwright), manage a notes/documents store, and run on any schedule. You get a full business operations stack through the same REST API your coding agents already use — no separate automation platform required.
+    </div>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#stack" style="color:var(--dim);text-decoration:none;">The Business Ops Stack</a></li>
+        <li><a href="#crm" style="color:var(--dim);text-decoration:none;">CRM: Contact Management</a></li>
+        <li><a href="#email" style="color:var(--dim);text-decoration:none;">Email: Gmail API Integration</a></li>
+        <li><a href="#browser" style="color:var(--dim);text-decoration:none;">Browser: Playwright Automation</a></li>
+        <li><a href="#notes" style="color:var(--dim);text-decoration:none;">Notes: Documents &amp; Write-ups</a></li>
+        <li><a href="#scheduler" style="color:var(--dim);text-decoration:none;">Scheduler: Recurring Tasks</a></li>
+        <li><a href="#dayinthelife" style="color:var(--dim);text-decoration:none;">Day-in-the-Life: Agent-Run Business Day</a></li>
+        <li><a href="#compare" style="color:var(--dim);text-decoration:none;">amux vs n8n vs Zapier vs Separate Tools</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="stack">The Business Ops Stack</h2>
+    <p>amux is built on a single Python server with a unified SQLite database. Every capability below is a REST endpoint at <code>$AMUX_URL</code> — the same URL your AI coding agents use for session management, the kanban board, and the Messages tab. No second platform, no separate automation service.</p>
+
+    <div class="table-scroll">
+    <table class="diff-table" style="margin:1.5rem 0;">
+      <thead>
+        <tr>
+          <th>Business Function</th>
+          <th>amux API</th>
+          <th>What agents can do</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="row-label">CRM / Contacts</td><td><code>/api/crm/contacts</code></td><td>Add, update, search contacts; log interactions; check follow-ups</td></tr>
+        <tr><td class="row-label">Email</td><td><code>/api/email/*</code></td><td>Send new emails, reply in-thread, search inbox, read messages (Gmail API)</td></tr>
+        <tr><td class="row-label">Browser</td><td><code>/api/browser/*</code></td><td>Navigate with saved auth, click, type, screenshot, run JS, AI-driven tasks</td></tr>
+        <tr><td class="row-label">Notes / Docs</td><td><code>/api/notes/*</code></td><td>Create, read, update, delete documents (plain text or rich HTML)</td></tr>
+        <tr><td class="row-label">Scheduler</td><td><code>/api/schedules</code></td><td>Run prompts on cron or natural-language schedules (daily at 9am, every weekday)</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h2 id="crm">CRM: Contact Management</h2>
+    <p>The amux CRM stores contacts with auto-assigned PPL-N IDs and full interaction history. AI agents access it through the REST API or the <code>amux crm</code> CLI.</p>
+
+    <h3>What agents do with CRM</h3>
+    <ul>
+      <li>After a conference: <em>"Search my inbox for the last 7 days, extract every person I emailed, add them as CRM contacts with company and role fields, and log 'conference follow-up' as an interaction."</em></li>
+      <li>Weekly pipeline review: <em>"List all contacts with interactions older than 14 days and no scheduled follow-up. Draft a personalized 3-sentence email for each."</em></li>
+      <li>Investor updates: <em>"Get all contacts tagged investor. Write a brief update email for each based on last month's milestones in the notes."</em></li>
+    </ul>
+
+    <pre><code><span class="comment"># Agent adds a contact via API</span>
+curl $AMUX_URL/api/crm/contacts -X POST \
+  -d '{"name":"Jane Smith","company":"Acme","email":"jane@acme.com","role":"CTO","notes":"Met at AI Summit, interested in enterprise plan"}'
+
+<span class="comment"># Log a follow-up interaction</span>
+curl $AMUX_URL/api/crm/contacts/PPL-12/interactions -X POST \
+  -d '{"notes":"Sent intro email, awaiting reply","type":"email"}'
+
+<span class="comment"># Check who needs follow-up</span>
+curl $AMUX_URL/api/crm/contacts/follow-ups</code></pre>
+
+    <h2 id="email">Email: Gmail API Integration</h2>
+    <p>amux connects directly to Gmail via the Gmail API — not Mail.app or SMTP. This means robust threading, no AppleScript fragility, and your real Gmail signature is auto-appended. AI agents can send new emails, reply in-thread, search by query, and read individual messages.</p>
+
+    <h3>Connected accounts</h3>
+    <p>Connect a Gmail account once with <code>GET /api/gmail/auth?account=your@email.com</code>. Tokens are stored in <code>~/.amux/gmail-tokens/</code>. Multiple accounts are supported — pass <code>"from": "info@mixpeek.com"</code> to specify which account sends.</p>
+
+    <h3>What agents do with email</h3>
+    <ul>
+      <li><strong>Send new email:</strong> <code>POST /api/email/send</code> with to, subject, body, from, optional cc</li>
+      <li><strong>Reply in-thread:</strong> <code>POST /api/email/reply</code> with message_id (from /inbox or /search) — sets In-Reply-To/References correctly</li>
+      <li><strong>Search inbox:</strong> <code>GET /api/email/search?q=investor&amp;days=30</code></li>
+      <li><strong>Read a message:</strong> <code>GET /api/email/message/&lt;rfc822_id&gt;</code></li>
+    </ul>
+
+    <pre><code><span class="comment"># Agent searches for leads and replies to each</span>
+MESSAGES=$(curl -s $AMUX_URL/api/email/search?q=pricing+question&days=7)
+
+<span class="comment"># For each message_id, reply with a personalized response</span>
+curl $AMUX_URL/api/email/reply -X POST \
+  -d '{"message_id":"<abc@gmail.com>","body":"Thanks for reaching out! Here is our pricing...","from":"ethan@mixpeek.com"}'</code></pre>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:1.5rem 0;">
+      <strong style="font-size:0.82rem;color:var(--muted);">Why not SMTP or osascript?</strong>
+      <p style="font-size:0.88rem;color:var(--dim);margin:0.4rem 0 0;">Raw SMTP from AI agents can land in spam. osascript (Mail.app) silently sends blank replies — a real incident. The amux Gmail API integration handles threading, authentication, and signature appending reliably. See <a href="/guides/ai-agent-security-hardening/">security hardening guide</a> for email rate limiting.</p>
+    </div>
+
+    <h2 id="browser">Browser: Playwright Automation</h2>
+    <p>The amux browser API wraps a persistent Playwright instance with saved auth profiles. AI agents can start a browser session with your cookies already loaded — no re-login — and drive any site programmatically.</p>
+
+    <h3>Saved auth profiles</h3>
+    <p>Auth profiles live in <code>~/.amux/playwright-auth/</code>. Record a profile once by logging in through a headed browser. Agents then launch headless with your saved cookies, skipping login entirely. This works for LinkedIn, Stripe, GitHub, internal dashboards, and any site where you're already authenticated.</p>
+
+    <h3>What agents do with browsers</h3>
+    <ul>
+      <li>Research: visit 10 competitor pricing pages, screenshot each, write a comparison note</li>
+      <li>Lead generation: search LinkedIn for job titles matching your ICP, extract names and companies, add to CRM</li>
+      <li>Data entry: fill out partner portal forms, submit expense reports, update inventory records</li>
+      <li>Monitoring: check Stripe dashboard daily for new signups, post a summary to the board</li>
+    </ul>
+
+    <pre><code><span class="comment"># Agent starts browser with default auth profile and navigates</span>
+curl $AMUX_URL/api/browser/start -X POST \
+  -d '{"profile":"default","url":"https://stripe.com/dashboard"}'
+
+<span class="comment"># Take a screenshot — returns {"path": "/path/to/screenshot.jpg"}</span>
+curl $AMUX_URL/api/browser/screenshot
+
+<span class="comment"># Or hand the task to the AI browser agent (drives autonomously)</span>
+curl $AMUX_URL/api/browser/agent -X POST \
+  -d '{"task":"Find all new signups from the last 7 days and return their email addresses","profile":"default"}'</code></pre>
+
+    <h2 id="notes">Notes: Documents &amp; Write-ups</h2>
+    <p>amux includes a notes store at <code>/api/notes/&lt;slug&gt;</code> for plain text or rich HTML documents. AI agents use this to store research, drafts, reports, and structured outputs that persist across sessions.</p>
+
+    <h3>What agents do with notes</h3>
+    <ul>
+      <li>Research report: an agent browses 5 competitor sites, writes a structured comparison, and saves it to <code>/api/notes/competitor-analysis-2026-07</code></li>
+      <li>Weekly digest: a scheduler-driven agent reads the board and CRM, writes a summary, saves to <code>/api/notes/weekly-digest</code>, and emails it</li>
+      <li>Meeting prep: before a call, an agent reads the CRM contact, notes, and recent emails, then writes a 1-page briefing note</li>
+    </ul>
+
+    <pre><code><span class="comment"># Agent saves a research document</span>
+curl $AMUX_URL/api/notes/competitor-research -X POST \
+  -d '{"content":"# Competitor Analysis\n\n## Acme Corp\n- Pricing: $99/seat..."}'
+
+<span class="comment"># Read a note in the next session</span>
+curl $AMUX_URL/api/notes/competitor-research</code></pre>
+
+    <h2 id="scheduler">Scheduler: Recurring Tasks</h2>
+    <p>The amux scheduler runs prompts on a cron or natural-language schedule. Each schedule targets an amux session and sends it a prompt text — the session's AI agent executes the task. No external cron, no separate automation service.</p>
+
+    <pre><code><span class="comment"># Daily inbox review at 9am (weekdays)</span>
+curl $AMUX_URL/api/schedules -X POST \
+  -d '{"title":"Daily inbox review","session":"biz-ops","command":"Check the inbox for the last 24 hours. Reply to any leads or customer questions. Log interactions in CRM. Write a summary note.","schedule_expr":"every weekday at 9am"}'
+
+<span class="comment"># Weekly CRM follow-up check (Mondays)</span>
+curl $AMUX_URL/api/schedules -X POST \
+  -d '{"title":"Weekly follow-up check","session":"biz-ops","command":"List all CRM contacts with no interaction in the last 14 days. Draft personalized follow-up emails for each and send them.","schedule_expr":"weekly on Monday at 8:30am"}'
+
+<span class="comment"># Daily board digest sent via email</span>
+curl $AMUX_URL/api/schedules -X POST \
+  -d '{"title":"Daily board digest","session":"biz-ops","command":"Summarize what is done, doing, and todo on the board. Email the summary to ethan@mixpeek.com.","schedule_expr":"daily at 6pm"}'</code></pre>
+
+    <h2 id="dayinthelife">Day-in-the-Life: Agent-Run Business Day</h2>
+    <p>Here is what a typical automated business day looks like when amux is running your ops layer:</p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.4rem 1.6rem;margin:1.5rem 0;">
+      <p style="margin:0 0 0.75rem;font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Automated Day (no human intervention required)</p>
+      <div style="display:flex;flex-direction:column;gap:0.75rem;font-size:0.88rem;">
+        <div><strong style="color:var(--accent);">8:30 AM</strong> — Scheduler fires. biz-ops agent reviews inbox, replies to 3 leads, logs interactions in CRM.</div>
+        <div><strong style="color:var(--accent);">9:00 AM</strong> — Scheduler fires. coding-daily agent reads the board, launches 5 coding agents with the highest-priority tasks.</div>
+        <div><strong style="color:var(--accent);">9:15 AM</strong> — You check the iOS app over coffee. See 3 email replies sent, 5 coding sessions active. No intervention needed.</div>
+        <div><strong style="color:var(--accent);">12:00 PM</strong> — Browser agent visits 3 competitor sites after a board task is created. Saves research note.</div>
+        <div><strong style="color:var(--accent);">2:00 PM</strong> — Coding agents start completing tasks. Board moves items from doing → done. Self-healing watchdog restarts one crashed session.</div>
+        <div><strong style="color:var(--accent);">5:00 PM</strong> — You briefly review completed branches, merge 4, leave 1 for tomorrow. 45 minutes of your time.</div>
+        <div><strong style="color:var(--accent);">6:00 PM</strong> — Scheduler fires. biz-ops agent emails you a board digest. Overnight coding batch queued.</div>
+        <div><strong style="color:var(--accent);">Overnight</strong> — 8 agents work on tests, docs, and refactoring. Watchdog handles any crashes. You sleep.</div>
+      </div>
+    </div>
+
+    <h2 id="compare">amux vs n8n vs Zapier vs Separate Tools</h2>
+
+    <div class="table-scroll">
+    <table class="diff-table" style="margin:1.5rem 0;">
+      <thead>
+        <tr>
+          <th>Capability</th>
+          <th>amux</th>
+          <th>n8n / Zapier</th>
+          <th>Separate tools</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="row-label">AI coding agents</td><td>Native — core use case</td><td>Limited via API calls</td><td>Claude Code / Cursor (no orchestration)</td></tr>
+        <tr><td class="row-label">Email automation</td><td>Built-in Gmail API, threading</td><td>Gmail node (Zapier/n8n)</td><td>SMTP / manual</td></tr>
+        <tr><td class="row-label">CRM</td><td>Built-in, SQLite, no SaaS</td><td>HubSpot / Salesforce node</td><td>HubSpot, Notion, etc.</td></tr>
+        <tr><td class="row-label">Browser automation</td><td>Built-in Playwright, saved auth</td><td>Puppeteer node (complex)</td><td>Playwright / Selenium scripts</td></tr>
+        <tr><td class="row-label">Scheduling</td><td>Built-in, natural language</td><td>Cron trigger node</td><td>cron / Launchd</td></tr>
+        <tr><td class="row-label">AI reasoning</td><td>Native (Claude Code, Codex, Gemini)</td><td>AI Agent node (limited)</td><td>Direct API (no orchestration)</td></tr>
+        <tr><td class="row-label">Mobile monitoring</td><td>iOS app + PWA</td><td>n8n cloud dashboard</td><td>None</td></tr>
+        <tr><td class="row-label">Cost</td><td>Free &amp; open source + API tokens</td><td>$20–$50/month + API costs</td><td>Multiple SaaS subscriptions</td></tr>
+        <tr><td class="row-label">Data stays local</td><td>Yes — SQLite on your machine</td><td>No — vendor cloud</td><td>Vendor dependent</td></tr>
+        <tr><td class="row-label">Setup</td><td>&lt; 5 minutes</td><td>2–4 hours</td><td>Per-tool setup (days)</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>The key difference: amux combines AI agent orchestration <em>with</em> the business ops API layer in one process. n8n and Zapier are good at connecting SaaS services but require separate setup for AI reasoning. Separate tools require context-switching and no single dashboard to monitor everything.</p>
+
+    <p>That said, amux and n8n work well together. Use amux for the AI agent loop (reasoning, code generation, complex judgment) and n8n for the integration plumbing (webhooks, SaaS connectors). See the <a href="/compare/amux-vs-n8n/">amux vs n8n comparison</a> for details.</p>
+
+    <h2 id="faq">FAQ</h2>
+
+    <div class="faq-list" style="display:flex;flex-direction:column;gap:1rem;margin-top:1.5rem;">
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> Can AI agents really handle my business email?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          For high-volume, repeatable email tasks — replying to inbound leads, sending follow-ups, distributing updates — yes. The amux Gmail API integration sends correctly threaded replies with your real account signature. For nuanced negotiations or sensitive relationships, draft-and-review mode works well: the agent drafts, you approve before send.
+        </div>
+      </details>
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> Is the browser automation reliable enough for real tasks?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          For structured, repeatable tasks on sites you control or understand well — yes. The saved auth profile means no login failures. The AI browser agent mode handles layout changes better than selector-based automation. For dynamically changing UIs or sites with aggressive bot detection, tasks may need occasional re-prompting. Monitor via the amux iOS app to catch failures quickly.
+        </div>
+      </details>
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> Do I need to run separate coding and business ops agents?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          It's best practice to separate them: a <code>biz-ops</code> session for business automation and dedicated coding sessions for software development. This avoids context confusion and makes the board easier to read. Both share the same amux server, kanban board, and monitoring dashboard.
+        </div>
+      </details>
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> How do I get started with business automation on amux?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          Install amux (<code>brew install mixpeek/amux/amux</code>), connect a Gmail account (<code>GET /api/gmail/auth?account=you@gmail.com</code>), register a biz-ops session (<code>amux register biz-ops --yolo</code>), and add your first scheduled task. The <a href="/guides/getting-started/">getting started guide</a> covers the full setup in under 5 minutes.
+        </div>
+      </details>
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> Is my business data safe with amux?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          amux stores all data locally in SQLite at <code>~/.amux/amux.db</code>. CRM contacts, notes, schedules, email history — all on your machine. Gmail tokens are stored in <code>~/.amux/gmail-tokens/</code>. Nothing is sent to external servers except the AI API calls (to Anthropic, OpenAI, or Google). See the <a href="/guides/ai-agent-security-hardening/">security guide</a> for hardening recommendations.
+        </div>
+      </details>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem 1.6rem;margin:3rem 0 2rem;text-align:center;">
+      <strong style="font-size:1rem;">Run your whole business with AI agents.</strong>
+      <p style="font-size:0.88rem;color:var(--dim);margin:0.5rem 0 1rem;">amux is the open-source control plane for both coding agents and business automation — one dashboard, one API, one install.</p>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="display:inline-block;padding:0.6rem 1.6rem;background:var(--accent);color:#fff;border-radius:8px;text-decoration:none;font-size:0.88rem;font-weight:600;margin-bottom:1rem;">Get Started on GitHub &mdash; Free &amp; Open Source</a>
+      <br>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">
+        <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83" alt="Download on the App Store" height="36" style="display:inline-block;vertical-align:middle">
+      </a>
+    </div>
+
+  </main>
+  <footer class="site-footer"><div class="footer-inner"><p>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a>. MIT + Commons Clause.</p></div></footer>
+
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
