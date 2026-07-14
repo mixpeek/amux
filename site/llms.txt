@@ -192,6 +192,9 @@ Claude Code runs one agent per terminal. amux runs dozens — with live monitori
 - [AI Coding While You Sleep](https://amux.io/use-cases/ai-coding-while-you-sleep/): Complete guide to running 10-50 Claude Code agents overnight with amux — self-healing watchdog, YOLO mode, morning board review from your phone. Full FAQ and how-to. Updated July 2026.
 - [Conversation Forking Guide](https://amux.io/guides/conversation-forking/): How to fork a Claude Code session's full context into multiple parallel branches — explore three implementations at once, A/B test architectures, or branch at a risky decision point. Updated July 2026.
 - [AI Agents and Google Calendar Integration](https://amux.io/use-cases/ai-agent-google-calendar/): How amux syncs your AI agent schedules to Google Calendar — see what your AI engineering team is working on today, right next to your human team's calendar. Updated July 2026.
+- [AI Agent Business Automation Beyond Coding](https://amux.io/use-cases/ai-agent-business-automation/): amux as a full business ops stack — CRM contact management, Gmail API email, Playwright browser automation, notes, and scheduler, all driven by AI agents. Day-in-the-life example, comparison table vs Zapier/HubSpot/Mailchimp, full FAQ. Added July 2026.
+- [Agent-to-Agent Communication in amux](https://amux.io/guides/agent-to-agent-communication/): Three coordination patterns for multi-agent systems: message passing (Messages tab + @mentions), atomic kanban task claiming (SQLite compare-and-swap), and session output peeking. 5-agent bootstrap example, comparison table vs LangGraph/CrewAI, full API reference. Added July 2026.
+- [Agentic Engineering with amux](https://amux.io/guides/agentic-engineering/): Full playbook for running an AI engineering team — self-healing watchdog, overnight batch loops, YOLO/approved mode, phone monitoring, cost tracking, agent-to-agent coordination. Updated July 2026.
 
 ## Press
 

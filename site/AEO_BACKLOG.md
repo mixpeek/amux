@@ -111,3 +111,13 @@ Track query gaps, target sections, priority, and status. Update every run.
 | query AI agent data SQL workbench | /guides/ai-agent-database-workbench/ | H | shipped 2026-07-13 (new page, 356 lines, all 7 table schemas, 10 power queries, HowTo+FAQPage JSON-LD) |
 | amux database workbench SQL amux.db | /guides/ai-agent-database-workbench/ | H | shipped 2026-07-13 |
 | inspect Claude Code session data SQLite | /guides/ai-agent-database-workbench/ | M | shipped 2026-07-13 |
+| agent-to-agent communication 2026 | /guides/agent-to-agent-communication/ | H | shipped 2026-07-14 (new page, message passing + atomic board claiming + output peeking, 5-agent bootstrap, LangGraph/CrewAI comparison) |
+| how do AI agents coordinate tasks | /guides/agent-to-agent-communication/ | H | shipped 2026-07-14 |
+| multi-agent messaging @mentions channels | /guides/agent-to-agent-communication/ | M | shipped 2026-07-14 |
+| AI agents automate business tasks 2026 | /use-cases/ai-agent-business-automation/ | H | shipped 2026-07-14 (new page, CRM+email+browser+scheduler stack, day-in-the-life workflow, comparison table vs Zapier/HubSpot) |
+| AI agent CRM email automation | /use-cases/ai-agent-business-automation/ | H | shipped 2026-07-14 |
+| Claude Code business automation beyond coding | /use-cases/ai-agent-business-automation/ | M | shipped 2026-07-14 |
+| agentic engineering 2026 playbook | /guides/agentic-engineering/ | H | enriched 2026-07-14 (480→584 lines, new AI engineering team framing, Messages tab section, Homebrew install, updated dateModified) |
+| amux vs aider 2026 | /compare/amux-vs-aider/ | H | rebuilt 2026-07-14 (164→~450 lines, 13-row table, answer-box, FAQPage 5 Qs, EXP-007 CTA) |
+| aider alternative parallel agents | /compare/amux-vs-aider/ | H | rebuilt 2026-07-14 |
+| EXP-007 GitHub CTA compare pages | /compare/amux-vs-*/ | M | shipped 2026-07-14 (8 compare pages: ngrok, codex, cursor, devin, diy-tmux, jules, n8n, aider; PostHog event exp007_compare_github_cta_click) |
