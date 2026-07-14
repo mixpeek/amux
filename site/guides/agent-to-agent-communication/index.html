@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Agent-to-Agent Communication — How AI Agents Coordinate in amux (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="How AI agents communicate with each other in amux: inter-session message passing via REST API, atomic task claiming from a shared kanban board, and output peeking. Real coordination patterns for multi-agent workflows in 2026.">
+  <meta name="keywords" content="how do AI agents communicate, inter-agent messaging 2026, amux Messages tab agent communication, multi-agent coordination patterns, agent-to-agent communication, Claude Code parallel agents, AI agent fleet coordination REST API, atomic task claiming agents">
+  <link rel="canonical" href="https://amux.io/guides/agent-to-agent-communication/">
+  <meta property="og:title" content="Agent-to-Agent Communication — How AI Agents Coordinate in amux (2026)">
+  <meta property="og:description" content="Three coordination patterns for multi-agent AI workflows: inter-session message passing via REST API, atomic kanban board claiming, and output peeking. Includes a 5-agent example workflow.">
+  <meta property="og:url" content="https://amux.io/guides/agent-to-agent-communication/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Agent-to-Agent Communication","item":"https://amux.io/guides/agent-to-agent-communication/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Agent-to-Agent Communication — How AI Agents Coordinate in amux (2026)","description":"Three coordination patterns for multi-agent AI workflows: inter-session message passing via REST API, atomic kanban board claiming, and output peeking. Includes a 5-agent example workflow.","url":"https://amux.io/guides/agent-to-agent-communication/","datePublished":"2026-07-14","dateModified":"2026-07-14","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Set up agent-to-agent communication in amux","description":"Enable AI agents to coordinate work using message passing, atomic task claiming, and output peeking in amux.","step":[{"@type":"HowToStep","position":1,"name":"Install amux","text":"brew install mixpeek/amux/amux and run amux serve to start the coordination server at localhost:8822."},{"@type":"HowToStep","position":2,"name":"Register sessions with names","text":"amux register agent-A --dir ~/Dev/project && amux register agent-B --dir ~/Dev/project. Each session gets a stable name used for addressing messages."},{"@type":"HowToStep","position":3,"name":"Load tasks onto the board","text":"Use the dashboard or API to add tasks to the kanban board: curl -sk -X POST -H 'Content-Type: application/json' -d '{\"title\":\"Implement auth module\",\"status\":\"todo\"}' $AMUX_URL/api/board"},{"@type":"HowToStep","position":4,"name":"Have agents claim tasks atomically","text":"Each agent claims a task: curl -sk -X POST -d '{\"session\":\"agent-A\"}' $AMUX_URL/api/board/TASK-1/claim — only one agent can claim each task (SQLite compare-and-swap prevents races)."},{"@type":"HowToStep","position":5,"name":"Enable inter-agent messaging","text":"Any agent can send a message to another: curl -sk -X POST -H 'Content-Type: application/json' -d '{\"text\":\"auth module done, ready for integration\"}' $AMUX_URL/api/sessions/agent-B/send — the message appears in agent-B's tmux pane and the Messages tab."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How do AI agents communicate with each other in amux?","acceptedAnswer":{"@type":"Answer","text":"amux provides three coordination mechanisms: (1) Direct message passing — any session can POST to /api/sessions/OTHER/send and the message lands in the target agent's tmux pane; (2) Atomic task claiming — agents POST to /api/board/TASK-ID/claim using SQLite compare-and-swap so no two agents grab the same task; (3) Output peeking — agents GET /api/sessions/OTHER/peek to read another agent's recent terminal output. The Messages tab in the dashboard shows the full history of all inter-agent messages."}},{"@type":"Question","name":"What is the amux Messages tab?","acceptedAnswer":{"@type":"Answer","text":"The Messages tab (shipped July 2026) is a global inter-session message history in the amux web dashboard. It shows all messages sent between sessions via /api/sessions/OTHER/send, lets you filter by session, and includes a 'locate in peek' button that jumps to that message's surrounding context in the target session's terminal transcript."}},{"@type":"Question","name":"How do agents avoid claiming the same task twice?","acceptedAnswer":{"@type":"Answer","text":"amux uses SQLite compare-and-swap (optimistic locking) for task claiming. POST /api/board/TASK-ID/claim atomically checks that the task is still unclaimed and marks it as owned by the requesting session in a single transaction. If two agents race, the second gets a 409 response and must try another task."}},{"@type":"Question","name":"Can agents read each other's terminal output?","acceptedAnswer":{"@type":"Answer","text":"Yes. GET /api/sessions/OTHER/peek?lines=100 returns the last N lines of any session's terminal scrollback. This lets agents check each other's progress, read outputs, or verify that a dependency completed before starting their own task."}},{"@type":"Question","name":"How does amux agent-to-agent communication compare to LangGraph or CrewAI?","acceptedAnswer":{"@type":"Answer","text":"LangGraph and CrewAI are Python frameworks with custom communication layers — they require you to build agent graphs in code. amux uses standard HTTP REST APIs and SQLite — any agent that can run curl or make an HTTP call can coordinate with others, regardless of what runtime it runs (Claude Code, Codex, Gemini CLI, shell scripts). There's no Python framework to learn and no custom protocol."}},{"@type":"Question","name":"What are @mentions and Channels in amux?","acceptedAnswer":{"@type":"Answer","text":"@mentions let any session address a message to a specific named session by typing @session-name, which triggers a notification in the target. Channels are named topic groups — sessions subscribe to a channel, and any message posted to that channel is delivered to all subscribers. Both features route through the same /api/sessions/OTHER/send endpoint, with the dashboard's Messages tab showing full history."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Agent-to-Agent Communication</span></div>
+
+    <div class="kicker">// guide</div>
+    <h1>Agent-to-Agent Communication</h1>
+    <p class="subtitle">How AI agents coordinate work in amux — message passing, atomic task claiming, and output peeking.</p>
+    <p style="color:var(--muted);font-size:0.85rem">Published: July 14, 2026 · Last updated: July 14, 2026</p>
+
+    <div style="background:var(--surface-2,#1a1f2e);border-left:3px solid var(--accent,#6ee7b7);padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
+      <strong>Quick answer:</strong> amux gives AI agents three ways to coordinate — direct message passing via REST API (<code>POST /api/sessions/OTHER/send</code>), atomic task claiming from a shared kanban board (<code>POST /api/board/TASK-ID/claim</code>), and output peeking to read another agent's terminal scrollback (<code>GET /api/sessions/OTHER/peek</code>). Any agent that can make an HTTP call can participate, regardless of runtime. No Python framework, no custom protocol.
+    </div>
+
+    <h2>Why agent-to-agent communication matters</h2>
+
+    <p>Running one AI agent on a task is easy. Running 10 agents on 10 tasks without collision is a coordination problem. Without a communication layer, agents duplicate work, step on each other's files, miss dependencies, and fail silently.</p>
+
+    <p>Most multi-agent frameworks (LangGraph, CrewAI, AutoGen) solve this by building agent graphs in Python code. That works well when you control the agents from a central orchestrator — but it breaks down when the "agents" are real developer tools (Claude Code, Codex CLI, Gemini CLI) running their own agentic loops in terminal sessions.</p>
+
+    <p>amux takes a different approach: standard HTTP REST APIs and SQLite. Any agent that can run <code>curl</code> — or instruct a subprocess to run it — can coordinate with every other agent in the fleet, regardless of runtime.</p>
+
+    <h2>The three coordination patterns</h2>
+
+    <h3>Pattern 1: Direct message passing</h3>
+
+    <p>Any session can send a message to any other named session. The message lands in the target agent's tmux pane (as if typed at the keyboard) and is logged in the Messages tab.</p>
+
+    <pre><code># Agent A sends a message to Agent B
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"text":"auth module complete, branch: feature/auth — ready for integration"}' \
+  https://localhost:8822/api/sessions/agent-B/send</code></pre>
+
+    <p>From inside a Claude Code session, agents can send messages using a bash tool call or by writing a shell script to be executed. The amux <code>$AMUX_URL</code> env var is available in every managed session.</p>
+
+    <pre><code># Inside any Claude Code session — send a message to the coordinator
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"text":"task TASK-42 done — merged to main. Moving to next item."}' \
+  $AMUX_URL/api/sessions/coordinator/send</code></pre>
+
+    <p>Use message passing for: task completion notifications, error escalations, asking a coordinator agent to assign a new task, and broadcasting status updates.</p>
+
+    <h3>Pattern 2: Atomic task claiming from the shared board</h3>
+
+    <p>The kanban board is the shared work queue. Any agent can claim a task atomically — SQLite compare-and-swap ensures only one agent can hold each task, even when 20 agents race simultaneously.</p>
+
+    <pre><code># List unclaimed tasks
+curl -sk https://localhost:8822/api/board | python3 -c "
+import json,sys
+[print(i['id'], i['title']) for i in json.load(sys.stdin) if i['status'] == 'todo']
+"
+
+# Claim a task atomically
+# Returns 200 with the task on success; 409 if already claimed
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"session":"agent-A"}' \
+  https://localhost:8822/api/board/TASK-1/claim
+
+# Mark done when complete
+curl -sk -X PATCH -H 'Content-Type: application/json' \
+  -d '{"status":"done","desc":"Result: implemented OAuth flow, 12 tests passing"}' \
+  https://localhost:8822/api/board/TASK-1</code></pre>
+
+    <p>The board-claim pattern enables fully autonomous fleet operation: load 20 tasks before bed, start 10 agents, each claims tasks atomically and works until the queue is empty. No orchestrator needed — the board is the orchestrator.</p>
+
+    <h3>Pattern 3: Output peeking</h3>
+
+    <p>Any agent can read the recent terminal scrollback of any other named session. This is useful for checking whether a dependency completed, reading a partial result, or diagnosing why another agent stalled.</p>
+
+    <pre><code># Read the last 100 lines of agent-A's terminal output
+curl -sk "https://localhost:8822/api/sessions/agent-A/peek?lines=100" | \
+  python3 -c "import json,sys; print(json.load(sys.stdin).get('output',''))"</code></pre>
+
+    <p>Use peeking for: waiting for a build agent to finish before starting integration tests, reading a research agent's output to decide the next step, or diagnosing a stalled agent without SSH-ing into the machine.</p>
+
+    <h2>The Messages tab</h2>
+
+    <p>Shipped July 2026, the Messages tab in the amux web dashboard provides a global history of all inter-agent messages. Every <code>POST /api/sessions/OTHER/send</code> call is logged — with sender, recipient, timestamp, and message content.</p>
+
+    <p>Key features:</p>
+    <ul>
+      <li><strong>Filter by session</strong> — see messages to/from a specific agent</li>
+      <li><strong>Locate in peek</strong> — jump to the message's surrounding context in the target session's terminal scrollback</li>
+      <li><strong>@mentions</strong> — type <code>@session-name</code> in a message to trigger a notification in that session</li>
+      <li><strong>Channels</strong> — named topic groups for broadcast messaging; sessions subscribe and receive all channel posts</li>
+    </ul>
+
+    <p>The Messages tab is the control room view — where you can see all inter-agent coordination happening in real time without SSH-ing into any session.</p>
+
+    <h2>@mentions and Channels</h2>
+
+    <p>For broadcast coordination (not just point-to-point), amux supports @mentions and Channels:</p>
+
+    <pre><code># @mention a specific session in a message (sends to that session + logs in Messages tab)
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"text":"@agent-B: the database schema migration is done, you can start writing queries"}' \
+  $AMUX_URL/api/sessions/agent-B/send
+
+# Post to a channel (all subscribers receive it)
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"text":"build system is green — all agents can deploy"}' \
+  $AMUX_URL/api/channels/build-status</code></pre>
+
+    <h2>5-agent example: parallel feature development</h2>
+
+    <p>Here's how a 5-agent team might coordinate on a sprint of independent features:</p>
+
+    <pre><code># Step 1: Human loads 5 tasks onto the board
+for task in \
+  "Implement OAuth login flow" \
+  "Add CSV export to reports" \
+  "Build webhook delivery retry" \
+  "Write E2E tests for billing" \
+  "Refactor database connection pool"; do
+  curl -sk -X POST -H 'Content-Type: application/json' \
+    -d "{\"title\":\"$task\",\"status\":\"todo\"}" \
+    https://localhost:8822/api/board
+done
+
+# Step 2: Human starts 5 agents (each gets the same bootstrap instruction)
+for i in 1 2 3 4 5; do
+  amux register "agent-$i" --dir ~/Dev/myproject --yolo
+  amux start "agent-$i"
+  amux send "agent-$i" "You are agent-$i on an AI engineering team. Your job:
+1. List unclaimed board tasks: curl -sk \$AMUX_URL/api/board | python3 -c \"import json,sys; [print(i['id'],i['title']) for i in json.load(sys.stdin) if i['status']=='todo']\"
+2. Claim one: curl -sk -X POST -H 'Content-Type: application/json' -d '{\"session\":\"agent-$i\"}' \$AMUX_URL/api/board/TASK-ID/claim
+3. Do the work. When done: curl -sk -X PATCH -H 'Content-Type: application/json' -d '{\"status\":\"done\",\"desc\":\"Result: ...\"}' \$AMUX_URL/api/board/TASK-ID
+4. Repeat until no unclaimed tasks remain.
+Start now."
+done</code></pre>
+
+    <p>Each agent independently claims tasks, works, marks them done, and picks up the next one. The dashboard shows live status. The Messages tab shows all inter-agent communication. You can steer any agent mid-run from your phone.</p>
+
+    <h2>Comparison: amux vs other coordination approaches</h2>
+
+    <table>
+      <thead><tr><th>Approach</th><th>Protocol</th><th>Agent independence</th><th>Works with Claude Code / Codex / Gemini</th><th>Parallel scale</th></tr></thead>
+      <tbody>
+        <tr><td>amux (REST + SQLite)</td><td>Standard HTTP — any agent with curl</td><td>Full — agents are autonomous processes</td><td>Yes — any runtime that can exec curl</td><td>50+ agents in production</td></tr>
+        <tr><td>LangGraph</td><td>Python function calls / in-process</td><td>Limited — orchestrator controls flow</td><td>Requires Python wrapper layer</td><td>Framework-managed (typically &lt;20)</td></tr>
+        <tr><td>CrewAI</td><td>Python in-process messaging</td><td>Limited — framework owns the loop</td><td>Requires Python wrapper layer</td><td>Small crews (2–10 typical)</td></tr>
+        <tr><td>Manual / tmux</td><td>None — human reads and copies</td><td>Full but uncoordinated</td><td>Yes — same terminal tooling</td><td>Hard to scale past 5</td></tr>
+        <tr><td>Custom broker (Redis/Kafka)</td><td>Custom per-team</td><td>Full</td><td>If you write the glue code</td><td>Unlimited but high setup cost</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Quick reference: coordination API</h2>
+
+    <pre><code># Send a message to a session
+POST $AMUX_URL/api/sessions/{session-name}/send
+Body: {"text": "message content"}
+
+# Claim a task atomically (returns 409 if already claimed)
+POST $AMUX_URL/api/board/{task-id}/claim
+Body: {"session": "agent-name"}
+
+# Read another session's terminal scrollback
+GET $AMUX_URL/api/sessions/{session-name}/peek?lines=100
+
+# List all board tasks
+GET $AMUX_URL/api/board
+
+# Mark a task done with result
+PATCH $AMUX_URL/api/board/{task-id}
+Body: {"status": "done", "desc": "Result: ..."}
+
+# List all sessions and their status
+GET $AMUX_URL/api/sessions</code></pre>
+
+    <h2>Getting started</h2>
+
+    <pre><code># Install
+brew install mixpeek/amux/amux
+# Or: pipx install amux
+# Or: uvx amux serve
+
+# Start the server
+amux serve  # → https://localhost:8822
+
+# Register two agents
+amux register agent-A --dir ~/Dev/myproject --yolo
+amux register agent-B --dir ~/Dev/myproject --yolo
+
+# Add a task
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Build feature X","status":"todo"}' \
+  https://localhost:8822/api/board
+
+# Start agents and let them claim work
+amux start agent-A
+amux start agent-B</code></pre>
+
+    <h2>See also</h2>
+    <ul>
+      <li><a href="/guides/agent-fleet-operations/">Agent fleet operations</a></li>
+      <li><a href="/features/agent-coordination/">Agent coordination features</a></li>
+      <li><a href="/guides/getting-started/">Getting started with amux</a></li>
+      <li><a href="/guides/ai-agent-skills/">AI agent Skills (slash commands)</a></li>
+      <li><a href="/compare/amux-vs-n8n/">amux vs n8n</a></li>
+    </ul>
+
+    <div class="cta-box">
+      <h3>Start coordinating AI agents today</h3>
+      <p>amux is open source — one Python file, zero external dependencies. Run a fleet of coordinating agents from your laptop or server.</p>
+      <pre><code>brew install mixpeek/amux/amux
+amux serve</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
+      <a class="btn" href="/guides/getting-started/" style="margin-left:0.5rem">Getting started →</a>
+    </div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Features</div>
+          <ul>
+            <li><a href="/features/agent-coordination/">Agent Coordination</a></li>
+            <li><a href="/features/self-healing/">Self-Healing</a></li>
+            <li><a href="/features/mobile-pwa/">Mobile App</a></li>
+            <li><a href="/features/web-dashboard/">Web Dashboard</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-n8n/">vs n8n</a></li>
+            <li><a href="/compare/amux-vs-aider/">vs Aider</a></li>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

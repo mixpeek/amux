@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Agentic Engineering: The Practical Guide to Running Parallel AI Coding Agents (2026) — amux</title>
+  <title>Agentic Engineering: The Practical Guide to Building and Running an AI Engineering Team (2026) — amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Agentic engineering is the practice of decomposing software work into parallel AI agent tasks. This guide shows exactly how to go from 1 agent to 10+ running concurrently — task decomposition, git isolation, coordination, and review. With real examples using Claude Code and amux.">
-  <meta name="keywords" content="agentic engineering, agentic engineering guide, agentic engineering karpathy, parallel ai coding agents, multi agent coding, agentic coding 2026, run multiple claude code agents, ai agent orchestration tutorial, agentic engineering workflow, parallel software development ai">
+  <meta name="description" content="Agentic engineering means running an AI engineering team — a fleet of parallel Claude Code, Codex, or Gemini CLI sessions working overnight on real software tasks. This guide covers task decomposition, git isolation, coordination with the Messages tab, and phone-first monitoring with amux.">
+  <meta name="keywords" content="agentic engineering, agentic engineering guide, agentic engineering karpathy, run AI engineering team, ai engineering team 2026, multi agent coding, agentic coding 2026, run multiple claude code agents, ai agent orchestration tutorial, agentic engineering workflow, parallel software development ai, agent coordination messages">
   <link rel="canonical" href="https://amux.io/guides/agentic-engineering/">
-  <meta property="og:title" content="Agentic Engineering: The Practical Guide (2026) — amux">
-  <meta property="og:description" content="Go from 1 AI coding agent to 10+ running in parallel. The practitioner's guide to agentic engineering — task decomposition, git isolation, coordination, and review.">
+  <meta property="og:title" content="Agentic Engineering: Building and Running an AI Engineering Team (2026) — amux">
+  <meta property="og:description" content="Run an AI engineering team — 5-20 Claude Code, Codex, or Gemini CLI agents working in parallel on your codebase, unattended overnight. The practitioner's guide to agentic engineering.">
   <meta property="og:url" content="https://amux.io/guides/agentic-engineering/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -22,9 +22,9 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Agentic Engineering","item":"https://amux.io/guides/agentic-engineering/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Agentic Engineering: The Practical Guide to Running Parallel AI Coding Agents (2026)","description":"The practitioner's guide to agentic engineering — decomposing software work into parallel AI agent tasks with real tooling, not theory.","url":"https://amux.io/guides/agentic-engineering/","datePublished":"2026-04-13","dateModified":"2026-04-13","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Agentic Engineering: Building and Running an AI Engineering Team (2026)","description":"The practitioner's guide to agentic engineering — decomposing software work into parallel AI agent tasks, coordinating via the Messages tab, and monitoring from your phone with amux.","url":"https://amux.io/guides/agentic-engineering/","datePublished":"2026-04-13","dateModified":"2026-07-14","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Practice Agentic Engineering","description":"Step-by-step guide to decomposing software work into parallel AI agent tasks and running them concurrently.","step":[{"@type":"HowToStep","name":"Decompose the work","text":"Break a feature or project into independent tasks that can be implemented in parallel without file conflicts. Each task should be 15-45 minutes of agent work."},{"@type":"HowToStep","name":"Write specs for each task","text":"Each task gets a short spec: goal, requirements, constraints, and acceptance criteria. This replaces real-time human guidance."},{"@type":"HowToStep","name":"Isolate with git worktrees","text":"Each agent gets its own git worktree so they can all work on the same repo without merge conflicts during implementation."},{"@type":"HowToStep","name":"Launch agents in parallel","text":"Start one agent per task. Each reads its spec, works in its worktree, and produces a branch with a PR or diff."},{"@type":"HowToStep","name":"Monitor and coordinate","text":"Use a dashboard to track agent status, token spend, and progress. Intervene only when an agent is stuck, not to micromanage."},{"@type":"HowToStep","name":"Review and merge","text":"Review each agent's output against the spec's acceptance criteria. Merge branches sequentially, resolving any remaining conflicts."}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is agentic engineering?","acceptedAnswer":{"@type":"Answer","text":"Agentic engineering is the practice of decomposing software work into tasks that AI coding agents execute in parallel with minimal human supervision. The term was popularized by Andrej Karpathy in early 2026 to distinguish the engineering discipline of managing AI agents from the casual 'vibe coding' approach. Where vibe coding is one developer prompting one agent interactively, agentic engineering is one developer orchestrating 5-20 agents working concurrently on different parts of a system."}},{"@type":"Question","name":"How is agentic engineering different from vibe coding?","acceptedAnswer":{"@type":"Answer","text":"Vibe coding is interactive: you sit with one agent, prompt it, review output, iterate. It is single-threaded and requires constant attention. Agentic engineering is parallel and asynchronous: you define tasks upfront, launch agents, and review completed work. The developer's role shifts from pair programmer to architect and reviewer. The throughput difference is dramatic — 10 agents working overnight can accomplish what takes a solo developer a week of vibe coding."}},{"@type":"Question","name":"How many AI coding agents can I run in parallel?","acceptedAnswer":{"@type":"Answer","text":"The practical limit depends on your API rate limits and machine resources, not on tooling. Most developers start with 3-5 agents and scale to 10-20 as they get better at task decomposition. With amux on a Mac with 16GB RAM, 20 concurrent Claude Code sessions is comfortable. The bottleneck is always task decomposition quality — poorly scoped tasks cause more rework than running fewer agents with better specs."}},{"@type":"Question","name":"What tools do I need for agentic engineering?","acceptedAnswer":{"@type":"Answer","text":"At minimum: an AI coding agent (Claude Code, Cursor, Aider) and git worktrees for isolation. For scale beyond 3-4 agents, you need orchestration: a dashboard to monitor agent status, a task board for work assignment, and a self-healing watchdog for unattended operation. amux provides all of this as a single Python file — session management, kanban board, REST API, and automatic crash recovery."}},{"@type":"Question","name":"Is agentic engineering only for large teams?","acceptedAnswer":{"@type":"Answer","text":"The opposite — agentic engineering is most transformative for solo developers and small teams. A single developer running 10 agents can match the throughput of a 5-person team for well-decomposed tasks like feature implementation, test generation, API endpoints, and refactoring. Enterprise teams benefit too, but the 10x leverage is felt most by individuals who previously bottlenecked on their own typing speed."}},{"@type":"Question","name":"What kinds of tasks work best with parallel agents?","acceptedAnswer":{"@type":"Answer","text":"Tasks that are independent and well-scoped: separate API endpoints, tests for different modules, features that touch different files, documentation for different components, refactoring across isolated packages. Tasks that do NOT parallelize well: schema migrations, global refactors that touch every file, and tightly coupled features where the output of one task is the input to another."}},{"@type":"Question","name":"How do I prevent agents from creating merge conflicts?","acceptedAnswer":{"@type":"Answer","text":"Three techniques: (1) Task decomposition — scope tasks so they touch different files or directories. (2) Git worktrees — each agent works in its own worktree branched from main. (3) Sequential merging — merge branches one at a time and resolve conflicts before merging the next. Tools like amux include built-in conflict detection that warns before agents start working on overlapping files."}},{"@type":"Question","name":"What does an agentic engineering workflow look like day-to-day?","acceptedAnswer":{"@type":"Answer","text":"Morning: review overnight agent output, merge completed branches, close board items. Mid-day: decompose the next batch of work into specs, push to the board, launch agents. Evening: queue overnight tasks (test generation, documentation, refactoring) and let the watchdog handle crashes. The developer's time shifts from writing code to writing specs, reviewing output, and architectural decisions."}}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is agentic engineering?","acceptedAnswer":{"@type":"Answer","text":"Agentic engineering is the practice of decomposing software work into tasks that AI coding agents execute in parallel with minimal human supervision. The term was popularized by Andrej Karpathy in early 2026 to distinguish the engineering discipline of managing AI agents from 'vibe coding.' Where vibe coding is one developer prompting one agent interactively, agentic engineering is one developer orchestrating 5-20 agents working concurrently — an AI engineering team."}},{"@type":"Question","name":"How is agentic engineering different from vibe coding?","acceptedAnswer":{"@type":"Answer","text":"Vibe coding is interactive: you sit with one agent, prompt it, review output, iterate. Agentic engineering is parallel and asynchronous: you write specs upfront, launch agents, and review completed work. The developer's role shifts from pair programmer to architect and reviewer. 10 agents working overnight can accomplish what takes a solo developer a week of vibe coding."}},{"@type":"Question","name":"How many AI coding agents can I run in parallel?","acceptedAnswer":{"@type":"Answer","text":"Most developers start with 3-5 agents and scale to 10-20. With amux on a Mac with 16GB RAM, 20 concurrent Claude Code sessions is comfortable. You can also mix runtimes — Claude Code, OpenAI Codex, and Gemini CLI agents can all run in parallel under the same amux dashboard. The bottleneck is always task decomposition quality, not tooling."}},{"@type":"Question","name":"How do I install amux to start running an AI engineering team?","acceptedAnswer":{"@type":"Answer","text":"Install via Homebrew: brew install mixpeek/amux/amux. Or with pipx: pipx install amux. Or run without installing: uvx amux serve. Then register a session and open the dashboard at https://localhost:8822. The whole setup takes under 5 minutes."}},{"@type":"Question","name":"What is the amux Messages tab?","acceptedAnswer":{"@type":"Answer","text":"The Messages tab (added July 2026) gives every amux session a 1:1 messaging inbox. Agents can send messages to other agents, report blockers, or receive steering from you mid-run. You can read message history in the peek panel. This enables pipeline coordination — a coordinator agent can message downstream workers when their dependency completes, without any file-system polling."}},{"@type":"Question","name":"What kinds of tasks work best with parallel agents?","acceptedAnswer":{"@type":"Answer","text":"Tasks that are independent and well-scoped: separate API endpoints, tests for different modules, features that touch different files, documentation for different components, refactoring across isolated packages. Tasks that do NOT parallelize well: schema migrations, global refactors that touch every file, and tightly coupled features where the output of one task is the input to another."}},{"@type":"Question","name":"How do I monitor agents from my phone?","acceptedAnswer":{"@type":"Answer","text":"Install the amux iOS app (App Store) or open your dashboard URL in Safari and tap Add to Home Screen for the PWA. Both show live session status, the kanban board, and let you peek into terminal output. Remote access via Tailscale (free) or the amux cloud tunnel. You can also send steering messages to agents directly from the Messages tab on mobile."}},{"@type":"Question","name":"What does an agentic engineering workflow look like day-to-day?","acceptedAnswer":{"@type":"Answer","text":"Morning: check overnight runs from your phone before getting out of bed. Review what completed, merge branches, close board items. Mid-day: decompose the next batch into specs, push to the board, launch agents. Evening: queue overnight tasks (test generation, documentation, refactoring) and let the watchdog handle crashes. Developer time shifts from writing code to writing specs, reviewing output, and architectural decisions."}}]}</script>
 </head>
 <body>
   <header class="site-header">
@@ -42,7 +42,11 @@
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Agentic Engineering</span></div>
     <h1>Agentic Engineering: The Practical Guide</h1>
-    <p class="subtitle">You don't need 10 engineers. You need 10 agents and the engineering discipline to orchestrate them. This is the step-by-step guide to going from one Claude Code session to a fleet.</p>
+    <p class="subtitle">You don't need 10 engineers. You need 10 agents and the engineering discipline to orchestrate them. This is the step-by-step guide to building and running an AI engineering team — from one Claude Code session to a fleet.</p>
+
+    <div style="background:var(--surface-2,#1a1f2e);border-left:3px solid var(--accent,#6ee7b7);padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
+      <strong>Quick answer:</strong> Agentic engineering is the practice of running a fleet of parallel AI coding agents (Claude Code, Codex, Gemini CLI) as a team, each working on a scoped task in its own git worktree. With amux you can launch 10–20 agents, coordinate them via the Messages tab, watch progress from your phone, and wake up to completed PRs. The key skills are task decomposition, git isolation, and async review.
+    </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
       <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
@@ -53,11 +57,14 @@
         <li><a href="#isolation" style="color:var(--dim);text-decoration:none;">Git Isolation: One Worktree Per Agent</a></li>
         <li><a href="#walkthrough" style="color:var(--dim);text-decoration:none;">Full Walkthrough: 8 Agents, One Feature</a></li>
         <li><a href="#coordination" style="color:var(--dim);text-decoration:none;">Agent Coordination Patterns</a></li>
+        <li><a href="#messages" style="color:var(--dim);text-decoration:none;">Messages Tab: Agent-to-Agent Coordination</a></li>
         <li><a href="#overnight" style="color:var(--dim);text-decoration:none;">Running Agents Overnight</a></li>
+        <li><a href="#phone" style="color:var(--dim);text-decoration:none;">Monitoring Your Fleet From Your Phone</a></li>
         <li><a href="#review" style="color:var(--dim);text-decoration:none;">Reviewing Agent Output at Scale</a></li>
         <li><a href="#mistakes" style="color:var(--dim);text-decoration:none;">Mistakes Everyone Makes (And How to Avoid Them)</a></li>
+        <li><a href="#compare" style="color:var(--dim);text-decoration:none;">amux vs DIY vs Single-Agent Approach</a></li>
         <li><a href="#economics" style="color:var(--dim);text-decoration:none;">The Economics: Cost vs Throughput</a></li>
-        <li><a href="#tooling" style="color:var(--dim);text-decoration:none;">Tooling Stack</a></li>
+        <li><a href="#tooling" style="color:var(--dim);text-decoration:none;">Tooling Stack &amp; Install</a></li>
         <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
       </ol>
     </nav>
@@ -274,6 +281,24 @@ Implement GET /api/notifications and POST /api/notifications
       <p style="font-size:0.88rem;color:var(--dim);margin:0.4rem 0 0;">Agents coordinate via the shared kanban board. When Task 1 finishes and marks itself <code>done</code>, downstream agents can be launched manually or by a coordinator agent that watches the board. Agents can also send messages to each other via channels: <code>curl $AMUX_URL/api/sessions/notif-tests/send -d '{"text":"API endpoints ready, start testing"}'</code></p>
     </div>
 
+    <h2 id="messages">Messages Tab: Agent-to-Agent Coordination</h2>
+    <p>The amux Messages tab (added July 2026) gives every session a 1:1 messaging inbox. Agents can send and receive messages while running, and you can steer a mid-flight agent without interrupting its tmux session.</p>
+
+    <h3>How it works</h3>
+    <ul>
+      <li><strong>Agent-to-agent:</strong> A coordinator agent watches the board and messages downstream agents when their dependency completes: <code>curl $AMUX_URL/api/sessions/billing-tests/send -d '{"text":"API endpoints merged, start integration tests"}'</code></li>
+      <li><strong>Human-to-agent:</strong> You see that an agent hit an edge case. Open the Messages tab, type a steering note, and the agent picks it up on its next tool-call cycle — no need to SSH or interrupt the session.</li>
+      <li><strong>Agent-to-human:</strong> An agent can report a blocker: <code>amux send myproject "Need clarification: should DELETE /user also cascade to billing?"</code></li>
+    </ul>
+
+    <h3>Peek history</h3>
+    <p>The Messages tab stores message history per session. When you open a session's peek panel, you can switch between the live terminal output and the full message history — useful for reviewing what coordination happened overnight.</p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:1.5rem 0;">
+      <strong style="font-size:0.82rem;color:var(--muted);">Multi-runtime coordination</strong>
+      <p style="font-size:0.88rem;color:var(--dim);margin:0.4rem 0 0;">Messages work across runtimes — you can have a Claude Code session as coordinator and Codex or Gemini CLI sessions as workers. The board and messaging API are runtime-agnostic. See the <a href="/guides/multi-runtime-agent-setup/">multi-runtime setup guide</a> for details.</p>
+    </div>
+
     <h2 id="overnight">Running Agents Overnight</h2>
     <p>The real productivity gain isn't running 8 agents for 2 hours while you watch. It's queuing 20 tasks before bed and waking up to completed branches.</p>
 
@@ -314,6 +339,28 @@ Implement GET /api/notifications and POST /api/notifications
 <span class="comment"># Or open the dashboard on your phone while making coffee</span>
 <span class="comment"># https://localhost:8822 (or via Tailscale from anywhere)</span></code></pre>
 
+    <h2 id="phone">Monitoring Your Fleet From Your Phone</h2>
+    <p>The amux iOS app is the remote control for your AI engineering team. You don't need to be at your desk to see what's happening — or to intervene when something goes wrong.</p>
+
+    <h3>What you can do from your phone</h3>
+    <ul>
+      <li>Check session status before getting out of bed (green dots = agents still running)</li>
+      <li>Peek at live terminal output for any session</li>
+      <li>Approve a pending permission prompt so an agent doesn't stall</li>
+      <li>Read message history — see what the coordinator agent sent overnight</li>
+      <li>Check the kanban board: how many tasks moved from doing → done while you slept</li>
+      <li>Send a steering message to any session directly from the Messages tab</li>
+    </ul>
+
+    <p>The dashboard also works as a Progressive Web App (PWA) — open <code>https://&lt;your-amux-server&gt;:8822</code> in Safari on iPhone, tap Add to Home Screen, and it runs full-screen. Install the native app for offline status, push notifications when an agent completes, and a polished peek panel.</p>
+
+    <p style="margin:1.25rem 0 0.5rem;">
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">
+        <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83" alt="Download on the App Store" height="40" style="display:block;margin:0 0 4px">
+      </a>
+      <span style="font-size:0.8rem;color:var(--muted);">Remote access via Tailscale (free) or amux cloud tunnel.</span>
+    </p>
+
     <h2 id="review">Reviewing Agent Output at Scale</h2>
     <p>Reviewing 8 branches is different from reviewing 1 PR. Here's the process that works:</p>
 
@@ -341,6 +388,31 @@ Implement GET /api/notifications and POST /api/notifications
 
     <h3>5. Skipping the prerequisite step</h3>
     <p>Launching 8 agents in parallel when Task 1 (schema, interface, config) isn't done yet means 7 agents will guess at the interface. They'll guess differently. You'll throw away all their work. Always run prerequisites to completion before launching dependent tasks.</p>
+
+    <h2 id="compare">amux vs DIY vs Single-Agent Approach</h2>
+
+    <div class="table-scroll">
+    <table class="diff-table" style="margin:1.5rem 0;">
+      <thead>
+        <tr>
+          <th>Capability</th>
+          <th>Single agent</th>
+          <th>DIY tmux + git</th>
+          <th>amux</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="row-label">Concurrent agents</td><td>1</td><td>Unlimited (manual)</td><td>Unlimited (managed)</td></tr>
+        <tr><td class="row-label">Task assignment</td><td>Manual prompt</td><td>Text files / sticky notes</td><td>SQLite kanban, atomic claiming</td></tr>
+        <tr><td class="row-label">Crash recovery</td><td>Manual restart</td><td>Manual restart</td><td>Self-healing watchdog</td></tr>
+        <tr><td class="row-label">Agent communication</td><td>N/A</td><td>Filesystem polling</td><td>Messages tab, REST API</td></tr>
+        <tr><td class="row-label">Phone monitoring</td><td>SSH only</td><td>SSH only</td><td>Native iOS app + PWA</td></tr>
+        <tr><td class="row-label">Dashboard</td><td>Terminal</td><td>Multiple terminal tabs</td><td>Web dashboard, live SSE</td></tr>
+        <tr><td class="row-label">Runtimes</td><td>One</td><td>Any (manual)</td><td>Claude Code, Codex, Gemini CLI</td></tr>
+        <tr><td class="row-label">Setup time</td><td>0</td><td>Hours</td><td>&lt; 5 minutes</td></tr>
+      </tbody>
+    </table>
+    </div>
 
     <h2 id="economics">The Economics: Cost vs Throughput</h2>
 
@@ -391,8 +463,19 @@ Implement GET /api/notifications and POST /api/notifications
     </table>
     </div>
 
-    <pre><code><span class="comment"># Get started in 30 seconds</span>
+    <pre><code><span class="comment"># Option 1: Homebrew (macOS, recommended)</span>
+<span class="prompt">$</span> <span class="cmd">brew install mixpeek/amux/amux</span>
+
+<span class="comment"># Option 2: pipx (Python, all platforms)</span>
+<span class="prompt">$</span> <span class="cmd">pipx install amux</span>
+
+<span class="comment"># Option 3: uvx (no install, run directly)</span>
+<span class="prompt">$</span> <span class="cmd">uvx amux serve</span>
+
+<span class="comment"># Option 4: From source</span>
 <span class="prompt">$</span> <span class="cmd">git clone https://github.com/mixpeek/amux && cd amux && ./install.sh</span>
+
+<span class="comment"># Then start your first session</span>
 <span class="prompt">$</span> <span class="cmd">amux register myproject --dir ~/Dev/myproject --yolo</span>
 <span class="prompt">$</span> <span class="cmd">amux start myproject && amux serve</span>
 <span class="ok">&#10003;</span> <span class="comment">Dashboard live at</span> <span class="url">https://localhost:8822</span></code></pre>
@@ -450,10 +533,26 @@ Implement GET /api/notifications and POST /api/notifications
       </details>
       <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
         <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
-          <span style="color:var(--muted);font-size:0.8rem;">Q</span> What tools do I need?
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> How do I install amux?
         </summary>
         <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
-          At minimum: an AI coding agent (Claude Code) and git worktrees. For scale beyond 3&ndash;4 agents, you need orchestration &mdash; a dashboard, task board, and crash recovery. <a href="https://github.com/mixpeek/amux">amux</a> provides all of this as a single Python file: session management, kanban board, REST API, self-healing watchdog, and mobile access.
+          Homebrew: <code>brew install mixpeek/amux/amux</code> (macOS, recommended). Python: <code>pipx install amux</code>. No install: <code>uvx amux serve</code>. From source: <code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh</code>. Dashboard opens at <code>https://localhost:8822</code>.
+        </div>
+      </details>
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> What is the Messages tab?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          The amux Messages tab (July 2026) gives every session a 1:1 inbox. Agents can message each other for pipeline coordination, you can steer a mid-flight agent without interrupting its terminal, and agents can report blockers. Message history is visible in the peek panel. Works across runtimes — Claude Code, Codex, and Gemini CLI sessions can all exchange messages.
+        </div>
+      </details>
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
+        <summary style="padding:1rem 1.2rem;cursor:pointer;font-weight:600;font-size:0.9rem;list-style:none;display:flex;align-items:center;gap:0.5rem;">
+          <span style="color:var(--muted);font-size:0.8rem;">Q</span> Can I monitor my agents from my phone?
+        </summary>
+        <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
+          Yes. The <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux iOS app</a> is the remote control for your AI engineering team. Check session status, peek at terminal output, approve permission prompts, and send messages — all from your phone. Also works as a PWA (add dashboard URL to Home Screen in Safari). Remote access via Tailscale (free) or amux cloud tunnel.
         </div>
       </details>
       <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
@@ -461,15 +560,20 @@ Implement GET /api/notifications and POST /api/notifications
           <span style="color:var(--muted);font-size:0.8rem;">Q</span> What does a typical day look like?
         </summary>
         <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
-          Morning: review overnight output, merge completed branches, close board items. Midday: decompose the next batch of work, write specs, launch agents. Evening: queue overnight tasks (tests, docs, refactoring), let the watchdog handle crashes. The developer's time shifts from writing code to writing specs and making architectural decisions.
+          Morning: check overnight runs from your phone before getting out of bed. Review what completed, merge branches, close board items. Midday: decompose the next batch of work, write specs, launch agents. Evening: queue overnight tasks (tests, docs, refactoring), let the watchdog handle crashes. Developer time shifts from writing code to writing specs and making architectural decisions.
         </div>
       </details>
     </div>
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem 1.6rem;margin:3rem 0 2rem;text-align:center;">
-      <strong style="font-size:1rem;">Ready to try agentic engineering?</strong>
-      <p style="font-size:0.88rem;color:var(--dim);margin:0.5rem 0 1rem;">amux gives you the infrastructure: parallel sessions, kanban board, self-healing watchdog, and mobile dashboard. One command to install.</p>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="display:inline-block;padding:0.6rem 1.6rem;background:var(--accent);color:#fff;border-radius:8px;text-decoration:none;font-size:0.88rem;font-weight:600;">Get Started &mdash; It's Free</a>
+      <strong style="font-size:1rem;">Ready to run your AI engineering team?</strong>
+      <p style="font-size:0.88rem;color:var(--dim);margin:0.5rem 0 1rem;">amux gives you the infrastructure: parallel sessions, kanban board, Messages tab, self-healing watchdog, and phone monitoring. One command to install.</p>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="display:inline-block;padding:0.6rem 1.6rem;background:var(--accent);color:#fff;border-radius:8px;text-decoration:none;font-size:0.88rem;font-weight:600;">Get Started on GitHub &mdash; Free &amp; Open Source</a>
+      <p style="margin:1rem 0 0;">
+        <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">
+          <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83" alt="Download on the App Store" height="36" style="display:inline-block;vertical-align:middle">
+        </a>
+      </p>
     </div>
 
   </main>
