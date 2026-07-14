@@ -44969,8 +44969,40 @@ class CCHandler(BaseHTTPRequestHandler):
                                                  if isinstance(_g, list) else [])
                         eff_gate = _effective_gate(gate_item, new_status)
                         if eff_gate and not body.get("force"):
+                            # AMUX-1719: gate_checked must actually MATCH the effective
+                            # gate. It used to be `isinstance(..., list)` — so
+                            # gate_checked:[] and gate_checked:["literally anything"]
+                            # both acked, and the 409 named the exact criteria and then
+                            # accepted a list matching none of them. An ack that is not
+                            # checked means accepted-not-verified; it made AMUX-1713
+                            # cosmetic, since a code item could still be closed without
+                            # ever asserting the merge. Every criterion must be present.
+                            _gc = body.get("gate_checked")
+                            _missing = []
+                            if isinstance(_gc, list):
+                                _have = {str(x).strip() for x in _gc}
+                                _missing = [c for c in eff_gate if c not in _have]
+                                if _missing:
+                                    return self._json({
+                                        "error": "gate_checked does not match the gate",
+                                        "ok": False, "blocked": True,
+                                        "gate": eff_gate,
+                                        "missing": _missing,
+                                        "you_sent": [str(x) for x in _gc],
+                                        "attempted_status": new_status,
+                                        "item": bid,
+                                        "item_type": (gate_item.get("type") or _DEFAULT_ITEM_TYPE),
+                                        "how_to_ack": {
+                                            "gate_checked": eff_gate,
+                                            "or_gate_ack": True,
+                                            "or_force": "true (explicit bypass; logged)",
+                                            "contract": "GET /api/board/contract",
+                                            "wrong_type?": ("If these criteria don't fit the work, the TYPE "
+                                                            "is wrong — fix the type, not the truth."),
+                                        },
+                                    }, 409)
                             acked = (bool(body.get("gate_ack"))
-                                     or isinstance(body.get("gate_checked"), list))
+                                     or (isinstance(_gc, list) and not _missing))
                             if not acked:
                                 return self._json({
                                     # NB: NO "status" key here. It used to echo the
