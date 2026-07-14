@@ -1,5 +1,68 @@
 [
   {
+    "hash": "03d57ce850048ceee8e04327a7efb3712d3a3fa5",
+    "short": "03d57ce",
+    "title": "Board task ownership is now auditable — shepherd vs executor split",
+    "date": "2026-07-14",
+    "type": "feat",
+    "tags": ["board", "agents", "orchestration", "reliability"],
+    "description": "Board issues now track two distinct roles: the session that created/delegated the task (shepherd) and the session actively executing it. A no-executor tripwire prevents tasks from sitting in 'doing' without an active owner — stale doing items surface immediately in the board UI."
+  },
+  {
+    "hash": "e0d19a6255d5eae40dc77617043146079bec28b8",
+    "short": "e0d19a6",
+    "title": "Stale 'doing' detector — board tasks can't be silently hoarded",
+    "date": "2026-07-14",
+    "type": "feat",
+    "tags": ["board", "reliability", "agents"],
+    "description": "The kanban board now flags any task that's been in 'doing' for too long without progress updates. Tasks can't be held indefinitely — the detector makes it hard for an agent or session to claim a task and then go quiet, keeping the board a reliable source of truth."
+  },
+  {
+    "hash": "fd791425a09ccc678b6d1a194b1b981474b9eee2",
+    "short": "fd79142",
+    "title": "Messages tab — your AI team's full communication history in one place",
+    "date": "2026-07-13",
+    "type": "feat",
+    "tags": ["messages", "channels", "dashboard", "agents"],
+    "description": "A new global Messages tab shows every message sent between sessions, newest first. Click 'Locate in peek' to jump to any message in the sending agent's terminal context. Finally: a Slack-like history view for your AI engineering team's inter-agent coordination."
+  },
+  {
+    "hash": "f3923258842b19c254bacd207dc7b2511b599929",
+    "short": "f392325",
+    "title": "Install via Homebrew or PyPI — no manual setup required",
+    "date": "2026-07-13",
+    "type": "feat",
+    "tags": ["install", "homebrew", "pypi", "distribution"],
+    "description": "amux is now on Homebrew (`brew install mixpeek/amux/amux`) and PyPI (`pipx install amux`). Zero-install trial available with `uvx amux serve` — no git clone, no install.sh. The classic `./install.sh` path remains for self-hosting on servers."
+  },
+  {
+    "hash": "64f66bf9ec0a23891f5d3de864faf894311238aa",
+    "short": "64f66bf",
+    "title": "Steering delivery is faster and less noisy — batched nudges with a cap",
+    "date": "2026-07-13",
+    "type": "perf",
+    "tags": ["steering", "performance", "agents"],
+    "description": "Steering instructions are now batched before delivery, a per-session nudge cap prevents over-steering runaway loops, and task-label updates are throttled so the dashboard stays readable when many agents are active. Net result: cleaner steering, less token waste."
+  },
+  {
+    "hash": "f3b77eff6b06c7577e4af2025736bace140dbeff",
+    "short": "f3b77ef",
+    "title": "Duplicate form submissions no longer send the same message twice",
+    "date": "2026-07-13",
+    "type": "fix",
+    "tags": ["ux", "reliability", "steering"],
+    "description": "A race between post-submit verification and a torn network request could cause the same steering message or board update to submit twice. Fixed with a submit-lock that clears only after the server confirms receipt."
+  },
+  {
+    "hash": "11d4d24699cf69f707da67403f3d0979e625c409",
+    "short": "11d4d24",
+    "title": "Stale browser tabs now reload automatically when a new version ships",
+    "date": "2026-07-13",
+    "type": "fix",
+    "tags": ["ux", "dashboard", "reliability"],
+    "description": "When a new amux version is pushed, open browser tabs were serving stale JS until a manual refresh. The server now pushes a version token via SSE; tabs that detect a mismatch self-reload immediately. Git fetch is throttled to prevent polling overload."
+  },
+  {
     "hash": "502e9ebf20e5d4fa837003632800e877120de5ad",
     "short": "502e9eb",
     "title": "Tab order stays stable when you show or hide tabs",
