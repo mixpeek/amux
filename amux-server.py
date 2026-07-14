@@ -1150,8 +1150,25 @@ def _bu_agent_run(task: str, session: str = "amux-agent", profile: str = "defaul
 
     DISPLAY_W, DISPLAY_H = 1280, 800
 
+    # Computer Use requires a real Anthropic API key — there is NO Plan/OAuth path
+    # for it (unlike the lookup/task-label CLI shots, which ride the subscription).
+    # This machine runs the claude CLI on OAuth with ANTHROPIC_API_KEY unset, so a
+    # bare anthropic.Anthropic() 401s at call time with an opaque error (gtm-videos
+    # hit this on /record, 2026-07-14). Read a DEDICATED key so the browser agent
+    # can be enabled without setting the global ANTHROPIC_API_KEY — which would
+    # switch every claude session, the lookup, and task-labels to per-token API
+    # billing instead of the Plan subscription. Fail loud and actionable otherwise.
+    _bu_key = os.environ.get("AMUX_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+    if not _bu_key:
+        return {"error": "browser agent needs an Anthropic API key",
+                "detail": "Computer Use has no Plan/OAuth path. Set AMUX_ANTHROPIC_API_KEY "
+                          "in ~/.amux/server.env (a key scoped to the browser agent only — this "
+                          "does NOT switch your claude sessions to API-key billing), then "
+                          "`touch amux-server.py`. Until then, drive the browser with the "
+                          "raw browser API / Playwright (/api/browser/*), which uses your saved "
+                          "auth profiles and needs no model key."}
     try:
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(api_key=_bu_key)
     except Exception as e:
         return {"error": f"failed to init Anthropic client: {e}"}
 
