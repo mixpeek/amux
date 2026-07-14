@@ -6127,6 +6127,15 @@ def _init_db():
         "ALTER TABLE saved_messages ADD COLUMN session TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE statuses ADD COLUMN gate TEXT",
         "ALTER TABLE issues ADD COLUMN gate TEXT",
+        # AMUX-1712: `session` was doing two jobs — who is ACCOUNTABLE for an item
+        # moving, and who is merely WATCHING it for a resting lane. When those
+        # diverge the board asserted the wrong one confidently: a shepherd's claim
+        # rendered identically to ownership, so the router read watching as ROUTED
+        # and a P0 sat idle in a lane that could not execute it (4h on the critical
+        # path, looking busy the whole time). `session` now means OWNER only;
+        # `shepherd` is the watcher. A field that cannot express a distinction will
+        # silently collapse it.
+        "ALTER TABLE issues ADD COLUMN shepherd TEXT",
     ]:
         try:
             db.execute(migration)
@@ -6834,6 +6843,28 @@ def _board_has_evidence(item: dict) -> bool:
     return bool(_BOARD_EVIDENCE_RE.search(item.get("desc") or ""))
 
 
+def _board_no_executor(item: dict) -> str:
+    """AMUX-1712 tripwire: is this `doing` item in nobody's executing hands?
+
+    `session` = OWNER (accountable for it MOVING). `shepherd` = WATCHER (holding
+    the thread for a resting lane). The 4h stall happened because those were the
+    same field: a shepherd's claim was indistinguishable from ownership, so the
+    router read watching as ROUTED and never asked. Returns a reason string when
+    the item is in `doing` but nobody is actually on the hook, else ''."""
+    if item.get("status") != "doing":
+        return ""
+    owner = (item.get("session") or "").strip()
+    shep = (item.get("shepherd") or "").strip()
+    if not owner and shep:
+        return f"watched by {shep}, owned by nobody"
+    if not owner:
+        return "no owner"
+    if shep and shep == owner:
+        # Owner==shepherd collapses the distinction again — the exact bug.
+        return f"{owner} is listed as both owner and shepherd"
+    return ""
+
+
 def _board_doing_rot(item: dict, now: float | None = None) -> bool:
     """True when a `doing` item is rotting: N+ days since any board update AND no
     evidence (commit/PR/merge) in its desc. Independent of session liveness."""
@@ -6992,7 +7023,7 @@ def _load_board(done_limit: int = 100) -> list:
     unlimited (all items).
     """
     db = get_db()
-    _COLS = """i.id, i.title, i.desc, i.status, i.session, i.creator,
+    _COLS = """i.id, i.title, i.desc, i.status, i.session, i.shepherd, i.creator,
                i.due, i.due_time, i.created, i.updated, i.owner_type,
                COALESCE(i.pinned, 0) AS pinned,
                COALESCE(i.pos, 0) AS pos,
@@ -7058,6 +7089,13 @@ def _load_board(done_limit: int = 100) -> list:
         if _board_doing_rot(item, _now):
             item["doing_rot"] = True
             item["doing_rot_days"] = round((_now - (item.get("updated") or _now)) / 86400, 1)
+        # No-executor tripwire (AMUX-1712): the query that would have caught the
+        # 4h stall in minutes — "which items are in `doing` with nobody executing
+        # them?" An item WATCHED but not OWNED (shepherd set, no owner) or claimed
+        # by nobody is not being worked, however busy it looks.
+        why = _board_no_executor(item)
+        if why:
+            item["no_executor"] = why
         result.append(item)
     result.sort(key=lambda x: (-x.get("pinned", 0),
                                 0 if x.get("pos", 0) == 0 else -1,
@@ -15425,6 +15463,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     font-weight: 500; font-size: 0.68rem; color: var(--dim);
     background: var(--border); border-radius: 8px; padding: 1px 6px;
   }
+  .board-card-noexec { display:inline-block; font-size:0.62rem; font-weight:700; padding:1px 6px; margin-bottom:4px; margin-left:4px;
+    border-radius:4px; background:rgba(224,85,91,0.18); color:#e0555b; border:1px solid rgba(224,85,91,0.45); }
+  .board-card-shepherd { font-size:0.62rem; padding:1px 6px; border-radius:4px; background:rgba(137,87,229,0.15);
+    color:var(--purple,#8957e5); border:1px dashed rgba(137,87,229,0.5); }
   .board-card-rot { display:inline-block; font-size:0.62rem; font-weight:600; padding:1px 6px; margin-bottom:4px;
     border-radius:4px; background:rgba(240,160,32,0.16); color:#f0a020; border:1px solid rgba(240,160,32,0.35); }
   .board-card {
@@ -23896,7 +23938,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.111';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.112';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -32130,12 +32172,14 @@ function _renderBoardCard(item) {
   h += '<button class="board-pin-btn' + (pinned ? ' active' : '') + '" onclick="event.stopPropagation();_togglePin(\'' + item.id + '\')" title="' + (pinned ? 'Unpin' : 'Pin to top') + '">&#x1F4CC;</button>';
   h += '<div class="board-card-key">' + esc(item.id) + '</div>';
   if (item.doing_rot) h += '<div class="board-card-rot" title="Rotting: ' + item.doing_rot_days + 'd in doing with no board update and no commit/PR evidence. Evidence it forward or demote it.">&#x26A0; ' + Math.round(item.doing_rot_days) + 'd no evidence</div>';
+  if (item.no_executor) h += '<div class="board-card-noexec" title="In doing, but nobody is executing it: ' + esc(item.no_executor) + '. Shepherding is not ownership.">&#x1F6A8; no executor</div>';
   h += '<div class="board-card-title">';
   if (boardViewMode === 'session') { const _st = item.status || 'todo'; h += '<span class="board-status-dot" style="background:' + statusStyle(_st).dot + '"></span>'; }
   h += esc(item.title) + '</div>';
   if (firstLine) h += '<div class="board-card-desc">' + esc(firstLine) + ((item.desc || '').length > 80 ? '\u2026' : '') + '</div>';
   h += '<div class="board-card-footer">';
   if (boardViewMode !== 'session' && item.session) h += '<span class="board-card-session" data-session="' + esc(item.session) + '">' + esc(item.session) + '</span>';
+  if (item.shepherd) h += '<span class="board-card-shepherd" data-session="' + esc(item.shepherd) + '" title="Shepherd: watching this for the owner. NOT accountable for executing it.">&#x1F441; watched by ' + esc(item.shepherd) + '</span>';
   tags.forEach(function(t) { h += '<span class="board-card-tag" data-tag="' + esc(t) + '">' + esc(t) + '</span>'; });
   if (item.due) { const today = new Date().toISOString().slice(0,10); const overdue = item.due < today && item.status !== 'done'; h += '<span class="board-card-time" style="' + (overdue ? 'color:var(--red)' : 'color:var(--accent)') + '">&#x1F4C5; ' + item.due + '</span>'; }
   h += '<span class="board-card-time">' + timeAgo(item.updated || item.created) + '</span>';
@@ -41433,7 +41477,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.111';
+const CACHE = 'amux-v0.9.112';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -43205,6 +43249,35 @@ class CCHandler(BaseHTTPRequestHandler):
             _remove_skill_from_providers(name)
             return self._json({"ok": True})
 
+        # GET /api/board/ownership — AMUX-1712 tripwire. "Which items are in `doing`
+        # with nobody actually executing them?" This is the query that would have
+        # caught the 4h stall in minutes: a shepherded item looks busy, but nobody
+        # is on the hook for moving it.
+        if method == "GET" and path == "/api/board/ownership":
+            doing = [i for i in _load_board(done_limit=0) if i.get("status") == "doing"]
+            def _row(i):
+                return {"id": i["id"], "title": i["title"],
+                        "owner": i.get("session") or None,
+                        "shepherd": i.get("shepherd") or None,
+                        "reason": i.get("no_executor") or None,
+                        "days_since_update": round(
+                            (time.time() - (i.get("updated") or time.time())) / 86400, 1)}
+            no_exec = [i for i in doing if i.get("no_executor")]
+            shepherded = [i for i in doing
+                          if (i.get("shepherd") or "") and not i.get("no_executor")]
+            return self._json({
+                "doing": len(doing),
+                # THE TRIPWIRE: in `doing`, but in nobody's executing hands.
+                "no_executor": [_row(i) for i in sorted(no_exec, key=lambda x: x.get("updated") or 0)],
+                # Legitimately shepherded — rendered AS watching, never as ownership.
+                "shepherded": [_row(i) for i in sorted(shepherded, key=lambda x: x.get("updated") or 0)],
+                "semantics": {
+                    "session": "OWNER — accountable for the item MOVING; must be a lane that can execute it",
+                    "shepherd": "WATCHER — holding the thread for a resting lane; NOT accountable for execution",
+                },
+                "note": "Shepherding must never look like ownership, or the router reads it as routed.",
+            })
+
         # GET /api/board/reconcile[?session=X] — the stale-doing reconcile view.
         # Per-session by default (each session reconciles its OWN lane — only the
         # owner can evidence an item); ?all=1 gives the fleet roll-up.
@@ -44531,9 +44604,10 @@ class CCHandler(BaseHTTPRequestHandler):
                 ).fetchone()
                 new_pos = (min_pos_row["m"] if min_pos_row else 0) - 1024.0
                 db.execute(
-                    """INSERT INTO issues (id, title, desc, status, session, creator, due, due_time, created, updated, owner_type, pos, gate)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (item_id, title, desc, status, session or None, creator, due, due_time, now, now, owner_type, new_pos, gate_json),
+                    """INSERT INTO issues (id, title, desc, status, session, shepherd, creator, due, due_time, created, updated, owner_type, pos, gate)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (item_id, title, desc, status, session or None, (body.get("shepherd") or None),
+                     creator, due, due_time, now, now, owner_type, new_pos, gate_json),
                 )
                 for tag in tags:
                     db.execute(
@@ -44827,11 +44901,11 @@ class CCHandler(BaseHTTPRequestHandler):
                                  f"acknowledged (force={bool(body.get('force'))}, "
                                  f"checked={len(_chk) if isinstance(_chk, list) else 0}/{len(eff_gate)})")
                     set_clauses, params = [], []
-                    for k in ("title", "desc", "status", "session", "due", "due_time", "owner_type", "pinned", "pos"):
+                    for k in ("title", "desc", "status", "session", "shepherd", "due", "due_time", "owner_type", "pinned", "pos"):
                         if k in body:
                             set_clauses.append(f"{k} = ?")
                             v = body[k]
-                            params.append(None if v == "" and k in ("session", "due", "due_time") else v)
+                            params.append(None if v == "" and k in ("session", "shepherd", "due", "due_time") else v)
                     if "gate" in body:
                         g = body.get("gate")
                         items = [str(x).strip() for x in g if str(x).strip()] if isinstance(g, list) else []
