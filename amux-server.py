@@ -6136,6 +6136,9 @@ def _init_db():
         # `shepherd` is the watcher. A field that cannot express a distinction will
         # silently collapse it.
         "ALTER TABLE issues ADD COLUMN shepherd TEXT",
+        # AMUX-1713: gates are DERIVED from the item type. Default 'code' keeps the
+        # strict merge/tests gate for existing items — never silently weaken a gate.
+        "ALTER TABLE issues ADD COLUMN type TEXT NOT NULL DEFAULT 'code'",
     ]:
         try:
             db.execute(migration)
@@ -6809,6 +6812,42 @@ _DEFAULT_STATUSES = [
     {"id": "discarded", "label": "Discarded"},
 ]
 
+# ── Item types & type-derived gates (AMUX-1713) ─────────────────────────────
+# The gate is GOOD — it enforces done != verified in code rather than etiquette.
+# But it was applied UNIFORMLY: closing an escalation that self-resolved (no code
+# at all) demanded an ack of "Implemented and merged" + "Tests / lint pass". The
+# only way to close it was to ASSERT A MERGE AND A TEST RUN THAT NEVER HAPPENED.
+#
+# A good gate that cannot be honestly satisfied teaches people to lie to it — and
+# once "Implemented and merged" has been acked falsely once, the ack means nothing
+# anywhere. The gate's signal is destroyed by the very people it disciplines, for
+# the most sympathetic possible reason: they just wanted to close a ticket that
+# was genuinely finished.
+#
+# Same class as AMUX-1712 (`session` could not distinguish shepherd from owner):
+# A GATE THAT CANNOT EXPRESS A DISTINCTION FORCES SOMEONE TO ASSERT SOMETHING
+# FALSE. The data model cannot say "not applicable", so it says something
+# plausible and false. Fix: DERIVE the gate from the item type.
+_ITEM_TYPES = ("code", "escalation", "blocker", "investigation", "ops", "research", "chore", "doc")
+_DEFAULT_ITEM_TYPE = "code"   # strictest by default — never silently weaken a gate
+
+# Non-code work still has a bar; it is just an HONEST one. "Outcome recorded"
+# is a real, checkable claim for an escalation that self-resolved — unlike a merge.
+_NONCODE_GATES = {
+    "doing":    ["Scope is clear", "Has an owner"],
+    "review":   ["Findings written up", "Ready for another set of eyes"],
+    "done":     ["Outcome recorded in the item (what happened, and why it is closed)"],
+    "verified": ["Outcome confirmed to still hold"],
+}
+# code → no override; the per-status defaults (merge/tests/CI) apply unchanged.
+_TYPE_GATES = {t: _NONCODE_GATES for t in _ITEM_TYPES if t != "code"}
+
+
+def _item_type_gate(item: dict, target_status: str) -> list:
+    """Gate derived from the item's TYPE, or [] to fall through to the status default."""
+    t = (item.get("type") or _DEFAULT_ITEM_TYPE).strip().lower()
+    return list(_TYPE_GATES.get(t, {}).get(target_status, []))
+
 
 # ── Board staleness (in-progress cards on idle sessions) ────────────────────
 _BOARD_STALE_AGE = 1800                # 30 min without an update → stale
@@ -7023,7 +7062,7 @@ def _load_board(done_limit: int = 100) -> list:
     unlimited (all items).
     """
     db = get_db()
-    _COLS = """i.id, i.title, i.desc, i.status, i.session, i.shepherd, i.creator,
+    _COLS = """i.id, i.title, i.desc, i.status, i.session, i.shepherd, i.type, i.creator,
                i.due, i.due_time, i.created, i.updated, i.owner_type,
                COALESCE(i.pinned, 0) AS pinned,
                COALESCE(i.pos, 0) AS pos,
@@ -7148,7 +7187,7 @@ def _item_by_id(bid: str) -> dict | None:
     """Fetch a single non-deleted issue by id."""
     db = get_db()
     row = db.execute(
-        """SELECT i.id, i.title, i.desc, i.status, i.session, i.creator,
+        """SELECT i.id, i.title, i.desc, i.status, i.session, i.shepherd, i.type, i.creator,
                   i.due, i.due_time, i.created, i.updated, i.owner_type,
                   COALESCE(i.pinned, 0) AS pinned,
                   COALESCE(i.pos, 0) AS pos,
@@ -7200,6 +7239,14 @@ def _effective_gate(item, target_status: str) -> list:
             g = []
     if isinstance(g, list) and g:
         return [str(x) for x in g if str(x).strip()]
+    # 1b. TYPE-derived gate (AMUX-1713). The item's type is intrinsic to it, so it
+    # outranks a session's per-status customization: an escalation contains no code
+    # no matter whose lane it sits in, and must never be closable only by asserting
+    # a merge that never happened. `code` (the default) defines no override and
+    # falls through to the status defaults below — gates are never silently weakened.
+    tg = _item_type_gate(item, target_status)
+    if tg:
+        return tg
     # 2. Per-session override for the target status
     session = item.get("session")
     if session:
@@ -23938,7 +23985,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.112';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.113';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -41477,7 +41524,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.112';
+const CACHE = 'amux-v0.9.113';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -43249,6 +43296,48 @@ class CCHandler(BaseHTTPRequestHandler):
             _remove_skill_from_providers(name)
             return self._json({"ok": True})
 
+        # GET /api/board/contract — the board's write contract, PUBLISHED (AMUX-1713).
+        # The ack key (`gate_ack`) previously had to be brute-forced against wrong
+        # guesses because /api/board/contract and /api/board/gates were both 404.
+        # An undiscoverable contract is how people end up asserting things falsely.
+        if method == "GET" and path == "/api/board/contract":
+            statuses = {st.get("id"): (st.get("gate") or [])
+                        for st in _load_board_statuses()}
+            return self._json({
+                "fields": {
+                    "session": "OWNER — accountable for the item MOVING. Must be a lane that can execute it.",
+                    "shepherd": "WATCHER — holding the thread for a rested lane. NOT accountable for execution.",
+                    "type": f"Item type; DERIVES the gate. One of {list(_ITEM_TYPES)}. Default '{_DEFAULT_ITEM_TYPE}'.",
+                    "status": f"One of {list(statuses)}.",
+                },
+                "gates": {
+                    "how_they_resolve": [
+                        "1. card-level `gate` override (issues.gate)",
+                        "2. TYPE-derived gate (from `type`) — an escalation has no code, so it can never be gated on a merge",
+                        "3. per-session override",
+                        "4. global per-status default",
+                    ],
+                    "by_status_default": statuses,
+                    "by_type": {"code": "(no override — the per-status defaults above apply)",
+                                **{t: _TYPE_GATES[t] for t in _TYPE_GATES}},
+                },
+                "how_to_satisfy_a_gate": {
+                    "gate_ack": "true  — acknowledge the whole checklist",
+                    "gate_checked": "[...] — the exact gate strings you are attesting to",
+                    "force": "true  — bypass (judgment stays with you; logged)",
+                    "NEVER": "Do not ack a criterion that did not happen. If the gate does not fit "
+                             "the work, the TYPE is wrong — fix the type, not the truth.",
+                },
+                "other_patch_keys": {
+                    "override_doing": "true — deliberately hold more than one `doing` item (AMUX-1707)",
+                },
+                "views": {
+                    "GET /api/board/contract": "this document",
+                    "GET /api/board/ownership": "doing items with nobody executing them (AMUX-1712)",
+                    "GET /api/board/reconcile?session=X": "your stale/rotting doing items (AMUX-1707)",
+                },
+            })
+
         # GET /api/board/ownership — AMUX-1712 tripwire. "Which items are in `doing`
         # with nobody actually executing them?" This is the query that would have
         # caught the 4h stall in minutes: a shepherded item looks busy, but nobody
@@ -44604,10 +44693,11 @@ class CCHandler(BaseHTTPRequestHandler):
                 ).fetchone()
                 new_pos = (min_pos_row["m"] if min_pos_row else 0) - 1024.0
                 db.execute(
-                    """INSERT INTO issues (id, title, desc, status, session, shepherd, creator, due, due_time, created, updated, owner_type, pos, gate)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO issues (id, title, desc, status, session, shepherd, type, creator, due, due_time, created, updated, owner_type, pos, gate)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (item_id, title, desc, status, session or None, (body.get("shepherd") or None),
-                     creator, due, due_time, now, now, owner_type, new_pos, gate_json),
+                     (body.get("type") or _DEFAULT_ITEM_TYPE), creator, due, due_time, now, now,
+                     owner_type, new_pos, gate_json),
                 )
                 for tag in tags:
                     db.execute(
@@ -44894,6 +44984,19 @@ class CCHandler(BaseHTTPRequestHandler):
                                     "gate": eff_gate,
                                     "attempted_status": new_status,
                                     "item": bid,
+                                    "item_type": (gate_item.get("type") or _DEFAULT_ITEM_TYPE),
+                                    # The ack contract used to be undiscoverable — it had to be
+                                    # brute-forced against wrong guesses. Publish it here and at
+                                    # GET /api/board/contract (AMUX-1713).
+                                    "how_to_ack": {
+                                        "gate_ack": True,
+                                        "or_gate_checked": eff_gate,
+                                        "contract": "GET /api/board/contract",
+                                        "wrong_type?": ("If this item has no code, set its type "
+                                                        "(escalation/blocker/investigation/ops/research/chore/doc) "
+                                                        "— the gate is DERIVED from the type. Never ack a merge "
+                                                        "that did not happen."),
+                                    },
                                 }, 409)
                         if eff_gate:
                             _chk = body.get("gate_checked")
@@ -44901,7 +45004,7 @@ class CCHandler(BaseHTTPRequestHandler):
                                  f"acknowledged (force={bool(body.get('force'))}, "
                                  f"checked={len(_chk) if isinstance(_chk, list) else 0}/{len(eff_gate)})")
                     set_clauses, params = [], []
-                    for k in ("title", "desc", "status", "session", "shepherd", "due", "due_time", "owner_type", "pinned", "pos"):
+                    for k in ("title", "desc", "status", "session", "shepherd", "type", "due", "due_time", "owner_type", "pinned", "pos"):
                         if k in body:
                             set_clauses.append(f"{k} = ?")
                             v = body[k]
