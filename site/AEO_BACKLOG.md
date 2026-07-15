@@ -121,3 +121,11 @@ Track query gaps, target sections, priority, and status. Update every run.
 | amux vs aider 2026 | /compare/amux-vs-aider/ | H | rebuilt 2026-07-14 (164→~450 lines, 13-row table, answer-box, FAQPage 5 Qs, EXP-007 CTA) |
 | aider alternative parallel agents | /compare/amux-vs-aider/ | H | rebuilt 2026-07-14 |
 | EXP-007 GitHub CTA compare pages | /compare/amux-vs-*/ | M | shipped 2026-07-14 (8 compare pages: ngrok, codex, cursor, devin, diy-tmux, jules, n8n, aider; PostHog event exp007_compare_github_cta_click) |
+| best claude code session manager 2026 | /guides/best-claude-code-session-managers-2026/ | H | enriched 2026-07-15 (477→530+ lines; fixed multi-runtime claim from "roadmap" to "shipped"; Homebrew/PyPI/uvx install; Messages tab; board gates; July 2026 date; new entity description) |
+| human in the loop AI agents 2026 | /guides/ai-agent-quality-gates/ | H | shipped 2026-07-15 (new page, 344 lines; HowTo+FAQPage+Article JSON-LD; four gate categories; done vs verified distinction; board gates feature; comparison table vs LangGraph/CrewAI/DIY) |
+| AI agent guardrails | /guides/ai-agent-quality-gates/ | H | shipped 2026-07-15 |
+| amux vs Cline 2026 | /compare/amux-vs-cline/ | H | rebuilt 2026-07-15 (99→350+ lines; 14-row table; EXP-007 CTA; complementary use case framing; "why not both" section; FAQPage 5 Qs; Cline 64K stars) |
+| cline alternative parallel agents | /compare/amux-vs-cline/ | H | rebuilt 2026-07-15 |
+| AI coding agency tools 2026 | /for/agencies/ | H | shipped 2026-07-15 (new page, 335 lines; Article+FAQPage+BreadcrumbList JSON-LD; parallel client projects, CRM, Gmail, iOS monitoring; agency day-in-the-life) |
+| run AI agents for clients | /for/agencies/ | H | shipped 2026-07-15 |
+| EXP-008 theme preference PostHog | site.js | M | shipped 2026-07-15 (posthog.register theme_preference on load + toggle; segments dark vs light conversion behavior) |

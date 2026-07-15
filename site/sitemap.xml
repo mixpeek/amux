@@ -14,6 +14,7 @@
   <url><loc>https://amux.io/for/startup-founders/</loc><lastmod>2026-07-04</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/for/indie-hackers/</loc><lastmod>2026-07-07</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/for/freelancers/</loc><lastmod>2026-07-08</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/for/agencies/</loc><lastmod>2026-07-15</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/for/engineering-managers/</loc><lastmod>2026-07-09</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-zed/</loc><lastmod>2026-07-09</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-ngrok/</loc><lastmod>2026-07-12</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
@@ -40,7 +41,8 @@
   <url><loc>https://amux.io/blog/self-improving-agent-loop/</loc><lastmod>2026-06-19</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/anthropic-agentic-billing-june-2026/</loc><lastmod>2026-06-12</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>
   <url><loc>https://amux.io/guides/gemini-cli-to-antigravity-cli/</loc><lastmod>2026-06-12</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>
-  <url><loc>https://amux.io/guides/best-claude-code-session-managers-2026/</loc><lastmod>2026-06-11</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>
+  <url><loc>https://amux.io/guides/best-claude-code-session-managers-2026/</loc><lastmod>2026-07-15</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>
+  <url><loc>https://amux.io/guides/ai-agent-quality-gates/</loc><lastmod>2026-07-15</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/ai-coding-tools-landscape-2026/</loc><lastmod>2026-05-18</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>
   <url><loc>https://amux.io/guides/ai-coding-agent-safety-checklist/</loc><lastmod>2026-05-19</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/best-ai-model-for-coding-2026/</loc><lastmod>2026-05-20</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>
@@ -113,7 +115,7 @@
   <url><loc>https://amux.io/compare/amux-vs-claude-code-agent-teams/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-claude-code-web-ui/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-claude-desktop/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
-  <url><loc>https://amux.io/compare/amux-vs-cline/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/compare/amux-vs-cline/</loc><lastmod>2026-07-15</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-dmux/</loc><lastmod>2026-04-07</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-crewai/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-cursor/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
