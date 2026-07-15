@@ -29,6 +29,8 @@
     capture_pageview: true,
     capture_pageleave: true,
   });
+  // EXP-008: register initial theme preference as a super property
+  posthog.register({ theme_preference: theme });
 
   document.addEventListener('DOMContentLoaded', function () {
     var nav = document.querySelector('.site-header nav') || document.querySelector('header.site nav') || document.querySelector('header nav');
@@ -43,6 +45,7 @@
       var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
       theme = next;
       applyTheme(next);
+      posthog.register({ theme_preference: next }); // EXP-008
     };
     // Insert just before the first CTA button so toggle sits between text links and action buttons
     var firstCta = nav.querySelector('.nav-cta, .cta, [class*="cta"]');

@@ -122,9 +122,11 @@
 - **Hypothesis:** Users who switch to light mode are more likely to be non-developers (less terminal-native) and may convert better on concierge/cloud vs GitHub. Track theme preference as a PostHog property.
 - **Page:** All pages (site.js)
 - **KPI:** Cloud signups (segment)
-- **Status:** `queued`
-- **Implementation:** `posthog.register({ theme_preference: theme })` in site.js
+- **Status:** `running`
+- **Started:** 2026-07-15
+- **Implementation:** Added `posthog.register({ theme_preference: theme })` in site.js — fires on page load (initial theme) and on every manual toggle. Registers as a super property, so it is attached to all subsequent PostHog events. Can now segment KPI clicks and pageviews by `theme_preference` in HogQL.
 - **Effort:** XS
+- **Measure after:** 2026-07-22 (7 days minimum)
 
 ### EXP-009 — "Indie hackers" and "overnight builders" language in hero subtitle
 - **Hypothesis:** Explicitly calling out the indie hacker / overnight builder persona in the homepage hero subtitle increases conversion from that audience (HN, Product Hunt, Indie Hackers forum traffic).
@@ -149,6 +151,14 @@
 - **Status:** `queued`
 - **Implementation:** Add "Plan strip — see your agent's task list in real time (new)" row or badge to homepage feature table
 - **Effort:** XS
+
+### EXP-014 — Replicate high-conversion guide pattern on other guides
+- **Hypothesis:** /guides/best-ai-agent-multiplexers-2026/ drove 16 GitHub KPI clicks in 7 days — the highest non-homepage conversion rate. PostHog shows this page has unusually high intent. Hypothesis: "best-of" / list-style guide titles convert better than how-to guides because visitors are in evaluation mode. Replicating the page structure (answer-box at top, feature matrix, CTA after matrix) on 3-5 other guides should increase their GitHub click rate from near-zero to 3–8 clicks/week each.
+- **Page:** /guides/best-claude-code-session-managers-2026/ (already enriched 2026-07-15), then /guides/best-ai-model-for-coding-2026/, then /guides/running-10-plus-agents/
+- **KPI:** GitHub stars
+- **Status:** `queued`
+- **Implementation:** Audit top-PV guides for missing answer-box + feature matrix. Add EXP-007-style GitHub CTA block to any guide with >20 pageviews/week and <2 KPI clicks/week.
+- **Effort:** S (3 files)
 
 ### EXP-012 — Freelancer CTA on compare pages
 - **Hypothesis:** Compare pages attract high-intent "is this the right tool?" visitors. Adding a "Freelancer? Scale to 5x clients →" contextual CTA on compare pages targets a specific high-converting audience segment identified from the /for/freelancers/ page creation today.
@@ -181,6 +191,7 @@ _Updated by SCHED-149 Job 9 after each run with PostHog data and experiment resu
 | 2026-07-10 | PostHog: 1 day of real data (phc_ key live since 2026-07-09); 294 pageviews, 111 autocaptures recorded — too early to score any experiments (all < 7 days); no KPI click events isolated yet | EXP-004 shipped: amber urgency badge "3 onboarding slots open this month" on /concierge/ final CTA; measure after 2026-07-17 |
 | 2026-07-11 | PostHog: 3 days data — 554 pageviews total, 26 KPI clicks (all homepage); /guides/best-ai-model-for-coding-2026/ has 84 PVs but 0 KPI clicks (biggest conversion gap) | EXP-005 shipped: star history chart between features and final CTA; EXP-013 added (guide page GitHub CTA) |
 | 2026-07-12 | PostHog: 14-day query returned 0 KPI clicks (data still accumulating — phc_ key only active since 2026-07-09, so < 7 days of real data for all experiments; none scoreable yet) | EXP-013 shipped: GitHub CTA chip on /guides/best-ai-model-for-coding-2026/ (84 PVs, 0 KPI clicks); EXP-006 queued next |
+| 2026-07-15 | PostHog 7-day KPI click data: homepage / → 70 clicks (GitHub+AppStore), /guides/best-ai-agent-multiplexers-2026/ → 16 clicks (highest non-homepage conversion rate — outperforming all compare pages), /docs/ → 6, /pricing/ → 6. EXP-002 iOS sticky bar: 5 custom exp002_ios_sticky_tap events observed since launch — positive signal but no pre-experiment baseline available (PostHog only active from 2026-07-09, EXP-002 started 2026-07-08). Cannot score pre/post. Extending measurement to 2026-07-22. EXP-001 also cannot be scored — same baseline gap. | EXP-008 shipped: theme_preference super property registered in site.js on page load and toggle (measures whether dark vs light users convert differently on GitHub vs cloud KPIs). New finding: /guides/best-ai-agent-multiplexers-2026/ has the best GitHub click rate outside the homepage — should investigate what drives this and replicate on similar high-PV guide pages. |
 
 ---
 
