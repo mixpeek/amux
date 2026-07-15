@@ -4455,8 +4455,8 @@ _steer_settle_since: dict = {}   # name -> monotonic ts of first deliverable obs
 
 
 def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
-    """Deliver the head of a session's steering queue once it has sat at a turn
-    boundary (raw status idle/waiting) *continuously* for _STEER_SETTLE_SECS.
+    """Deliver the head of a session's steering queue once it has sat at an IDLE
+    turn boundary *continuously* for _STEER_SETTLE_SECS.
 
     The settle window is the accuracy guard: a lone torn/between-task frame that
     momentarily reads idle only starts the timer — the session must STILL be
@@ -4468,11 +4468,18 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
     `raw` (the tmux frame) lets us look past the main loop: a session whose main
     loop rests at the prompt while a background subagent is still working is NOT
     done, so an in-flight subagent holds steering exactly like an active frame
-    (mirrors the client-facing status). Only 'idle' is suppressed this way — a
-    'waiting' prompt genuinely needs the user's input regardless of subagents."""
+    (mirrors the client-facing status).
+
+    Delivery requires a genuinely IDLE prompt — NOT 'waiting'. A 'waiting' frame
+    means a live selector is up (a tool-approval "Do you want to proceed?", an
+    AskUserQuestion, or a rate-limit/compact picker). Injecting a queued message
+    there does NOT answer the selector — send_text's picker-closing Escape
+    REJECTS the pending tool ("[Request interrupted by user] for tool use",
+    gtm-engine 2026-07-15). Hold until the selector resolves (human answer or
+    auto-continue) and the session returns to an empty prompt."""
     now = time.monotonic()
-    deliverable = status in ("waiting", "idle")
-    if deliverable and status == "idle" and raw and _has_running_subagent(raw):
+    deliverable = status == "idle"
+    if deliverable and raw and _has_running_subagent(raw):
         deliverable = False  # main loop idle but a subagent is still running
     with _steering_lock:
         queue = _steering_queue.get(name, [])
@@ -8001,7 +8008,7 @@ def _run_schedule(sched):
             else:
                 note = (r.stdout or "")[:500] or None
         else:
-            ok, err = send_text(session, command)
+            ok, err = send_text(session, command, defer_if_busy=True)
             if not ok:
                 status, note = "error", str(err)
                 slog(f"[sched] send failed for '{sched['title']}': {err}")
@@ -11437,7 +11444,7 @@ def _verify_submitted(name: str, target: str, text: str, esc_at: float = 0.0,
     return bool(sent_at and _jsonl_user_msg_since(name, text, sent_at))
 
 
-def send_text(name: str, text: str, _from_steering: bool = False) -> tuple[bool, str]:
+def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy: bool = False) -> tuple[bool, str]:
     iterm2_id = _session_iterm2_id(name)
     if iterm2_id:
         return _iterm2_send(iterm2_id, text)
@@ -11529,7 +11536,26 @@ def send_text(name: str, text: str, _from_steering: bool = False) -> tuple[bool,
             # 2026-07-10: Esc/C-u/type/Esc/Enter ~150ms apart vanished the text,
             # the same sequence with a 1.2s gap submitted it. So track when each
             # Escape is sent and keep any pair ≥1.3s apart.
-            _generating = _detect_claude_status(tmux_capture(name, 12) or "") == "active"
+            _status = _detect_claude_status(tmux_capture(name, 12) or "")
+            _generating = _status == "active"
+            _waiting = _status == "waiting"
+            # Boundary-aware delivery for AUTOMATED senders (scheduler,
+            # inter-session channels). Never interrupt a live turn or a pending
+            # selector: a 'waiting' frame is a tool-approval / question / picker,
+            # and the picker-closing Escape below would REJECT the pending tool
+            # ("[Request interrupted by user]" contention, gtm-engine 2026-07-15).
+            # Park the message in the steering queue instead; _steer_try_deliver
+            # lands it at the next genuinely-idle boundary. Deliberate user sends
+            # (defer_if_busy=False, the default) still go straight through so a
+            # human can answer/interrupt on purpose.
+            if defer_if_busy and (_generating or _waiting):
+                _steer_enqueue(name, text)
+                return True, "queued (steering) — session busy, delivers at turn boundary"
+            # Safety net for the steering path itself: if the session slipped into
+            # a selector between the settle capture and this send, don't Escape
+            # (that rejects the tool) — keep the batch queued for the next tick.
+            if _waiting and _from_steering:
+                return False, "session at a selector — retry at next idle boundary"
             if _generating and ("@" in text or text.lstrip().startswith("/")):
                 # @/slash text can't be queued as typed input while a turn is
                 # running: the autocomplete picker opens on type and eats the
@@ -11718,7 +11744,9 @@ def _channel_deliver(sender: str, recipient: str, text: str) -> tuple[bool, str]
         f"  curl -sk -X POST $AMUX_URL/api/channels/$AMUX_SESSION/{safe_sender}/messages "
         f"-H 'Content-Type: application/json' -d '{{\"text\":\"YOUR REPLY HERE\"}}'"
     )
-    return send_text(recipient, wrapped)
+    # Boundary-aware: an inter-session message must never reject the recipient's
+    # pending tool-approval (the backend->gtm-engine AskUserQuestion kill, 2026-07-15).
+    return send_text(recipient, wrapped, defer_if_busy=True)
 
 
 def _channel_end(closer: str, other: str) -> tuple[bool, str]:
@@ -11726,7 +11754,7 @@ def _channel_end(closer: str, other: str) -> tuple[bool, str]:
     safe_closer = closer if _VALID_SESSION_NAME_RE.match(closer) else "unknown"
     notice = f"[channel ended by @{safe_closer}] no reply needed — the channel has been closed."
     if is_running(other):
-        send_text(other, notice)
+        send_text(other, notice, defer_if_busy=True)
     f = _channel_file(closer, other)
     try:
         if f.exists():
