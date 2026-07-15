@@ -1,1 +1,1 @@
-Spin up and supervise a fleet of AI coding agents from your phone. Watch live output, send commands, manage tasks, and keep agents working — even while you sleep.
+Your AI coding agents keep working while you're away. Monitor Claude Code, Codex, and Gemini sessions live from your phone. Approve actions, steer agents, and track progress from anywhere.

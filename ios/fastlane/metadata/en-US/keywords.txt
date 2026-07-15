@@ -1,1 +1,1 @@
-claude,ai,coding,llm,codex,gemini,anthropic,tmux,ssh,terminal,devops,copilot,cursor,automation
+claude code,codex,gemini,anthropic,vibe coding,developer tools,terminal,remote,fleet,monitor,llm

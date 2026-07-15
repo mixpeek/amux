@@ -1,7 +1,7 @@
 # amux iOS App — App Store Listing
 
-**Status:** Proposed rewrite — paste into App Store Connect to update.
-**Reason:** Current listing ("agent multiplexer", "Run AI agents from your phone") implies the app creates agents. It doesn't — it monitors and manages them. Reframing as companion app / remote control better matches what users actually do.
+**Status:** Updated 2026-07-15. Fastlane metadata is now the source of truth (`ios/fastlane/metadata/en-US/`). Push with `fastlane release`.
+**Remaining:** App name change (requires App Store Connect), screenshots (zero currently).
 
 ---
 

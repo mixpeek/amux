@@ -1,19 +1,40 @@
-amux is a self-hosted control plane for AI coding agents. Run, monitor, and orchestrate dozens of parallel Claude Code, Codex, and Gemini sessions from your iPhone or iPad — the native app connects to your own amux server over the network.
+Keep your AI coding agents running while you're away from your desk.
 
-WHAT YOU CAN DO
-• Watch every agent's live terminal output in real time
-• Send prompts and commands to any session from anywhere
-• Track work on a shared kanban board with atomic task claiming
-• Get agents to coordinate — delegate tasks between sessions
-• Manage notes, contacts (CRM), and recurring scheduled jobs
-• Keep agents running unattended with a self-healing watchdog
+amux is the remote control for your AI engineering fleet. Monitor live Claude Code, Codex, and Gemini sessions, approve pending actions, inspect terminal output, coordinate work across agents, and recover from problems directly from your iPhone.
+
+Think of it like GitHub Mobile for AI agents: the work happens on your laptop or server, amux puts the control panel in your pocket.
+
+WHAT YOU CAN DO FROM YOUR PHONE
+
+- Check overnight runs before getting out of bed
+- Approve permission prompts before agents stall
+- See exactly why an agent stopped (peek into live terminal output)
+- Assign a new task to an idle session
+- Send a steering instruction to redirect an agent mid-run
+- Monitor your whole fleet at once: status, active tasks, token usage
+- Manage the kanban board: see what's done, doing, and stuck
+- Keep coding while traveling
 
 BRING YOUR OWN SERVER
-amux is open source. Run the single-file amux server on your own Mac, Linux box, or cloud VM, then connect this app to it — over Tailscale, your LAN, or amux Cloud. Your code and agents never leave your infrastructure.
+
+amux is open source. Run the single-file Python server on your Mac, Linux box, or cloud VM, then connect this app over Tailscale, your LAN, or amux Cloud. Your code and agents never leave your infrastructure.
 
 BUILT FOR PARALLEL WORK
-Instead of babysitting one AI assistant, run a whole fleet — one agent per feature, per bug, per module, all supervised from a single dashboard in your pocket.
+
+Instead of babysitting one AI assistant, run a whole fleet. One agent per feature, per bug, per module, all supervised from a single dashboard.
 
 Self-healing keeps sessions alive: amux auto-compacts context, restarts on corruption, unblocks stuck prompts, and handles rate limits fleet-wide so your agents keep shipping overnight.
+
+TWO ACCESS MODES
+
+Native iOS app (this app): SwiftUI with optimized touch targets and full peek panel. Connects to your amux server over Wi-Fi, Tailscale, or the amux cloud tunnel.
+
+Progressive Web App: Open your amux dashboard URL in Safari and install to home screen for a full-screen experience without the App Store.
+
+REQUIREMENTS
+
+- amux server running on Mac or Linux (free, open source: github.com/mixpeek/amux)
+- Claude Code, OpenAI Codex CLI, or Gemini CLI installed on your server
+- Wi-Fi, Tailscale, or amux tunnel for remote access
 
 Learn more at amux.io
