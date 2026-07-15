@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agent Quality Gates: Done vs Verified, Human-in-the-Loop &amp; Guardrails (2026) — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="AI agent quality gates prevent coding agents from marking work done before it is verifiably complete. amux implements four gate categories — cost, context, action, and outcome — with board-enforced done vs verified states and phone approval.">
+  <meta name="keywords" content="AI agent quality gates 2026, human in the loop AI agents, AI coding agent approval workflow, done vs verified AI agents, AI agent guardrails, gate AI agent actions, prevent AI agents marking work done prematurely, AI agent human oversight">
+  <link rel="canonical" href="https://amux.io/guides/ai-agent-quality-gates/">
+  <meta property="og:title" content="AI Agent Quality Gates: Done vs Verified, Human-in-the-Loop &amp; Guardrails (2026) — amux">
+  <meta property="og:description" content="AI agent quality gates prevent coding agents from marking work done before it is verifiably complete. amux enforces four gate categories with board-level done vs verified states and phone approval.">
+  <meta property="og:url" content="https://amux.io/guides/ai-agent-quality-gates/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Agent Quality Gates","item":"https://amux.io/guides/ai-agent-quality-gates/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Quality Gates: Done vs Verified, Human-in-the-Loop and Guardrails (2026)","description":"AI agent quality gates prevent coding agents from marking work done before it is verifiably complete. amux implements four gate categories — cost, context, action, and outcome — with board-enforced done vs verified states and phone approval.","url":"https://amux.io/guides/ai-agent-quality-gates/","datePublished":"2026-07-15","dateModified":"2026-07-15","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Set Up Quality Gates for AI Coding Agents","description":"Configure cost, context, action, and outcome gates in amux to prevent AI agents from marking work complete before it is verifiably done in production.","step":[{"@type":"HowToStep","position":1,"name":"Install amux","text":"brew install mixpeek/amux/amux"},{"@type":"HowToStep","position":2,"name":"Register your project in gated mode","text":"amux register myproject --dir ~/Dev/myproject (omit --yolo to require per-action approval)"},{"@type":"HowToStep","position":3,"name":"Set a token kill threshold","text":"Open the amux dashboard, go to Settings > Session Limits, and set a max token budget per session. The watchdog terminates sessions that exceed it."},{"@type":"HowToStep","position":4,"name":"Connect the iOS app for phone approval","text":"Install the amux iOS app (App Store: amux – Agent Multiplexer) and point it at your amux server. Pending approval prompts appear on your phone; tap to approve or deny."},{"@type":"HowToStep","position":5,"name":"Advance board tasks with gate acknowledgment","text":"amux board done TASK-ID --gate \"Implemented and merged,Tests pass\" — agents must acknowledge gate conditions before the board advances the task status."},{"@type":"HowToStep","position":6,"name":"Mark verified only after production confirmation","text":"Move a task to verified only after all four conditions hold: CI pipeline green on the merged commit, change deployed to production, smoke test on real prod behavior passes, zero regressions detected."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the difference between done and verified for AI agents?","acceptedAnswer":{"@type":"Answer","text":"Done means the agent has finished writing and committing code. Verified means the change has been confirmed working end-to-end in production: CI/CD pipeline passed on the merged commit, the commit is deployed to production, a smoke test on real prod behavior passed, and no regressions were detected. amux board enforces this distinction with explicit gate checkboxes agents must acknowledge before advancing a task's status. Conflating done and verified is one of the most common failure modes in overnight AI agent runs."}},{"@type":"Question","name":"How do I approve AI agent actions from my phone?","acceptedAnswer":{"@type":"Answer","text":"amux's iOS app (available on the App Store) shows pending permission prompts from all active sessions. When an agent reaches a step that requires approval — a destructive file operation, an external API call, a git push — the prompt appears in the iOS app's session peek view. Tap to approve or deny from anywhere. For fully unattended runs where no human approval is needed, enable YOLO mode with --yolo at session start."}},{"@type":"Question","name":"How do I prevent AI agents from running up a huge token bill overnight?","acceptedAnswer":{"@type":"Answer","text":"amux tracks per-session token usage in real time, parsed from JSONL transcripts. Set a per-session token threshold in the dashboard; the watchdog process terminates sessions that exceed the limit and logs the termination event. This prevents runaway loops — a common failure where an agent gets stuck refactoring the same file repeatedly, consuming tokens without making progress."}},{"@type":"Question","name":"What is YOLO mode and when should I use it?","acceptedAnswer":{"@type":"Answer","text":"YOLO mode (amux start --yolo or amux register --yolo) auto-approves all per-action permission prompts, letting Claude Code run fully unattended. Use it for trusted batch work in isolated environments: generating tests, writing documentation, refactoring low-risk code on a feature branch. Disable YOLO and use gated mode when agents touch anything irreversible: production systems, external APIs, billing, or shared repositories where a bad push is hard to reverse."}},{"@type":"Question","name":"How does amux detect when a coding agent gets stuck?","acceptedAnswer":{"@type":"Answer","text":"amux's stale-doing detector flags board tasks that have been in doing status without a progress update for longer than a configured interval. The watchdog also detects context overflow before it crashes the session: when context usage exceeds a threshold, amux pauses the agent, runs /compact to summarize and compress the conversation, then resumes. If a session crashes despite this, the watchdog restarts it with --resume so the conversation continues from the last checkpoint."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>AI Agent Quality Gates</span></div>
+
+    <h1>AI Agent Quality Gates: Done vs Verified, Human-in-the-Loop &amp; Guardrails (2026)</h1>
+    <p class="subtitle">Prevent AI coding agents from marking work complete before it is verifiably done &mdash; with cost gates, context gates, action gates, and board-enforced outcome gates. Updated July 2026.</p>
+
+    <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;border-left:3px solid var(--blue)">
+      <strong>Quick answer:</strong> AI agent quality gates are checkpoints that prevent coding agents from marking work complete before it is verifiably done. Unlike human developers who intuitively know the difference between &ldquo;I think it works&rdquo; and &ldquo;I confirmed it works in production&rdquo;, agents will mark tasks done the moment they finish writing code &mdash; unless explicit gates require them to acknowledge CI, deployment, and production verification. amux implements four categories of quality gates: cost gates (per-session token kill thresholds), context gates (auto-compaction before overflow), action gates (human approval for destructive operations), and outcome gates (board task states that require evidence before advancing).
+    </div>
+
+    <h2 id="why-gates">Why AI agents need quality gates</h2>
+    <p>Without gates, an AI coding agent's definition of &ldquo;done&rdquo; is &ldquo;I pushed the code.&rdquo; The agent has no intrinsic reason to wait for CI, check whether the deploy succeeded, or run a smoke test on production. It just moves on to the next task. This produces a classic overnight-run failure: 20 tasks marked done by morning, zero of them deployed, none of them tested. The board looks like progress; the product is unchanged.</p>
+    <p>The deeper problem is that agents are optimizing for task completion as a signal, not for working software as an outcome. A gate interrupts that optimization and forces the agent to produce evidence &mdash; a CI run URL, a deploy confirmation, a smoke-test result &mdash; before it is allowed to call something finished. Without that evidence requirement, &ldquo;done&rdquo; is a fiction the agent tells itself.</p>
+    <p>amux's board distinguishes <code>done</code> (implemented and merged) from <code>verified</code> (confirmed working in production with CI, deploy, and smoke-test evidence). This prevents false completion status from accumulating silently across a team of parallel agents. The stale-doing detector catches a different failure: tasks that get claimed by an agent and never updated, which are silent abandonment rather than silent completion.</p>
+
+    <h2 id="cost-gates">Cost gates &mdash; prevent runaway token spend</h2>
+    <p>A coding agent stuck in a bad loop will spend tokens indefinitely. A recursive refactor loop, a test-fix cycle that keeps generating new failures, or an agent that cannot find a file and keeps retrying can exhaust a Claude Max monthly budget in a single overnight run if nothing stops it.</p>
+    <p>amux tracks per-session token usage in real time, parsed from the JSONL transcript each session writes. The usage is visible on every session card in the dashboard. Set a per-session token kill threshold in Settings &rarr; Session Limits; the watchdog process terminates any session that exceeds the limit and logs the termination event with timestamp and token count.</p>
+    <pre><code># Check token usage for all active sessions
+curl -sk https://localhost:8822/api/sessions | python3 -c "
+import json, sys
+for s in json.load(sys.stdin):
+    tokens = s.get('tokens_used', 0)
+    limit  = s.get('token_limit', 'none')
+    print(f\"{s['name']:20s}  {tokens:>8,} tokens  limit={limit}\")
+"</code></pre>
+    <p>Cost gates pair with the scheduler: long-running batch sessions can be given a budget for the run, not just the session lifetime, so a nightly job that normally costs 50k tokens is automatically killed if it reaches 200k &mdash; a signal that something has gone wrong.</p>
+
+    <h2 id="context-gates">Context gates &mdash; prevent context overflow crashes</h2>
+    <p>Claude Code sessions crash when their context window fills up. In a long-running unattended session &mdash; overnight refactors, multi-file migrations, test generation at scale &mdash; context overflow is the most common failure mode. Without intervention, the session dies silently at 3am and no one is there to restart it.</p>
+    <p>amux's watchdog monitors context usage on each session and intervenes before overflow. When usage crosses a configured threshold, the watchdog pauses the agent, sends a <code>/compact</code> command to Claude Code, waits for the compact to complete, and then resumes the session with the agent's last message &mdash; making the intervention transparent to the developer. The session loses no work; it just continues with a compressed context.</p>
+    <pre><code># Context auto-compaction is enabled by default. Monitor it:
+curl -sk https://localhost:8822/api/sessions/myproject | python3 -c "
+import json, sys
+s = json.load(sys.stdin)
+print('context_pct:', s.get('context_pct', 'n/a'))
+print('compactions:', s.get('compaction_count', 0))
+"</code></pre>
+    <p>If a session crashes despite compaction &mdash; an edge case where the compact itself overflows, or the process dies for an unrelated reason &mdash; the watchdog restarts it with <code>--resume</code> so the conversation continues from the last checkpoint rather than starting cold.</p>
+
+    <h2 id="action-gates">Action gates &mdash; human approval for irreversible operations</h2>
+    <p>Some agent actions cannot be undone: pushing to a shared branch, deleting a database record, sending an email, calling a paid external API, or clicking &ldquo;deploy&rdquo; in a production dashboard. Action gates are the mechanism that puts a human between the agent and those consequences.</p>
+    <p>amux supports two modes per session:</p>
+    <ul>
+      <li><strong>Gated mode</strong> (default): each action that Claude Code would normally prompt for requires explicit human approval before proceeding. The permission prompt is queued and surfaced in the dashboard and iOS app.</li>
+      <li><strong>YOLO mode</strong> (<code>--yolo</code>): all per-action prompts are auto-approved. The agent runs fully unattended. Use this for isolated environments with no irreversible side effects.</li>
+    </ul>
+    <p><strong>Phone approval via iOS app:</strong> When a session is in gated mode and the agent reaches a step requiring approval, the prompt appears in the iOS app's session view as a pending action card. Tap <strong>Approve</strong> or <strong>Deny</strong> from anywhere. The agent is blocked until you respond &mdash; it does not time out and move on. This means you can run a gated session overnight and wake up to a single approval request rather than a completed (or broken) run.</p>
+    <pre><code># Register a session in gated mode (omit --yolo)
+amux register myproject --dir ~/Dev/myproject
+
+# Or switch an existing session between modes at runtime:
+# YOLO on:  amux start myproject --yolo
+# YOLO off: amux start myproject   (no --yolo flag)</code></pre>
+    <p>The browser automation layer &mdash; amux's Playwright integration and the Computer Use agent &mdash; adds a per-automation <code>allow_irreversible: false</code> flag. When set, the automation blocks on any step classified as destructive (form submission, file deletion, payment action) until the operator explicitly approves that step. This is independent of Claude Code's permission system and applies even in YOLO mode.</p>
+
+    <h2 id="outcome-gates">Outcome gates &mdash; board gates for evidence-based completion</h2>
+    <p>Outcome gates are the highest-value gate category: they enforce the distinction between &ldquo;the agent thinks it is done&rdquo; and &ldquo;a human can confirm it is done.&rdquo; amux's board implements this with three task states and explicit gate conditions that must be acknowledged before advancing.</p>
+
+    <h3>The three states</h3>
+    <ul>
+      <li><strong>doing</strong> &mdash; actively being worked on by an agent or human. Only one task per session should be <code>doing</code> at a time.</li>
+      <li><strong>done</strong> &mdash; implemented and merged. Gate conditions: &ldquo;Implemented and merged&rdquo; + &ldquo;Tests / lint pass.&rdquo; This is not deployed and not confirmed in production.</li>
+      <li><strong>verified</strong> &mdash; confirmed working in production. All four conditions must hold, with evidence recorded: CI pipeline green on the merged commit, deployed to production, smoke-tested in prod, zero regressions.</li>
+    </ul>
+
+    <p>Agents cannot advance a task from <code>doing</code> to <code>done</code> by setting the status field alone &mdash; the gate checkboxes must be acknowledged in the API call. The same applies for <code>done</code> to <code>verified</code>. This prevents an agent from bulk-completing tasks at the end of a run without actually checking whether any of the conditions are met.</p>
+
+    <pre><code># Advance to done (agent must acknowledge both gates)
+curl -sk -X PATCH -H 'Content-Type: application/json' \
+  -d '{
+    "status": "done",
+    "gate_checked": ["Implemented and merged", "Tests / lint pass"],
+    "desc": "PR #142 merged. CI passed on sha abc1234."
+  }' \
+  https://localhost:8822/api/board/TASK-123
+
+# Advance to verified (all four production gates required)
+curl -sk -X PATCH -H 'Content-Type: application/json' \
+  -d '{
+    "status": "verified",
+    "gate_checked": [
+      "CI / CD green on merged commit",
+      "Deployed to production",
+      "Smoke-tested in production",
+      "Zero regressions"
+    ],
+    "desc": "Verified in prod: CI run https://... green; deployed sha abc1234; prod smoke passed; no regressions in health checks."
+  }' \
+  https://localhost:8822/api/board/TASK-123</code></pre>
+
+    <h3>Stale-doing detector</h3>
+    <p>A task stuck in <code>doing</code> with no progress update is a different failure mode: silent task abandonment. An agent claims a task, hits an obstacle, and stops updating the board &mdash; but the task stays in <code>doing</code> indefinitely, blocking other agents and creating false signals about session activity.</p>
+    <p>amux's stale-doing detector flags tasks held in <code>doing</code> beyond a configured interval without a description update. These appear as warnings in the dashboard and the iOS app's board view. The flag does not automatically reassign the task; it surfaces the problem for human review so a different session can be assigned or the task can be reset to <code>todo</code>.</p>
+
+    <h3>Shepherd / executor split</h3>
+    <p>The session that creates a board task (the shepherd) is tracked separately from the session that executes it (the executor). This accountability split matters when tasks are delegated across sessions: you can see at a glance which session is responsible for the outcome versus which session is doing the work. It also enables the stale-doing detector to notify the shepherd when the executor goes silent.</p>
+
+    <h2 id="comparison">amux quality gates vs. alternatives</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Gate type</th>
+          <th>amux</th>
+          <th>LangGraph</th>
+          <th>CrewAI</th>
+          <th>DIY tmux</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Cost kill threshold</td>
+          <td>Per-session, real-time</td>
+          <td>No</td>
+          <td>No</td>
+          <td>No</td>
+        </tr>
+        <tr>
+          <td>Context compaction</td>
+          <td>Auto-heal (watchdog)</td>
+          <td>Manual</td>
+          <td>Manual</td>
+          <td>No</td>
+        </tr>
+        <tr>
+          <td>Action approval</td>
+          <td>YOLO / gated / phone</td>
+          <td>Custom checkpoints</td>
+          <td>Human input nodes</td>
+          <td>No</td>
+        </tr>
+        <tr>
+          <td>Done vs verified</td>
+          <td>Board gates (enforced)</td>
+          <td>No</td>
+          <td>No</td>
+          <td>No</td>
+        </tr>
+        <tr>
+          <td>Stale task detection</td>
+          <td>Auto-flag after N hours</td>
+          <td>No</td>
+          <td>No</td>
+          <td>No</td>
+        </tr>
+        <tr>
+          <td>Mobile approval</td>
+          <td>iOS app</td>
+          <td>No</td>
+          <td>No</td>
+          <td>No</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2 id="setup">Setting up quality gates in amux</h2>
+
+    <p><strong>Step 1: Install amux</strong></p>
+    <pre><code>brew install mixpeek/amux/amux
+# or: git clone https://github.com/mixpeek/amux && cd amux && ./install.sh</code></pre>
+
+    <p><strong>Step 2: Register your project in gated mode</strong></p>
+    <pre><code># Gated (default) — each action prompts for approval
+amux register myproject --dir ~/Dev/myproject
+
+# YOLO — auto-approve everything (isolated environments only)
+amux register myproject --dir ~/Dev/myproject --yolo</code></pre>
+
+    <p><strong>Step 3: Set a token kill threshold</strong></p>
+    <p>Open the amux dashboard at <code>https://localhost:8822</code> &rarr; Settings &rarr; Session Limits. Set a max token budget per session. The watchdog terminates sessions that exceed it and logs the event with the token count and timestamp.</p>
+
+    <p><strong>Step 4: Connect the iOS app for phone approval</strong></p>
+    <p>Install <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">amux &ndash; Agent Multiplexer</a> from the App Store. Enter your amux server address in the app. Pending permission prompts from all active sessions appear in the app; tap to approve or deny from anywhere.</p>
+
+    <p><strong>Step 5: Mark tasks done with gate acknowledgment</strong></p>
+    <pre><code># Via CLI
+amux board done TASK-ID --gate "Implemented and merged,Tests pass"
+
+# Via API (more explicit)
+curl -sk -X PATCH -H 'Content-Type: application/json' \
+  -d '{"status":"done","gate_checked":["Implemented and merged","Tests / lint pass"],"desc":"PR merged, CI green"}' \
+  https://localhost:8822/api/board/TASK-ID</code></pre>
+
+    <p><strong>Step 6: Verify in production before marking verified</strong></p>
+    <pre><code>curl -sk -X PATCH -H 'Content-Type: application/json' \
+  -d '{
+    "status": "verified",
+    "gate_checked": [
+      "CI / CD green on merged commit",
+      "Deployed to production",
+      "Smoke-tested in production",
+      "Zero regressions"
+    ],
+    "desc": "Verified: CI run https://ci.example.com/123 green; deployed sha abc1234; prod smoke passing; no regressions."
+  }' \
+  https://localhost:8822/api/board/TASK-ID</code></pre>
+
+    <h2 id="yolo">When to relax gates (YOLO mode)</h2>
+    <p>YOLO mode exists because not every agent action needs a human in the loop. The right trade-off depends on the reversibility of the side effects:</p>
+    <ul>
+      <li><strong>Use <code>--yolo</code> for:</strong> greenfield projects with no production surface, test environments with no external dependencies, isolated feature branches where a bad push is easy to revert, documentation generation, pure read-only analysis tasks.</li>
+      <li><strong>Keep gates enabled for:</strong> anything touching a shared repository, external APIs (billing, email, third-party services), production databases, deployment systems, or any operation where the cost of a mistake exceeds the cost of an approval tap.</li>
+    </ul>
+    <p>The principle is: the more irreversible the side effect, the stronger the gate. YOLO mode is a deliberate opt-in to &ldquo;I trust this agent with everything in this session.&rdquo; Gated mode is the default because most agents should not have that level of trust by default.</p>
+    <p>YOLO can also be toggled per-session from the dashboard without stopping and restarting the session &mdash; useful when a trusted batch run needs human sign-off on one specific step and then wants to continue unattended.</p>
+
+    <h2 id="faq">Frequently Asked Questions</h2>
+
+    <details class="faq-item" open>
+      <summary>What is the difference between done and verified for AI agents?</summary>
+      <p>Done means the agent has finished writing and committing code. Verified means the change has been confirmed working end-to-end in production: the CI/CD pipeline passed on the merged commit, the commit is deployed to production, a smoke test on real prod behavior passed, and no regressions were detected. amux board enforces this distinction with explicit gate checkboxes agents must acknowledge before advancing a task's status. Conflating done and verified is one of the most common failure modes in overnight AI agent runs.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>How do I approve AI agent actions from my phone?</summary>
+      <p>amux's iOS app (<a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">App Store: amux &ndash; Agent Multiplexer</a>) shows pending permission prompts from all active sessions. When an agent reaches a step that requires approval &mdash; a destructive file operation, an external API call, a git push &mdash; the prompt appears in the iOS app's session peek view. Tap to approve or deny from anywhere. For fully unattended runs where no human approval is needed, enable YOLO mode with <code>--yolo</code> at session start.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>How do I prevent AI agents from running up a huge token bill overnight?</summary>
+      <p>amux tracks per-session token usage in real time, parsed from JSONL transcripts. Set a per-session token threshold in the dashboard under Settings &rarr; Session Limits; the watchdog process terminates sessions that exceed the limit and logs the termination event. This prevents runaway loops &mdash; a common failure where an agent gets stuck refactoring the same file repeatedly, consuming tokens without making progress.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>What is YOLO mode and when should I use it?</summary>
+      <p>YOLO mode (<code>amux start --yolo</code> or <code>amux register --yolo</code>) auto-approves all per-action permission prompts, letting Claude Code run fully unattended. Use it for trusted batch work in isolated environments: generating tests, writing documentation, refactoring low-risk code on a feature branch. Disable YOLO and use gated mode when agents touch anything irreversible: production systems, external APIs, billing, or shared repositories where a bad push is hard to reverse.</p>
+    </details>
+
+    <details class="faq-item">
+      <summary>How does amux detect when a coding agent gets stuck?</summary>
+      <p>amux's stale-doing detector flags board tasks that have been in <code>doing</code> status without a progress update for longer than a configured interval. The watchdog also detects context overflow before it crashes the session: when context usage exceeds a threshold, amux pauses the agent, runs <code>/compact</code> to summarize and compress the conversation, then resumes. If a session crashes despite this, the watchdog restarts it with <code>--resume</code> so the conversation continues from the last checkpoint.</p>
+    </details>
+
+    <div class="cta-box">
+      <h3>Human-in-the-loop AI agents, built in</h3>
+      <p>amux is an open-source control plane for AI agent teams &mdash; self-healing, phone-first, single Python file, zero external dependencies, MIT licensed. Quality gates ship out of the box.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+amux register myproject --dir ~/Dev/myproject
+amux start myproject
+amux serve  # → https://localhost:8822 — open Board tab</code></pre>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux">&#9733; Star on GitHub</a>
+        <a class="btn" href="/guides/getting-started/">Get started</a>
+      </div>
+    </div>
+
+    <h2>Related guides</h2>
+    <ul>
+      <li><a href="/guides/getting-started/">Getting started with amux</a></li>
+      <li><a href="/guides/running-10-plus-agents/">Running 10+ parallel AI coding agents</a></li>
+      <li><a href="/guides/self-healing-configuration/">Self-healing AI agent configuration</a></li>
+      <li><a href="/compare/amux-vs-diy-tmux/">amux vs DIY tmux</a></li>
+      <li><a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code documentation (Anthropic)</a></li>
+    </ul>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents. amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel Claude Code, Codex, or Gemini CLI sessions, with built-in kanban, notes, CRM, email, browser automation, and a scheduler.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
