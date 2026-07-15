@@ -21,9 +21,77 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Cline (Roo Code)","item":"https://amux.io/compare/amux-vs-cline/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Cline (Roo Code) — Fleet Orchestrator vs VS Code AI Coding Assistant (2026)","description":"Cline is an interactive VS Code AI coding assistant with per-step tool approval and multi-model support. amux is the headless fleet orchestrator for running dozens of parallel Claude Code, Codex, or Gemini CLI agents overnight — web dashboard, iOS app, self-healing watchdog. Complementary tools: use Cline for interactive feature work, amux for parallel batch fleet management.","url":"https://amux.io/compare/amux-vs-cline/","datePublished":"2026-07-15","dateModified":"2026-07-15","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Should I use Cline or amux?","acceptedAnswer":{"@type":"Answer","text":"Use Cline if you want an interactive AI coding assistant that stays inside VS Code, supports multiple AI models (Claude, GPT-4o, Gemini, DeepSeek, Ollama), and shows you each action before executing it. Use amux if you want to run multiple Claude Code, Codex CLI, or Gemini CLI agents in parallel — overnight, unattended, with a web dashboard and phone monitoring. Most advanced AI builders use both: Cline for interactive feature work, amux for parallel batch fleet management."}},{"@type":"Question","name":"Can Cline run multiple agents in parallel?","acceptedAnswer":{"@type":"Answer","text":"No — Cline runs one agent per VS Code window. Each instance has its own conversation context and operates independently. There is no shared task board, no inter-agent communication, no self-healing if a session crashes, and no fleet monitoring. For parallel agent workloads, you would need to manually open multiple VS Code windows with separate Cline sessions — without any coordination layer between them. amux is purpose-built for this use case."}},{"@type":"Question","name":"Can I use amux and Cline together?","acceptedAnswer":{"@type":"Answer","text":"Yes — they complement each other well. Use Cline for interactive feature development in VS Code where you want per-step approval. Use amux to manage parallel Claude Code, Codex, or Gemini CLI sessions for batch work: generating tests, writing documentation, building multiple features simultaneously. Many developers use Cline during the day for focused work, then queue amux sessions to run overnight."}},{"@type":"Question","name":"Does Cline have a mobile app?","acceptedAnswer":{"@type":"Answer","text":"No. Cline runs entirely inside VS Code and requires the desktop application to be open. If you close VS Code or lose your laptop, the agent stops. amux's iOS app lets you monitor session status, inspect terminal output, approve pending actions, and steer agents from your iPhone — even while traveling or away from your desk."}},{"@type":"Question","name":"Is Cline open source?","acceptedAnswer":{"@type":"Answer","text":"Yes — Cline is open source under the Apache 2.0 license, available at github.com/cline/cline with approximately 64,000 GitHub stars and around 2 million VS Code marketplace installs. amux is also open source (MIT + Commons Clause) with self-hosting via Homebrew or pip, and an optional $20/month cloud tier for teams that want a hosted dashboard."}}]}</script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},
+      {"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},
+      {"@type":"ListItem","position":3,"name":"amux vs Cline (Roo Code)","item":"https://amux.io/compare/amux-vs-cline/"}
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux vs Cline (Roo Code) — Fleet Orchestrator vs VS Code AI Coding Assistant (2026)",
+    "description": "Cline is an interactive VS Code AI coding assistant with per-step tool approval and multi-model support. amux is the headless fleet orchestrator for running dozens of parallel Claude Code, Codex, or Gemini CLI agents overnight — web dashboard, iOS app, self-healing watchdog. Complementary tools: use Cline for interactive feature work, amux for parallel batch fleet management.",
+    "url": "https://amux.io/compare/amux-vs-cline/",
+    "datePublished": "2026-07-15",
+    "dateModified": "2026-07-15",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Should I use Cline or amux?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Use Cline if you want an interactive AI coding assistant that stays inside VS Code, supports multiple AI models (Claude, GPT-4o, Gemini, DeepSeek, Ollama), and shows you each action before executing it. Use amux if you want to run multiple Claude Code, Codex CLI, or Gemini CLI agents in parallel — overnight, unattended, with a web dashboard and phone monitoring. Most advanced AI builders use both: Cline for interactive feature work, amux for parallel batch fleet management."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can Cline run multiple agents in parallel?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No — Cline runs one agent per VS Code window. Each instance has its own conversation context and operates independently. There is no shared task board, no inter-agent communication, no self-healing if a session crashes, and no fleet monitoring. For parallel agent workloads, you would need to manually open multiple VS Code windows with separate Cline sessions — without any coordination layer between them. amux is purpose-built for this use case."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I use amux and Cline together?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes — they complement each other well. Use Cline for interactive feature development in VS Code where you want per-step approval. Use amux to manage parallel Claude Code, Codex, or Gemini CLI sessions for batch work: generating tests, writing documentation, building multiple features simultaneously. Many developers use Cline during the day for focused work, then queue amux sessions to run overnight."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does Cline have a mobile app?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. Cline runs entirely inside VS Code and requires the desktop application to be open. If you close VS Code or lose your laptop, the agent stops. amux's iOS app lets you monitor session status, inspect terminal output, approve pending actions, and steer agents from your iPhone — even while traveling or away from your desk."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is Cline open source?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes — Cline is open source under the Apache 2.0 license, available at github.com/cline/cline with approximately 64,000 GitHub stars and around 2 million VS Code marketplace installs. amux is also open source (MIT + Commons Clause) with self-hosting via Homebrew or pip, and an optional $20/month cloud tier for teams that want a hosted dashboard."
+        }
+      }
+    ]
+  }
+  </script>
 </head>
 <body>
   <header class="site-header">
@@ -39,121 +107,487 @@
     </nav>
   </header>
   <main>
-    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Cline (Roo Code)</span></div>
+    <div class="breadcrumb">
+      <a href="/">amux</a>
+      <span class="sep">›</span>
+      <a href="/compare/">Compare</a>
+      <span class="sep">›</span>
+      <span>amux vs Cline (Roo Code)</span>
+    </div>
 
     <div class="kicker">// compare</div>
     <h1>amux vs Cline (Roo Code)</h1>
-    <p class="subtitle">Fleet orchestrator for parallel headless agents vs interactive single-agent VS Code assistant — different problems, complementary solutions.</p>
+    <p class="subtitle">
+      Fleet orchestrator for parallel headless agents vs interactive single-agent VS Code assistant —
+      different problems, complementary solutions.
+    </p>
     <p style="color:var(--muted);font-size:0.85rem">Last updated: July 15, 2026</p>
 
     <!-- EXP-007: compare pages GitHub CTA -->
     <div style="display:flex;align-items:center;gap:1rem;background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:0.875rem 1.125rem;margin:1.5rem 0;flex-wrap:wrap">
       <span style="font-size:13px;color:var(--fg-mute,#8892a4);flex:1;min-width:180px">Considering amux? See it in action before deciding →</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="if(window.posthog) posthog.capture('exp007_compare_github_cta_click', {page: window.location.pathname})" style="display:inline-flex;align-items:center;gap:0.5rem;background:#24292e;color:#fff;text-decoration:none;padding:0.5rem 1rem;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+      <a href="https://github.com/mixpeek/amux"
+         target="_blank"
+         rel="noopener"
+         onclick="if(window.posthog) posthog.capture('exp007_compare_github_cta_click', {page: window.location.pathname})"
+         style="display:inline-flex;align-items:center;gap:0.5rem;background:#24292e;color:#fff;text-decoration:none;padding:0.5rem 1rem;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+        </svg>
         ⭐ Star amux on GitHub
       </a>
     </div>
 
     <div style="background:var(--surface-2,#1a1f2e);border-left:3px solid var(--accent,#6ee7b7);padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
-      <strong>Quick answer:</strong> Cline and amux address different parts of the AI coding workflow. Cline is a VS Code extension that runs a single AI coding agent with user approval for every step — ideal for interactive, iterative feature development where you want to stay in the loop. amux is a headless fleet orchestrator that runs dozens of Claude Code, Codex, or Gemini CLI agents in parallel overnight, with a web dashboard and iOS app for remote monitoring. Most serious AI builders use both: Cline for interactive work, amux for parallel batch fleet management.
+      <strong>Quick answer:</strong> Cline and amux address different parts of the AI coding workflow.
+      Cline is a VS Code extension that runs a single AI coding agent with user approval for every step —
+      ideal for interactive, iterative feature development where you want to stay in the loop.
+      amux is a headless fleet orchestrator that runs dozens of Claude Code, Codex, or Gemini CLI agents
+      in parallel overnight, with a web dashboard and iOS app for remote monitoring.
+      Most serious AI builders use both: Cline for interactive work,
+      amux for parallel batch fleet management.
     </div>
 
     <h2>What each tool is built for</h2>
 
-    <p><strong>Cline</strong> (also known as Roo Code, formerly Claude Dev) is one of the most popular AI coding extensions in the VS Code marketplace — approximately 64,000 GitHub stars and around 2 million installs. It runs inside VS Code as a sidebar agent and connects to any LLM you configure: Claude, GPT-4o, Gemini, DeepSeek, local models via Ollama, and more than twenty other providers. Before executing any tool call — reading a file, editing code, running a terminal command, opening a browser — Cline asks for your explicit approval. That per-step control model is the point: Cline is built for interactive, human-in-the-loop feature development where you want full visibility into every action the agent takes. Install via the VS Code Extensions marketplace; open source under Apache 2.0 at <a href="https://github.com/cline/cline" target="_blank" rel="noopener">github.com/cline/cline</a>.</p>
+    <p>
+      <strong>Cline</strong> (also known as Roo Code, formerly Claude Dev) is one of the most popular
+      AI coding extensions in the VS Code marketplace — approximately 64,000 GitHub stars and around
+      2 million installs as of mid-2026. It runs inside VS Code as a sidebar agent and connects to
+      any LLM you configure: Claude, GPT-4o, Gemini, DeepSeek, local models via Ollama, and more than
+      twenty other providers. Before executing any tool call — reading a file, editing code,
+      running a terminal command, opening a browser — Cline asks for your explicit approval.
+      That per-step control model is the point: Cline is built for interactive, human-in-the-loop
+      feature development where you want full visibility into every action the agent takes.
+      Install via the VS Code Extensions marketplace; open source under Apache 2.0 at
+      <a href="https://github.com/cline/cline" target="_blank" rel="noopener">github.com/cline/cline</a>.
+    </p>
 
-    <p><strong>amux</strong> (~298 GitHub stars, much newer) is the open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>, OpenAI Codex CLI, or Gemini CLI sessions headlessly in tmux — no IDE, no VS Code, no desktop required. The web dashboard shows live terminal output from every session at once. The iOS app gives you remote monitoring and approval from anywhere. A built-in kanban board lets agents atomically claim tasks so no two sessions duplicate work. Self-healing handles context exhaustion, crashes, and stuck prompts automatically. Install: <code>brew install mixpeek/amux/amux</code> or <code>pipx install amux</code>. Open source (MIT + Commons Clause) at <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.</p>
+    <p>
+      <strong>amux</strong> (~298 GitHub stars, much newer) is the open-source control plane for
+      running an AI engineering team from a single dashboard or your phone. It launches, monitors,
+      and self-heals dozens of parallel
+      <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>,
+      OpenAI Codex CLI, or Gemini CLI sessions headlessly in tmux — no IDE, no VS Code,
+      no desktop required. The web dashboard shows live terminal output from every session at once.
+      The iOS app gives you remote monitoring and approval from anywhere. A built-in kanban board
+      lets agents atomically claim tasks so no two sessions duplicate work. Self-healing handles
+      context exhaustion, crashes, and stuck prompts automatically. Install:
+      <code>brew install mixpeek/amux/amux</code> or <code>pipx install amux</code>.
+      Open source (MIT + Commons Clause) at
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.
+    </p>
 
     <h2>The core difference: interactive single-agent vs unattended fleet at scale</h2>
 
-    <p>Cline is built for the loop: you describe a task in the VS Code sidebar, the agent proposes an action, you approve it, it executes, repeat. This per-step approval is great for complex features where you want human judgment at every decision point — when the agent is about to overwrite a critical file or run a database migration, you want to see that before it happens. And Cline's multi-model support means you can pick the best LLM for any given task without changing tools. One agent per VS Code window, requires you to be present.</p>
+    <p>
+      Cline is built for the loop: you describe a task in the VS Code sidebar, the agent proposes
+      an action, you approve it, it executes, repeat. This per-step approval model is ideal for
+      complex features where you want human judgment at every decision point — when the agent is about
+      to overwrite a critical file, run a database migration, or call an external API, you see and
+      approve it first. Cline's multi-model support means you can pick the best LLM for any given
+      task without changing tools. One agent per VS Code window; requires you to be at your desk.
+    </p>
 
-    <p>amux is built for the queue: load 20 tasks onto the kanban board before bed, 10 agents claim tasks atomically and work in parallel overnight, and you review 20 completed branches in the morning — from your iPhone over coffee. The self-healing watchdog handles context exhaustion (auto-compact and resume), crashes (restart and replay), and stuck prompts (detection and reset) without any human intervention. No IDE, no VS Code, no desktop presence required. The fleet runs whether or not you are at your desk.</p>
+    <p>
+      amux is built for the queue: load 20 tasks onto the kanban board before bed, 10 agents claim
+      tasks atomically and work in parallel overnight, and you review 20 completed branches in the
+      morning from your iPhone over coffee. The self-healing watchdog handles context exhaustion
+      (auto-compact and resume), crashes (restart and replay), and stuck prompts (detection and reset)
+      without any human intervention. No IDE, no VS Code, no desktop presence required.
+      The fleet runs whether or not you are at your desk.
+    </p>
 
-    <p>These are not competing tools — they solve the two opposite bottlenecks of AI-assisted development. Cline eliminates the "I need to see every AI action" concern for interactive work where oversight is the point. amux eliminates the "I can only run one thing at a time" constraint for batch and fleet work where throughput is the point. Most advanced AI builders end up using both for different parts of their workflow.</p>
+    <p>
+      These are not competing tools — they solve the two opposite bottlenecks of AI-assisted
+      development. Cline eliminates the "I need to see every AI action" concern for interactive
+      work where oversight is the point. amux eliminates the "I can only run one thing at a time"
+      constraint for batch and fleet work where throughput is the point.
+      Most advanced AI builders end up using both for different parts of their workflow.
+    </p>
 
     <h2>Feature comparison</h2>
 
     <table>
-      <thead><tr><th>Feature</th><th>amux</th><th>Cline (Roo Code)</th></tr></thead>
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th>amux</th>
+          <th>Cline (Roo Code)</th>
+        </tr>
+      </thead>
       <tbody>
-        <tr><td>Type</td><td>Fleet orchestrator / AI engineering team control plane</td><td>IDE AI coding assistant (VS Code extension)</td></tr>
-        <tr><td>Interface</td><td>Web dashboard + iOS app + CLI</td><td>VS Code extension sidebar</td></tr>
-        <tr><td>Agent model / runtime</td><td>Claude Code CLI · OpenAI Codex CLI · Gemini CLI</td><td>Multi-model API — Claude, GPT-4o, Gemini, DeepSeek, Ollama, 20+ providers</td></tr>
-        <tr><td>Parallel agents</td><td>Unlimited headless sessions (10–50+ typical)</td><td>One per VS Code window, no shared coordination</td></tr>
-        <tr><td>Unattended operation</td><td>Self-healing watchdog, YOLO auto-approve mode, runs overnight without user</td><td>Requires VS Code open and user present to approve each step</td></tr>
-        <tr><td>Human oversight model</td><td>Phone approval via iOS app, kanban board quality gates, steering messages</td><td>Per-step tool approval dialog in VS Code sidebar</td></tr>
-        <tr><td>Task coordination</td><td>Shared kanban board with atomic SQLite CAS claiming across all sessions</td><td>No built-in coordination between sessions</td></tr>
-        <tr><td>Inter-agent messaging</td><td>REST API messaging · @mention channels · Messages tab history</td><td>No cross-session communication</td></tr>
-        <tr><td>Mobile access</td><td><a href="/features/mobile-pwa/">Native iOS app</a> + installable PWA — monitor, steer, approve from phone</td><td>Desktop VS Code only — agent stops when VS Code closes</td></tr>
-        <tr><td>Self-healing</td><td>Auto-compact on context overflow, crash restart, message replay, stuck-prompt detection</td><td>User must manually restart; no automated recovery</td></tr>
-        <tr><td>Cost / token tracking</td><td>Per-session token accounting in web dashboard</td><td>Per-conversation cost shown in sidebar</td></tr>
-        <tr><td>Inter-session communication</td><td>Sessions send and receive messages via REST API; view all message history</td><td>No — each VS Code window is isolated</td></tr>
-        <tr><td>Built-in toolbox</td><td>Scheduler, notes, CRM, email (Gmail API), browser automation</td><td>File editing, terminal, browser (within the active agent session)</td></tr>
-        <tr><td>IDE required</td><td>No — runs in tmux on any Mac or Linux server, headless</td><td>Yes — VS Code must be running on your desktop</td></tr>
-        <tr><td>Open source</td><td>Yes — MIT + Commons Clause (single Python file)</td><td>Yes — Apache 2.0</td></tr>
-        <tr><td>Price</td><td>Free (self-hosted) / $20/month (cloud)</td><td>Free</td></tr>
-        <tr><td>Install</td><td><code>brew install mixpeek/amux/amux</code> · <code>pipx install amux</code> · <code>uvx amux serve</code></td><td>VS Code Extensions marketplace — search "Cline" or "Roo Code"</td></tr>
-        <tr><td>GitHub stars</td><td>298</td><td>~64,000</td></tr>
+        <tr>
+          <td>Type</td>
+          <td>Fleet orchestrator / AI engineering team control plane</td>
+          <td>IDE AI coding assistant (VS Code extension)</td>
+        </tr>
+        <tr>
+          <td>Interface</td>
+          <td>Web dashboard + iOS app + CLI</td>
+          <td>VS Code extension sidebar</td>
+        </tr>
+        <tr>
+          <td>Agent model / runtime</td>
+          <td>Claude Code CLI · OpenAI Codex CLI · Gemini CLI</td>
+          <td>Multi-model API — Claude, GPT-4o, Gemini, DeepSeek, Ollama, 20+ providers</td>
+        </tr>
+        <tr>
+          <td>Parallel agents</td>
+          <td>Unlimited headless sessions (10–50+ typical)</td>
+          <td>One per VS Code window, no shared coordination</td>
+        </tr>
+        <tr>
+          <td>Unattended operation</td>
+          <td>Self-healing watchdog, YOLO auto-approve mode, runs overnight without user</td>
+          <td>Requires VS Code open and user present to approve each step</td>
+        </tr>
+        <tr>
+          <td>Human oversight model</td>
+          <td>Phone approval via iOS app, kanban board quality gates, steering messages</td>
+          <td>Per-step tool approval dialog in VS Code sidebar</td>
+        </tr>
+        <tr>
+          <td>Task coordination</td>
+          <td>Shared kanban board with atomic SQLite CAS claiming across all sessions</td>
+          <td>No built-in coordination between sessions</td>
+        </tr>
+        <tr>
+          <td>Inter-agent messaging</td>
+          <td>REST API messaging · @mention channels · Messages tab history</td>
+          <td>No cross-session communication</td>
+        </tr>
+        <tr>
+          <td>Mobile access</td>
+          <td><a href="/features/mobile-pwa/">Native iOS app</a> + installable PWA — monitor, steer, approve from phone</td>
+          <td>Desktop VS Code only — agent stops when VS Code closes</td>
+        </tr>
+        <tr>
+          <td>Self-healing</td>
+          <td>Auto-compact on context overflow, crash restart, message replay, stuck-prompt detection</td>
+          <td>User must manually restart; no automated recovery</td>
+        </tr>
+        <tr>
+          <td>Cost / token tracking</td>
+          <td>Per-session token accounting in web dashboard</td>
+          <td>Per-conversation cost shown in sidebar</td>
+        </tr>
+        <tr>
+          <td>Inter-session communication</td>
+          <td>Sessions send and receive messages via REST API; full message history tab</td>
+          <td>No — each VS Code window is an isolated silo</td>
+        </tr>
+        <tr>
+          <td>Built-in toolbox</td>
+          <td>Scheduler, notes, CRM, email (Gmail API), browser automation</td>
+          <td>File editing, terminal, browser (within the active agent session)</td>
+        </tr>
+        <tr>
+          <td>IDE required</td>
+          <td>No — runs in tmux on any Mac or Linux server, headless</td>
+          <td>Yes — VS Code must be running on your desktop</td>
+        </tr>
+        <tr>
+          <td>Open source</td>
+          <td>Yes — MIT + Commons Clause (single Python file)</td>
+          <td>Yes — Apache 2.0</td>
+        </tr>
+        <tr>
+          <td>Price</td>
+          <td>Free (self-hosted) / $20/month (cloud)</td>
+          <td>Free</td>
+        </tr>
+        <tr>
+          <td>Install</td>
+          <td><code>brew install mixpeek/amux/amux</code> · <code>pipx install amux</code></td>
+          <td>VS Code Extensions marketplace — search "Cline" or "Roo Code"</td>
+        </tr>
+        <tr>
+          <td>GitHub stars</td>
+          <td>298</td>
+          <td>~64,000</td>
+        </tr>
       </tbody>
     </table>
+
+    <h2>How Cline works</h2>
+
+    <p>
+      Cline operates as a VS Code extension that maintains a conversation with your chosen LLM provider.
+      When you give it a task, it reads your codebase (respecting .clineignore rules), plans a sequence
+      of actions, and then executes each action one at a time — pausing before each for your explicit
+      approval. Tool calls include reading files, writing files, running terminal commands, searching
+      the web, and driving a headless browser. The agent sees your VS Code workspace context: open
+      tabs, active file, selected text.
+    </p>
+
+    <p>
+      Each Cline session is stateful within a single VS Code window and its conversation history. If you
+      close VS Code, the session ends. If the context window fills up, you start a new conversation.
+      Roo Code (the Cline fork) adds features like boomerang tasks — sub-tasks that spin out and
+      return results to the parent — but the fundamental single-agent, single-window model is the same.
+    </p>
+
+    <h2>How amux works</h2>
+
+    <p>
+      amux manages a fleet of tmux sessions, each running a Claude Code, Codex CLI, or Gemini CLI
+      process headlessly. A SQLite database tracks session state, kanban board items, messages,
+      and schedules. The web dashboard streams live output from every session via Server-Sent Events
+      so you can watch all agents simultaneously. The iOS app connects to the same API over the local
+      network (or via the cloud tier).
+    </p>
+
+    <p>
+      When an agent's context window fills up, amux's watchdog detects it, sends the appropriate
+      compact command, waits for the agent to resume, and replays any pending messages — all
+      automatically, without requiring human intervention. When an agent crashes, the watchdog
+      restarts it. When an agent finishes a task and marks it done on the board, the next available
+      agent picks up the next todo item via an atomic compare-and-swap operation so no work is
+      duplicated across the fleet.
+    </p>
 
     <h2>Where Cline is the better fit</h2>
 
     <ul>
-      <li><strong>Interactive feature development where you want to approve each AI action.</strong> Cline's per-step approval loop is purpose-built for complex features where you want to review every file edit, every terminal command, and every browser action before it executes. If the feature involves subtle business logic, a tricky migration, or anything where an unchecked AI action could cause damage, Cline's model keeps you in control at every step.</li>
-      <li><strong>IDE-native workflows — VS Code context, open files, workspace awareness.</strong> Cline lives in VS Code, sees your open files and active editor context, and integrates with your existing workspace. No context-switching, no separate terminal, no dashboard to check — the agent is right in the sidebar while you work. It understands your open tabs, selected code, and current file the same way you do.</li>
-      <li><strong>Multi-model flexibility in a single UI.</strong> Cline supports more than twenty LLM providers — Claude, GPT-4o, Gemini, DeepSeek, local models via Ollama, and others. If you regularly switch between models for different tasks (e.g. Claude for reasoning, DeepSeek for cost-sensitive work, a local model for privacy-sensitive code), Cline handles this natively without additional tooling.</li>
-      <li><strong>Quick single-task automation with full visibility.</strong> For a well-defined, contained task — implement this function, refactor this class, write tests for this module — Cline gets you there fast with a tight feedback loop. You see each action as it happens and can intervene, redirect, or undo at any point.</li>
-      <li><strong>Zero infrastructure overhead.</strong> Install the VS Code extension and you are running in seconds. No server to stand up, no tmux, no dashboard, no cloud account. If you just want AI coding assistance inside the editor you are already using, Cline is the lowest-friction path.</li>
+      <li>
+        <strong>Interactive feature development where you want to approve each AI action.</strong>
+        Cline's per-step approval loop is purpose-built for complex features where you want to
+        review every file edit, every terminal command, and every browser action before it executes.
+        When the feature involves subtle business logic, a tricky migration, or anything where an
+        unchecked AI action could cause damage, Cline's model keeps you in control at every step.
+      </li>
+      <li>
+        <strong>IDE-native workflows — VS Code context, open files, workspace awareness.</strong>
+        Cline lives in VS Code, sees your open files and active editor context, and integrates with
+        your existing workspace. No context-switching, no separate terminal, no dashboard to check —
+        the agent is right in the sidebar while you work. It understands your open tabs, selected
+        code, and current file the same way you do.
+      </li>
+      <li>
+        <strong>Multi-model flexibility in a single UI.</strong>
+        Cline supports more than twenty LLM providers. If you regularly switch between Claude,
+        GPT-4o, DeepSeek, and local Ollama models for different tasks, Cline handles this natively
+        in a single interface without additional tooling.
+      </li>
+      <li>
+        <strong>Quick single-task automation with full visibility.</strong>
+        For a well-defined, contained task — implement this function, refactor this class,
+        write tests for this module — Cline gets you there fast with a tight feedback loop.
+        You see each action as it happens and can intervene, redirect, or undo at any point.
+      </li>
+      <li>
+        <strong>Zero infrastructure overhead.</strong>
+        Install the VS Code extension and you are running in seconds. No server to stand up,
+        no tmux, no dashboard. If you just want AI coding assistance inside the editor you are
+        already using, Cline is the lowest-friction path.
+      </li>
     </ul>
 
     <h2>Where amux is the better fit</h2>
 
     <ul>
-      <li><strong>Running 5–50 parallel agents overnight while you sleep.</strong> Queue work before bed, agents claim tasks from the shared board, work in parallel through the night, and you review completed branches in the morning from your phone. Cline has no fleet model — each session is uncoordinated and requires you to be present. See <a href="/guides/running-10-plus-agents/">how to run 10+ agents in parallel</a>.</li>
-      <li><strong>Unattended batch operations — test generation, docs, refactoring at scale.</strong> The self-healing watchdog handles context exhaustion (auto-compact and resume), crashes (restart and replay), and stuck prompts (detection and reset) automatically. amux YOLO mode lets agents auto-approve safe actions so the fleet keeps moving without requiring a human at the keyboard. Cline pauses for approval at every step and stops when VS Code closes.</li>
-      <li><strong>Remote monitoring and steering from your phone.</strong> The <a href="/features/mobile-pwa/">iOS app and installable PWA</a> give you a full remote control for your AI engineering team — inspect live terminal output, see which tasks are claimed, peek at any session, send steering messages, approve pending quality gates. If you close your laptop, board a flight, or step away from your desk, the fleet keeps running and you stay in control from your phone. Cline has no mobile story.</li>
-      <li><strong>Coordinated parallel work with quality gates.</strong> amux's <a href="/guides/ai-agent-quality-gates/">quality gate system</a> lets you require human or automated approval before agents proceed past defined checkpoints — at the fleet level. Agents coordinate via a shared kanban board with atomic task claiming (SQLite compare-and-swap) so no two sessions ever duplicate work. Inter-agent messaging via REST API lets sessions share results, delegate sub-tasks, and build on each other's output. Cline sessions are isolated silos with no coordination layer.</li>
-      <li><strong>Full business ops alongside coding agents.</strong> amux includes a CRM, Gmail-API email, a scheduler, notes, and browser automation alongside the coding fleet. Teams use it for customer support agents, market research, automated reporting, and CI orchestration running in the same control plane as their parallel coding sessions. This goes well beyond what any IDE extension is designed to handle.</li>
-      <li><strong>Server or cloud deployments — no Mac/Windows desktop required.</strong> amux runs headlessly on any Mac or Linux server, in Docker, or on a cloud VM. If you want AI agents running on a remote machine or in a CI/CD pipeline, amux fits naturally. Cline requires a desktop VS Code installation.</li>
+      <li>
+        <strong>Running 5–50 parallel agents overnight while you sleep.</strong>
+        Queue work before bed, agents claim tasks from the shared board, work in parallel through
+        the night, and you review completed branches in the morning from your phone.
+        Cline has no fleet model — each session is uncoordinated and requires you to be present.
+        See <a href="/guides/running-10-plus-agents/">how to run 10+ agents in parallel</a>.
+      </li>
+      <li>
+        <strong>Unattended batch operations — test generation, docs, refactoring at scale.</strong>
+        The self-healing watchdog handles context exhaustion, crashes, and stuck prompts automatically.
+        amux YOLO mode lets agents auto-approve safe actions so the fleet keeps moving without a human
+        at the keyboard. Cline pauses for approval at every step and stops when VS Code closes.
+      </li>
+      <li>
+        <strong>Remote monitoring and steering from your phone.</strong>
+        The <a href="/features/mobile-pwa/">iOS app and installable PWA</a> give you a full remote
+        control for your AI engineering team — inspect live terminal output, see which tasks are
+        claimed, peek at any session, send steering messages, approve pending quality gates.
+        If you close your laptop, board a flight, or step away from your desk, the fleet keeps
+        running and you stay in control from your phone. Cline has no mobile story.
+      </li>
+      <li>
+        <strong>Coordinated parallel work with quality gates.</strong>
+        amux's <a href="/guides/ai-agent-quality-gates/">quality gate system</a> lets you require
+        human or automated approval before agents proceed past defined checkpoints — at the fleet
+        level. Agents coordinate via a shared kanban board with atomic task claiming so no two
+        sessions ever duplicate work. Inter-agent messaging via REST API lets sessions share results,
+        delegate sub-tasks, and build on each other's output. Cline sessions are isolated silos.
+      </li>
+      <li>
+        <strong>Full business ops alongside coding agents.</strong>
+        amux includes a CRM, Gmail-API email, a scheduler, notes, and browser automation alongside
+        the coding fleet. Teams use it for customer support agents, market research, automated
+        reporting, and CI orchestration running in the same control plane as their parallel coding
+        sessions. This goes well beyond what any IDE extension is designed to handle.
+      </li>
+      <li>
+        <strong>Server or cloud deployments — no Mac/Windows desktop required.</strong>
+        amux runs headlessly on any Mac or Linux server, in Docker, or on a cloud VM. If you want
+        AI agents running on a remote machine, in a CI/CD pipeline, or on a dedicated server you
+        SSH into, amux fits naturally. Cline requires a desktop VS Code installation to be open.
+      </li>
     </ul>
 
     <h2>Why not both? A day in the life using Cline + amux</h2>
 
-    <p>Many advanced AI developers use Cline and amux together because they solve opposite problems at different times of day and different points in the engineering workflow. Here is what that looks like in practice:</p>
+    <p>
+      Many advanced AI developers use Cline and amux together because they solve opposite problems
+      at different times of day and different points in the engineering workflow.
+      Here is what that typically looks like:
+    </p>
 
-    <p><strong>Morning (review overnight fleet output).</strong> You open the amux iOS app over coffee. Ten tasks completed overnight: eight branches ready to review, two waiting at quality gates for your approval. You peek at the terminal output for each, approve the gate on the two waiting agents, and move all ten board items to "done" with a summary. None of this required your laptop — you did it from your phone before you got out of bed.</p>
+    <p>
+      <strong>Morning (review overnight fleet output).</strong>
+      You open the amux iOS app over coffee. Ten tasks completed overnight: eight branches are ready
+      to review in GitHub, two are waiting at quality gates for your approval. You peek at the
+      terminal output for each, approve the gate on the two waiting agents, and move all ten board
+      items to done with a summary. None of this required your laptop — you did it from your phone.
+    </p>
 
-    <p><strong>Day (interactive feature work in VS Code with Cline).</strong> You sit down at your desk and open VS Code. There is a complex new feature with subtle business logic — the kind where you want to watch the agent's reasoning and intervene if it takes a wrong turn. You use Cline for this: interactive, step-by-step, with approval at each tool call. Cline's multi-model support lets you try Claude Sonnet for architecture exploration and switch to a cheaper model for the boilerplate implementation. You approve each file edit and terminal command as it happens.</p>
+    <p>
+      <strong>Day (interactive feature work in VS Code with Cline).</strong>
+      You sit down at your desk and open VS Code. There is a complex new feature with subtle business
+      logic — the kind where you want to watch the agent's reasoning and intervene if it takes a
+      wrong turn. You use Cline for this: interactive, step-by-step, with approval at each tool call.
+      Cline's multi-model support lets you try Claude Sonnet for architecture exploration and switch
+      to a cheaper model for the boilerplate implementation. You approve each edit and command as it
+      happens.
+    </p>
 
-    <p><strong>Evening (queue tomorrow's amux batch).</strong> Before you close your laptop, you add items to the amux kanban board: generate integration tests for the feature you built today, update documentation across eight modules to reflect the new API, run a parallel refactor of the legacy authentication layer across five services, and produce a competitive intelligence report using the browser automation agent. You set a quality gate on the refactor so agents pause before merging any branch. Then you close your laptop. The fleet runs overnight.</p>
+    <p>
+      <strong>Evening (queue tomorrow's amux batch).</strong>
+      Before you close your laptop, you add items to the amux kanban board: generate integration
+      tests for the feature you built today, update documentation across eight modules to reflect
+      the new API, run a parallel refactor of the legacy authentication layer across five services,
+      and produce a competitive intelligence report using the browser automation agent. You set a
+      quality gate on the refactor so agents pause before merging any branch. Then you close your
+      laptop. The fleet runs overnight.
+    </p>
 
-    <p>The two tools are designed for opposite ends of the same spectrum: Cline for when you need a careful, human-guided, interactive AI that shows you every move it makes; amux for when you want unattended throughput at fleet scale with monitoring from your pocket.</p>
+    <p>
+      The two tools cover the full spectrum of AI-assisted engineering. Cline for when you need
+      a careful, human-guided, interactive AI that shows you every move it makes.
+      amux for when you want unattended throughput at fleet scale with monitoring from your pocket.
+    </p>
+
+    <h2>Use case decision guide</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Situation</th>
+          <th>Better tool</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Building a complex feature with nuanced requirements</td>
+          <td>Cline — interactive approval, VS Code context</td>
+        </tr>
+        <tr>
+          <td>Generating tests for an existing codebase</td>
+          <td>amux — parallel agents, overnight batch, no supervision needed</td>
+        </tr>
+        <tr>
+          <td>Refactoring a large codebase across many files</td>
+          <td>amux — parallel sessions each owning a slice, fleet coordination</td>
+        </tr>
+        <tr>
+          <td>Exploring a new library or framework</td>
+          <td>Cline — tight feedback loop, multi-model flexibility</td>
+        </tr>
+        <tr>
+          <td>Updating documentation across 20 modules</td>
+          <td>amux — each agent handles a module, completes overnight</td>
+        </tr>
+        <tr>
+          <td>Debugging a production incident right now</td>
+          <td>Cline — interactive, immediate, you stay in control</td>
+        </tr>
+        <tr>
+          <td>Running agents while you travel or are away from your desk</td>
+          <td>amux — iOS app for monitoring, self-healing keeps fleet alive</td>
+        </tr>
+        <tr>
+          <td>Coordinating 10 agents working on related features simultaneously</td>
+          <td>amux — shared board, atomic claiming, inter-agent messaging</td>
+        </tr>
+        <tr>
+          <td>Using GPT-4o or DeepSeek for a specific task</td>
+          <td>Cline — direct multi-provider API support in sidebar</td>
+        </tr>
+        <tr>
+          <td>Running agents on a remote Linux server, no desktop</td>
+          <td>amux — headless, no IDE required, SSH-friendly</td>
+        </tr>
+      </tbody>
+    </table>
 
     <h2>FAQ</h2>
 
-    <dl style="display:grid;gap:1.25rem">
+    <dl style="display:grid;gap:1.5rem">
       <div>
-        <dt style="font-weight:600;margin-bottom:0.25rem">Should I use Cline or amux?</dt>
-        <dd style="color:var(--fg-mute,#8892a4)">Use Cline if you want an interactive AI coding assistant inside VS Code with per-step approval and support for 20+ LLM providers. Use amux if you want to run parallel Claude Code, Codex CLI, or Gemini CLI agents overnight, unattended, with a web dashboard and phone monitoring. Most advanced AI builders use both — Cline for interactive feature work during the day, amux for parallel batch fleet management overnight.</dd>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Should I use Cline or amux?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Use Cline if you want an interactive AI coding assistant inside VS Code with per-step
+          approval and support for 20+ LLM providers. Use amux if you want to run parallel
+          Claude Code, Codex CLI, or Gemini CLI agents overnight, unattended, with a web dashboard
+          and phone monitoring. Most advanced AI builders use both — Cline for interactive feature
+          work during the day, amux for parallel batch fleet management overnight.
+        </dd>
       </div>
       <div>
-        <dt style="font-weight:600;margin-bottom:0.25rem">Can Cline run multiple agents in parallel?</dt>
-        <dd style="color:var(--fg-mute,#8892a4)">No. Cline runs one agent per VS Code window with no shared task board, no inter-agent communication, and no self-healing. You can open multiple VS Code windows, but there is no coordination layer between them — they are isolated sessions with no way to share tasks or results. amux is purpose-built for parallel fleet work. See <a href="/guides/running-10-plus-agents/">how to run 10+ agents in parallel</a>.</dd>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Can Cline run multiple agents in parallel?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          No. Cline runs one agent per VS Code window with no shared task board, no inter-agent
+          communication, and no self-healing. You can open multiple VS Code windows, but there is
+          no coordination layer between them — they are isolated sessions with no way to share tasks
+          or results. amux is purpose-built for parallel fleet work. See
+          <a href="/guides/running-10-plus-agents/">how to run 10+ agents in parallel</a>.
+        </dd>
       </div>
       <div>
-        <dt style="font-weight:600;margin-bottom:0.25rem">Does Cline have a mobile app?</dt>
-        <dd style="color:var(--fg-mute,#8892a4)">No. Cline is desktop VS Code only — the agent stops the moment VS Code closes. amux's <a href="/features/mobile-pwa/">iOS app and installable PWA</a> let you monitor live session output, approve pending quality gates, send steering messages, and manage the kanban board from your iPhone — even when you are away from your desk.</dd>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Can I use amux and Cline together?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Yes — they complement each other well. Use Cline for interactive feature development in VS
+          Code where you want per-step approval. Use amux to manage parallel Claude Code, Codex, or
+          Gemini CLI sessions for batch work: generating tests, writing documentation, building multiple
+          features simultaneously. Many developers use Cline during the day for focused work, then
+          queue amux sessions to run overnight.
+        </dd>
       </div>
       <div>
-        <dt style="font-weight:600;margin-bottom:0.25rem">What is the difference between Cline and Roo Code?</dt>
-        <dd style="color:var(--fg-mute,#8892a4)">Roo Code (formerly Roo Cline) is a community fork of Cline maintained separately with additional features and a different release cadence. Both are VS Code extensions for interactive AI coding assistance with per-step approval. amux is unrelated to either — it is a server-side fleet orchestrator that manages Claude Code CLI, Codex CLI, and Gemini CLI sessions headlessly, not a VS Code extension.</dd>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Does Cline have a mobile app?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          No. Cline is desktop VS Code only — the agent stops the moment VS Code closes. amux's
+          <a href="/features/mobile-pwa/">iOS app and installable PWA</a> let you monitor live session
+          output, approve pending quality gates, send steering messages, and manage the kanban board
+          from your iPhone — even when you are traveling or away from your desk.
+        </dd>
       </div>
       <div>
-        <dt style="font-weight:600;margin-bottom:0.25rem">Is Cline open source?</dt>
-        <dd style="color:var(--fg-mute,#8892a4)">Yes — Apache 2.0 at <a href="https://github.com/cline/cline" target="_blank" rel="noopener">github.com/cline/cline</a>, approximately 64,000 GitHub stars and around 2 million VS Code marketplace installs. amux is also open source — MIT + Commons Clause at <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>, with a free self-hosted path and an optional $20/month cloud tier for teams.</dd>
+        <dt style="font-weight:600;margin-bottom:0.35rem">What is the difference between Cline and Roo Code?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Roo Code (formerly Roo Cline) is a community fork of Cline maintained separately with
+          additional features and a different release cadence. Both are VS Code extensions for
+          interactive AI coding assistance with per-step approval. amux is unrelated to either —
+          it is a server-side fleet orchestrator that manages Claude Code CLI, Codex CLI, and Gemini
+          CLI sessions headlessly, not a VS Code extension.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Is Cline open source?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Yes — Apache 2.0 at
+          <a href="https://github.com/cline/cline" target="_blank" rel="noopener">github.com/cline/cline</a>,
+          approximately 64,000 GitHub stars and around 2 million VS Code marketplace installs. amux is
+          also open source — MIT + Commons Clause at
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>,
+          with a free self-hosted path and an optional $20/month cloud tier for teams.
+        </dd>
       </div>
     </dl>
 
@@ -173,7 +607,13 @@ amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # → https://localhost:8822</code></pre>
 
-    <p>See the <a href="/guides/getting-started/">getting started guide</a> for a full walkthrough, <a href="/guides/running-10-plus-agents/">how to run 10+ agents in parallel</a> for fleet operations, and the <a href="/guides/ai-agent-quality-gates/">quality gates guide</a> for human-in-the-loop checkpoints at scale. If you are coming from Cline, you already have Claude set up — amux just adds the fleet layer on top.</p>
+    <p>
+      See the <a href="/guides/getting-started/">getting started guide</a> for a full walkthrough,
+      <a href="/guides/running-10-plus-agents/">how to run 10+ agents in parallel</a> for fleet
+      operations, and the <a href="/guides/ai-agent-quality-gates/">quality gates guide</a> for
+      human-in-the-loop checkpoints at scale. If you are coming from Cline, you already have Claude
+      configured — amux adds the fleet layer on top without replacing your interactive workflow.
+    </p>
 
     <h2>See also</h2>
     <ul>
@@ -188,13 +628,21 @@ amux serve  # → https://localhost:8822</code></pre>
 
     <div class="cta-box">
       <h3>Run an AI engineering team with amux</h3>
-      <p>Parallel agents, self-healing, web dashboard, and a remote-control iOS app. Open source, MIT licensed. Complements Cline for the work that can't wait for you to be at your desk.</p>
+      <p>
+        Parallel agents, self-healing, web dashboard, and a remote-control iOS app.
+        Open source, MIT licensed. Complements Cline for the work that can't wait for you to be
+        at your desk.
+      </p>
       <pre><code>brew install mixpeek/amux/amux
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # → https://localhost:8822</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
-      <a class="btn" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" style="margin-left:0.5rem">Download iOS App</a>
+      <a class="btn"
+         href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435"
+         target="_blank"
+         rel="noopener"
+         style="margin-left:0.5rem">Download iOS App</a>
     </div>
   </main>
   <footer class="sub-footer">
