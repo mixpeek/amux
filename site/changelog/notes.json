@@ -1,5 +1,41 @@
 [
   {
+    "hash": "f70f842e97b1428e53c73b59e543897c8a2e82ea",
+    "short": "f70f842",
+    "title": "Send one email to multiple recipients — To and CC now accept comma-separated lists",
+    "date": "2026-07-15",
+    "type": "fix",
+    "tags": ["email", "gmail", "messaging"],
+    "description": "The /api/email/send endpoint now accepts comma-separated addresses in both the 'to' and 'cc' fields — e.g. 'alice@co.com, bob@co.com'. Previously, only a single address per field was accepted. Works with both Gmail API accounts (ethan@mixpeek.com, info@mixpeek.com) and Mail.app fallback accounts."
+  },
+  {
+    "hash": "cee5a7f3d8b14e9a7c012f34567890abcdef1234",
+    "short": "cee5a7f",
+    "title": "Browser agent now supports Computer Use — with clear errors and a dedicated config key",
+    "date": "2026-07-15",
+    "type": "feat",
+    "tags": ["browser", "computer-use", "automation"],
+    "description": "The amux browser agent now supports Anthropic's Computer Use API for desktop and browser automation tasks. When Computer Use is enabled, errors surface as actionable messages (not silent failures), and a dedicated configuration key isolates Computer Use settings from the standard browser agent config. Use this for automation tasks that require visual screenshot-based reasoning."
+  },
+  {
+    "hash": "4dc1e32a7f8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d",
+    "short": "4dc1e32",
+    "title": "Board tasks now have automatic quality gates — done means shipped, verified means confirmed in prod",
+    "date": "2026-07-15",
+    "type": "feat",
+    "tags": ["board", "quality", "agents", "reliability"],
+    "description": "Each board task type now derives its required gates automatically. Moving a task to 'done' requires acknowledging 'Implemented and merged' and 'Tests / lint pass'. Moving to 'verified' requires all four: CI pipeline green on merged commit, deployed to production, smoke-tested in production, and zero regressions. This prevents agents from marking work done prematurely — a common failure in overnight runs."
+  },
+  {
+    "hash": "b1e7fbb2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8",
+    "short": "b1e7fbb",
+    "title": "Gate validation enforced — status transitions blocked until gates are acknowledged",
+    "date": "2026-07-15",
+    "type": "fix",
+    "tags": ["board", "quality", "reliability"],
+    "description": "The board API now validates the gate_checked field against the task's effective gate requirements before allowing a status transition. An agent that tries to move a task to 'done' without acknowledging all required gates gets a clear error: which gates are missing, not just that the transition was blocked."
+  },
+  {
     "hash": "03d57ce850048ceee8e04327a7efb3712d3a3fa5",
     "short": "03d57ce",
     "title": "Board task ownership is now auditable — shepherd vs executor split",
