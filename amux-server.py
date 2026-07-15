@@ -13764,13 +13764,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .overlay-body .md-link:active { color: #e8c547; }
   /* Box-drawing tables/frames: keep monospace alignment, scroll sideways instead
      of wrapping (which detached borders and shredded rows on narrow screens). */
-  .overlay-body .peek-box { display: block; white-space: pre; overflow-x: auto; max-width: 100%;
+  .overlay-body .peek-box { display: block; white-space: pre; overflow-x: auto; overflow-y: hidden; max-width: 100%;
     word-break: normal; overflow-wrap: normal; -webkit-overflow-scrolling: touch;
     /* Only claim HORIZONTAL pans; vertical scroll gestures pass through to the
        peek-body. Without this, iOS treats each box block as its own touch-scroll
        context and traps the vertical swipe when your finger lands on one — which
-       are the ──── rules around every prompt, so you couldn't scroll up past ❯. */
-    touch-action: pan-x; overscroll-behavior: contain; }
+       are the ──── rules around every prompt, so you couldn't scroll up past ❯.
+       overflow-y:hidden is load-bearing: overflow-x:auto ALONE makes the browser
+       COMPUTE overflow-y to `auto` (CSS spec), so a table TALLER than the viewport
+       becomes a vertical scroll container that — with overscroll containment —
+       swallows the wheel/swipe instead of chaining to peek-body ("can't scroll a
+       very tall table", 2026-07-15). Boxes are content-height, so hidden clips
+       nothing. Scope the overscroll containment to X so vertical still chains. */
+    touch-action: pan-x; overscroll-behavior-x: contain; }
   .overlay-body .peek-box::-webkit-scrollbar { height: 6px; }
   .overlay-body .peek-box::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.22); border-radius: 3px; }
   /* Emoji occupy exactly 2 monospace cells inside tables so borders stay aligned
@@ -24048,7 +24054,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.114';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.115';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -41587,7 +41593,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.114';
+const CACHE = 'amux-v0.9.115';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
