@@ -2190,6 +2190,11 @@ _LOG_SAVE_INTERVAL = 30  # seconds between saves per session
 
 _peek_cache: dict[str, tuple[float, int, dict]] = {}  # session -> (monotonic_time, lines, response_dict)
 _PEEK_CACHE_TTL = 2.5  # seconds — long enough that multiple clients share one cached result
+# session -> the transcript string the last FULL peek response's history was built
+# from. A live=1 poll trims its frame against this exact text, so the seam stays
+# duplicate-free against the history the client is actually displaying — without
+# re-rendering the 120KB transcript on every poll. Written only for peeked sessions.
+_peek_transcript_cache: dict[str, str] = {}
 
 _transcript_render_cache: dict[tuple, tuple[float, int, str]] = {}  # (path, max_chars) -> (mtime, size, rendered)
 _jsonl_path_cache: dict[str, tuple[float, "Path | None"]] = {}  # session -> (monotonic, path)
@@ -19633,8 +19638,13 @@ let peekSearchQuery = '';
 let peekSearchIndex = 0;
 let _peekMatches = [];
 let lastPeekHTML = '';
-let _lastPeekRaw = '';   // raw output from last peek — skip re-render if unchanged
-let _peekEtag = null;    // ETag of last peek response — enables conditional 304 fetches
+let _lastPeekRaw = '';   // raw LIVE frame from last peek — skip re-render if unchanged
+// Transcript history is fetched once per open (the full payload) and kept here, so
+// each poll re-fetches/re-renders only the ~7KB live frame instead of ~138KB.
+let _peekHistoryRaw = '';
+let _peekHistoryHTML = '';
+let _peekEtag = null;    // ETag of last FULL peek response — enables conditional 304 fetches
+let _peekLiveEtag = null; // ETag of last live=1 response — keeps idle polls a cheap 304
 // Adaptive peek polling: fast while the session generates, back off when idle
 // (each idle poll is a cheap 304 anyway), and pause entirely when the tab is hidden.
 function _peekPollInterval() {
@@ -19650,7 +19660,7 @@ function _schedulePeekPoll() {
   if (!peekSession || document.hidden) return;
   peekTimer = setTimeout(async () => {
     peekTimer = null;
-    try { await refreshPeek(); } catch(e) {}
+    try { await refreshPeek(true); } catch(e) {}   // poll the live frame only (~7KB)
     _schedulePeekPoll();
   }, _peekPollInterval());
 }
@@ -24308,7 +24318,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.122';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.123';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -24344,7 +24354,8 @@ function openPeek(name, opts) {
   _peekMsgIndex = -1;
   lastPeekHTML = '';
   _lastPeekRaw = '';
-  _peekEtag = null;   // new session → drop the old session's ETag
+  _peekEtag = null; _peekLiveEtag = null;   // new session → drop the old session's ETags
+  _peekHistoryRaw = ''; _peekHistoryHTML = '';   // and its transcript history
   _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };  // reset the load-earlier state
   const searchInp = document.getElementById('peek-search');
   if (searchInp) {
@@ -24459,7 +24470,7 @@ async function agentNav(dir, index) {
     const d = await r.json();
     if (d.ok) {
       showToast('Viewing: ' + (d.viewing || 'switched'));
-      _peekEtag = null; _lastPeekRaw = null;   // force a fresh render
+      _peekEtag = null; _peekLiveEtag = null; _lastPeekRaw = null; _peekHistoryRaw = '';   // force a fresh render (history too)
       setTimeout(refreshPeek, 200);
     } else {
       showToast(d.message || 'Could not switch agent view');
@@ -25361,7 +25372,7 @@ async function _peekFitPane() {
     });
     const d = await r.json();
     if (d.resized && !/already/.test(d.message || '')) {
-      _peekEtag = null; _lastPeekRaw = null;   // repaint at the new width
+      _peekEtag = null; _peekLiveEtag = null; _lastPeekRaw = null; _peekHistoryRaw = '';   // repaint at the new width (history too)
       setTimeout(refreshPeek, 450);            // give Claude a beat to reflow
     }
   } catch (e) {}
@@ -25418,7 +25429,7 @@ async function _peekLoadEarlier() {
     // Paint immediately (refreshPeek skips DOM writes while scrolled up) and
     // anchor at the bottom of the just-loaded chunk so reading continues
     // where the user was.
-    lastPeekHTML = _peekEarlierHTML() + _lastLiveHTML;
+    lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
     applyPeekSearch(true, false);
     const body = document.getElementById('peek-body');
     const first = body && body.querySelector('.pe-chunk');
@@ -25459,25 +25470,35 @@ async function refreshPeek(liveOnly) {
     // peek paints the latest instantly on click. The full payload (~138KB, mostly
     // transcript history) follows and fills in scrollback. Only the full response
     // carries the ETag the poll conditions on.
+    const _et = liveOnly ? _peekLiveEtag : _peekEtag;
     const r = await fetch(API + '/api/sessions/' + name + '/peek?lines=300' + (liveOnly ? '&live=1' : ''),
-      (!liveOnly && _peekEtag) ? { headers: { 'If-None-Match': _peekEtag } } : undefined);
+      _et ? { headers: { 'If-None-Match': _et } } : undefined);
     if (peekSession !== name) return;
     if (r.status === 304) {   // unchanged — nothing transferred, skip parse + render entirely
       if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
       return;
     }
-    if (!liveOnly) _peekEtag = r.headers.get('ETag') || _peekEtag;
+    if (liveOnly) _peekLiveEtag = r.headers.get('ETag') || _peekLiveEtag;
+    else _peekEtag = r.headers.get('ETag') || _peekEtag;
     const data = await r.json();
-    const output = data.output || '(no output)';
-    // Skip re-render when output is identical — saves ansiToHtml work on every poll tick.
-    // This also applies with an active search: the highlights are already in the DOM,
-    // so re-running applyPeekSearch would needlessly scroll the view back to the current
-    // match every tick (the "force-scroll back to result" bug on idle sessions).
-    if (output === _lastPeekRaw && lastPeekHTML) {
+    // Alt-screen peeks return history + live SEPARATELY so a poll can re-render just
+    // the live frame. A live=1 poll carries no history (keep what we already have);
+    // non-alt/legacy shapes send one `output` blob — treat that as the live part.
+    const output = (data.live != null) ? data.live : (data.output || '(no output)');
+    const histRaw = (data.history != null) ? data.history : null;   // null ⇒ live-only poll
+    // Skip re-render when nothing we'd paint changed — saves ansiToHtml work on every
+    // poll tick. This also applies with an active search: the highlights are already in
+    // the DOM, so re-running applyPeekSearch would needlessly scroll the view back to
+    // the current match every tick (the "force-scroll back to result" bug on idle sessions).
+    if (output === _lastPeekRaw && (histRaw === null || histRaw === _peekHistoryRaw) && lastPeekHTML) {
       if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
       return;
     }
     _lastPeekRaw = output;
+    if (histRaw !== null && histRaw !== _peekHistoryRaw) {   // full fetch → (re)render history once
+      _peekHistoryRaw = histRaw;
+      _peekHistoryHTML = histRaw ? wrapBoxBlocks(_fitRules(highlightPrompts(ansiToHtml(histRaw)))) : '';
+    }
     // Subagent switcher visibility: the agents panel always includes a
     // "⏺ main"/"◯ main" row in the bottom lines of the pane. Checking for
     // that exact row (tail only, ANSI-stripped) avoids false positives from
@@ -25505,7 +25526,7 @@ async function refreshPeek(liveOnly) {
     // "load earlier output" bar (or the loaded log tail) above the live view
     // so scrollback exists in peek the way it does in a real terminal.
     _lastLiveHTML = _markAgentRows(newHTML);
-    lastPeekHTML = _peekEarlierHTML() + _lastLiveHTML;
+    lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
     const hasSearch = peekSearchQuery.trim().length > 0;
     // When user has scrolled up, skip DOM update to avoid fidgeting the view.
     // Buffer in lastPeekHTML and flush when they resume.
@@ -41943,7 +41964,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.122';
+const CACHE = 'amux-v0.9.123';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -48491,8 +48512,14 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 output = tmux_capture(name, lines)
                 if live_only:
                     _live = _strip_launch_noise(output.strip()) if output else ""
+                    # Trim against the SAME transcript the client is currently showing
+                    # as history (cached by the last full fetch) — that keeps the seam
+                    # duplicate-free without re-rendering the 120KB transcript here.
+                    _tr = _peek_transcript_cache.get(name, "")
+                    if _tr and _live:
+                        _live = _trim_live_overlap(_tr, _live)
                     return self._json_etag({"name": name, "live_only": True,
-                                            "output": _collapse_blank_runs(_live) if _live else "(no output)"})
+                                            "live": _collapse_blank_runs(_live) if _live else "(no output)"})
                 tmux_lines = len(output.splitlines()) if output else 0
                 is_alt = _tmux_alt_screen(name)
                 # Alt-screen (Claude Code TUI): transcript for history,
@@ -48509,14 +48536,17 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                         # transcript ends with — trim that overlap so they don't
                         # render twice (raw-markdown transcript + rendered frame).
                         live = _trim_live_overlap(transcript, live)
-                        joined = (transcript.rstrip() + "\n\n" + live) if transcript else live
-                        resp = {"name": name, "output": _collapse_blank_runs(joined)}
-                    elif live:
-                        resp = {"name": name, "output": _collapse_blank_runs(live)}
-                    elif transcript:
-                        resp = {"name": name, "output": transcript}
-                    else:
-                        resp = {"name": name, "output": "(no output)"}
+                    # Cache the transcript this response's history is built from, so a
+                    # subsequent live=1 poll can trim its frame against the SAME history
+                    # the client is displaying (no seam duplication, no re-render).
+                    _peek_transcript_cache[name] = transcript or ""
+                    # history + live returned SEPARATELY: the poll re-fetches only the
+                    # ~7KB live frame and swaps that DOM region, instead of re-sending
+                    # and re-parsing the whole ~138KB payload every tick.
+                    resp = {"name": name,
+                            "history": _collapse_blank_runs(transcript) if transcript else "",
+                            "live": (_collapse_blank_runs(live) if live else
+                                     ("" if transcript else "(no output)"))}
                     _peek_cache[name] = (now, lines, resp)
                     return self._json_etag(resp)
                 # Normal screen: show capture directly, save log in background.
