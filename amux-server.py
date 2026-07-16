@@ -15054,12 +15054,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
 
   /* ── Filters button + modal + preview chips ── */
+  .filters-btn { position: relative; }
   .filters-btn.active { color: var(--accent); border-color: var(--accent); }
   .filters-count {
+    position: absolute; top: -5px; right: -5px;
     display: inline-flex; align-items: center; justify-content: center;
-    min-width: 15px; height: 15px; padding: 0 4px; margin-left: 4px;
-    border-radius: 8px; background: var(--accent); color: #0d1117;
-    font-size: 0.62rem; font-weight: 700; line-height: 1;
+    min-width: 14px; height: 14px; padding: 0 3px;
+    border-radius: 7px; background: var(--accent); color: #0d1117;
+    font-size: 0.58rem; font-weight: 700; line-height: 1;
+    box-shadow: 0 0 0 1.5px var(--bg);
   }
   .active-filters {
     display: none; gap: 6px; flex-wrap: wrap; align-items: center;
@@ -17461,9 +17464,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       oninput="searchQuery=this.value;document.getElementById('search-wrap').classList.toggle('has-value',!!this.value);onSearchInput()">
     <button class="search-clear" onclick="event.stopPropagation();clearSearch()">&#x2715;</button>
   </div>
-  <button id="filters-btn" class="tile-btn filters-btn" onclick="openFiltersModal()" title="Filters — logs search, provider, model">
-    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-    <span class="log-search-label">Filters</span>
+  <button id="filters-btn" class="tile-btn filters-btn" onclick="openFiltersModal()" title="Filters — logs search, provider, model" aria-label="Filters">
+    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
     <span id="filters-count" class="filters-count" style="display:none;">0</span>
   </button>
   <div class="tile-controls">
@@ -24241,7 +24243,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.119';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.120';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -41867,7 +41869,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.119';
+const CACHE = 'amux-v0.9.120';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
