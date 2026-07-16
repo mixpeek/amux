@@ -4381,7 +4381,7 @@ def _snapshot_all_sessions():
     finally:
         _snapshot_running = False
 
-def _steer_enqueue(name: str, text: str) -> str:
+def _steer_enqueue(name: str, text: str, guard: str = "") -> str:
     """Append a message to a session's durable steering queue (memory + DB).
     Delivered (batched) at the next turn boundary by _steer_try_deliver.
 
@@ -4389,9 +4389,14 @@ def _steer_enqueue(name: str, text: str) -> str:
     stacked — observed live on mvs-infra: recurring scheduled prompts piled up
     behind a busy session (the same PULSE health-loop queued twice runs the
     same loop back-to-back for nothing), and sender retries queued literal
-    duplicates ("YES to the census" ×2)."""
+    duplicates ("YES to the census" ×2).
+
+    `guard`: optional re-validation tag (e.g. "commit"). _steer_try_deliver
+    rechecks the condition at DELIVERY and drops the entry if it went stale —
+    a commit-guard nudge whose tree got committed while the nudge waited
+    (AMUX-1737). In-memory only; a restart-reloaded entry delivers without it."""
     msg_id = f"steer-{int(time.time()*1000)}"
-    entry = {"id": msg_id, "text": text, "queued_at": time.time()}
+    entry = {"id": msg_id, "text": text, "queued_at": time.time(), "guard": guard}
     with _steering_lock:
         q = _steering_queue.setdefault(name, [])
         stale = [m for m in q if m["text"] == text and not m.get("_inflight")]
@@ -4481,6 +4486,29 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
     deliverable = status == "idle"
     if deliverable and raw and _has_running_subagent(raw):
         deliverable = False  # main loop idle but a subagent is still running
+    # Re-validate commit-guard nudges at DELIVERY: a nudge enqueued when a session
+    # went idle-dirty is HELD while the session's next turn commits, then would
+    # deliver against a now-clean tree — a stale warning (AMUX-1737, fired 4/4
+    # today). When the session is idle again and the tree is clean, drop them.
+    if deliverable:
+        with _steering_lock:
+            _guard_ids = [m["id"] for m in _steering_queue.get(name, [])
+                          if m.get("guard") == "commit" and not m.get("_inflight")]
+        if _guard_ids:
+            _wd = _session_work_dir(name)
+            if _wd and not _session_dirty_files(name, _wd):
+                _drop = set(_guard_ids)
+                with _steering_lock:
+                    _steering_queue[name] = [m for m in _steering_queue.get(name, []) if m["id"] not in _drop]
+                try:
+                    _db = get_db()
+                    for _mid in _drop:
+                        _db.execute("DELETE FROM steering_queue WHERE id=?", (_mid,))
+                    _db.commit()
+                except Exception:
+                    pass
+                _commit_guard_nudged.pop(name, None)   # tree clean → re-arm the guard
+                slog(f"[commit-guard] {name}: tree clean at delivery — dropped {len(_drop)} stale nudge(s)")
     with _steering_lock:
         queue = _steering_queue.get(name, [])
         if not queue or not deliverable:
@@ -9159,7 +9187,7 @@ def _commit_guard(name: str) -> bool:
             return False
         if is_running(name):
             _commit_guard_daily[(name, _day)] = _cnt + 1
-            _steer_enqueue(name, msg)
+            _steer_enqueue(name, msg, guard="commit")
         _push_alert("uncommitted", name, f"{n} uncommitted file(s) under {wd} — nudged to commit")
         slog(f"[commit-guard] {name}: nudged ({n} uncommitted)")
         return True
