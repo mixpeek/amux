@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>amux vs Windsurf — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Compare amux with Windsurf (formerly Codeium) for AI coding productivity.">
-  <meta name="keywords" content="amux vs windsurf, windsurf alternative, codeium vs claude code, AI coding tools">
+  <title>amux vs Windsurf (2026) — AI Agent Orchestration vs AI IDE</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux runs dozens of parallel AI coding agents overnight. Windsurf is an AI-first IDE for interactive development. Here's when to use each.">
+  <meta name="keywords" content="amux vs windsurf, windsurf alternative, windsurf alternative for batch agents, windsurf vs claude code orchestration, run agents overnight windsurf alternative, codeium vs amux, AI IDE vs agent orchestrator">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-windsurf/">
-  <meta property="og:title" content="amux vs Windsurf — amux">
-  <meta property="og:description" content="Compare amux with Windsurf (formerly Codeium) for AI coding productivity.">
+  <meta property="og:title" content="amux vs Windsurf (2026) — AI Agent Orchestration vs AI IDE">
+  <meta property="og:description" content="Windsurf is an AI-first IDE for interactive coding. amux runs dozens of parallel AI coding agents overnight, unattended. Different tools for different moments — here's when to use each.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-windsurf/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,9 +21,84 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Windsurf","item":"https://amux.io/compare/amux-vs-windsurf/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"amux vs Windsurf","description":"Compare amux with Windsurf (formerly Codeium) for AI coding productivity.","url":"https://amux.io/compare/amux-vs-windsurf/","about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","applicationCategory":"DeveloperApplication"}}</script>
-  </head>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},
+      {"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},
+      {"@type":"ListItem","position":3,"name":"amux vs Windsurf","item":"https://amux.io/compare/amux-vs-windsurf/"}
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux vs Windsurf (2026): AI Agent Orchestration vs AI IDE",
+    "description": "amux runs dozens of parallel AI coding agents overnight. Windsurf is an AI-first IDE for interactive development. Here's when to use each — and why most teams use both.",
+    "url": "https://amux.io/compare/amux-vs-windsurf/",
+    "datePublished": "2026-07-16",
+    "dateModified": "2026-07-16",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "publisher": {
+      "@type": "Organization",
+      "name": "amux",
+      "url": "https://amux.io/",
+      "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}
+    }
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Is amux a Windsurf alternative?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Not exactly — they solve different problems. Windsurf is an AI-first IDE for interactive coding. amux is a headless orchestrator that runs dozens of parallel agents overnight, unattended. Most developers who use amux also use an IDE like Windsurf or Cursor for interactive work."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can Windsurf run multiple agents in parallel?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Windsurf runs one SWE-2 autonomous agent at a time per window. To run 10+ agents in parallel, you would need to open 10+ Windsurf windows manually, with no shared coordination. amux is purpose-built for this: it launches dozens of Claude Code or Codex CLI agents simultaneously, with a shared kanban board for task coordination and a self-healing watchdog that keeps them running overnight."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux have an IDE?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No — amux is intentionally headless. It runs AI coding agents (Claude Code, Codex CLI, Gemini CLI) in terminal sessions and provides a web dashboard and iOS app for monitoring and control. You write code in your preferred IDE (Windsurf, Cursor, VS Code, Vim) and use amux to scale up the agent work that happens in the background."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Which is better for solo developers shipping overnight?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux. Its core use case is running 10–50 parallel AI coding agents overnight while you sleep, with a self-healing watchdog that automatically recovers from context exhaustion and crashed sessions. You wake up to finished PRs instead of crashed terminals. Windsurf is optimized for interactive coding sessions where you are present."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I use amux and Windsurf together?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes — they complement each other perfectly. Many developers use Windsurf for interactive coding during the day (in-editor completions, quick fixes, Cascade codebase chat) and amux for batch operations at night (generating tests, refactoring modules, reviewing PRs across a monorepo with 10+ parallel agents). The two tools operate in completely different moments of the workflow."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -38,16 +113,544 @@
     </nav>
   </header>
   <main>
-    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Windsurf</span></div>
+    <div class="breadcrumb">
+      <a href="/">amux</a>
+      <span class="sep">›</span>
+      <a href="/compare/">Compare</a>
+      <span class="sep">›</span>
+      <span>amux vs Windsurf</span>
+    </div>
+
+    <div class="kicker">// compare</div>
     <h1>amux vs Windsurf</h1>
-<p class="subtitle">Windsurf is an AI IDE. amux is a headless agent fleet manager.</p>
-<p><strong>Windsurf</strong> (formerly Codeium) is an AI-powered IDE with Cascade, its agentic coding flow. <strong>amux</strong> manages dozens of Claude Code sessions with a web dashboard and self-healing.</p>
-<h2>Key differences</h2>
-<table><thead><tr><th>Feature</th><th>amux</th><th>Windsurf</th></tr></thead><tbody><tr><td>Interface</td><td>Web dashboard + CLI</td><td>Desktop IDE</td></tr><tr><td>Parallel agents</td><td>Unlimited headless sessions</td><td>Single Cascade flow</td></tr><tr><td>Unattended mode</td><td>Self-healing, runs overnight</td><td>Requires IDE open</td></tr><tr><td>Mobile</td><td>PWA on iOS/Android</td><td>Desktop only</td></tr><tr><td>Model</td><td>Claude Code (any Anthropic model)</td><td>Multiple providers</td></tr><tr><td>Price</td><td>Pay per API token</td><td>$15/mo subscription</td></tr><tr><td>Open source</td><td>Yes (MIT)</td><td>No</td></tr></tbody></table>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+    <p class="subtitle">
+      Windsurf excels at interactive AI coding in an IDE. amux runs your agents overnight while you sleep.
+      They solve different problems.
+    </p>
+    <p style="color:var(--muted);font-size:0.85rem">Last updated: July 16, 2026</p>
+
+    <!-- EXP-007: compare pages GitHub CTA -->
+    <div style="display:flex;align-items:center;gap:1rem;background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:0.875rem 1.125rem;margin:1.5rem 0;flex-wrap:wrap">
+      <span style="font-size:13px;color:var(--fg-mute,#8892a4);flex:1;min-width:180px">Considering amux? See it in action before deciding →</span>
+      <a href="https://github.com/mixpeek/amux"
+         target="_blank"
+         rel="noopener"
+         onclick="if(window.posthog) posthog.capture('exp007_compare_github_cta_click', {page: window.location.pathname})"
+         style="display:inline-flex;align-items:center;gap:0.5rem;background:#24292e;color:#fff;text-decoration:none;padding:0.5rem 1rem;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 .5C5.7.5.5 5.7.5 12c0 5 3.3 9.3 7.9 10.8.6.1.8-.2.8-.6v-2.2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.7 1.2 3.4.9.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2.9-.3 1.9-.4 2.9-.4s2 .1 2.9.4c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.7.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.8C23.5 5.7 18.3.5 12 .5z"/>
+        </svg>
+        ⭐ Star amux on GitHub
+      </a>
+    </div>
+
+    <div style="background:var(--surface-2,#1a1f2e);border-left:3px solid var(--accent,#6ee7b7);padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
+      <strong>Quick answer:</strong> Windsurf is an AI-first VS Code fork by Codeium with Cascade
+      (real-time codebase awareness) and SWE-2 (autonomous agent mode). amux is a headless orchestrator
+      that runs dozens of Claude Code, Codex, or Gemini CLI agents in parallel — overnight, unattended,
+      with a web dashboard and iOS app for remote monitoring. Both help developers ship faster, but in
+      completely different moments of the workflow. Most advanced AI developers end up using
+      an IDE like Windsurf for interactive work and amux for unattended fleet-scale batch jobs.
+    </div>
+
+    <h2>What each tool is built for</h2>
+
+    <p>
+      <strong>Windsurf</strong> (by Codeium, formerly Codeium Editor) is an AI-first IDE built on a
+      VS Code fork — so you get the full VS Code extension ecosystem alongside deep AI integration baked
+      into the editor itself. Its headline feature is <strong>Cascade</strong>, a real-time AI flow that
+      maintains awareness of your entire codebase across edits, not just the current file. Cascade
+      connects changes, understands how code flows across files, and proactively suggests next steps
+      as you work. <strong>SWE-2</strong> is Windsurf's autonomous agent mode — it can plan multi-step
+      tasks, execute terminal commands, edit files, and iterate without constant human prompting.
+      Additional features include Tab (next-line completions), Supercomplete (multi-line fill-in),
+      and multi-model support (Claude, GPT-4, Gemini). Pricing: free tier with limits, $15/month Pro,
+      $40/month Teams. Proprietary license. Approximately 45K+ GitHub stars for the ecosystem.
+    </p>
+
+    <p>
+      <strong>amux</strong> (~299 GitHub stars, much newer and purpose-built for orchestration) is the
+      open-source control plane for running an AI engineering team from a single dashboard or your
+      phone. It launches, monitors, and self-heals dozens of parallel
+      <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>,
+      OpenAI Codex CLI, or Gemini CLI sessions headlessly in tmux — no IDE, no VS Code,
+      no desktop required. The web dashboard shows live terminal output from every session at once.
+      The iOS app gives you remote monitoring and control from anywhere. A built-in kanban board
+      lets agents atomically claim tasks so no two sessions ever duplicate work. Self-healing handles
+      context exhaustion, crashes, and stuck prompts automatically. Install:
+      <code>brew install mixpeek/amux/amux</code> or <code>pipx install amux</code>.
+      Open source (MIT) — single Python file, zero external dependencies — at
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.
+    </p>
+
+    <h2>The core difference: interactive IDE agent vs unattended fleet at scale</h2>
+
+    <p>
+      Windsurf is built for the present tense: you are at your desk, inside the IDE, with Cascade
+      aware of what you are actively changing. SWE-2 can run autonomously for longer stretches, but
+      Windsurf's architecture assumes you are present — the agent runs in the context of a live IDE
+      session, on your desktop, on a single codebase at a time. When you close Windsurf, the
+      agent stops. You cannot run 15 Windsurf agents simultaneously on 15 different tasks without
+      opening 15 separate IDE windows and manually managing each one.
+    </p>
+
+    <p>
+      amux is built for the overnight queue: load 20 tasks onto the kanban board before bed, 10 agents
+      claim tasks atomically and work in parallel overnight, and you review 20 completed branches in the
+      morning from your iPhone over coffee. The self-healing watchdog handles context exhaustion
+      (auto-compact and resume), crashes (restart and replay), and stuck prompts without any human
+      intervention. No IDE, no VS Code, no desktop presence required. The fleet runs whether or not
+      you are at your desk — and the iOS app keeps you in control when you are anywhere else.
+    </p>
+
+    <p>
+      These tools do not compete for the same moment. Windsurf is the best AI IDE for interactive
+      development where codebase awareness and editor-native completions matter. amux is the
+      infrastructure layer for running agents at scale while you sleep, travel, or work on something
+      else entirely.
+    </p>
+
+    <h2>Feature comparison</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th>amux</th>
+          <th>Windsurf</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Architecture</td>
+          <td>Headless fleet orchestrator — tmux sessions, REST API, web dashboard</td>
+          <td>AI-first VS Code fork — full IDE with deep AI integration</td>
+        </tr>
+        <tr>
+          <td>Agent model / runtime</td>
+          <td>Claude Code CLI · OpenAI Codex CLI · Gemini CLI (any mix)</td>
+          <td>Cascade (interactive AI flow) · SWE-2 (autonomous agent mode)</td>
+        </tr>
+        <tr>
+          <td>Parallel agents</td>
+          <td>Unlimited headless sessions (10–50+ typical overnight)</td>
+          <td>One active agent per IDE window — no shared coordination across windows</td>
+        </tr>
+        <tr>
+          <td>Unattended operation</td>
+          <td>Self-healing watchdog — runs overnight without the user present</td>
+          <td>Requires Windsurf IDE open and running; closes when IDE closes</td>
+        </tr>
+        <tr>
+          <td>Self-healing</td>
+          <td>Auto-compact on context overflow, crash restart, message replay, stuck-prompt detection</td>
+          <td>No automated recovery — user must manually restart if agent gets stuck</td>
+        </tr>
+        <tr>
+          <td>Mobile management</td>
+          <td><a href="/features/mobile-pwa/">Native iOS app</a> + installable PWA — monitor, steer, approve from phone</td>
+          <td>Desktop IDE only — no mobile access</td>
+        </tr>
+        <tr>
+          <td>Task coordination (kanban)</td>
+          <td>Shared kanban board with atomic SQLite CAS claiming across all sessions</td>
+          <td>No built-in coordination across agents or windows</td>
+        </tr>
+        <tr>
+          <td>Quality gates</td>
+          <td>Board-level gate system — human or automated approval before agents proceed</td>
+          <td>No — agent runs autonomously without gate checkpoints</td>
+        </tr>
+        <tr>
+          <td>Built-in email / CRM / scheduler</td>
+          <td>Gmail API email, CRM, scheduler, notes, browser automation — all built in</td>
+          <td>No — coding-focused IDE; no business ops tooling</td>
+        </tr>
+        <tr>
+          <td>Multiple AI providers</td>
+          <td>Runs any CLI-based agent: Claude Code, Codex CLI, Gemini CLI</td>
+          <td>Multi-model: Claude, GPT-4, Gemini, and others via Windsurf's API layer</td>
+        </tr>
+        <tr>
+          <td>IDE required</td>
+          <td>No — runs headlessly on any Mac or Linux, SSH-friendly, Docker-ready</td>
+          <td>Yes — the IDE must be open on your desktop</td>
+        </tr>
+        <tr>
+          <td>Overnight batch jobs</td>
+          <td>Core use case — agents run and self-heal through the night unattended</td>
+          <td>Not supported — IDE must stay open; no fleet or batch model</td>
+        </tr>
+        <tr>
+          <td>VS Code extension ecosystem</td>
+          <td>No — terminal-native; bring your own editor for writing code</td>
+          <td>Yes — full VS Code fork with all VS Code extensions available</td>
+        </tr>
+        <tr>
+          <td>Tab completions / Supercomplete</td>
+          <td>No — amux manages agents, not editor completions</td>
+          <td>Yes — Tab (next-line) and Supercomplete (multi-line) built into editor</td>
+        </tr>
+        <tr>
+          <td>Open source</td>
+          <td>Yes — MIT license (single Python file, zero external dependencies)</td>
+          <td>No — proprietary; Codeium extensions are source-available but the IDE is not</td>
+        </tr>
+        <tr>
+          <td>Cost model</td>
+          <td>Free self-hosted / $20/month cloud; pay underlying API costs per token</td>
+          <td>Free tier (limited), $15/month Pro, $40/month Teams</td>
+        </tr>
+        <tr>
+          <td>Install</td>
+          <td><code>brew install mixpeek/amux/amux</code> · <code>pipx install amux</code> · <code>uvx amux serve</code></td>
+          <td>Download from windsurf.com — available for macOS, Windows, Linux</td>
+        </tr>
+        <tr>
+          <td>GitHub stars</td>
+          <td>299</td>
+          <td>~45K+ (Codeium ecosystem)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>How Windsurf works</h2>
+
+    <p>
+      Windsurf is a VS Code fork that replaces the standard editor with a deeply AI-integrated
+      alternative. Cascade is the core AI layer: it maintains a model of your entire codebase,
+      not just the file you have open, and uses that awareness to make suggestions, complete edits,
+      and understand the ripple effects of changes across files. As you edit, Cascade sees what
+      changed, why it changed in context, and what likely needs updating elsewhere.
+    </p>
+
+    <p>
+      SWE-2 is Windsurf's autonomous mode — you describe a multi-step task, SWE-2 plans it, then
+      executes it across terminal commands, file edits, and test runs. Unlike Cascade (which is
+      reactive and follows your lead), SWE-2 takes initiative and works through a plan. It is a
+      meaningful step toward unattended agent behavior, but it still operates within a single IDE
+      session: one agent, one codebase, on your desktop. Tab and Supercomplete handle the routine
+      in-file completion work that happens continuously as you type.
+    </p>
+
+    <p>
+      Windsurf supports multiple AI backends (Claude, GPT-4, Gemini), so you are not locked to a
+      single model. The VS Code fork means all your existing extensions, keybindings, and
+      workspace settings carry over. For developers who already live in VS Code, Windsurf is a
+      drop-in that adds powerful AI layers without a workflow change.
+    </p>
+
+    <h2>How amux works</h2>
+
+    <p>
+      amux manages a fleet of tmux sessions, each running a Claude Code, Codex CLI, or Gemini CLI
+      process headlessly. A SQLite database tracks session state, kanban board items, messages,
+      and schedules. The web dashboard streams live output from every session via Server-Sent Events
+      so you can watch all agents simultaneously. The iOS app connects to the same API over the local
+      network or via the cloud tier.
+    </p>
+
+    <p>
+      When an agent's context window fills up, amux's watchdog detects it, sends the compact command,
+      waits for the agent to resume, and replays any pending messages — all automatically, without
+      human intervention. When an agent crashes, the watchdog restarts it. When an agent finishes a
+      task and marks it done on the board, the next available agent picks up the next todo item via
+      an atomic compare-and-swap claim so no work is ever duplicated across the fleet.
+    </p>
+
+    <p>
+      The built-in toolbox goes beyond coding agents: scheduler for recurring tasks, notes for
+      shared context, CRM and Gmail API email for customer-facing agent workflows, and browser
+      automation for research and interaction tasks — all managed from the same dashboard and
+      controllable from the iOS app.
+    </p>
+
+    <h2>Where Windsurf is the better fit</h2>
+
+    <ul>
+      <li>
+        <strong>Interactive feature development with deep codebase awareness.</strong>
+        Cascade's continuous model of your full codebase makes Windsurf exceptional for complex
+        features where changes ripple across many files. It sees the implications of each edit
+        in real time — not just the file you have open. If you are building something new and want
+        an AI copilot that understands your full project architecture as you go, Cascade is
+        purpose-built for that.
+      </li>
+      <li>
+        <strong>VS Code users who want AI that deeply integrates with their editor.</strong>
+        Windsurf is a VS Code fork — all your extensions, keybindings, themes, and muscle memory
+        carry over. If you already live in VS Code, switching to Windsurf costs almost nothing
+        and adds Cascade, SWE-2, Tab, and Supercomplete without changing your workflow.
+      </li>
+      <li>
+        <strong>Tab completions and Supercomplete while writing code.</strong>
+        amux does not have an editor. If you want AI completing the next line (or next block)
+        as you type, Windsurf's Tab and Supercomplete are designed for exactly that. This is an
+        in-editor concern that amux — a headless fleet orchestrator — is not built to address.
+      </li>
+      <li>
+        <strong>Autonomous in-editor tasks with SWE-2.</strong>
+        For a well-defined, self-contained task — implement this endpoint, write tests for this
+        service, refactor this module — SWE-2 handles it autonomously within Windsurf with no
+        manual step-by-step prompting. Good for tasks you want finished before you close the IDE,
+        not overnight.
+      </li>
+      <li>
+        <strong>Multi-model flexibility in a single editor.</strong>
+        Windsurf supports Claude, GPT-4, Gemini, and other providers in one interface. If you
+        regularly switch models for different tasks within an interactive coding session,
+        Windsurf handles this natively without additional tooling.
+      </li>
+    </ul>
+
+    <h2>Where amux is the better fit</h2>
+
+    <ul>
+      <li>
+        <strong>Running 10–50 parallel agents overnight while you sleep.</strong>
+        Queue work before bed, agents claim tasks from the shared board, work in parallel through
+        the night, and you review completed branches in the morning from your phone. Windsurf has
+        no fleet model — each IDE window is one uncoordinated agent that requires you to be present.
+        See <a href="/guides/running-10-plus-agents/">how to run 10+ agents in parallel</a>.
+      </li>
+      <li>
+        <strong>Unattended batch operations — test generation, docs, refactoring at scale.</strong>
+        The self-healing watchdog handles context exhaustion, crashes, and stuck prompts automatically.
+        YOLO mode lets agents auto-approve safe actions so the fleet keeps moving without a human
+        at the keyboard. Windsurf's agents stop when the IDE closes.
+      </li>
+      <li>
+        <strong>Remote monitoring and steering from your phone.</strong>
+        The <a href="/features/mobile-pwa/">iOS app and installable PWA</a> let you inspect live
+        terminal output from every session, see which tasks are claimed on the board, send steering
+        messages to any agent, approve pending quality gates, and manage the fleet — all from your
+        iPhone. If you board a flight or step away from your desk, the fleet keeps running.
+        Windsurf has no mobile story.
+      </li>
+      <li>
+        <strong>Coordinated parallel work with quality gates.</strong>
+        amux's <a href="/guides/ai-agent-quality-gates/">quality gate system</a> requires human or
+        automated approval before agents proceed past defined checkpoints — at the fleet level.
+        Agents share a kanban board with atomic task claiming so no two sessions ever duplicate work.
+        Inter-session messaging via REST API lets agents share results and build on each other's output.
+        Windsurf sessions are isolated with no coordination layer between them.
+      </li>
+      <li>
+        <strong>Full business operations alongside coding agents.</strong>
+        amux includes CRM, Gmail API email, a scheduler, notes, and browser automation in the same
+        control plane as your coding sessions. Teams use it for customer support agents, market
+        research, automated reporting, and CI orchestration alongside parallel coding work.
+        This goes well beyond what any IDE is designed to handle.
+      </li>
+      <li>
+        <strong>Server or headless deployments — no desktop required.</strong>
+        amux runs headlessly on any Mac or Linux server, in Docker, or on a cloud VM. If you want
+        AI agents running on a remote machine, in a CI/CD pipeline, or on a dedicated server you
+        SSH into, amux fits naturally. Windsurf requires a desktop installation and an active display.
+      </li>
+    </ul>
+
+    <h2>Why not both? A day in the life using Windsurf + amux</h2>
+
+    <p>
+      Windsurf and amux address opposite ends of the AI coding spectrum: Windsurf handles interactive
+      work where you are present and watching; amux handles fleet-scale batch work where you are
+      not. Most serious AI developers end up needing both. Here is what that workflow looks like:
+    </p>
+
+    <p>
+      <strong>Morning — review overnight amux fleet output.</strong>
+      You open the amux iOS app over coffee. Eight tasks completed overnight. Six branches are ready
+      to review in GitHub, two agents are waiting at quality gates for your go-ahead. You peek at
+      the terminal output for each, approve the gate on the two waiting agents, and mark all eight
+      board items done with a short summary. None of this required opening your laptop — you did it
+      from your phone while the coffee brewed.
+    </p>
+
+    <p>
+      <strong>Day — interactive feature work in Windsurf.</strong>
+      You open Windsurf. There is a complex new API surface with subtle business logic — the kind
+      where you want Cascade tracking the full architecture as you build it. Cascade sees how your
+      new endpoint connects to the existing auth layer, flags a schema inconsistency in a related
+      module, and Supercomplete fills in the boilerplate while you focus on the logic. SWE-2 runs
+      the test suite autonomously after each major change. You stay in the IDE the whole time.
+    </p>
+
+    <p>
+      <strong>Evening — queue tomorrow's amux batch before closing the laptop.</strong>
+      Before you shut down, you add items to the amux board: generate integration tests for the
+      feature you built today, update API documentation across twelve modules, run a parallel
+      refactor of the legacy session handling layer across four services, and produce a dependency
+      audit across the monorepo. You set a quality gate on the refactor so agents pause before
+      merging any branch. You close your laptop. The fleet runs overnight.
+    </p>
+
+    <p>
+      The tools cover the full spectrum. Windsurf for the interactive coding hours where codebase
+      awareness, completions, and IDE integration matter. amux for the unattended hours where
+      throughput, self-healing, and remote monitoring are the bottleneck.
+    </p>
+
+    <h2>Use case decision guide</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>If you want…</th>
+          <th>Use…</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Interactive AI coding with tab completions and Supercomplete</td>
+          <td>Windsurf — editor-native, continuous AI as you type</td>
+        </tr>
+        <tr>
+          <td>Run agents overnight while you sleep</td>
+          <td>amux — self-healing fleet, no desktop required, iOS monitoring</td>
+        </tr>
+        <tr>
+          <td>Manage your agents from your phone</td>
+          <td>amux — native iOS app and installable PWA</td>
+        </tr>
+        <tr>
+          <td>VS Code-style editor with deep AI integration</td>
+          <td>Windsurf — Cascade, SWE-2, full VS Code extension ecosystem</td>
+        </tr>
+        <tr>
+          <td>Run 10+ agents on different repos simultaneously</td>
+          <td>amux — parallel fleet with shared kanban and atomic task claiming</td>
+        </tr>
+        <tr>
+          <td>Self-healing unattended sessions</td>
+          <td>amux — auto-compact, crash restart, stuck-prompt detection</td>
+        </tr>
+        <tr>
+          <td>Autonomous in-editor multi-step task completion</td>
+          <td>Windsurf SWE-2 — IDE-native, codebase-aware autonomous agent</td>
+        </tr>
+        <tr>
+          <td>Generate tests for an entire codebase in parallel</td>
+          <td>amux — each agent handles a module, runs overnight without supervision</td>
+        </tr>
+        <tr>
+          <td>Quality gates before agents merge or proceed</td>
+          <td>amux — board-level gate system with human or automated approval</td>
+        </tr>
+        <tr>
+          <td>Run AI agents on a remote Linux server, no desktop</td>
+          <td>amux — headless, SSH-friendly, Docker-ready</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Frequently Asked Questions</h2>
+
+    <dl style="display:grid;gap:1.5rem">
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Is amux a Windsurf alternative?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Not exactly — they solve different problems. Windsurf is an AI-first IDE for interactive
+          coding sessions. amux is a headless orchestrator that runs dozens of parallel agents
+          overnight, unattended, with a web dashboard and iOS app for remote monitoring.
+          Most developers who use amux also use an IDE like Windsurf or Cursor for interactive
+          work — the two tools cover different moments in the workflow.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Can Windsurf run multiple agents in parallel?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Windsurf runs one SWE-2 autonomous agent at a time per IDE window. To run 10+ agents in
+          parallel, you would need to open 10+ Windsurf windows manually, with no shared task board,
+          no inter-agent coordination, and no self-healing if a session gets stuck. amux is
+          purpose-built for this use case: it launches dozens of Claude Code or Codex CLI agents
+          simultaneously with a shared kanban board for task coordination and a self-healing watchdog
+          that keeps them all running overnight. See
+          <a href="/guides/running-10-plus-agents/">how to run 10+ agents in parallel</a>.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Does amux have an IDE?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          No — amux is intentionally headless. It runs AI coding agents (Claude Code, Codex CLI,
+          Gemini CLI) in terminal sessions managed by tmux and provides a web dashboard and iOS app
+          for monitoring and control. You write code in your preferred IDE — Windsurf, Cursor,
+          VS Code, Vim — and use amux to scale up the agent work that happens in the background
+          while you work on something else or while you sleep.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Which is better for solo developers shipping overnight?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          amux. Its core use case is running 10–50 parallel AI coding agents overnight while you
+          sleep, with a self-healing watchdog that automatically recovers from context exhaustion
+          and crashed sessions. You wake up to finished PRs and completed tasks instead of crashed
+          terminals and blank screens. Windsurf is optimized for interactive coding sessions where
+          you are present at your desk.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Can I use amux and Windsurf together?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Yes — they complement each other perfectly. Many developers use Windsurf for interactive
+          coding during the day (in-editor Cascade completions, quick fixes, SWE-2 autonomous tasks
+          while present) and amux for batch operations at night (generating tests, refactoring
+          modules, reviewing PRs across a monorepo with 10+ parallel agents).
+          The two tools operate in completely different moments of the workflow — using both covers
+          the full spectrum of AI-assisted engineering.
+        </dd>
+      </div>
+    </dl>
+
+    <h2>Quick start with amux</h2>
+
+    <pre><code># Install via Homebrew (recommended on macOS)
+brew install mixpeek/amux/amux
+
+# Or via PyPI
+pipx install amux
+
+# Or zero-install trial (no install needed)
+uvx amux serve
+
+# Register a project and launch the dashboard
+amux register myproject --dir ~/Dev/myproject
+amux serve  # → https://localhost:8822</code></pre>
+
+    <p>
+      See the <a href="/guides/getting-started/">getting started guide</a> for a full walkthrough,
+      <a href="/guides/running-10-plus-agents/">how to run 10+ agents in parallel</a> for fleet
+      operations, and the <a href="/guides/ai-agent-quality-gates/">quality gates guide</a> for
+      human-in-the-loop checkpoints at fleet scale. If you already use Windsurf for interactive
+      work, amux adds the overnight batch layer on top without changing a thing about your daytime
+      coding workflow.
+    </p>
+
+    <h2>See also</h2>
+    <ul>
+      <li><a href="/compare/">All amux comparisons</a></li>
+      <li><a href="/compare/amux-vs-cursor/">amux vs Cursor</a></li>
+      <li><a href="/compare/amux-vs-cline/">amux vs Cline (Roo Code)</a></li>
+      <li><a href="/guides/best-ai-agent-multiplexers-2026/">Best AI agent multiplexers in 2026</a></li>
+      <li><a href="/guides/getting-started/">Getting started with amux</a></li>
+      <li><a href="/guides/running-10-plus-agents/">Running 10+ agents in parallel</a></li>
+      <li><a href="/guides/ai-agent-quality-gates/">AI agent quality gates</a></li>
+      <li><a href="/features/mobile-pwa/">Mobile PWA and iOS app</a></li>
+    </ul>
+
+    <div class="cta-box">
+      <h3>Get started with amux</h3>
+      <p>Run your first parallel agent fleet tonight. Install in 30 seconds.</p>
+      <pre><code>brew install mixpeek/amux/amux
+amux register myproject --dir ~/Dev/myproject
+amux serve  # → https://localhost:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ View on GitHub</a>
+      <a class="btn"
+         href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435"
+         target="_blank"
+         rel="noopener"
+         style="margin-left:0.5rem">Download iOS App</a>
+    </div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -95,6 +698,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
     </div>
   </footer>
 
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>
