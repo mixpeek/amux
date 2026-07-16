@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux for Open-Source Maintainers — AI Agents for Issue Triage, PR Reviews &amp; Changelogs (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Open-source maintainers use amux to run AI agents overnight — triaging GitHub issues, reviewing contributor PRs, generating changelogs, and keeping documentation current. Runs on your laptop. Free and open-source.">
+  <meta name="keywords" content="AI tools for open source maintainers 2026, automate GitHub issue triage AI, open source maintainer tools, AI agent for pull request review, automate changelog generation AI, AI coding agent open source projects, amux for open source, open source contributor automation">
+  <link rel="canonical" href="https://amux.io/for/open-source-maintainers/">
+  <meta property="og:title" content="amux for Open-Source Maintainers — AI Agents for Issue Triage, PR Reviews &amp; Changelogs">
+  <meta property="og:description" content="Run AI agents overnight to triage issues, review contributor PRs, generate release notes, and keep documentation current — all from one dashboard. Free and open-source.">
+  <meta property="og:url" content="https://amux.io/for/open-source-maintainers/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "For Developers", "item": "https://amux.io/for/"},
+      {"@type": "ListItem", "position": 3, "name": "Open-Source Maintainers", "item": "https://amux.io/for/open-source-maintainers/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux for Open-Source Maintainers — AI Agents for Issue Triage, PR Reviews and Changelogs",
+    "description": "Open-source maintainers use amux to run AI agents overnight — triaging GitHub issues, reviewing contributor PRs, generating changelogs, and keeping documentation current.",
+    "url": "https://amux.io/for/open-source-maintainers/",
+    "datePublished": "2026-07-16",
+    "dateModified": "2026-07-16",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["AI tools for open source maintainers 2026", "automate GitHub issue triage", "AI agent pull request review", "changelog generation AI", "open source maintainer tools"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Can AI agents actually triage GitHub issues reliably?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes, for the triage step: categorizing by type (bug/feature/question), assigning labels, checking for missing reproduction steps, linking to existing issues, and drafting a first response. amux runs Claude Code agents overnight with your CLAUDE.md context — they know your project's conventions, issue templates, and common patterns. Judgment calls (prioritization, acceptance/rejection) remain yours; the agent does the reading and drafting so you make decisions faster."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does amux help with contributor PR reviews?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "You queue each PR as a board task. The agent runs overnight, reads the diff and the project CLAUDE.md, checks coding conventions, looks for common mistakes (missing tests, incorrect types, undocumented breaking changes), and posts a structured review comment as a draft. You wake up with pre-read PR notes, approve or edit the review, and post it. A 30-minute PR review becomes a 5-minute approval. Works especially well for style/convention checks on contributor PRs where the logic is correct but the formatting is off."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does amux generate changelogs?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The agent runs git log --oneline since the last release tag, categorizes commits by type (feat/fix/chore/docs), groups them semantically, and drafts a CHANGELOG.md entry or release notes page in your project's format. You specify the format and style in CLAUDE.md. The agent handles the reading and sorting; you do a final editorial pass before publishing. This works best with conventional commits (feat/fix/chore) since they give the agent explicit signals."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux work for projects with hundreds of issues?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes — this is exactly the use case it was designed for. You can run one agent per batch of issues overnight. For a backlog of 200 open issues, queue them in batches of 20-30 per agent session. Agents read in parallel and draft responses independently, sharing a kanban board so no issue is touched twice. A 200-issue triage backlog that would take a maintainer 3 days can often be drafted in one overnight run."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the cost for open-source maintainers?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux itself is free and open-source (MIT license). You run it on your own machine — no SaaS fee, no per-seat charge. You pay only for AI model tokens. For issue triage and PR review, costs are typically low because the tasks are read-heavy: reading 50 issues and drafting responses costs a few dollars in API tokens. Claude Max ($200/month flat) gives unlimited Claude Code usage for maintainers with large backlogs. Many maintainers find the ROI immediate — hours of triage work replaced by minutes of review."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For Developers</a> <span class="sep">›</span> <span>Open-Source Maintainers</span></div>
+
+    <h1>amux for Open-Source Maintainers</h1>
+    <p class="subtitle">Run AI agents overnight to triage issues, review contributor PRs, generate release notes, and keep documentation current — so you can stay ahead of a growing project without burning out. <em>Updated July 2026.</em></p>
+
+    <p>amux is an open-source control plane for AI coding agents. It launches, coordinates, and self-heals dozens of parallel Claude Code, Codex CLI, or Gemini CLI sessions from a single web dashboard. For open-source maintainers, this means one dashboard showing every maintenance task in progress — issue triage, PR review, doc updates, changelog generation — all running overnight while you sleep.</p>
+
+    <h2>The open-source maintainer backlog problem</h2>
+    <p>As a project grows, the maintainer's job shifts. Less coding, more reading: reading 30 new issues to figure out which are duplicates, which need more info, which are real bugs. Reading contributor PRs to check if they follow conventions before you spend time on a review. Reading git history to write release notes. Reading old documentation to find what needs updating.</p>
+    <p>Most of this reading-and-drafting work doesn't require your judgment — it requires your context. The maintainer's advantage is knowing the project: the conventions, the gotchas, the prior decisions. That context lives in the codebase and in your CLAUDE.md. An agent with that context can do most of the reading and drafting overnight, so your time goes to final decisions — approve, request changes, merge, close — not to the mechanical first pass.</p>
+
+    <h2>Issue triage overnight</h2>
+    <p>The most time-consuming part of issue triage is the reading: reading each issue, checking if it's a duplicate, determining if there's enough context to reproduce, categorizing it, and drafting a first response. An agent can do this for 50 issues while you sleep.</p>
+
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># In your project CLAUDE.md, specify the triage rules:
+# - Bug: assign label "bug", check for reproduction steps, if missing ask for them
+# - Feature: assign label "enhancement", compare against roadmap in ROADMAP.md
+# - Question: assign label "question", search existing docs for an answer
+# - Duplicate: link to the original issue, close with a note
+
+# On the amux board, queue issues as tasks
+amux board add "Triage GH issues #450-#480 — see CLAUDE.md for rules"
+
+# Agent runs overnight and produces a Markdown report:
+# Issue #451: Bug (missing repro steps — drafted request for steps)
+# Issue #452: Duplicate of #391 — drafted close comment
+# Issue #453: Feature (added to backlog.md)
+# ...
+
+# You wake up, review the draft comments, approve and post</code></pre>
+
+    <p>The agent works from your CLAUDE.md context: your project's issue templates, common duplicate issues, the difference between bugs and misconfigurations, which features are out of scope, and how you like to communicate with contributors. A well-written CLAUDE.md makes the agent's output directly usable with minimal editing.</p>
+
+    <h2>Contributor PR review drafts</h2>
+    <p>Reviewing contributor PRs is the highest-leverage maintenance task — and the most time-consuming when a project grows. You can't merge without reviewing; you can't review 20 PRs a day and also write code. An agent can do the mechanical first pass: checking coding conventions, spotting missing tests, identifying breaking changes without migration notes, and flagging patterns that don't match the codebase.</p>
+
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Queue contributor PRs for overnight review
+amux board add "Draft review for PR #512 — check conventions, test coverage, breaking changes"
+amux board add "Draft review for PR #514 — new API endpoint, check error handling"
+amux board add "Draft review for PR #516 — performance fix, check benchmark comparison"
+
+# Agent produces a structured review draft:
+# PR #512: 3 issues — missing docstring on new public method; test for edge case not present;
+#   import ordering doesn't follow project convention (see CLAUDE.md §imports)
+#   Draft review comment: [...]
+
+# You review the draft, add your judgment, post</code></pre>
+
+    <p>The agent is strongest at mechanical convention checks (did they follow your style guide? did they add tests? is there a CHANGELOG entry?). Your judgment is needed for architectural decisions and contribution acceptance. The split is usually 80% mechanical / 20% judgment — and agents handle the 80%.</p>
+
+    <h2>Changelog and release notes generation</h2>
+    <p>Writing release notes is the task most maintainers put off longest. It requires reading all commits since the last release, categorizing them, and writing human-readable summaries. An agent with git access and your CHANGELOG format in CLAUDE.md can draft a full release entry overnight.</p>
+
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Queue a changelog generation task
+amux board add "Generate CHANGELOG entry for v1.4.0 — commits since tag v1.3.2, format per CLAUDE.md §changelog"
+
+# Agent runs git log v1.3.2..HEAD --oneline, categorizes by feat/fix/chore,
+# groups semantically, and drafts a CHANGELOG.md entry:
+#
+# ## v1.4.0 — 2026-07-16
+# ### New features
+# - Add CSV export to reports page (#412)
+# - Support multiple file uploads in the editor (#419)
+# ### Bug fixes
+# - Fix mobile layout overflow on Safari (#407)
+# - Correct timezone handling in scheduler (#415)
+# ### Internal
+# - Upgrade dependencies (see lock file diff)
+#
+# Review, edit, commit</code></pre>
+
+    <p>Works best with <a href="https://www.conventionalcommits.org/" target="_blank" rel="noopener">conventional commits</a> (feat/fix/chore prefixes) — they give the agent explicit signals for categorization. Even with mixed commit messages, agents can usually infer the category from the commit body.</p>
+
+    <h2>Documentation drift prevention</h2>
+    <p>Documentation goes stale as code changes. An agent can scan the codebase for places where code and docs diverge — function signatures that don't match, configuration options that exist in code but not in docs, examples that reference deprecated APIs. Queue a doc audit monthly and wake up to a list of specific diffs to fix.</p>
+
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Monthly doc audit task
+amux board add "Audit docs/ against src/ — find stale API references, missing config options, broken examples"
+
+# Agent produces a report:
+# docs/api.md line 142: function signature outdated (params changed in commit a3f92b1)
+# docs/config.md: missing 'timeout_ms' option (added in v1.3.1)
+# docs/examples/auth.js: uses deprecated AuthV1 (removed in v1.2.0)
+#
+# You fix, commit, ship</code></pre>
+
+    <h2>Feature comparison</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Maintenance task</th>
+          <th>Without amux</th>
+          <th>With amux agents</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Triage 50 new issues</td>
+          <td>3–5 hours of reading and typing</td>
+          <td>Overnight run; 30-min review of drafts</td>
+        </tr>
+        <tr>
+          <td>Review 10 contributor PRs</td>
+          <td>5–8 hours including context-switching</td>
+          <td>Overnight drafts; 1–2 hours of final judgment</td>
+        </tr>
+        <tr>
+          <td>Write release notes for v1.x</td>
+          <td>1–2 hours of git log reading + writing</td>
+          <td>10-minute edit of agent draft</td>
+        </tr>
+        <tr>
+          <td>Monthly doc audit</td>
+          <td>Usually skipped (too slow)</td>
+          <td>Overnight scan; 1-hour fix session</td>
+        </tr>
+        <tr>
+          <td>Respond to stale issues</td>
+          <td>Periodic manual sweeps; often missed</td>
+          <td>Scheduled weekly agent run</td>
+        </tr>
+        <tr>
+          <td>Cost</td>
+          <td>Your time (the scarcest resource)</td>
+          <td>~$5–20 in API tokens per overnight run</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Scheduling recurring maintenance</h2>
+    <p>amux has a built-in scheduler. You can set it to triage new issues every Monday morning, audit docs monthly, and generate release notes draft before every planned release — all running unattended.</p>
+
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Weekly issue triage (every Monday at 6am)
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Weekly issue triage","command":"Triage all GitHub issues opened this week. See CLAUDE.md for rules. Post a summary to the amux board.","schedule_expr":"weekly on Monday at 6am","session":"myproject"}' \
+  $AMUX_URL/api/schedules
+
+# Monthly doc audit (1st of each month at 7am)
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"title":"Monthly doc audit","command":"Audit docs/ for stale content vs src/. Report in board task.","schedule_expr":"monthly on 1 at 7am","session":"myproject"}' \
+  $AMUX_URL/api/schedules</code></pre>
+
+    <h2>Monitor everything from your phone</h2>
+    <p>The <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">native iOS app</a> gives you a live view of all running agents — peek at their output, check board status, approve or close tasks, and send new instructions without opening a laptop. For open-source maintainers who also have day jobs, this means checking on overnight triage runs during lunch or between meetings.</p>
+
+    <h2>Get started</h2>
+    <p>Install amux, register your open-source project, write a CLAUDE.md with your project context and triage rules, and queue your first overnight issue triage.</p>
+
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># Install (choose your preferred method)
+brew install mixpeek/amux/amux      # Homebrew (macOS)
+pipx install amux                    # PyPI
+uvx amux serve                       # Zero-install
+
+# Register your open-source project
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8822
+
+# Queue your first triage run
+amux board add "Triage all open issues — categorize, label, draft responses per CLAUDE.md"</code></pre>
+
+    <h2>Frequently Asked Questions</h2>
+
+    <h3>Can AI agents actually triage GitHub issues reliably?</h3>
+    <p>Yes, for the triage step: categorizing by type (bug/feature/question), assigning labels, checking for missing reproduction steps, linking to existing issues, and drafting a first response. amux runs Claude Code agents overnight with your CLAUDE.md context — they know your project's conventions, issue templates, and common patterns. Judgment calls (prioritization, acceptance/rejection) remain yours; the agent does the reading and drafting so you make decisions faster.</p>
+
+    <h3>How does amux help with contributor PR reviews?</h3>
+    <p>You queue each PR as a board task. The agent runs overnight, reads the diff and the project CLAUDE.md, checks coding conventions, looks for common mistakes (missing tests, incorrect types, undocumented breaking changes), and produces a structured review draft. You wake up with pre-read PR notes, edit or approve the review, and post it. A 30-minute PR review becomes a 5-minute approval.</p>
+
+    <h3>How does amux generate changelogs?</h3>
+    <p>The agent runs <code>git log --oneline</code> since the last release tag, categorizes commits by type (feat/fix/chore/docs), groups them semantically, and drafts a CHANGELOG.md entry in your project's format. You specify the format and style in CLAUDE.md. Works best with conventional commits (feat/fix/chore prefixes).</p>
+
+    <h3>Does amux work for projects with hundreds of open issues?</h3>
+    <p>Yes — you can run one agent per batch of issues overnight. For a backlog of 200 open issues, queue them in batches of 20–30 per agent session. Agents read in parallel and draft responses independently, sharing a kanban board so no issue is touched twice. A 200-issue triage backlog that would take a maintainer 3 days can often be drafted in one overnight run.</p>
+
+    <h3>What is the cost for open-source maintainers?</h3>
+    <p>amux itself is free and open-source (MIT license). You run it on your own machine — no SaaS fee, no per-seat charge. You pay only for AI model tokens. Issue triage and PR review are read-heavy tasks: triaging 50 issues typically costs a few dollars in API tokens. Claude Max ($200/month flat) gives unlimited Claude Code usage for maintainers with large backlogs.</p>
+
+    <div class="cta-box">
+      <h3>Run an AI engineering team tonight — free and open-source</h3>
+      <p>Install amux, write a CLAUDE.md with your project context, and queue your first overnight triage run.</p>
+      <pre><code>brew install mixpeek/amux/amux
+amux register myproject --dir ~/Dev/myproject --yolo
+amux serve  # → https://localhost:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <a class="btn" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" style="margin-left:.5rem">iOS App</a>
+    </div>
+
+    <h2>See also</h2>
+    <ul>
+      <li><a href="/guides/getting-started/">Getting started with amux</a> — install in 5 minutes</li>
+      <li><a href="/use-cases/ai-coding-while-you-sleep/">AI coding while you sleep</a> — YOLO mode and overnight setup</li>
+      <li><a href="/guides/ai-agent-quality-gates/">AI agent quality gates</a> — done vs verified, board gate types</li>
+      <li><a href="/for/engineering-managers/">amux for engineering managers</a> — team-level orchestration</li>
+      <li><a href="/for/freelancers/">amux for freelancers</a> — client project isolation and CRM</li>
+    </ul>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">For developers</div>
+          <ul>
+            <li><a href="/for/freelancers/">Freelancers</a></li>
+            <li><a href="/for/indie-hackers/">Indie Hackers</a></li>
+            <li><a href="/for/engineering-managers/">Engineering Managers</a></li>
+            <li><a href="/for/open-source-maintainers/">Open-Source Maintainers</a></li>
+            <li><a href="/for/">All personas</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/compare/">Compare</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
