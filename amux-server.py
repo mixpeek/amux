@@ -21688,9 +21688,29 @@ function esc(s) {
 function escJs(s) {
   return esc(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
+// How many viewport px one style px maps to under the root CSS zoom — MEASURED
+// with a probe, not derived from getComputedStyle(zoom). Engines disagree on
+// whether getBoundingClientRect returns zoom-scaled coordinates (Chromium
+// standardized zoom does; other engines/versions don't), so trusting the
+// computed value misplaced every _cssRect consumer at zoom≠100%: the walkthrough
+// spotlight floated over empty space and the card ⋯ menu detached (2026-07-16).
+// The probe is self-consistent in BOTH engine families by construction.
+let _zProbe = { z: 1, t: 0 };
+function _uiZoomFactor() {
+  if (performance.now() - _zProbe.t < 2000) return _zProbe.z;
+  try {
+    const p = document.createElement('div');
+    p.style.cssText = 'position:fixed;left:0;top:0;width:100px;height:1px;visibility:hidden;pointer-events:none;';
+    document.body.appendChild(p);
+    const w = p.getBoundingClientRect().width || 100;
+    p.remove();
+    _zProbe = { z: w / 100 || 1, t: performance.now() };
+  } catch (e) { _zProbe = { z: 1, t: performance.now() }; }
+  return _zProbe.z;
+}
 function _cssRect(el) {
   const r = el.getBoundingClientRect();
-  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const z = _uiZoomFactor();
   return { top: r.top / z, right: r.right / z, bottom: r.bottom / z, left: r.left / z, width: r.width / z, height: r.height / z };
 }
 
@@ -21914,7 +21934,7 @@ function toggleMenu(name) {
   if (!btn) { el.classList.add('open'); openMenu = name; return; }
   const r = _cssRect(btn);
   const vw = document.documentElement.clientWidth || window.innerWidth;
-  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const z = _uiZoomFactor();   // measured, engine-agnostic (see _cssRect)
   const vh = window.innerHeight / z;
   // Portal to body — escapes overflow:hidden on .card (iOS Safari clips fixed children)
   if (el.parentElement !== document.body) {
@@ -24457,7 +24477,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.130';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.131';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -28180,7 +28200,7 @@ function _csvInitCellTap() {
     pop.className = 'csv-cell-pop';
     pop.textContent = text;
     const rect = _cssRect(td);
-    const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+    const z = _uiZoomFactor();   // measured, engine-agnostic (see _cssRect)
     pop.style.left = Math.min(rect.left, window.innerWidth / z - 320) + 'px';
     pop.style.top = (rect.bottom + 4) + 'px';
     document.body.appendChild(pop);
@@ -29341,7 +29361,7 @@ function _showExploreMenu(path, btn, type) {
   const r = _cssRect(btn);
   const pw = popup.offsetWidth || 140;
   const ph = popup.offsetHeight || 80;
-  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const z = _uiZoomFactor();   // measured, engine-agnostic (see _cssRect)
   const vw = window.innerWidth / z, vh = window.innerHeight / z;
   // Open beside the ⋯ button: align the menu's right edge to the button's
   // right edge (drops down from the button). If that would clip off the left,
@@ -29419,7 +29439,7 @@ function _showFilesMenu(path, btn, type) {
   const r = _cssRect(btn);
   const pw = popup.offsetWidth || 160;
   const ph = popup.offsetHeight || 140;
-  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const z = _uiZoomFactor();   // measured, engine-agnostic (see _cssRect)
   const vw = window.innerWidth / z, vh = window.innerHeight / z;
   // Open beside the ⋯ button: align the menu's right edge to the button's
   // right edge (drops down from the button). If that would clip off the left,
@@ -42192,7 +42212,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.130';
+const CACHE = 'amux-v0.9.131';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
