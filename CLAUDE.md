@@ -36,7 +36,7 @@ Persistent env vars for the server. Loaded at startup via `os.environ.setdefault
 Example `~/.amux/server.env`:
 ```
 AMUX_S3_BUCKET=ethan-personal
-AMUX_S3_KEY=amux/calendar.ics
+AMUX_S3_KEY=amux/cal-<random-token>.ics
 AMUX_S3_REGION=us-east-2
 ```
 
@@ -53,10 +53,10 @@ emitted as UTC (`DTSTART:...Z`) so Google shows the correct local time; all-day 
 
 S3 bucket config (on `ethan-personal`):
 - Public access block: `BlockPublicAcls=true, IgnorePublicAcls=true, BlockPublicPolicy=false, RestrictPublicBuckets=false`
-- Bucket policy grants public `s3:GetObject` on `arn:aws:s3:::ethan-personal/amux/*.ics` (widened from the single `calendar.ics` key so cache-busting keys work).
-- Current key: `AMUX_S3_KEY=amux/calendar-v2.ics` → `https://ethan-personal.s3.us-east-2.amazonaws.com/amux/calendar-v2.ics`
+- Bucket policy grants public `s3:GetObject` on `arn:aws:s3:::ethan-personal/amux/*.ics` (widened from the single `calendar.ics` key so cache-busting keys work). Bucket LISTING is denied (403), so a random key is not discoverable.
+- Current key: a **random token** (`amux/cal-<32hex>.ics`) that lives ONLY in `~/.amux/server.env` — **NEVER commit the actual key/URL to this repo: the repo is public, and a committed feed URL is how the old guessable key leaked.** Read it with `grep AMUX_S3_KEY ~/.amux/server.env`; the dashboard's Subscribe button shows the full URL.
 
-**Google caches ICS feeds by URL, hard.** There is no reliable way to force a refresh — Google refetches on its own cadence (hours). If you edit the feed's *content shape* and need Google to see it now, publish to a NEW key (bump `-v2`→`-v3`) and re-subscribe; the old URL keeps serving Google's stale cache. `AMUX_S3_KEY` is read at startup via `os.environ.setdefault`, and execv reloads inherit the env, so changing it needs a real restart: `launchctl kickstart -k gui/$(id -u)/com.amux.server`.
+**Google caches ICS feeds by URL, hard.** There is no reliable way to force a refresh — Google refetches on its own cadence (hours). If you edit the feed's *content shape* and need Google to see it now, publish to a NEW random key and re-subscribe; the old URL keeps serving Google's stale cache. `AMUX_S3_KEY` is read at startup via `os.environ.setdefault`, and execv reloads inherit the env, so changing it needs a real restart: `launchctl kickstart -k gui/$(id -u)/com.amux.server`.
 
 The feed auto-uploads to S3 on every event write. The dashboard's calendar subscription button shows the S3 URL directly when configured.
 
