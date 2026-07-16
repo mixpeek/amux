@@ -46277,6 +46277,44 @@ class CCHandler(BaseHTTPRequestHandler):
                     if res.get("error"):
                         return self._json(res, 502)
                     return self._json(res.get("messages", []))
+                # No account filter: serve the Gmail-connected accounts via the
+                # API, in PARALLEL. The AppleScript below drives Mail.app serially
+                # across every configured account and measured ~28s here — a Gmail
+                # account that merely lacks a token (so it falls to AppleScript)
+                # cost 13.5s by itself — which blew the 60s gateway timeout and
+                # returned 504. Gmail-API accounts need none of that: each is
+                # ~1.3s, and run concurrently the fan-out costs max(), not sum().
+                # An account Mail.app owns but Gmail has no token for is still
+                # reachable via ?account=<addr> (that takes the AppleScript path
+                # below); connect it (GET /api/gmail/auth?account=<addr>) to put
+                # it on this fast path too.
+                _connected = _gmail_connected_accounts()
+                if not account_filter and _connected:
+                    from concurrent.futures import ThreadPoolExecutor
+                    from email.utils import parsedate_to_datetime
+
+                    def _recv_key(m):
+                        """Newest first; an unparseable date sinks, never raises."""
+                        try:
+                            return parsedate_to_datetime(m.get("date", "")).timestamp()
+                        except Exception:
+                            return 0.0
+
+                    _msgs: list = []
+                    with ThreadPoolExecutor(max_workers=min(8, len(_connected))) as _ex:
+                        _futs = [_ex.submit(_gmail_inbox_messages, _a, count)
+                                 for _a in _connected]
+                        for _f in _futs:
+                            try:
+                                # Bound each account: one wedged token must not
+                                # hang the unified inbox into a gateway timeout.
+                                _r = _f.result(timeout=20)
+                            except Exception:
+                                continue
+                            if not _r.get("error"):
+                                _msgs.extend(_r.get("messages", []))
+                    _msgs.sort(key=_recv_key, reverse=True)
+                    return self._json(_msgs[:count])
                 # No-account script: iterate every account's INBOX. The
                 # per-account filter case has its own dedicated script below.
                 # (Earlier this branch interpolated a stray `end if` with no
@@ -49835,10 +49873,19 @@ def _validate_api_key_job():
 def _watch_self(server):
     """Watch amux-server.py for changes and restart on modification.
 
-    Uses a 3-second debounce so rapid successive edits (e.g. multiple
-    sessions committing) only trigger a single restart.
+    Debounced so rapid successive edits (e.g. multiple sessions committing)
+    collapse into a single restart. Each restart costs ~11s of real downtime
+    (shutdown drain + execv + re-executing this 50k-line module), during which
+    every session on the box gets connection refused / 502 / 504. At a 3s
+    debounce an edit burst became a restart burst: 13 restarts in 10 minutes,
+    the server up only 16-70s between them. 30s collapses a burst into one
+    restart. Lower it via AMUX_RELOAD_DEBOUNCE (e.g. 3) when actively
+    iterating on the server and you want a save to land immediately.
     """
-    _DEBOUNCE = 3  # seconds to wait for edits to settle
+    try:
+        _DEBOUNCE = max(1, int(os.environ.get("AMUX_RELOAD_DEBOUNCE", "30")))
+    except ValueError:
+        _DEBOUNCE = 30  # seconds to wait for edits to settle
     script = Path(__file__).resolve()
     mtime = script.stat().st_mtime
     while True:
@@ -50009,12 +50056,19 @@ def _kill_stale_port(port: int):
         r = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True, timeout=5)
         if r.returncode == 0:
             my_pid = os.getpid()
+            killed = False
             for line in r.stdout.strip().splitlines():
                 pid = int(line.strip())
                 if pid != my_pid:
                     slog(f"[startup] killing stale process {pid} on port {port}")
                     os.kill(pid, 9)
-            time.sleep(1)
+                    killed = True
+            # Only pause when we actually killed something — the wait is for the
+            # OS to release that pid's socket. On an execv auto-reload the pid is
+            # unchanged, so nothing is killed and this slept 1s for nothing on
+            # every single restart.
+            if killed:
+                time.sleep(1)
     except Exception:
         pass
 
