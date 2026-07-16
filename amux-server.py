@@ -14626,6 +14626,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     display: none; position: fixed; inset: 0; z-index: 8000;
   }
   #wt-overlay.open { display: block; }
+  #wt-overlay.open + #wt-tooltip { display: block; }
   #wt-backdrop {
     position: fixed; inset: 0; z-index: 8001;
     transition: opacity 0.2s;
@@ -14638,7 +14639,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     pointer-events: none;
   }
   #wt-tooltip {
-    position: fixed; z-index: 8003;
+    display: none;
+    position: fixed; z-index: 8503;
     background: var(--bg, #fff); border: 1px solid var(--border, #e2e2e5);
     border-radius: 14px; padding: 20px 22px 16px;
     max-width: 340px; width: calc(100vw - 40px);
@@ -24482,7 +24484,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.132';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.133';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -42197,8 +42199,11 @@ window.addEventListener('load', _pinnedNotesRefresh);
 <div id="wt-overlay">
   <div id="wt-backdrop"></div>
   <div id="wt-spotlight"></div>
-  <div id="wt-tooltip"></div>
 </div>
+<!-- Sibling, NOT a child: inside the overlay's stacking context the tooltip sat
+     at the overlay's z (8000) and the guided-build dialogs lifted to 8002 hid
+     the guidance text entirely. As a sibling it stacks above them. -->
+<div id="wt-tooltip"></div>
 
 <!-- DevTools Panel -->
 <div id="devtools-panel">
@@ -42257,7 +42262,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.132';
+const CACHE = 'amux-v0.9.133';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
