@@ -9415,7 +9415,15 @@ def _live_conv_id(name: str, work_dir: str = "") -> str:
         pass
     if work_dir:
         try:
-            return _find_latest_session_id(work_dir)
+            cand = _find_latest_session_id(work_dir)
+            # In a SHARED work_dir the "latest jsonl" belongs to whichever session
+            # was last active, not necessarily this one. Adopting it cross-links two
+            # sessions onto one Claude conversation (the mixpeek-general/frustrations
+            # bug, 2026-07-16). Refuse a candidate another session already owns so a
+            # separated session can't silently re-grab its neighbor's conversation.
+            if cand and _conversation_owned_by_other(cand, name):
+                return ""
+            return cand
         except Exception:
             return ""
     return ""
