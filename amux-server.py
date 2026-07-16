@@ -7995,7 +7995,7 @@ def _drain_and_fire_sched_events(now: float):
             slog(f"[sched] event-trigger firing '{s['title']}' → {s.get('session')}")
             _run_schedule(s)
             db.execute("UPDATE schedules SET last_run=?, updated=? WHERE id=?",
-                       (datetime.now().strftime("%Y-%m-%dT%H:%M"), int(now), sid))
+                       (int(time.time()), int(now), sid))   # last_run = UTC unix, same clock as schedule_runs.ran_at (AMUX-1736)
             db.commit()
 
 
@@ -8205,13 +8205,13 @@ def _scheduler_loop():
                 now_ts = int(time.time())
                 if sched["sched_type"] == "once":
                     db.execute("UPDATE schedules SET enabled=0, last_run=?, updated=? WHERE id=?",
-                               (now_str, now_ts, sched["id"]))
+                               (now_ts, now_ts, sched["id"]))   # last_run = UTC unix (AMUX-1736)
                     _sched_audit(sched["id"], "enabled", 1, 0, "run-once")
                 else:
                     expr = sched.get("schedule_expr") or ""
                     next_r = (_parse_next_run(expr) if expr else None) or _next_run_dt(sched)
                     db.execute("UPDATE schedules SET last_run=?, next_run=?, updated=? WHERE id=?",
-                               (now_str, next_r, now_ts, sched["id"]))
+                               (now_ts, next_r, now_ts, sched["id"]))   # last_run = UTC unix (AMUX-1736)
             if due:
                 db.commit()
         except Exception as e:
@@ -24280,7 +24280,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.120';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.121';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -32130,7 +32130,8 @@ function renderScheduler(opts) {
         ? `<span class="sched-sess-dot ${sessStatus}" title="${s.session}: ${sessStatus}"></span><span style="color:var(--accent);cursor:pointer;" onclick="switchView('sessions');openPeek('${esc(s.session)}')">${esc(s.session)}</span>`
         : `<span style="color:var(--dim);">(shell)</span>`;
       const nextRel = s.next_run ? `▶ <strong style="color:var(--text);" title="${s.next_run}">${relTime(s.next_run)}</strong>` : '';
-      const lastRel = s.last_run ? `<span style="color:var(--dim);" title="${s.last_run}">&#x2713; ${relTime(s.last_run)}</span>` : `<span style="color:var(--dim);">never</span>`;
+      const _lrTitle = s.last_run ? (/^\d+$/.test(String(s.last_run)) ? new Date((+s.last_run > 2e9 ? +s.last_run : +s.last_run * 1000)).toLocaleString() : new Date(s.last_run).toLocaleString()) : '';
+      const lastRel = s.last_run ? `<span style="color:var(--dim);" title="${esc(_lrTitle)}">&#x2713; ${relTime(s.last_run)}</span>` : `<span style="color:var(--dim);">never</span>`;
       const trigLabel = s.trigger_on ? `&nbsp;&middot;&nbsp;<span style="color:var(--accent);font-size:0.65rem;">&#x26A1; ${esc((s.trigger_on||'').split(',').map(t=>t==='session_idle'?'idle':t==='board'?'board':t).join('+')).trim()}</span>` : '';
       const watchLabel = s.watch ? `&nbsp;&middot;&nbsp;<span style="color:var(--dim);font-size:0.65rem;">&#x1F441; watch</span>` : '';
       const doneLabel = s.done_pattern ? `&nbsp;&middot;&nbsp;<span style="color:var(--dim);font-size:0.65rem;">stop: <code style="font-size:0.6rem;">${esc(s.done_pattern.length > 20 ? s.done_pattern.slice(0,20)+'…' : s.done_pattern)}</code></span>` : '';
@@ -41906,7 +41907,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.120';
+const CACHE = 'amux-v0.9.121';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -45620,9 +45621,9 @@ class CCHandler(BaseHTTPRequestHandler):
                 cols = _sched_cols(db)
                 sched = _sched_row_to_dict(row, cols)
                 _run_schedule(sched)
-                now_str = _dt.now().strftime("%Y-%m-%dT%H:%M")
+                _run_ts = int(_time.time())
                 db.execute("UPDATE schedules SET last_run=?, updated=? WHERE id=?",
-                           (now_str, int(_time.time()), sid_for_run))
+                           (_run_ts, _run_ts, sid_for_run))   # last_run = UTC unix (AMUX-1736)
                 db.commit()
                 self._json({"ok": True, "ran": sched["title"]})
                 return
