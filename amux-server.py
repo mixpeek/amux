@@ -24337,7 +24337,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.125';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.126';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -25516,9 +25516,11 @@ async function refreshPeek(liveOnly) {
       return;
     }
     _lastPeekRaw = output;
+    let histChanged = false;
     if (histRaw !== null && histRaw !== _peekHistoryRaw) {   // full fetch → (re)render history once
       _peekHistoryRaw = histRaw;
       _peekHistoryHTML = histRaw ? wrapBoxBlocks(_fitRules(highlightPrompts(ansiToHtml(histRaw)))) : '';
+      histChanged = true;
     }
     // Subagent switcher visibility: the agents panel always includes a
     // "⏺ main"/"◯ main" row in the bottom lines of the pane. Checking for
@@ -25560,7 +25562,9 @@ async function refreshPeek(liveOnly) {
       applyPeekSearch(true, false);
       body.scrollTop = savedTop;
     } else if (!_peekScrollLocked) {
-      applyPeekSearch(false);
+      const _liveEl = document.getElementById('pk-live');
+      if (!histChanged && _liveEl) _liveEl.innerHTML = _lastLiveHTML;   // live tick → swap the small region only
+      else applyPeekSearch(false);
     }
     if (!_peekScrollLocked && atBottom && !hasSearch) {
       body.scrollTop = body.scrollHeight;
@@ -25594,13 +25598,22 @@ async function refreshPeek(liveOnly) {
   }
 }
 
+// Split DOM: history lives in a stable container and the live frame in its own,
+// so a live tick swaps ONLY #pk-live (a few hundred bytes) instead of
+// re-innerHTML'ing the whole ~100K-char scrollback every 900ms — that wholesale
+// reflow was the visible "janky" churn when watching an active session.
+function _paintPeekRegions(body) {
+  const hist = _peekEarlierHTML() + _peekHistoryHTML;
+  if (!hist && !_lastLiveHTML && lastPeekHTML) { body.innerHTML = lastPeekHTML; return; }  // IDB cached open paint
+  body.innerHTML = '<div id="pk-hist">' + hist + '</div><div id="pk-live">' + _lastLiveHTML + '</div>';
+}
 function applyPeekSearch(keepIndex, doScroll) {
   const body = document.getElementById('peek-body');
   const countEl = document.getElementById('peek-search-count');
   if (!body) return;
   const q = peekSearchQuery.trim();
   if (!q) {
-    body.innerHTML = lastPeekHTML;
+    _paintPeekRegions(body);
     _peekMatches = [];
     peekSearchIndex = 0;
     if (countEl) countEl.textContent = '';
@@ -41990,7 +42003,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.125';
+const CACHE = 'amux-v0.9.126';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
