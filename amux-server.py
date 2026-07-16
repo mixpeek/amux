@@ -42304,12 +42304,18 @@ class CCHandler(BaseHTTPRequestHandler):
             self.send_response(304)
             self._cors()
             self.send_header("ETag", etag)
+            # no-store: the client manages If-None-Match explicitly, so the browser
+            # must NEVER serve this live payload from its own HTTP cache — opening a
+            # peek fetches with no If-None-Match, and a cached copy showed stale
+            # terminal until a full page refresh ("have to refresh to get latest").
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             return
         self.send_response(200)
         self._cors()
         self.send_header("Content-Type", "application/json")
         self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         try:
