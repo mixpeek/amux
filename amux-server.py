@@ -12874,7 +12874,8 @@ def _gmail_find_message_by_rfc822(account: str, rfc822_id: str) -> dict | None:
 
 
 def _gmail_reply_send(account: str, rfc822_message_id: str, body: str,
-                       include_signature: bool = True, reply_all: bool = False) -> dict:
+                       include_signature: bool = True, reply_all: bool = False,
+                       allow_self: bool = False) -> dict:
     """Reply in-thread (clean body + signature, correct In-Reply-To/References/
     threadId) to the message identified by its RFC822 Message-ID header."""
     import email.utils as _eu
@@ -12933,15 +12934,31 @@ def _gmail_reply_send(account: str, rfc822_message_id: str, body: str,
     else:
         # the party who last spoke (From) if external, else the original recipient(s)
         to_addr, cc = ", ".join(from_ext or to_ext), ""
+    if not to_addr and allow_self:
+        # VERIFY MODE (AMUX-1739 follow-up): an operator proving that replies
+        # thread inline needs to reply between OWNED accounts — the exact test
+        # the self-loop guard otherwise forbids. Reply to the original sender
+        # (even if ours), or the original recipients, excluding only the
+        # sending account itself.
+        import email.utils as _eu2
+        _raw_from = [a for _n, a in _eu2.getaddresses([headers.get("from", "") or ""]) if a and a.lower() != account.lower()]
+        _raw_to = [a for _n, a in _eu2.getaddresses([headers.get("to", "") or ""]) if a and a.lower() != account.lower()]
+        to_addr = ", ".join(_raw_from or _raw_to)
     if not to_addr:
-        # NEVER fall back to emailing ourselves. If no external party is on the
-        # thread, refuse and force the caller to pass an explicit recipient.
+        # NEVER fall back to emailing ourselves (without explicit allow_self).
         return {"error": "no external recipient on this thread (would email ourselves) — "
-                         "pass an explicit 'to' via /api/email/send"}
+                         "pass an explicit 'to' via /api/email/send, or use "
+                         "{\"allow_self\": true} to run a threading self-test between owned accounts"}
     references = (headers.get("references", "") + " " + orig_msgid).strip()
-    return _gmail_compose_send(account, to_addr, subject, body, cc=cc,
+    _res = _gmail_compose_send(account, to_addr, subject, body, cc=cc,
                                in_reply_to=orig_msgid, references=references,
                                thread_id=thread_id, include_signature=include_signature)
+    # Threading proof for the caller: the original's thread id (account-local)
+    # and whether the reply landed in the SAME thread — assertable evidence.
+    if isinstance(_res, dict) and not _res.get("error"):
+        _res["orig_thread_id"] = thread_id or orig.get("threadId", "")
+        _res["threaded"] = bool(thread_id) and _res.get("thread_id") == thread_id
+    return _res
 
 
 def _gmail_get_message_full(account: str, rfc822_id: str) -> dict | None:
@@ -47253,7 +47270,8 @@ end tell
                 if gmail_from and gmail_from in _gmail_connected_accounts():
                     res = _gmail_reply_send(gmail_from, message_id, reply_body,
                                             include_signature=include_sig,
-                                            reply_all=bool(reply_all))
+                                            reply_all=bool(reply_all),
+                                            allow_self=bool(body.get("allow_self")))
                     if res.get("error"):
                         return self._json(res, 502)
                     _email_log({"endpoint": "reply", "via": "gmail", "from": gmail_from,
@@ -47265,6 +47283,8 @@ end tell
                                        "reply_all": bool(reply_all), "from": gmail_from,
                                        "via": "gmail", "id": res.get("id"),
                                        "thread_id": res.get("thread_id"),
+                                       "orig_thread_id": res.get("orig_thread_id"),
+                                       "threaded": res.get("threaded"),
                                        "signature_included": res.get("signature_included")})
                 msg_id_safe = message_id.replace('"', '\\"')
                 body_expr = _ascript_str(reply_body)
