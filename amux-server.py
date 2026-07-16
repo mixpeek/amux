@@ -22677,7 +22677,7 @@ async function doSend(name, text) {
   // One msg_id per logical send, reused verbatim by the offline-queue replay:
   // the server dedups on it, so a retry after a lost response (e.g. the
   // server restarted mid-request AFTER the keys landed) can't deliver twice.
-  const sendBody = JSON.stringify({text: payload, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random())});
+  const sendBody = JSON.stringify({text: payload, record_history: true, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random())});
   // Use direct fetch (not apiCall) so we can handle 409 specifically
   try {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
@@ -24129,7 +24129,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.117';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.118';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -25936,7 +25936,7 @@ async function steerSession(name, text) {
   const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/steer', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     // msg_id makes retries idempotent — see doSend
-    body: JSON.stringify({ text, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()) })
+    body: JSON.stringify({ text, record_history: true, msg_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()) })
   });
   if (r) {
     showToast('Steering queued — will deliver at next turn boundary');
@@ -27251,11 +27251,12 @@ function cmdHistoryAdd(text, opts) {
       try { localStorage.removeItem('amux_cmd_history'); } catch (e3) {}
     }
   }
-  // Persist to server
-  fetch(API + '/api/history', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ text: entry.text, type: entry.type, session: entry.session, ts: entry.time })
-  }).catch(() => {});
+  // Server-side recording now happens ATOMICALLY inside the /send and /steer
+  // handlers (record_history flag), so a message reaches the shared history for
+  // every client even if this device is offline/suspended right after sending.
+  // No fragile fire-and-forget POST here that a backgrounded phone PWA would drop
+  // (the "sent from phone, missing on desktop" bug, 2026-07-16). The push above
+  // is just this device's optimistic local copy; the server pull reconciles it.
   _cmdHistoryIdx = -1;
 }
 
@@ -41678,7 +41679,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.117';
+const CACHE = 'amux-v0.9.118';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -48531,6 +48532,16 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     return self._json({"ok": True, "deduped": True,
                                        "message": "duplicate retry ignored (already queued)"})
                 msg_id = _steer_enqueue(name, text)
+                # Server-side history record (atomic, device-independent) — see the
+                # /send handler. Gated on record_history; dedup above prevents doubles.
+                if body.get("record_history"):
+                    try:
+                        _dbh = get_db()
+                        _dbh.execute("INSERT INTO cmd_history (text, type, session, ts) VALUES (?,?,?,?)",
+                                     (text, "steering", name, int(time.time() * 1000)))
+                        _dbh.commit()
+                    except Exception:
+                        pass
                 return self._json({"ok": True, "id": msg_id, "message": "queued for next turn boundary"})
             return self._json({"error": "method not allowed"}, 405)
 
@@ -48564,6 +48575,20 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     _update_meta(name, last_send=int(time.time()), last_send_text=text[:200])
                     _session_prev_status[name] = "active"  # seed for idle detection
                     _summarize_task_bg(name, text)
+                    # Record to the shared history SERVER-SIDE, atomic with the send,
+                    # so the message is in history for EVERY client even if the sending
+                    # device's own history POST never lands (flaky phone / suspended
+                    # PWA). Gated on record_history so agent-to-agent sends on this same
+                    # endpoint don't flood the human history. The msg_id dedup above
+                    # means a retried/offline-replayed send never double-records.
+                    if body.get("record_history"):
+                        try:
+                            _dbh = get_db()
+                            _dbh.execute("INSERT INTO cmd_history (text, type, session, ts) VALUES (?,?,?,?)",
+                                         (text, "direct", name, int(time.time() * 1000)))
+                            _dbh.commit()
+                        except Exception:
+                            pass
                 elif msg_id:
                     _send_dedup_forget(name, msg_id)
                 # 409 = session exists but is not running (user-caused, not a server error)
