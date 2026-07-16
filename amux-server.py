@@ -24308,7 +24308,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.121';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.122';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -24407,7 +24407,11 @@ function openPeek(name, opts) {
       body.scrollTop = body.scrollHeight;
     }
   });
-  refreshPeek();
+  // Paint the CURRENT terminal instantly from the few-KB live frame, THEN pull the
+  // full payload (~138KB, mostly transcript history) to fill in scrollback. Clicking
+  // a session now shows the latest immediately instead of waiting on ~120KB of
+  // history — and 4 ansiToHtml passes over it — before anything appears.
+  refreshPeek(true).finally(() => refreshPeek());
   _schedulePeekPoll();
   setTimeout(_peekFitPane, 350);   // fit the pane to this viewer's width
   _updateSendSplit();   // sync the Send/Queue button label to the current mode
@@ -25440,7 +25444,7 @@ function _fitRules(html) {
   }).join('\n');
 }
 
-async function refreshPeek() {
+async function refreshPeek(liveOnly) {
   const name = peekSession;
   if (!name) return;
   // Refresh the Plan strip (throttled — task files change slowly).
@@ -25451,14 +25455,18 @@ async function refreshPeek() {
   const body = document.getElementById('peek-body');
   const statusEl = document.getElementById('peek-status');
   try {
-    const r = await fetch(API + '/api/sessions/' + name + '/peek?lines=300',
-      _peekEtag ? { headers: { 'If-None-Match': _peekEtag } } : undefined);
+    // liveOnly (open path): a few-KB live frame — the CURRENT terminal — so the
+    // peek paints the latest instantly on click. The full payload (~138KB, mostly
+    // transcript history) follows and fills in scrollback. Only the full response
+    // carries the ETag the poll conditions on.
+    const r = await fetch(API + '/api/sessions/' + name + '/peek?lines=300' + (liveOnly ? '&live=1' : ''),
+      (!liveOnly && _peekEtag) ? { headers: { 'If-None-Match': _peekEtag } } : undefined);
     if (peekSession !== name) return;
     if (r.status === 304) {   // unchanged — nothing transferred, skip parse + render entirely
       if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
       return;
     }
-    _peekEtag = r.headers.get('ETag') || _peekEtag;
+    if (!liveOnly) _peekEtag = r.headers.get('ETag') || _peekEtag;
     const data = await r.json();
     const output = data.output || '(no output)';
     // Skip re-render when output is identical — saves ansiToHtml work on every poll tick.
@@ -41935,7 +41943,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.121';
+const CACHE = 'amux-v0.9.122';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -48470,11 +48478,21 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 return self._json(_session_cc_tasks(name))
             if action == "peek":
                 lines = int(qs.get("lines", ["80"])[0])
+                # live=1 → return ONLY the live tmux frame and skip the ~120KB JSONL
+                # transcript render. That frame IS the current terminal, so opening a
+                # peek can paint the latest instantly; the client fetches the full
+                # payload (transcript history + live) right after. The full response
+                # is ~138KB, ~120KB of which is history you don't need to see "now".
+                live_only = (qs.get("live", ["0"])[0] or "") in ("1", "true", "yes")
                 now = time.monotonic()
                 cached = _peek_cache.get(name)
-                if cached and cached[1] >= lines and (now - cached[0]) < _PEEK_CACHE_TTL:
+                if not live_only and cached and cached[1] >= lines and (now - cached[0]) < _PEEK_CACHE_TTL:
                     return self._json_etag(cached[2])
                 output = tmux_capture(name, lines)
+                if live_only:
+                    _live = _strip_launch_noise(output.strip()) if output else ""
+                    return self._json_etag({"name": name, "live_only": True,
+                                            "output": _collapse_blank_runs(_live) if _live else "(no output)"})
                 tmux_lines = len(output.splitlines()) if output else 0
                 is_alt = _tmux_alt_screen(name)
                 # Alt-screen (Claude Code TUI): transcript for history,
