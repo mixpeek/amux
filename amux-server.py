@@ -5314,6 +5314,21 @@ CREATE TABLE IF NOT EXISTS schedule_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_sched_runs_sched ON schedule_runs(schedule_id, ran_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sched_runs_ran   ON schedule_runs(ran_at DESC);
+-- Mutation audit: EVERY change to a schedule's fields (esp. the enabled flag)
+-- is recorded here so a flip is never unattributed again. Forensics after the
+-- 07-14 bulk-disable / unattributed re-enables (AMUX-1735).
+CREATE TABLE IF NOT EXISTS schedule_audit (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    schedule_id TEXT NOT NULL,
+    ts          INTEGER NOT NULL,
+    field       TEXT NOT NULL,
+    old_value   TEXT,
+    new_value   TEXT,
+    source      TEXT,
+    by_who      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sched_audit_sched ON schedule_audit(schedule_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_sched_audit_ts    ON schedule_audit(ts DESC);
 -- Real calendar EVENTS — the only layer that syncs to Google Calendar by default.
 -- (The calendar shows three layers: events here, tasks=schedules, issues=board.)
 CREATE TABLE IF NOT EXISTS cal_events (
@@ -7984,6 +7999,25 @@ def _drain_and_fire_sched_events(now: float):
             db.commit()
 
 
+def _sched_audit(schedule_id, field, old, new, source, by_who=""):
+    """Record a schedule field mutation (esp. `enabled`) for attribution/forensics.
+    Every path that flips a schedule's enabled flag — API PATCH, watch
+    auto-disable, run-once — logs here, so a mutation is never unattributed again
+    (AMUX-1735). `by_who` comes from the PATCH body's 'by'/'source_session' when
+    the caller supplies it; automated paths pass their own source tag."""
+    try:
+        db = get_db()
+        db.execute(
+            "INSERT INTO schedule_audit (schedule_id, ts, field, old_value, new_value, source, by_who) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (schedule_id, int(time.time()), field, str(old), str(new), source, by_who or ""))
+        db.commit()
+        slog(f"[sched-audit] {schedule_id} {field}: {old!r} -> {new!r} via {source}"
+             + (f" by {by_who}" if by_who else " (UNATTRIBUTED)"))
+    except Exception as e:
+        slog(f"[sched-audit] failed for {schedule_id}: {e}")
+
+
 def _run_schedule(sched):
     """Execute a schedule entry — send message to tmux session (kind='tmux')
     or run as shell command (kind='shell'). Logs the run.
@@ -8092,6 +8126,7 @@ def _watch_schedule_response(sched, pre_output: str):
         if done_action == "disable":
             db.execute("UPDATE schedules SET enabled=0, updated=? WHERE id=?", (now_ts, sched_id))
             db.commit()
+            _sched_audit(sched_id, "enabled", 1, 0, "watch-autodisable")
             _push_alert("scheduler", session,
                          f"Schedule '{sched['title']}' auto-disabled — done pattern matched")
             slog(f"[sched-watch] disabled schedule '{sched['title']}'")
@@ -8113,6 +8148,7 @@ def _watch_schedule_response(sched, pre_output: str):
             follow_up = done_action[8:]
             send_text(session, follow_up)
             db.execute("UPDATE schedules SET enabled=0, updated=? WHERE id=?", (now_ts, sched_id))
+            _sched_audit(sched_id, "enabled", 1, 0, "watch-done-command")
             db.execute(
                 "INSERT INTO schedule_runs (schedule_id, ran_at, status, note) VALUES (?,?,?,?)",
                 (sched_id, now_ts, "done", f"Matched '{done_pattern}' → sent: {follow_up}")
@@ -8170,6 +8206,7 @@ def _scheduler_loop():
                 if sched["sched_type"] == "once":
                     db.execute("UPDATE schedules SET enabled=0, last_run=?, updated=? WHERE id=?",
                                (now_str, now_ts, sched["id"]))
+                    _sched_audit(sched["id"], "enabled", 1, 0, "run-once")
                 else:
                     expr = sched.get("schedule_expr") or ""
                     next_r = (_parse_next_run(expr) if expr else None) or _next_run_dt(sched)
@@ -45487,6 +45524,23 @@ class CCHandler(BaseHTTPRequestHandler):
                 self._json([dict(r) for r in rows])
                 return
 
+            # GET /api/schedules/audit[?id=SCHED-N] — enabled/field mutation trail
+            # (attribution forensics, AMUX-1735). ts is UTC unix, same clock as runs.
+            if method == "GET" and path == "/api/schedules/audit":
+                db = get_db()
+                sid = (qs.get("id", [""])[0] or "").strip()
+                lim = min(int(qs.get("limit", ["100"])[0] or 100), 500)
+                if sid:
+                    rows = db.execute(
+                        "SELECT a.*, s.title FROM schedule_audit a LEFT JOIN schedules s ON s.id=a.schedule_id "
+                        "WHERE a.schedule_id=? ORDER BY a.ts DESC LIMIT ?", (sid, lim)).fetchall()
+                else:
+                    rows = db.execute(
+                        "SELECT a.*, s.title FROM schedule_audit a LEFT JOIN schedules s ON s.id=a.schedule_id "
+                        "ORDER BY a.ts DESC LIMIT ?", (lim,)).fetchall()
+                self._json([dict(r) for r in rows])
+                return
+
             # POST /api/schedules
             if method == "POST" and path == "/api/schedules":
                 db = get_db()
@@ -45611,6 +45665,9 @@ class CCHandler(BaseHTTPRequestHandler):
                 cols = _sched_cols(db)
                 sched = _sched_row_to_dict(row, cols)
                 body = self._read_body()
+                _AUDIT_FIELDS = ("enabled","session","command","schedule_expr","done_action","trigger_on","kind")
+                _old_vals = {k: sched.get(k) for k in _AUDIT_FIELDS}
+                _by = str(body.get("by") or body.get("source_session") or "").strip()[:64]
                 for k in ("title","session","command","kind","sched_type","recurrence","run_at","enabled","schedule_expr",
                           "watch","watch_timeout","done_pattern","done_action","trigger_on","trigger_cooldown","trigger_sessions"):
                     if k in body:
@@ -45639,6 +45696,12 @@ class CCHandler(BaseHTTPRequestHandler):
                      sched["updated"], sched_id)
                 )
                 db.commit()
+                # Attribution/audit — log every changed tracked field (esp. enabled)
+                # so a schedule mutation is never unattributed again (AMUX-1735).
+                # Callers should pass {"by":"<session>"}; else it records UNATTRIBUTED.
+                for _k in _AUDIT_FIELDS:
+                    if str(_old_vals.get(_k)) != str(sched.get(_k)):
+                        _sched_audit(sched_id, _k, _old_vals.get(_k), sched.get(_k), "api-patch", _by)
                 _push_ical_bg()   # schedule changed → refresh calendar feed
                 self._json(sched)
                 return
