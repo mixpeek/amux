@@ -48570,7 +48570,14 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 # Backup JSONL transcript before /compact so we can revert
                 if text.strip().startswith("/compact"):
                     threading.Thread(target=backup_session_jsonl, args=(name, "pre_compact"), daemon=True).start()
-                ok, msg = send_text(name, text)
+                # Inter-session / programmatic sends (a bare {"text":...} from another
+                # session, no browser marker) must NEVER interrupt the recipient: deliver
+                # like a normal prompt typed into an in-flight turn, and defer PAST a
+                # tool-approval / selector instead of Escape-cancelling it (the
+                # backend->gtm-engine AskUserQuestion kill, 2026-07-15). Human browser
+                # sends carry record_history and keep their existing behavior.
+                _defer_busy = not bool(body.get("record_history"))
+                ok, msg = send_text(name, text, defer_if_busy=_defer_busy)
                 if ok:
                     _update_meta(name, last_send=int(time.time()), last_send_text=text[:200])
                     _session_prev_status[name] = "active"  # seed for idle detection
