@@ -67,8 +67,11 @@ platform :ios do
       is_key_content_base64: true
     )
 
+    version = ENV["APP_VERSION"] || "1.0.1"
+
     deliver(
       api_key: api_key,
+      app_version: version,
       skip_binary_upload: true,
       skip_screenshots: false,
       skip_metadata: false,
