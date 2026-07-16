@@ -24410,7 +24410,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.126';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.127';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -24449,6 +24449,10 @@ function openPeek(name, opts) {
   _peekEtag = null; _peekLiveEtag = null;   // new session → drop the old session's ETags
   _peekLastFullMs = 0; _peekPrevStatus = '';   // force a fresh history cycle for this session
   _peekHistoryRaw = ''; _peekHistoryHTML = '';   // and its transcript history
+  // CRITICAL: also drop the previous session's rendered live frame — the region
+  // painter renders _lastLiveHTML directly, so a stale value briefly showed the
+  // PREVIOUS session's terminal when opening a different one (2026-07-16).
+  _lastLiveHTML = '';
   _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };  // reset the load-earlier state
   const searchInp = document.getElementById('peek-search');
   if (searchInp) {
@@ -42076,7 +42080,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.126';
+const CACHE = 'amux-v0.9.127';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
