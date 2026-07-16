@@ -22,7 +22,7 @@ import uuid
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 import urllib.request, urllib.error
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, quote
 
 # Strip Claude Code env vars so child processes (new sessions) don't inherit them
 for _cv in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
@@ -12940,6 +12940,79 @@ def _gmail_reply_send(account: str, rfc822_message_id: str, body: str,
     return _gmail_compose_send(account, to_addr, subject, body, cc=cc,
                                in_reply_to=orig_msgid, references=references,
                                thread_id=thread_id, include_signature=include_signature)
+
+
+def _gmail_get_message_full(account: str, rfc822_id: str) -> dict | None:
+    """Full message (headers + body + attachment parts) by RFC822 Message-ID via
+    the INDEXED rfc822msgid: query — the fast path for /api/email/message. The
+    old handler swept every mailbox of every Mail.app account with AppleScript
+    and timed out >45s on Outlook-origin ids (the mhoward miss, AMUX-1739)."""
+    try:
+        svc = _gmail_service(account)
+        if not svc:
+            return None
+        rid = rfc822_id.strip().lstrip("<").rstrip(">")
+        res = svc.users().messages().list(
+            userId="me", q=f"rfc822msgid:{rid}", maxResults=1).execute()
+        msgs = res.get("messages", [])
+        if not msgs:
+            return None
+        return svc.users().messages().get(
+            userId="me", id=msgs[0]["id"], format="full").execute()
+    except Exception as e:
+        slog(f"[gmail] get_full {account}: {e}")
+        return None
+
+
+def _gmail_walk_attachments(payload: dict) -> list:
+    """List attachment parts (filename/mime/size/attachment_id), recursively."""
+    out = []
+    def _walk(p):
+        for part in (p or {}).get("parts", []) or []:
+            fn = part.get("filename") or ""
+            bd = part.get("body", {}) or {}
+            if fn and (bd.get("attachmentId") or bd.get("data")):
+                out.append({"filename": fn,
+                            "mime_type": part.get("mimeType", ""),
+                            "size": bd.get("size", 0),
+                            "attachment_id": bd.get("attachmentId", "")})
+            _walk(part)
+    _walk(payload or {})
+    return out
+
+
+def _gmail_latest_matching(account: str, from_addr: str = "", with_addr: str = "",
+                            subject_contains: str = "", newer_days: int = 0) -> dict | None:
+    """Resolve 'the latest message from/with X' to its RFC822 Message-ID + meta.
+    from_addr → sender match (reply-by-selector); with_addr → either direction
+    (new-thread guard). Returns None on no match or any API error (fail-open)."""
+    try:
+        svc = _gmail_service(account)
+        if not svc:
+            return None
+        if from_addr:
+            q = f"from:{from_addr}"
+        elif with_addr:
+            q = f"(from:{with_addr} OR to:{with_addr})"
+        else:
+            return None
+        if newer_days:
+            q += f" newer_than:{int(newer_days)}d"
+        res = svc.users().messages().list(userId="me", q=q, maxResults=10).execute()
+        for m in res.get("messages", []):   # newest first
+            meta = svc.users().messages().get(
+                userId="me", id=m["id"], format="metadata",
+                metadataHeaders=["From", "To", "Subject", "Message-ID", "Date"]).execute()
+            h = {x["name"].lower(): x["value"] for x in meta.get("payload", {}).get("headers", [])}
+            if subject_contains and subject_contains.lower() not in (h.get("subject", "") or "").lower():
+                continue
+            return {"message_id": h.get("message-id", ""), "subject": h.get("subject", ""),
+                    "from": h.get("from", ""), "to": h.get("to", ""), "date": h.get("date", ""),
+                    "gmail_message_id": m["id"], "thread_id": meta.get("threadId", ""),
+                    "account": account}
+    except Exception as e:
+        slog(f"[gmail] latest_matching {account}: {e}")
+    return None
 
 
 def _gmail_inbox_messages(account: str, count: int = 20, q: str = "") -> dict:
@@ -46828,6 +46901,44 @@ return output
                 bad_cc = [a.strip() for a in cc.split(",") if a.strip() and not re.match(_addr_re, a.strip())]
                 if bad_cc:
                     return self._json({"error": f"invalid cc address: {', '.join(bad_cc)}"}, 400)
+                # NEW-THREAD GUARD (AMUX-1739): a /send to an EXTERNAL recipient who
+                # has an active thread in the last N days fragments a customer
+                # conversation (a fresh send to mhoward@lucihub.com opened a new
+                # thread at a prospect CEO instead of continuing his). Block with the
+                # candidate thread so replying stays the DEFAULT; opening a new
+                # thread requires an explicit force_new_thread. Internal/own-domain
+                # recipients are exempt (digests to ourselves always have recent
+                # threads). Fails open on Gmail API errors.
+                if not body.get("force_new_thread"):
+                    _own_domains = ("mixpeek.com", "trymixpeek.com", "joinmixpeek.com", "getmixpeek.com")
+                    _conn_accts = {a.lower() for a in _gmail_connected_accounts()}
+                    _ext_rcpts = [a.strip() for a in to.split(",") if a.strip()
+                                  and a.strip().lower() not in _conn_accts
+                                  and not any(a.strip().lower().endswith("@" + d) for d in _own_domains)]
+                    try:
+                        _win = max(1, min(int(body.get("thread_window_days") or 14), 90))
+                    except (TypeError, ValueError):
+                        _win = 14
+                    for _r in _ext_rcpts:
+                        _cand = None
+                        for _acct in _gmail_connected_accounts():
+                            _cand = _gmail_latest_matching(_acct, with_addr=_r, newer_days=_win)
+                            if _cand:
+                                break
+                        if _cand:
+                            slog(f"[email] new-thread guard: blocked /send to {_r} "
+                                 f"(active thread {_cand.get('subject','')!r} in last {_win}d)")
+                            return self._json({
+                                "error": f"{_r} has an active thread in the last {_win} days — "
+                                         "replying in-thread is the default; opening a new thread "
+                                         "must be explicit",
+                                "blocked": True, "recipient": _r, "candidate_thread": _cand,
+                                "reply_instead": {"endpoint": "POST /api/email/reply",
+                                                  "body": {"message_id": _cand.get("message_id", ""),
+                                                           "body": "...", "from": from_acct or "ethan@mixpeek.com"}},
+                                "or_force": {"force_new_thread": True,
+                                             "note": "resend with this flag to deliberately start a new thread"},
+                            }, 409)
                 # Prefer the Gmail API when sending from a connected Gmail account:
                 # robust delivery, no AppleScript, and the real Gmail signature.
                 # Falls through to Mail.app/AppleScript for non-Gmail accounts.
@@ -46919,8 +47030,35 @@ end tell
                 reply_body = body.get("body", "").strip()
                 reply_all = body.get("reply_all", False)
                 from_acct = body.get("from", "").strip()
-                if not message_id or not reply_body:
-                    return self._json({"error": "message_id and body are required"}, 400)
+                # REPLY-BY-SELECTOR (AMUX-1739): "reply to the latest message from X"
+                # resolves server-side, so callers don't round-trip /search → /message
+                # (which could time out) just to obtain a message_id. Optional
+                # subject_contains narrows to a thread; dry_run returns the resolved
+                # target WITHOUT sending (safe to test against live customer threads).
+                _resolved = None
+                if not message_id:
+                    _sel_from = (body.get("reply_to_latest_from") or "").strip()
+                    if _sel_from:
+                        _subj_c = (body.get("subject_contains") or "").strip()
+                        _pref = (body.get("from") or "").strip()
+                        _accts = ([_pref] if _pref in _gmail_connected_accounts() else []) + \
+                                 [a for a in _gmail_connected_accounts() if a != _pref]
+                        for _a in _accts:
+                            _resolved = _gmail_latest_matching(_a, from_addr=_sel_from,
+                                                               subject_contains=_subj_c)
+                            if _resolved:
+                                break
+                        if not _resolved:
+                            return self._json({"error": f"no message from {_sel_from}"
+                                               + (f" with subject containing {_subj_c!r}" if _subj_c else "")
+                                               + " found in any connected account"}, 404)
+                        message_id = _resolved["message_id"]
+                if not message_id or (not reply_body and not body.get("dry_run")):
+                    return self._json({"error": "message_id (or reply_to_latest_from) and body are required"}, 400)
+                if body.get("dry_run"):
+                    return self._json({"ok": True, "dry_run": True, "would_reply_to": message_id,
+                                       "resolved": _resolved,
+                                       "note": "no email sent — repeat without dry_run to send"})
                 # Prefer Gmail API when replying from a connected Gmail account:
                 # correct In-Reply-To/References/threadId, a clean (non-quoted)
                 # body, and the real Gmail signature. Mail.app fallback otherwise.
@@ -47158,11 +47296,71 @@ return output
                     return self._json({"error": str(e)}, 500)
 
             # GET /api/email/message/<rfc822_message_id>
+            if method == "GET" and path == "/api/email/attachment":
+                # Download one attachment (listed by /api/email/message) to a local
+                # file the caller can Read. Gmail-API accounts only (AMUX-1739).
+                _acct = qs.get("account", [""])[0].strip()
+                _gmid = qs.get("gmail_message_id", [""])[0].strip()
+                _attid = qs.get("attachment_id", [""])[0].strip()
+                _fname = qs.get("filename", ["attachment.bin"])[0].strip() or "attachment.bin"
+                if not (_acct and _gmid and _attid):
+                    return self._json({"error": "account, gmail_message_id and attachment_id are required "
+                                                "(all returned by GET /api/email/message/<id>)"}, 400)
+                try:
+                    _svc = _gmail_service(_acct)
+                    if not _svc:
+                        return self._json({"error": f"'{_acct}' is not a Gmail-connected account"}, 400)
+                    import base64 as _b64
+                    _att = _svc.users().messages().attachments().get(
+                        userId="me", messageId=_gmid, id=_attid).execute()
+                    _data = _b64.urlsafe_b64decode(_att.get("data", "") + "==")
+                    _safe = re.sub(r"[^A-Za-z0-9._-]", "_", _fname)[-120:] or "attachment.bin"
+                    _outdir = Path.home() / ".amux" / "email-attachments"
+                    _outdir.mkdir(parents=True, exist_ok=True)
+                    _outp = _outdir / f"{int(time.time())}-{_safe}"
+                    _outp.write_bytes(_data)
+                    return self._json({"ok": True, "path": str(_outp), "size": len(_data),
+                                       "filename": _fname})
+                except Exception as e:
+                    return self._json({"error": str(e)}, 502)
+
             if method == "GET" and path.startswith("/api/email/message/"):
                 raw_mid = path[len("/api/email/message/"):]
                 mid = unquote(raw_mid).strip()
                 if not mid:
                     return self._json({"error": "message_id is required"}, 400)
+                # FAST PATH (AMUX-1739): the indexed Gmail rfc822msgid: lookup, tried
+                # across every connected account. The AppleScript sweep below scans
+                # every mailbox of every Mail.app account and timed out >45s on an
+                # Outlook-origin id — it is now only the non-Gmail fallback.
+                import email.utils as _eu2
+                for _acct in _gmail_connected_accounts():
+                    _full = _gmail_get_message_full(_acct, mid)
+                    if not _full:
+                        continue
+                    _h = {x["name"].lower(): x["value"]
+                          for x in _full.get("payload", {}).get("headers", [])}
+                    _html, _text = _gmail_decode_body(_full.get("payload", {}))
+                    _atts = _gmail_walk_attachments(_full.get("payload", {}))
+                    for _a in _atts:
+                        _a["gmail_message_id"] = _full.get("id", "")
+                        _a["account"] = _acct
+                        _a["download"] = ("/api/email/attachment?account=" + quote(_acct)
+                                          + "&gmail_message_id=" + quote(_full.get("id", ""))
+                                          + "&attachment_id=" + quote(_a.get("attachment_id", ""))
+                                          + "&filename=" + quote(_a.get("filename", "")))
+                    return self._json({
+                        "subject": _h.get("subject", ""), "from": _h.get("from", ""),
+                        "to": [a for _n, a in _eu2.getaddresses([_h.get("to", "") or ""]) if a],
+                        "cc": [a for _n, a in _eu2.getaddresses([_h.get("cc", "") or ""]) if a],
+                        "date": _h.get("date", ""), "account": _acct, "via": "gmail",
+                        "in_reply_to": _h.get("in-reply-to", ""),
+                        "references": _h.get("references", ""),
+                        "thread_id": _full.get("threadId", ""),
+                        "gmail_message_id": _full.get("id", ""),
+                        "body": _text or _html,
+                        "attachments": _atts,
+                    })
                 mid_safe = mid.replace('"', '\\"')
                 script = f"""
 set output to ""
