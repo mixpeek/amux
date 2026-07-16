@@ -24410,8 +24410,23 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.127';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.128';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
+// Paint a cached peek entry (offline / instant-open). Returns false when the
+// cache has no real content — the caller then keeps 'Loading…'/reconnecting
+// instead of painting a silent EMPTY terminal.
+function _paintCachedPeek(cached) {
+  if (!cached || (!cached.output && !cached.history)) return false;
+  _peekHistoryRaw = cached.history || '';
+  _peekHistoryHTML = cached.history ? wrapBoxBlocks(_fitRules(highlightPrompts(ansiToHtml(cached.history)))) : '';
+  _lastLiveHTML = cached.output ? _markAgentRows(wrapBoxBlocks(_fitRules(highlightPrompts(ansiToHtml(cached.output))))) : '';
+  lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
+  applyPeekSearch();
+  const ago = Math.floor((Date.now() - (cached.time || Date.now())) / 60000);
+  const st = document.getElementById('peek-status');
+  if (st) st.textContent = 'Cached ' + (ago < 1 ? 'just now' : ago + 'm ago');
+  return true;
+}
 function openPeek(name, opts) {
   _stopPeekPoll();
   if (_transcriptTimer) { clearInterval(_transcriptTimer); _transcriptTimer = null; }
@@ -24506,13 +24521,11 @@ function openPeek(name, opts) {
   // Load cached peek instantly while fetching fresh data
   _idb.get('peek_' + name).then(cached => {
     if (peekSession !== name) return;  // session changed before cache resolved
-    if (cached && (!lastPeekHTML || lastPeekHTML.includes('Loading...'))) {
-      lastPeekHTML = wrapBoxBlocks(highlightPrompts(ansiToHtml(cached.output)));
-      applyPeekSearch();
-      const ago = Math.floor((Date.now() - cached.time) / 60000);
-      document.getElementById('peek-status').textContent = 'Cached ' + (ago < 1 ? 'just now' : ago + 'm ago');
-      const body = document.getElementById('peek-body');
-      body.scrollTop = body.scrollHeight;
+    if (!lastPeekHTML || lastPeekHTML.includes('Loading...')) {
+      if (_paintCachedPeek(cached)) {
+        const body = document.getElementById('peek-body');
+        body.scrollTop = body.scrollHeight;
+      }
     }
   });
   // Paint the CURRENT terminal instantly from the few-KB live frame, THEN pull the
@@ -25656,20 +25669,21 @@ async function refreshPeek(liveOnly) {
     }
     if (performance.now() > _peekGeoHold) statusEl.textContent = (data.saved ? 'Saved log' : 'Updated') + ' ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
     // Cache peek output for offline browsing
-    _idb.set('peek_' + peekSession, { output, time: Date.now() });
+    // Cache BOTH slices — since the live-split, `output` alone is just the tiny
+    // live frame (sometimes ''), which painted an EMPTY black peek from cache
+    // (social, 2026-07-16). Never write an entry with no content.
+    if (_peekHistoryRaw || _lastPeekRaw) _idb.set('peek_' + peekSession, { output: _lastPeekRaw, history: _peekHistoryRaw, time: Date.now() });
   } catch(e) {
     console.error('peek:', e);
     // Offline: load cached peek
     if (!lastPeekHTML || lastPeekHTML.includes('Loading...')) {
       const cached = await _idb.get('peek_' + peekSession);
-      if (cached) {
-        lastPeekHTML = wrapBoxBlocks(highlightPrompts(ansiToHtml(cached.output)));
-        applyPeekSearch();
-        const ago = Math.floor((Date.now() - cached.time) / 60000);
-        statusEl.textContent = 'Cached ' + (ago < 1 ? 'just now' : ago + 'm ago');
-      } else {
-        body.innerHTML = '<span style="color:var(--dim)">No cached output available</span>';
-        statusEl.textContent = 'Offline — no cache';
+      if (!_paintCachedPeek(cached)) {
+        // No usable cache and the fetch failed (typically the server mid-restart,
+        // ~11s). Say so — the poll keeps retrying and heals within seconds; a
+        // silent EMPTY terminal here read as a broken peek.
+        body.innerHTML = '<span style="color:var(--dim)">amux server unreachable — retrying…</span>';
+        statusEl.textContent = 'Reconnecting…';
       }
     }
   }
@@ -42080,7 +42094,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.127';
+const CACHE = 'amux-v0.9.128';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
