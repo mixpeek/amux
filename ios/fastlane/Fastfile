@@ -58,6 +58,26 @@ platform :ios do
     )
   end
 
+  # Push metadata + screenshots only (no build required)
+  lane :metadata do
+    api_key = app_store_connect_api_key(
+      key_id:        ENV["APP_STORE_CONNECT_API_KEY_ID"],
+      issuer_id:     ENV["APP_STORE_CONNECT_API_ISSUER_ID"],
+      key_content:   ENV["APP_STORE_CONNECT_API_KEY_CONTENT"],
+      is_key_content_base64: true
+    )
+
+    deliver(
+      api_key: api_key,
+      skip_binary_upload: true,
+      skip_screenshots: false,
+      skip_metadata: false,
+      force: true,
+      submit_for_review: false,
+      run_precheck_before_submit: false
+    )
+  end
+
   # Promote latest TestFlight build to App Store (run manually)
   lane :release do
     api_key = app_store_connect_api_key(
@@ -72,7 +92,7 @@ platform :ios do
       submit_for_review: true,
       automatic_release: true,
       force: true,
-      skip_screenshots: true,  # set to false once you have screenshots
+      skip_screenshots: false,
       skip_metadata: false
     )
   end
