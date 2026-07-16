@@ -24129,7 +24129,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.116';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.117';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -27267,27 +27267,32 @@ function openCmdHistoryModal() {
   m.classList.add('active');
   const s = document.getElementById('cmd-history-search');
   if (s) { s.value = ''; setTimeout(() => s.focus(), 50); }
-  _populateCmdHistorySessions();
+  // Opened from a session's peek (the "Message history" button lives in the peek
+  // more-menu, so peekSession is set) → pre-scope the filter to that session.
+  const _ctx = (typeof peekSession !== 'undefined' && peekSession) ? peekSession : '';
+  _populateCmdHistorySessions(_ctx);
   _renderCmdHistoryList();
   // History is server-side, but this page only pulled it once at load — a
   // long-lived tab/PWA would miss everything sent from other devices since.
   // Re-pull on every open so phone and desktop always see the same history.
   _loadCmdHistoryFromServer().then(() => {
-    _populateCmdHistorySessions();
+    _populateCmdHistorySessions(_ctx);
     _renderCmdHistoryList();
   });
 }
-function _populateCmdHistorySessions() {
+function _populateCmdHistorySessions(presetSession) {
   const sel = document.getElementById('cmd-history-session-filter');
   if (!sel) return;
-  const prev = sel.value;
+  // Opening from a session (presetSession) scopes the filter to it; a plain
+  // re-populate (no arg, e.g. the async reload) keeps the current choice.
+  const desired = (presetSession != null && presetSession !== '') ? presetSession : sel.value;
   const names = [...new Set(_cmdHistory.map(e => typeof e === 'string' ? '' : (e.session || '')).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b));
   sel.innerHTML = '<option value="">All sessions</option>' + names.map(n => {
     const safe = n.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     return '<option value="' + safe + '">' + safe + '</option>';
   }).join('');
-  sel.value = names.includes(prev) ? prev : '';
+  sel.value = names.includes(desired) ? desired : '';
 }
 function closeCmdHistoryModal() {
   const m = document.getElementById('cmd-history-modal');
@@ -41673,7 +41678,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.116';
+const CACHE = 'amux-v0.9.117';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
