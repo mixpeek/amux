@@ -19650,17 +19650,36 @@ let _peekLiveEtag = null; // ETag of last live=1 response — keeps idle polls a
 function _peekPollInterval() {
   const s = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(x => x.name === peekSession) : null;
   const st = s && s.status;
-  if (st === 'active') return 1800;
-  if (st === 'waiting') return 2500;
-  return 7000;
+  // Cadence sized to what a tick actually costs NOW: a live=1 poll is ~650B (the
+  // trimmed frame) or a 304 when unchanged — not the 138KB that justified the old
+  // 1800/7000ms. Measured 2026-07-16: active peeks updated every ~2s; a live
+  // terminal viewer should be ≤1s (ttyd/wetty-class streamers are sub-second).
+  if (st === 'active') return 900;
+  if (st === 'waiting') return 1500;
+  return 3000;   // idle ticks are 304s — near-free
 }
 function _stopPeekPoll() { if (peekTimer) { clearTimeout(peekTimer); peekTimer = null; } }
+let _peekLastFullMs = 0;    // when the FULL payload (history) was last fetched
+let _peekPrevStatus = '';   // peeked session's status on the previous poll tick
+const _PEEK_HISTORY_REFRESH_MS = 30000;  // fallback full-refresh cadence while open
 function _schedulePeekPoll() {
   _stopPeekPoll();
   if (!peekSession || document.hidden) return;
   peekTimer = setTimeout(async () => {
     peekTimer = null;
-    try { await refreshPeek(true); } catch(e) {}   // poll the live frame only (~7KB)
+    try {
+      // History is fetched once on open and would otherwise go stale: on a
+      // long-open peek, output scrolling out of the live frame fell into a gap
+      // between frozen history and the live view. Refresh the FULL payload when
+      // the turn just ended (active→idle: the transcript grew) or every 30s as
+      // a fallback; every other tick is the ~650B/304 live poll.
+      const _s = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(x => x.name === peekSession) : null;
+      const _st = (_s && _s.status) || '';
+      const turnEnded = _peekPrevStatus === 'active' && _st !== 'active';
+      _peekPrevStatus = _st;
+      const needFull = turnEnded || (performance.now() - _peekLastFullMs > _PEEK_HISTORY_REFRESH_MS);
+      await refreshPeek(!needFull);
+    } catch(e) {}
     _schedulePeekPoll();
   }, _peekPollInterval());
 }
@@ -24318,7 +24337,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.123';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.124';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -24355,6 +24374,7 @@ function openPeek(name, opts) {
   lastPeekHTML = '';
   _lastPeekRaw = '';
   _peekEtag = null; _peekLiveEtag = null;   // new session → drop the old session's ETags
+  _peekLastFullMs = 0; _peekPrevStatus = '';   // force a fresh history cycle for this session
   _peekHistoryRaw = ''; _peekHistoryHTML = '';   // and its transcript history
   _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };  // reset the load-earlier state
   const searchInp = document.getElementById('peek-search');
@@ -25474,6 +25494,7 @@ async function refreshPeek(liveOnly) {
     const r = await fetch(API + '/api/sessions/' + name + '/peek?lines=300' + (liveOnly ? '&live=1' : ''),
       _et ? { headers: { 'If-None-Match': _et } } : undefined);
     if (peekSession !== name) return;
+    if (!liveOnly) _peekLastFullMs = performance.now();   // history is fresh (200 or 304)
     if (r.status === 304) {   // unchanged — nothing transferred, skip parse + render entirely
       if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
       return;
@@ -41964,7 +41985,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.123';
+const CACHE = 'amux-v0.9.124';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
