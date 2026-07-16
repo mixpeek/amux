@@ -15053,6 +15053,62 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     border-color: var(--accent);
   }
 
+  /* ── Filters button + modal + preview chips ── */
+  .filters-btn.active { color: var(--accent); border-color: var(--accent); }
+  .filters-count {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 15px; height: 15px; padding: 0 4px; margin-left: 4px;
+    border-radius: 8px; background: var(--accent); color: #0d1117;
+    font-size: 0.62rem; font-weight: 700; line-height: 1;
+  }
+  .active-filters {
+    display: none; gap: 6px; flex-wrap: wrap; align-items: center;
+    margin: 6px 12px 2px;
+  }
+  .active-filter-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 0.72rem; padding: 4px 9px; border-radius: 12px;
+    background: rgba(88,166,255,0.2); color: var(--accent);
+    border: 1px solid var(--accent); cursor: pointer;
+    -webkit-tap-highlight-color: transparent; white-space: nowrap;
+  }
+  .active-filter-chip .afx { font-size: 0.66rem; opacity: 0.75; }
+  .active-filter-chip:active { background: rgba(88,166,255,0.32); }
+  .active-filter-clear {
+    font-size: 0.7rem; color: var(--dim); cursor: pointer; padding: 4px 6px;
+    text-decoration: underline; -webkit-tap-highlight-color: transparent;
+  }
+  .filter-section { padding: 12px 2px; border-bottom: 1px solid var(--border); }
+  .filter-section-title {
+    font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--dim); margin-bottom: 9px;
+  }
+  .filter-chip-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .filter-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    min-height: 34px; padding: 6px 12px; border-radius: 16px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); cursor: pointer;
+    font-size: 0.82rem; -webkit-tap-highlight-color: transparent; transition: all 0.15s;
+  }
+  .filter-chip:active { background: var(--border); }
+  .filter-chip.on { background: rgba(88,166,255,0.18); color: var(--accent); border-color: var(--accent); }
+  .filter-chip-n {
+    font-size: 0.66rem; opacity: 0.6; background: rgba(128,128,128,0.18);
+    border-radius: 8px; padding: 1px 6px; min-width: 14px; text-align: center;
+  }
+  .filter-chip.on .filter-chip-n { background: rgba(88,166,255,0.25); opacity: 0.9; }
+  .filter-toggle-row {
+    display: flex; align-items: center; gap: 10px; cursor: pointer;
+    font-size: 0.9rem; min-height: 44px;
+  }
+  .filter-toggle-row input[type=checkbox] { width: 18px; height: 18px; flex-shrink: 0; accent-color: var(--accent); }
+  .filter-hint { font-size: 0.72rem; color: var(--dim); line-height: 1.45; margin-top: 4px; }
+  .filter-modal-actions {
+    display: flex; gap: 8px; padding-top: 12px; margin-top: 4px;
+    border-top: 1px solid var(--border); flex-shrink: 0;
+  }
+
   /* Card description */
   .card-desc {
     color: var(--text); font-size: 0.82rem; margin-top: 4px; margin-left: 20px;
@@ -17405,9 +17461,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       oninput="searchQuery=this.value;document.getElementById('search-wrap').classList.toggle('has-value',!!this.value);onSearchInput()">
     <button class="search-clear" onclick="event.stopPropagation();clearSearch()">&#x2715;</button>
   </div>
-  <button id="log-search-btn" class="tile-btn log-search-btn" onclick="toggleLogSearch()" title="Search inside session logs">
-    <svg class="log-search-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="8" y1="8" x2="14" y2="8"/><line x1="8" y1="14" x2="11" y2="14"/></svg>
-    <span class="log-search-label">Logs</span>
+  <button id="filters-btn" class="tile-btn filters-btn" onclick="openFiltersModal()" title="Filters — logs search, provider, model">
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+    <span class="log-search-label">Filters</span>
+    <span id="filters-count" class="filters-count" style="display:none;">0</span>
   </button>
   <div class="tile-controls">
     <button class="tile-btn" id="tile-sort-btn" onclick="toggleSortMode()" title="Sort alphabetically (pinned stay on top, order stops shifting)" style="font-size:0.7rem;font-weight:700;">A&#x2193;</button>
@@ -17415,6 +17472,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="tile-btn" id="tile-expand-btn" onclick="toggleExpand()" title="Expand active sessions — click again to collapse all">&#x26A1;</button>
   </div>
 </div>
+<div id="active-filters" class="active-filters"></div>
 <div id="tag-filters" class="tag-filters"></div>
 <div id="offline-banner" class="offline-banner">
   <div class="offline-banner-header">
@@ -19237,6 +19295,38 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 
+<!-- Filters modal (session list) -->
+<div id="filters-modal" class="overlay" style="z-index:210;" onclick="if(event.target===this)closeFiltersModal()">
+  <div style="display:flex;flex-direction:column;height:100%;max-width:520px;margin:0 auto;width:100%;">
+    <div class="overlay-header">
+      <h2>&#x2263; Filters</h2>
+      <button class="btn" onclick="closeFiltersModal()">&#x2715;</button>
+    </div>
+    <div style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;">
+      <div class="filter-section">
+        <div class="filter-section-title">Search</div>
+        <label class="filter-toggle-row">
+          <input type="checkbox" id="filter-logsearch" onchange="setLogSearchMode(this.checked)">
+          <span>Search inside session logs</span>
+        </label>
+        <div class="filter-hint">When on, the search box on the sessions page matches text inside each session's output, not just its name.</div>
+      </div>
+      <div class="filter-section">
+        <div class="filter-section-title">Provider</div>
+        <div id="filter-providers" class="filter-chip-row"></div>
+      </div>
+      <div class="filter-section">
+        <div class="filter-section-title">Model type</div>
+        <div id="filter-models" class="filter-chip-row"></div>
+      </div>
+    </div>
+    <div class="filter-modal-actions">
+      <button class="btn" onclick="clearAllFilters()">Clear all</button>
+      <button class="btn primary" style="flex:1;" onclick="closeFiltersModal()">Done</button>
+    </div>
+  </div>
+</div>
+
 <!-- Saved messages modal (same overlay style as message history) -->
 <div id="saved-messages-modal" class="overlay" style="z-index:210;" onclick="if(event.target===this)_closeSavedMessages()">
   <div style="display:flex;flex-direction:column;height:100%;max-width:680px;margin:0 auto;width:100%;">
@@ -19449,6 +19539,23 @@ let logSearchMode = false;
 let _logMatches = {};       // name -> matched snippet string
 let _logSearchTimer = null;
 let _logSearchAbort = null;
+// Filters modal facets (session list). Multi-select within a facet.
+let filterProviders = new Set();   // 'claude' | 'codex' | 'gemini' | 'iterm2'
+let filterModels = new Set();      // coarse model class: opus/sonnet/haiku/gpt/gemini/...
+// Coarse model class for a model string, so "claude-opus-4-8" and a future
+// "claude-opus-5" both filter as "opus".
+function _modelClass(m) {
+  m = (m || '').toLowerCase();
+  if (!m) return 'other';
+  if (m.includes('opus')) return 'opus';
+  if (m.includes('sonnet')) return 'sonnet';
+  if (m.includes('haiku')) return 'haiku';
+  if (m.includes('fable')) return 'fable';
+  if (m.includes('gpt')) return 'gpt';
+  if (m.includes('gemini')) return 'gemini';
+  if (/^o[0-9]/.test(m)) return 'o-series';
+  return m.split(/[-\s]/)[0] || 'other';
+}
 let peekSession = null;
 // Last session whose peek was opened — remembered across closePeek so the
 // Messages view can pre-scope its filter to "the session you came from".
@@ -21057,6 +21164,8 @@ function render() {
   const focusedId = _active && _active.id ? _active.id : null;
   updateActiveCount();
   updateRateLimitPill();
+  // Active-filter preview chips (provider/model/log-search) + Filters button badge
+  renderActiveFilters();
   // Build tag filter bar
   const tagEl = document.getElementById('tag-filters');
   const allTags = [...new Set(sessions.filter(s => !s.archived).flatMap(s => s.tags || []))].sort();
@@ -21102,14 +21211,17 @@ function render() {
   let list = (activeTag ? sessions.filter(s => (s.tags || []).includes(activeTag)) : sessions).filter(s => !s.archived);
   // Filter by search query
   const q = searchQuery.toLowerCase().trim();
-  const filtered = q ? list.filter(s =>
+  let filtered = q ? list.filter(s =>
     s.name.toLowerCase().includes(q) ||
     (s.dir || '').toLowerCase().includes(q) ||
     (s.desc || '').toLowerCase().includes(q) ||
     (s.tags || []).some(t => t.toLowerCase().includes(q)) ||
     (logSearchMode && s.name in _logMatches)
   ) : list;
-  if ((q || activeTag) && !filtered.length) {
+  // Filters modal: provider + model-type facets (multi-select, AND across facets)
+  if (filterProviders.size) filtered = filtered.filter(s => filterProviders.has(sessionProvider(s)));
+  if (filterModels.size) filtered = filtered.filter(s => filterModels.has(_modelClass(sessionConfiguredModel(s))));
+  if ((q || activeTag || filterProviders.size || filterModels.size) && !filtered.length) {
     el.innerHTML = '<div class="empty">No matching sessions.</div>';
     _renderArchivedSection();
     _restoreCardFocus(focusedId);
@@ -24129,7 +24241,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.118';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.119';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -27524,18 +27636,94 @@ function onSearchInput() {
   }
 }
 
-function toggleLogSearch() {
-  logSearchMode = !logSearchMode;
-  const btn = document.getElementById('log-search-btn');
-  btn.classList.toggle('active', logSearchMode);
-  document.getElementById('search-input').placeholder = logSearchMode
-    ? 'Search session logs...' : 'Search sessions...';
+function setLogSearchMode(on) {
+  logSearchMode = !!on;
+  const btn = document.getElementById('log-search-btn');   // legacy toolbar button (may be absent)
+  if (btn) btn.classList.toggle('active', logSearchMode);
+  const si = document.getElementById('search-input');
+  if (si) si.placeholder = logSearchMode ? 'Search session logs...' : 'Search sessions...';
   _logMatches = {};
   if (logSearchMode && searchQuery) {
     clearTimeout(_logSearchTimer);
     _logSearchTimer = setTimeout(_runLogSearch, 100);
   }
   render();
+  renderActiveFilters();
+}
+function toggleLogSearch() { setLogSearchMode(!logSearchMode); }
+
+// ── Filters modal (session list) ─────────────────────────────────────────────
+function _activeFilterCount() {
+  return filterProviders.size + filterModels.size + (logSearchMode ? 1 : 0);
+}
+function openFiltersModal() {
+  const cb = document.getElementById('filter-logsearch');
+  if (cb) cb.checked = logSearchMode;
+  renderFilterOptions();
+  const m = document.getElementById('filters-modal');
+  if (m) m.classList.add('active');
+}
+function closeFiltersModal() {
+  const m = document.getElementById('filters-modal');
+  if (m) m.classList.remove('active');
+  renderActiveFilters();
+}
+const _PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', iterm2: 'iTerm2' };
+const _MODEL_LABELS = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable', gpt: 'GPT', gemini: 'Gemini', 'o-series': 'o-series' };
+function _mLabel(x){ return _MODEL_LABELS[x] || (x.charAt(0).toUpperCase()+x.slice(1)); }
+function renderFilterOptions() {
+  const live = sessions.filter(s => !s.archived);
+  // Provider chips — options are the providers actually present, plus any selected.
+  const provs = [...new Set(live.map(sessionProvider))].filter(Boolean);
+  filterProviders.forEach(p => { if (!provs.includes(p)) provs.push(p); });
+  provs.sort();
+  const pEl = document.getElementById('filter-providers');
+  if (pEl) pEl.innerHTML = provs.length ? provs.map(p => {
+    const on = filterProviders.has(p);
+    const n = live.filter(s => sessionProvider(s) === p).length;
+    return `<button class="filter-chip${on?' on':''}" onclick="toggleProviderFilter('${escJs(p)}')">${esc(_PROVIDER_LABELS[p]||p)}<span class="filter-chip-n">${n}</span></button>`;
+  }).join('') : '<span class="filter-hint">No sessions.</span>';
+  // Model-type chips
+  const mods = [...new Set(live.map(s => _modelClass(sessionConfiguredModel(s))))].filter(Boolean);
+  filterModels.forEach(m => { if (!mods.includes(m)) mods.push(m); });
+  mods.sort();
+  const mEl = document.getElementById('filter-models');
+  if (mEl) mEl.innerHTML = mods.length ? mods.map(m => {
+    const on = filterModels.has(m);
+    const n = live.filter(s => _modelClass(sessionConfiguredModel(s)) === m).length;
+    return `<button class="filter-chip${on?' on':''}" onclick="toggleModelFilter('${escJs(m)}')">${esc(_mLabel(m))}<span class="filter-chip-n">${n}</span></button>`;
+  }).join('') : '<span class="filter-hint">No sessions.</span>';
+}
+function toggleProviderFilter(p) {
+  if (filterProviders.has(p)) filterProviders.delete(p); else filterProviders.add(p);
+  renderFilterOptions(); render(); renderActiveFilters();
+}
+function toggleModelFilter(m) {
+  if (filterModels.has(m)) filterModels.delete(m); else filterModels.add(m);
+  renderFilterOptions(); render(); renderActiveFilters();
+}
+function clearAllFilters() {
+  filterProviders.clear(); filterModels.clear();
+  if (logSearchMode) setLogSearchMode(false); else { render(); }
+  const cb = document.getElementById('filter-logsearch'); if (cb) cb.checked = false;
+  renderFilterOptions(); renderActiveFilters();
+}
+// Preview chips on the sessions page + the Filters-button count badge.
+function renderActiveFilters() {
+  const cnt = _activeFilterCount();
+  const badge = document.getElementById('filters-count');
+  if (badge) { badge.textContent = cnt; badge.style.display = cnt ? '' : 'none'; }
+  const btn = document.getElementById('filters-btn');
+  if (btn) btn.classList.toggle('active', cnt > 0);
+  const el = document.getElementById('active-filters');
+  if (!el) return;
+  const chips = [];
+  if (logSearchMode) chips.push(`<span class="active-filter-chip" onclick="setLogSearchMode(false)">Logs search<span class="afx">&#x2715;</span></span>`);
+  filterProviders.forEach(p => chips.push(`<span class="active-filter-chip" onclick="toggleProviderFilter('${escJs(p)}')">${esc(_PROVIDER_LABELS[p]||p)}<span class="afx">&#x2715;</span></span>`));
+  filterModels.forEach(m => chips.push(`<span class="active-filter-chip" onclick="toggleModelFilter('${escJs(m)}')">${esc(_mLabel(m))}<span class="afx">&#x2715;</span></span>`));
+  if (chips.length) chips.push(`<span class="active-filter-clear" onclick="clearAllFilters()">Clear all</span>`);
+  el.innerHTML = chips.join('');
+  el.style.display = chips.length ? 'flex' : 'none';
 }
 
 async function _runLogSearch() {
@@ -41679,7 +41867,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.118';
+const CACHE = 'amux-v0.9.119';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
