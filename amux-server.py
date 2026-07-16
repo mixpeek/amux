@@ -19420,6 +19420,9 @@ let _logMatches = {};       // name -> matched snippet string
 let _logSearchTimer = null;
 let _logSearchAbort = null;
 let peekSession = null;
+// Last session whose peek was opened — remembered across closePeek so the
+// Messages view can pre-scope its filter to "the session you came from".
+let _lastPeekedSession = '';
 let peekTimer = null;
 let peekSessionDir = '';
 let peekSearchQuery = '';
@@ -24096,7 +24099,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.115';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.116';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 function openPeek(name, opts) {
   _stopPeekPoll();
@@ -24105,6 +24108,7 @@ function openPeek(name, opts) {
   if (_tb) { _tb.innerHTML = ''; _tb._lastHTML = null; }
   clearPeekFiles();  // clear any stale attachments from previous peek
   peekSession = name;
+  _lastPeekedSession = name;   // remembered for the Messages view's default filter
   _peekScrollLocked = false;
   // Reset the Plan strip so it reloads for the new session (no stale flash).
   _peekPlanLast = 0;
@@ -30692,7 +30696,7 @@ function switchView(view) {
   if (view === 'habits') _habitsLoad();
   if (view === 'skills') _skillsTabLoad();
   if (view === 'sql') _sqlInit();
-  if (view === 'messages') _messagesLoad(true);
+  if (view === 'messages') _messagesLoad(true, (typeof peekSession !== 'undefined' && peekSession) || _lastPeekedSession);
   if (view === 'files') loadFiles(_filesPath);
   if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
   if (view !== 'files') {
@@ -37983,7 +37987,7 @@ let _msgsOffset = 0;
 const _MSGS_PAGE = 200;
 let _msgsDone = false;
 
-async function _messagesLoad(reset) {
+async function _messagesLoad(reset, presetSession) {
   if (reset !== false) { _msgsData = []; _msgsOffset = 0; _msgsDone = false; }
   try {
     const r = await fetch(API + '/api/history?limit=' + _MSGS_PAGE + '&offset=' + _msgsOffset);
@@ -37995,10 +37999,14 @@ async function _messagesLoad(reset) {
     // Session filter options (from loaded data)
     const sel = document.getElementById('msgs-session-filter');
     if (sel) {
-      const cur = sel.value;
+      // Opening from a session (presetSession) scopes the filter to that session;
+      // plain refresh/paginate calls (no presetSession) keep the current choice.
+      const cur = (presetSession != null && presetSession !== '') ? presetSession : sel.value;
       const names = [...new Set(_msgsData.map(m => m.session).filter(Boolean))].sort();
       sel.innerHTML = '<option value="">All sessions</option>' +
         names.map(n => '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
+      // A preset session with no messages in the loaded page has no <option>;
+      // the select then falls back to "All sessions" on its own.
     }
     _messagesRender();
   } catch (e) {
@@ -41635,7 +41643,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.115';
+const CACHE = 'amux-v0.9.116';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
