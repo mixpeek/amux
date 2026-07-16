@@ -129,3 +129,11 @@ Track query gaps, target sections, priority, and status. Update every run.
 | AI coding agency tools 2026 | /for/agencies/ | H | shipped 2026-07-15 (new page, 335 lines; Article+FAQPage+BreadcrumbList JSON-LD; parallel client projects, CRM, Gmail, iOS monitoring; agency day-in-the-life) |
 | run AI agents for clients | /for/agencies/ | H | shipped 2026-07-15 |
 | EXP-008 theme preference PostHog | site.js | M | shipped 2026-07-15 (posthog.register theme_preference on load + toggle; segments dark vs light conversion behavior) |
+| best AI agent multiplexers 2026 | /guides/best-ai-agent-multiplexers-2026/ | H | refreshed 2026-07-16 (74d stale May->July 2026; multi-runtime CC+Codex+Gemini framing; Homebrew/pipx/uvx install paths; Messages tab; board gates; 299 stars) |
+| amux vs Windsurf 2026 | /compare/amux-vs-windsurf/ | H | rebuilt 2026-07-16 (99→703 lines; 18-row table; EXP-007 CTA; FAQPage 5 Qs; 'Why not both?' day-in-the-life workflow; Cascade+SWE-2 accurate facts) |
+| windsurf alternative CLI agents | /compare/amux-vs-windsurf/ | H | rebuilt 2026-07-16 |
+| amux vs Cursor 2026 | /compare/amux-vs-cursor/ | H | rebuilt 2026-07-16 (120→602 lines; 17-row table; FAQPage 5 Qs; 'Cursor Agent vs amux' section; decision guide 12-row table; pricing comparison) |
+| cursor alternative open source | /compare/amux-vs-cursor/ | H | rebuilt 2026-07-16 |
+| AI tools for open source maintainers 2026 | /for/open-source-maintainers/ | H | shipped 2026-07-16 (new page, 361 lines; issue triage, PR review drafts, changelog generation, doc audits; scheduling section; FAQPage 5 Qs) |
+| automate GitHub issue triage AI | /for/open-source-maintainers/ | H | shipped 2026-07-16 |
+| EXP-009 indie hacker hero subtitle | site/index.html | M | shipped 2026-07-16 (added 'Indie hackers, solo builders, and engineering teams' to .lede paragraph; measure after 2026-07-23) |
