@@ -14680,6 +14680,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     cursor: pointer; padding: 4px 0; text-decoration: underline; text-underline-offset: 2px;
   }
   .wt-skip:hover { color: var(--text); }
+  .wt-chapters { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 4px; }
+  .wt-chapter {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 11px 14px; min-height: 44px; border-radius: 10px; text-align: left;
+    background: var(--bg, #fff); border: 1px solid var(--border, #ddd);
+    color: var(--text, #111); font-size: 0.9rem; font-weight: 600; cursor: pointer;
+  }
+  .wt-chapter:hover { border-color: var(--accent, #0a0a0a); }
+  .wt-chapter.done { opacity: 0.75; }
+  .wt-ch-check { color: var(--green, #2da44e); font-weight: 700; }
   @media (max-width: 600px) {
     #wt-tooltip { max-width: calc(100vw - 32px); padding: 16px; }
   }
@@ -24445,7 +24455,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.129';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.130';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -37310,52 +37320,75 @@ async function pullFromRemote(btn) {
 // ═══════ Walkthrough ═══════
 (function() {
   var WT_KEY = 'amux_walkthrough_done';
+  var WT_CH_KEY = 'amux_wt_chapters';
   var _wtStep = 0;
-  var _wtSteps = [
-    {
-      target: '#add-btn',
-      title: 'Create a session',
-      body: 'Start here. Each session is a Claude Code agent running in tmux. Pick a project directory, optionally enable YOLO mode, and hit Start.',
-      pos: 'bottom'
-    },
-    {
-      target: '.tab-bar-outer',
-      title: 'Navigate with tabs',
-      body: 'Switch between views — Sessions, Board, Files, Workspace, Notes, and more. Tap the \u229E button on the right to show or hide tabs.',
-      pos: 'bottom',
-      padX: 0, padY: 0
-    },
-    {
-      target: '.cards',
-      title: 'Your agent fleet',
-      body: 'Sessions appear here as live cards. Each shows status (working, needs input, idle), token usage, last activity, and the current task.',
-      pos: 'top',
-      padX: 20, padY: 10
-    },
-    {
-      target: function() { var el = document.querySelector('.send-row') || document.querySelector('.chips'); return el || document.querySelector('.card-menu-btn'); },
-      targetFallback: '.cards',
-      title: 'Command & peek',
-      body: 'Send messages and use quick-action chips right on the card. Tap a session name or the \u22EF menu \u2192 Peek for a full terminal view with search, git status, and memory.',
-      pos: 'top'
-    },
-    {
-      target: '#tab-board',
-      title: 'Coordinate with the board',
-      body: 'Plan work across your fleet. Create tasks, assign to sessions, and agents claim them atomically \u2014 no duplicate work.',
-      pos: 'bottom'
-    },
-    {
-      target: '#tab-grid',
-      title: 'Workspace view',
-      body: 'Watch your whole fleet at once. Drag and resize panes, save layouts, and monitor multiple agents side-by-side.',
-      pos: 'bottom'
-    }
+
+  // ── Progressive disclosure: a 4-step core intro, then an opt-in chapter menu.
+  // Chapters go deep on what actually makes amux powerful; nobody is forced
+  // through 15 steps, and the menu tracks which chapters you've seen.
+  var _WT_CORE = [
+    { target: '.cards', pos: 'top', padX: 20, padY: 10,
+      title: 'Your AI workforce',
+      body: 'Every card is a Claude Code agent running in its own terminal — live status (working / needs you / idle), current task, and token spend. amux is the operations layer around a whole fleet of them.' },
+    { target: '#add-btn', pos: 'bottom',
+      title: 'Spin up an agent',
+      body: 'Create a session: point it at a repo or folder, pick a model, optionally YOLO mode. Seconds later it\u2019s a working agent on a card.' },
+    { target: function() { var el = document.querySelector('.send-row') || document.querySelector('.chips'); return el || document.querySelector('.cards'); }, pos: 'top',
+      title: 'Steer without breaking focus',
+      body: 'Type to any agent right from its card. Messages QUEUE and deliver when the agent reaches a safe stopping point — you never interrupt work in flight, and delivery is verified so nothing silently vanishes.' },
+    { menu: true,
+      title: 'That\u2019s the core. Go deeper?',
+      body: 'Three short chapters — pick what matters to you. Each is under a minute.' }
   ];
+  var _WT_CHAPTERS = {
+    fleet: { label: '\u26A1 Run a fleet, not a chatbot', steps: [
+      { target: '#tab-board', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'The board is the source of truth',
+        body: 'Tasks live on a shared kanban. Agents claim work atomically (no duplicates), and status gates keep them honest — “done” requires evidence, “verified” requires proof it works in production.' },
+      { target: '#tab-grid', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'Watch everything at once',
+        body: 'The Workspace grid shows every terminal side-by-side — drag, resize, save layouts. Mission control for a dozen agents.' },
+      { target: '#filters-btn', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'Slice the fleet',
+        body: 'Filter sessions by model or provider, and flip on log search to grep INSIDE every agent\u2019s terminal output at once — “which agent touched the billing code?” is one search.' }
+    ]},
+    phone: { label: '\u{1F4F1} Your business, from your phone', steps: [
+      { target: '.cards', pos: 'top', padX: 20, padY: 10,
+        title: 'The whole thing is a PWA',
+        body: 'Add amux to your home screen and this exact dashboard — every terminal, every control — runs from your phone. Peeks open instantly and update about every second.' },
+      { target: function() { var el = document.querySelector('.send-row') || document.querySelector('.chips'); return el || document.querySelector('.cards'); }, pos: 'top',
+        title: 'Approve and steer from anywhere',
+        body: 'An agent hit a permission prompt while you\u2019re at lunch? Push alert → open the peek → answer. Sends queue safely, survive offline, and land in the shared history so every device sees them.' },
+      { target: '#tab-messages', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'Nothing gets lost',
+        body: 'Every message to every agent is recorded server-side — browse and search the full history from any device, filtered to the session you came from.' }
+    ]},
+    auto: { label: '\u{1F916} Automate the business itself', steps: [
+      { target: '#tab-scheduler', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'Schedules: agents on a clock',
+        body: 'Recurring prompts to any agent — daily digests, inbox triage, deploy watchdogs, closed-loop “keep pushing until done” drivers. Every schedule mutation is audit-logged.' },
+      { target: '#tab-calendar', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'A real calendar',
+        body: 'Agents create actual events that sync to a private ICS feed — subscribe from Google or Apple Calendar and your agents\u2019 scheduling shows up next to your real life.' },
+      { target: '#tab-crm', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'Email & CRM built in',
+        body: 'Agents send and reply IN-THREAD from your real email accounts (with your signature), read attachments, and log contacts, interactions, and follow-ups in the CRM.' },
+      { target: '#tab-browser', targetFallback: '.tab-bar-outer', pos: 'bottom',
+        title: 'A real browser with your logins',
+        body: 'Agents drive a browser with saved auth profiles — pull invoices, publish content, work dashboards that have no API. End-to-end business workflows, unattended.' }
+    ]}
+  };
+  var _wtSteps = _WT_CORE;
+  var _wtChapterKey = null;   // non-null while inside a chapter
+
+  function _wtChDone() { try { return JSON.parse(localStorage.getItem(WT_CH_KEY) || '{}'); } catch(e) { return {}; } }
+  function _wtChMark(k) { try { var d = _wtChDone(); d[k] = 1; localStorage.setItem(WT_CH_KEY, JSON.stringify(d)); } catch(e) {} }
 
   function _wtGetTarget(step) {
     var s = _wtSteps[step];
+    if (!s || s.menu) return null;
     var el = typeof s.target === 'function' ? s.target() : document.querySelector(s.target);
+    if (el && !el.offsetParent) el = null;   // hidden (customizer-removed tab) → fallback
     if (!el && s.targetFallback) el = document.querySelector(s.targetFallback);
     return el;
   }
@@ -37365,59 +37398,64 @@ async function pullFromRemote(btn) {
     var el = _wtGetTarget(_wtStep);
     var spotlight = document.getElementById('wt-spotlight');
     var tooltip = document.getElementById('wt-tooltip');
-    if (!el) { spotlight.style.display = 'none'; return; }
+    if (!s) return;
 
-    var r = _cssRect(el);
-    var pad = 8;
-    var padX = s.padX || pad;
-    var padY = s.padY || pad;
-    spotlight.style.display = 'block';
-    spotlight.style.top = (r.top - padY) + 'px';
-    spotlight.style.left = (r.left - padX) + 'px';
-    spotlight.style.width = (r.width + padX * 2) + 'px';
-    spotlight.style.height = (r.height + padY * 2) + 'px';
-
-    // Build tooltip content
-    var dots = '';
-    for (var i = 0; i < _wtSteps.length; i++) {
-      var cls = 'wt-dot';
-      if (i < _wtStep) cls += ' done';
-      if (i === _wtStep) cls += ' active';
-      dots += '<div class="' + cls + '"></div>';
+    if (s.menu || !el) { spotlight.style.display = 'none'; }
+    else {
+      var r = _cssRect(el);
+      var padX = s.padX || 8, padY = s.padY || 8;
+      spotlight.style.display = 'block';
+      spotlight.style.top = (r.top - padY) + 'px';
+      spotlight.style.left = (r.left - padX) + 'px';
+      spotlight.style.width = (r.width + padX * 2) + 'px';
+      spotlight.style.height = (r.height + padY * 2) + 'px';
     }
-    var isFirst = _wtStep === 0;
-    var isLast = _wtStep === _wtSteps.length - 1;
-    tooltip.innerHTML =
-      '<div><span class="wt-step-num">' + (_wtStep + 1) + '</span><span class="wt-title">' + s.title + '</span></div>' +
-      '<div class="wt-body">' + s.body + '</div>' +
-      '<div class="wt-footer">' +
-        '<div class="wt-dots">' + dots + '</div>' +
-        '<div class="wt-btns">' +
-          '<button class="wt-skip" onclick="_wtDismiss()">Skip</button>' +
-          (isFirst ? '' : '<button class="wt-btn" onclick="_wtPrev()">Back</button>') +
-          (isLast
-            ? '<button class="wt-btn wt-btn-primary" onclick="_wtDismiss()">Done</button>'
-            : '<button class="wt-btn wt-btn-primary" onclick="_wtNext()">Next</button>') +
-        '</div>' +
-      '</div>';
 
-    // Position tooltip
-    var tw = tooltip.offsetWidth;
-    var th = tooltip.offsetHeight;
-    var gap = 14;
-    var top, left;
-    if (s.pos === 'bottom') {
-      top = r.bottom + padY + gap;
-      left = r.left + r.width / 2 - tw / 2;
+    var html = '<div>' + (s.menu ? '' : '<span class="wt-step-num">' + (_wtStep + 1) + '</span>') +
+               '<span class="wt-title">' + s.title + '</span></div>' +
+               '<div class="wt-body">' + s.body + '</div>';
+    if (s.menu) {
+      var done = _wtChDone();
+      html += '<div class="wt-chapters">';
+      Object.keys(_WT_CHAPTERS).forEach(function(k) {
+        html += '<button class="wt-chapter' + (done[k] ? ' done' : '') + '" onclick="_wtChapter(\'' + k + '\')">' +
+                _WT_CHAPTERS[k].label + (done[k] ? ' <span class="wt-ch-check">\u2713</span>' : '') + '</button>';
+      });
+      html += '</div><div class="wt-footer"><div></div><div class="wt-btns">' +
+              '<button class="wt-btn wt-btn-primary" onclick="_wtDismiss()">Finish</button></div></div>';
     } else {
-      top = r.top - padY - gap - th;
-      left = r.left + r.width / 2 - tw / 2;
+      var dots = '';
+      for (var i = 0; i < _wtSteps.length; i++) {
+        var cls = 'wt-dot';
+        if (i < _wtStep) cls += ' done';
+        if (i === _wtStep) cls += ' active';
+        dots += '<div class="' + cls + '"></div>';
+      }
+      var isFirst = _wtStep === 0;
+      var isLast = _wtStep === _wtSteps.length - 1;
+      var nextLabel = isLast ? (_wtChapterKey ? 'Chapters' : 'Done') : 'Next';
+      html += '<div class="wt-footer"><div class="wt-dots">' + dots + '</div><div class="wt-btns">' +
+              '<button class="wt-skip" onclick="_wtDismiss()">Skip</button>' +
+              (isFirst ? '' : '<button class="wt-btn" onclick="_wtPrev()">Back</button>') +
+              '<button class="wt-btn wt-btn-primary" onclick="_wtNext()">' + nextLabel + '</button>' +
+              '</div></div>';
     }
-    // Clamp to viewport
+    tooltip.innerHTML = html;
+
+    var tw = tooltip.offsetWidth, th = tooltip.offsetHeight, gap = 14, top, left;
+    if (s.menu || !el) {
+      top = window.innerHeight / 2 - th / 2;
+      left = window.innerWidth / 2 - tw / 2;
+    } else {
+      var r2 = _cssRect(el);
+      var padY2 = s.padY || 8;
+      if (s.pos === 'bottom') { top = r2.bottom + padY2 + gap; left = r2.left + r2.width / 2 - tw / 2; }
+      else { top = r2.top - padY2 - gap - th; left = r2.left + r2.width / 2 - tw / 2; }
+    }
     if (left < 12) left = 12;
     if (left + tw > window.innerWidth - 12) left = window.innerWidth - 12 - tw;
-    if (top < 12) { top = r.bottom + padY + gap; }
-    if (top + th > window.innerHeight - 12) { top = r.top - padY - gap - th; }
+    if (top < 12) top = 12;
+    if (top + th > window.innerHeight - 12) top = window.innerHeight - 12 - th;
     tooltip.style.top = top + 'px';
     tooltip.style.left = left + 'px';
   }
@@ -37427,18 +37465,34 @@ async function pullFromRemote(btn) {
     _wtPosition();
   }
 
+  window._wtChapter = function(key) {
+    _wtChapterKey = key;
+    _wtSteps = _WT_CHAPTERS[key].steps;
+    _wtStep = 0;
+    _wtPosition();
+  };
   window._wtNext = function() {
-    if (_wtStep < _wtSteps.length - 1) { _wtStep++; _wtPosition(); }
+    if (_wtStep < _wtSteps.length - 1) { _wtStep++; _wtPosition(); return; }
+    if (_wtChapterKey) {           // chapter finished → back to the menu, marked done
+      _wtChMark(_wtChapterKey);
+      _wtChapterKey = null;
+      _wtSteps = _WT_CORE;
+      _wtStep = _WT_CORE.length - 1;   // the menu step
+      _wtPosition();
+      return;
+    }
+    _wtDismiss();
   };
   window._wtPrev = function() {
     if (_wtStep > 0) { _wtStep--; _wtPosition(); }
   };
   window._wtDismiss = function() {
     document.getElementById('wt-overlay').classList.remove('open');
+    _wtChapterKey = null; _wtSteps = _WT_CORE;
     try { localStorage.setItem(WT_KEY, '1'); } catch(e) {}
   };
   window._wtRestart = function() {
-    _wtStep = 0;
+    _wtChapterKey = null; _wtSteps = _WT_CORE; _wtStep = 0;
     try { localStorage.removeItem(WT_KEY); } catch(e) {}
     _wtShow();
   };
@@ -42131,7 +42185,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.129';
+const CACHE = 'amux-v0.9.130';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
