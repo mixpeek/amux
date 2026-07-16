@@ -12775,25 +12775,67 @@ def _gmail_reply_send(account: str, rfc822_message_id: str, body: str,
                        include_signature: bool = True, reply_all: bool = False) -> dict:
     """Reply in-thread (clean body + signature, correct In-Reply-To/References/
     threadId) to the message identified by its RFC822 Message-ID header."""
+    import email.utils as _eu
+    # Cross-account: find the message in the sending account, else any other
+    # connected account — so a thread that lives on info@ can be replied to from
+    # ethan@ (threading then rides on In-Reply-To/References, not the account-local
+    # threadId). Fixes the "message not found -> fresh non-threaded send" fallback.
     orig = _gmail_find_message_by_rfc822(account, rfc822_message_id)
+    thread_account = account
     if not orig:
-        return {"error": "message not found in this account — check message_id / account"}
+        for _acct in _gmail_connected_accounts():
+            if _acct == account:
+                continue
+            _found = _gmail_find_message_by_rfc822(_acct, rfc822_message_id)
+            if _found:
+                orig, thread_account = _found, _acct
+                break
+    if not orig:
+        return {"error": "message not found in any connected account — check message_id"}
     headers = {h["name"].lower(): h["value"]
                for h in orig.get("payload", {}).get("headers", [])}
-    thread_id = orig.get("threadId", "")
+    # threadId is account-local; only valid if the message lives in the SENDING
+    # account. Cross-account replies thread via In-Reply-To/References instead.
+    thread_id = orig.get("threadId", "") if thread_account == account else ""
     orig_msgid = headers.get("message-id", rfc822_message_id)
     if not orig_msgid.startswith("<"):
         orig_msgid = f"<{orig_msgid}>"
     subject = headers.get("subject", "") or ""
     if not subject.lower().startswith("re:"):
         subject = "Re: " + subject
-    to_addr = headers.get("from", "")
-    cc = ""
+    # Recipient resolution: the reply goes to the EXTERNAL party, never to one of
+    # our own accounts. This fixes the reply-to-self bug: replying to our OWN sent
+    # message (From=us) previously set to_addr=us and emailed ourselves. Exclude
+    # the sending account, every connected account, and all our owned domains.
+    _our_domains = ("mixpeek.com", "trymixpeek.com", "joinmixpeek.com", "getmixpeek.com")
+    _connected = {a.lower() for a in _gmail_connected_accounts()} | {account.lower()}
+
+    def _external(hdr: str) -> list:
+        out = []
+        for _name, addr in _eu.getaddresses([hdr or ""]):
+            a = (addr or "").strip()
+            if not a:
+                continue
+            al = a.lower()
+            if al in _connected or any(al.endswith("@" + d) for d in _our_domains):
+                continue
+            out.append(a)
+        return out
+
+    from_ext = _external(headers.get("from", ""))
+    to_ext = _external(headers.get("to", ""))
+    cc_ext = _external(headers.get("cc", ""))
     if reply_all:
-        extras = [headers.get("to", ""), headers.get("cc", "")]
-        parts = [p.strip() for chunk in extras for p in chunk.split(",")
-                 if p.strip() and account.lower() not in p.lower()]
-        cc = ", ".join(dict.fromkeys(parts))  # dedup, preserve order
+        all_ext = list(dict.fromkeys(from_ext + to_ext + cc_ext))
+        to_addr, cc = ", ".join(all_ext), ""
+    else:
+        # the party who last spoke (From) if external, else the original recipient(s)
+        to_addr, cc = ", ".join(from_ext or to_ext), ""
+    if not to_addr:
+        # NEVER fall back to emailing ourselves. If no external party is on the
+        # thread, refuse and force the caller to pass an explicit recipient.
+        return {"error": "no external recipient on this thread (would email ourselves) — "
+                         "pass an explicit 'to' via /api/email/send"}
     references = (headers.get("references", "") + " " + orig_msgid).strip()
     return _gmail_compose_send(account, to_addr, subject, body, cc=cc,
                                in_reply_to=orig_msgid, references=references,
