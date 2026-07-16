@@ -47317,7 +47317,15 @@ return output
                     _safe = re.sub(r"[^A-Za-z0-9._-]", "_", _fname)[-120:] or "attachment.bin"
                     _outdir = Path.home() / ".amux" / "email-attachments"
                     _outdir.mkdir(parents=True, exist_ok=True)
-                    _outp = _outdir / f"{int(time.time())}-{_safe}"
+                    # ms granularity + bump-on-collision: a message can carry SEVERAL
+                    # same-named inline images (two image.png on one mhoward reply) —
+                    # second-granularity paths made back-to-back downloads overwrite.
+                    _base = int(time.time() * 1000)
+                    _outp = _outdir / f"{_base}-{_safe}"
+                    _n = 0
+                    while _outp.exists():
+                        _n += 1
+                        _outp = _outdir / f"{_base}-{_n}-{_safe}"
                     _outp.write_bytes(_data)
                     return self._json({"ok": True, "path": str(_outp), "size": len(_data),
                                        "filename": _fname})
