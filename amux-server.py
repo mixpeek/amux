@@ -14691,6 +14691,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .wt-chapter:hover { border-color: var(--accent, #0a0a0a); }
   .wt-chapter.done { opacity: 0.75; }
+  /* Guided-build steps open REAL dialogs; lift them above the tour backdrop so
+     the spotlighted form is actually visible + interactive during the tour. */
+  #wt-overlay.open ~ #create-overlay.active, body:has(#wt-overlay.open) #create-overlay.active,
+  body:has(#wt-overlay.open) #sched-overlay.active,
+  body:has(#wt-overlay.open) #event-modal.active { z-index: 8002; }
   .wt-ch-check { color: var(--green, #2da44e); font-weight: 700; }
   @media (max-width: 600px) {
     #wt-tooltip { max-width: calc(100vw - 32px); padding: 16px; }
@@ -24477,7 +24482,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.131';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.132';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -37403,6 +37408,28 @@ async function pullFromRemote(btn) {
       { target: '#tab-browser', targetFallback: '.tab-bar-outer', pos: 'bottom',
         title: 'A real browser with your logins',
         body: 'Agents drive a browser with saved auth profiles — pull invoices, publish content, work dashboards that have no API. End-to-end business workflows, unattended.' }
+    ]},
+    build: { label: '\u{1F6E0} Build one now (guided)', cleanup: function() {
+        try { closeEventModal(); } catch(e) {}
+        try { closeSchedModal(); } catch(e) {}
+        try { closeCreate(); } catch(e) {}
+        try { switchView('sessions'); } catch(e) {}
+      }, steps: [
+      { action: function() { switchView('sessions'); openCreate(); }, wait: 350,
+        target: '#create-dir', targetFallback: '#create-overlay', pos: 'bottom',
+        title: 'This is the real create dialog',
+        body: 'Point an agent at your code: drop a repo or folder path here. Each agent gets its own terminal in that directory.' },
+      { target: '#create-prompt', targetFallback: '#create-overlay', pos: 'bottom',
+        title: 'Give it its first task',
+        body: 'Whatever you type here is the agent\u2019s opening prompt \u2014 \u201Cfix the failing tests\u201D, \u201Ctriage my inbox and draft replies\u201D. Hit Start to create it for REAL, or Next to keep touring.' },
+      { action: function() { try { closeCreate(); } catch(e) {} switchView('scheduler'); openSchedModal(null); }, wait: 400,
+        target: '#sched-title', targetFallback: '#sched-overlay', pos: 'bottom',
+        title: 'An automation is a prompt on a timer',
+        body: 'This is the real schedule form. The command is just a message to an agent \u2014 \u201Cevery morning: triage my inbox and email me a digest\u201D. Save it and you\u2019ve automated your first business process.' },
+      { action: function() { try { closeSchedModal(); } catch(e) {} switchView('calendar'); setTimeout(function(){ openEventModal(null); }, 250); }, wait: 650,
+        target: '#event-modal .modal', targetFallback: '#fc-container', pos: 'bottom',
+        title: 'Integrations are first-class',
+        body: 'A real calendar event \u2014 it syncs to the private feed your Google/Apple calendar subscribes to. Agents use these same integrations by API: in-thread email, CRM, browser automation. Save one or Cancel.' }
     ]}
   };
   var _wtSteps = _WT_CORE;
@@ -37492,16 +37519,33 @@ async function pullFromRemote(btn) {
     _wtPosition();
   }
 
+  function _wtCleanup() {
+    var ch = _wtChapterKey && _WT_CHAPTERS[_wtChapterKey];
+    if (ch && ch.cleanup) { try { ch.cleanup(); } catch(e) {} }
+  }
+  // Enter a step: run its live action (open the real dialog/tab) first, then
+  // position once the UI has settled — this is what makes the guided-build
+  // chapter walk REAL forms instead of pointing at closed doors.
+  function _wtGo() {
+    var st = _wtSteps[_wtStep];
+    if (st && st.action) {
+      try { st.action(); } catch(e) {}
+      setTimeout(_wtPosition, st.wait || 300);
+    } else {
+      _wtPosition();
+    }
+  }
   window._wtChapter = function(key) {
     _wtChapterKey = key;
     _wtSteps = _WT_CHAPTERS[key].steps;
     _wtStep = 0;
-    _wtPosition();
+    _wtGo();
   };
   window._wtNext = function() {
-    if (_wtStep < _wtSteps.length - 1) { _wtStep++; _wtPosition(); return; }
+    if (_wtStep < _wtSteps.length - 1) { _wtStep++; _wtGo(); return; }
     if (_wtChapterKey) {           // chapter finished → back to the menu, marked done
       _wtChMark(_wtChapterKey);
+      _wtCleanup();
       _wtChapterKey = null;
       _wtSteps = _WT_CORE;
       _wtStep = _WT_CORE.length - 1;   // the menu step
@@ -37511,10 +37555,11 @@ async function pullFromRemote(btn) {
     _wtDismiss();
   };
   window._wtPrev = function() {
-    if (_wtStep > 0) { _wtStep--; _wtPosition(); }
+    if (_wtStep > 0) { _wtStep--; _wtGo(); }
   };
   window._wtDismiss = function() {
     document.getElementById('wt-overlay').classList.remove('open');
+    _wtCleanup();
     _wtChapterKey = null; _wtSteps = _WT_CORE;
     try { localStorage.setItem(WT_KEY, '1'); } catch(e) {}
   };
@@ -42212,7 +42257,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.131';
+const CACHE = 'amux-v0.9.132';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
