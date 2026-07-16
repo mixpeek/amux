@@ -22,7 +22,7 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Best AI Agent Multiplexers 2026","item":"https://amux.io/guides/best-ai-agent-multiplexers-2026/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Best AI Agent Multiplexers Compared (2026): 12 Tools Ranked","description":"The definitive comparison of every AI agent multiplexer and orchestrator in 2026. Feature matrix, architecture deep-dives, and honest recommendations.","url":"https://amux.io/guides/best-ai-agent-multiplexers-2026/","datePublished":"2026-05-03","dateModified":"2026-05-03","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Best AI Agent Multiplexers Compared (2026): 12 Tools Ranked","description":"The definitive comparison of every AI agent multiplexer and orchestrator in 2026. Feature matrix, architecture deep-dives, and honest recommendations.","url":"https://amux.io/guides/best-ai-agent-multiplexers-2026/","datePublished":"2026-07-16","dateModified":"2026-07-16","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an AI agent multiplexer?","acceptedAnswer":{"@type":"Answer","text":"An AI agent multiplexer is a tool that lets you run multiple AI coding agents (like Claude Code, Codex CLI, or Aider) in parallel sessions, each working on a different task simultaneously. It manages session lifecycle, monitors health, and coordinates work across agents — turning a single developer into a fleet operator."}},{"@type":"Question","name":"What is the best AI agent multiplexer in 2026?","acceptedAnswer":{"@type":"Answer","text":"It depends on your workflow. For unattended overnight runs with self-healing and mobile monitoring, amux leads. For the best native macOS desktop experience, cmux is unmatched. For minimal CLI-only git worktree workflows, dmux or workmux are lightweight options. For cloud-hosted autonomous agents, Devin or OpenAI Codex are the simplest to start with."}},{"@type":"Question","name":"Can I run multiple Claude Code sessions without a multiplexer?","acceptedAnswer":{"@type":"Answer","text":"Yes — Claude Code has built-in Agent Teams (claude --agent-teams) that spawn parallel sub-agents using git worktrees. For simple parallelism this works well. A dedicated multiplexer adds session persistence, crash recovery, cost tracking, mobile monitoring, and inter-agent coordination that the built-in feature doesn't provide."}},{"@type":"Question","name":"How many parallel AI agents can I run?","acceptedAnswer":{"@type":"Answer","text":"The bottleneck is typically API rate limits and cost, not local resources. Most developers run 3-10 agents in parallel. amux users regularly run 10-20+ sessions on a single machine. Claude Code uses roughly 200-400MB RAM per session, so a 16GB laptop can host 20+ agents comfortably. The API provider's rate limits are usually the binding constraint."}},{"@type":"Question","name":"Do I need a multiplexer if I use Cursor or an AI IDE?","acceptedAnswer":{"@type":"Answer","text":"IDE-based AI tools like Cursor run agents inside the editor, which limits parallelism and requires a GUI. If you want to run 5+ agents overnight on different tasks, a terminal-based multiplexer is more practical. Many developers use both: Cursor for interactive coding at their desk, and a multiplexer for batch/overnight agent runs."}},{"@type":"Question","name":"Are AI agent multiplexers free?","acceptedAnswer":{"@type":"Answer","text":"Most are open source and free. amux (MIT), dmux (MIT), workmux (MIT), and ittybitty (MIT) are fully free. cmux core is GPL-3.0 (free) with a paid Founder's Edition. Termdock and Superset have free tiers. You still pay for the underlying AI API usage (Anthropic, OpenAI, etc.) regardless of which multiplexer you choose."}}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","name":"Best AI Agent Multiplexers 2026","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","url":"https://github.com/mixpeek/amux"},{"@type":"ListItem","position":2,"name":"cmux","url":"https://cmux.com"},{"@type":"ListItem","position":3,"name":"dmux","url":"https://github.com/standardagents/dmux"},{"@type":"ListItem","position":4,"name":"Termdock","url":"https://termdock.com"},{"@type":"ListItem","position":5,"name":"workmux","url":"https://github.com/raine/workmux"},{"@type":"ListItem","position":6,"name":"ittybitty","url":"https://github.com/adamwulf/ittybitty"},{"@type":"ListItem","position":7,"name":"Superset","url":"https://superset.sh"},{"@type":"ListItem","position":8,"name":"Claude Code Agent Teams","url":"https://github.com/anthropics/claude-code"},{"@type":"ListItem","position":9,"name":"Cursor Background Agents","url":"https://cursor.com"},{"@type":"ListItem","position":10,"name":"Devin","url":"https://devin.ai"},{"@type":"ListItem","position":11,"name":"OpenAI Codex","url":"https://github.com/openai/codex"},{"@type":"ListItem","position":12,"name":"OpenHands","url":"https://github.com/All-Hands-AI/OpenHands"}]}</script>
   <style>
@@ -62,6 +62,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Best AI Agent Multiplexers 2026</span></div>
     <h1>Best AI Agent Multiplexers Compared (2026)</h1>
     <p class="subtitle">The definitive comparison of every tool for running parallel AI coding agents. 12 tools across 3 categories, with an honest feature matrix and opinionated recommendations.</p>
+    <p style="font-family:var(--font-mono);font-size:12px;color:var(--fg-mute);margin-top:-0.5rem;"><!-- last-updated: 2026-07-16 --> Updated July 2026</p>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
       <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
@@ -330,17 +331,19 @@
         <span>Python + tmux</span>
         <span>macOS, Linux, cloud VMs</span>
       </div>
-      <p>amux is an orchestration platform built as a single Python file (<code>amux-server.py</code>). It runs a local HTTPS server that manages tmux sessions, serves a web dashboard, and exposes a comprehensive REST API. The self-healing watchdog auto-restarts crashed agents, auto-compacts context overflows, and detects stuck sessions.</p>
+      <p>amux is an orchestration platform built as a single Python file (<code>amux-server.py</code>). It runs a local HTTPS server that manages tmux sessions, serves a web dashboard, and exposes a comprehensive REST API. The self-healing watchdog auto-restarts crashed agents, auto-compacts context overflows, and detects stuck sessions. Run an AI engineering team from one dashboard — start agents before bed, review PRs in the morning.</p>
       <p><strong>Distinguishing features:</strong></p>
       <ul>
         <li>Self-healing watchdog with crash recovery, context compaction, and stuck detection</li>
+        <li>Multi-runtime: officially supports <a href="https://github.com/anthropics/claude-code">Claude Code</a>, <a href="https://github.com/openai/codex">OpenAI Codex CLI</a>, and <a href="https://github.com/google-gemini/gemini-cli">Gemini CLI</a></li>
         <li>Mobile PWA dashboard + native <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435">iOS app</a> for monitoring from anywhere</li>
-        <li>SQLite-backed kanban board with atomic task claiming for agent-to-agent delegation</li>
+        <li>SQLite-backed kanban board with type-based quality gates (todo → doing → done → verified)</li>
+        <li>Built-in Messages tab for email management from the dashboard</li>
         <li>Per-session token spend and cost tracking</li>
         <li>Full REST API for sessions, board, notes, CRM, browser automation, email, and cron</li>
-        <li>Single-file deployment: <code>scp amux-server.py your-server:</code> is a valid deploy</li>
+        <li>Multiple install paths: <code>brew install mixpeek/amux/amux</code> · <code>pipx install amux</code> · <code>uvx amux serve</code> (zero-install)</li>
       </ul>
-      <p><strong>Best for:</strong> Developers who run agents unattended (overnight, during meetings), need mobile monitoring, want agent-to-agent orchestration, or need a REST API for custom automation. The richest feature set of any multiplexer, at the cost of more moving parts than a simple CLI tool.</p>
+      <p><strong>Best for:</strong> Developers who run agents unattended (overnight, during meetings), need mobile monitoring, want agent-to-agent orchestration, or need a REST API for custom automation. Works with any AI coding runtime — Claude Code, Codex CLI, or Gemini CLI. The richest feature set of any multiplexer, at the cost of more moving parts than a simple CLI tool.</p>
       <p><a href="/compare/amux-vs-cmux/">amux vs cmux</a> &middot; <a href="/compare/amux-vs-dmux/">amux vs dmux</a> &middot; <a href="/compare/amux-vs-diy-tmux/">amux vs DIY tmux</a></p>
     </div>
 
@@ -730,12 +733,23 @@ ittybitty → dmux → workmux → Agent Teams → Superset → cmux → amux �
 
     <div class="cta-box" style="margin-top:3rem;">
       <h3>Try amux</h3>
-      <p>Run dozens of AI coding agents in parallel with self-healing, mobile monitoring, and token tracking. Works on macOS, Linux, and cloud VMs. Python 3 + tmux. Open source.</p>
-      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
+      <p>Run dozens of AI coding agents in parallel with self-healing, mobile monitoring, and token tracking. Works on macOS, Linux, and cloud VMs. Open source, MIT, single Python file. Compatible with Claude Code, OpenAI Codex CLI, and Gemini CLI.</p>
+      <pre><code># Homebrew (macOS)
+brew install mixpeek/amux/amux
+
+# PyPI (any platform)
+pipx install amux
+
+# Zero-install with uvx
+uvx amux serve  # → https://localhost:8822
+
+# Or from source
+git clone https://github.com/mixpeek/amux && cd amux && ./install.sh</code></pre>
+      <pre><code>amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # → https://localhost:8822</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <a class="btn" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" style="margin-left:0.75rem;">iOS App</a>
     </div>
   </main>
   <footer class="sub-footer">
