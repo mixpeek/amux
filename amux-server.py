@@ -9329,6 +9329,28 @@ def _find_latest_session_id(work_dir: str) -> str:
     return ""
 
 
+def _conversation_owned_by_other(conv_id: str, this_session: str) -> str:
+    """Return the name of a DIFFERENT session whose meta already claims `conv_id`,
+    or '' if none. Two amux sessions must never share one Claude conversation:
+    when they do (shared CC_DIR + a borrowed/stale id), the two panes render one
+    JSONL and commands to one mirror into the other (mixpeek-general adopted
+    mixpeek-frustrations' f035d084, 2026-07-16). Used to refuse adopting a
+    neighbor's conversation id so a collision can never be cemented."""
+    if not conv_id:
+        return ""
+    for mf in CC_SESSIONS.glob("*.meta.json"):
+        other = mf.name[:-len(".meta.json")]
+        if other == this_session:
+            continue
+        try:
+            m = json.loads(mf.read_text(errors="replace"))
+        except Exception:
+            continue
+        if (m.get("cc_conversation_id") or "") == conv_id:
+            return other
+    return ""
+
+
 def _ascript_str(s: str) -> str:
     """Convert a Python string to an AppleScript expression with proper linefeed handling.
     Returns an expression like: ("line1" & linefeed & "line2")
@@ -48431,7 +48453,17 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 # and compaction rotations.
                 conv_id = (body.get("conversation_id") or "").strip()
                 if conv_id and re.fullmatch(r"[0-9a-fA-F-]{8,64}", conv_id):
-                    meta["cc_conversation_id"] = conv_id
+                    _owner = _conversation_owned_by_other(conv_id, name)
+                    if _owner:
+                        # Another session already owns this conversation. Adopting
+                        # it would cross-link two sessions onto one Claude brain
+                        # (commands to one mirror into the other). Refuse and leave
+                        # this session's own id intact so a restart separates them.
+                        slog(f"[conv-guard] '{name}' reported conversation "
+                             f"{conv_id[:12]} already owned by '{_owner}' — not "
+                             f"adopting (would cross-link sessions)")
+                    else:
+                        meta["cc_conversation_id"] = conv_id
                 cwd = (body.get("cwd") or "").strip()
                 if cwd and cwd.startswith("/"):
                     meta["cc_cwd"] = cwd
