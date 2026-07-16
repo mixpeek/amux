@@ -13914,6 +13914,41 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     transition: opacity 0.25s, transform 0.25s cubic-bezier(.4,0,.2,1);
   }
   .overlay.active { pointer-events: auto; opacity: 1; transform: none; }
+  /* ── Generic centered modal (calendar event editor) ─────────────────────────
+     These classes had NO rules — openEventModal's markup rendered as unstyled
+     flow content stacked at the page bottom (the "Edit event at the bottom of
+     the screen" bug, 2026-07-16). */
+  .modal-overlay {
+    position: fixed; inset: 0; z-index: 300;
+    background: rgba(0,0,0,0.55);
+    display: none; align-items: center; justify-content: center;
+    padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+  .modal-overlay.active { display: flex; }
+  .modal-overlay .modal {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    width: 100%; max-width: 440px; max-height: min(86dvh, 640px);
+    display: flex; flex-direction: column;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+  }
+  .modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .modal-header h3 { font-size: 1rem; }
+  .modal-close {
+    background: none; border: none; color: var(--dim); font-size: 1.3rem;
+    cursor: pointer; min-width: 44px; min-height: 32px; line-height: 1;
+  }
+  .modal-body { padding: 14px 16px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .modal-body .input {
+    width: 100%; box-sizing: border-box; padding: 8px 10px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font-size: 0.9rem; outline: none;
+  }
+  .modal-body input[type=date].input, .modal-body input[type=time].input { width: auto; flex: 1; min-width: 0; }
+  .modal-footer { padding: 12px 16px; border-top: 1px solid var(--border); flex-shrink: 0; }
+  .modal-footer .btn.danger { color: var(--red); border-color: var(--red); }
   .overlay-header {
     display: flex; justify-content: space-between; align-items: center;
     margin-bottom: 8px; flex-shrink: 0;
@@ -24410,7 +24445,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.128';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.129';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -34057,6 +34092,7 @@ function _fcInit() {
     selectable: true,
     selectMirror: true,
     dayMaxEvents: true,
+    eventMaxStack: 3,   // timeGrid: >3 concurrent events collapse to "+N more" instead of unreadable slivers
     weekNumbers: false,
     firstDay: 0,
     slotMinTime: '06:00:00',
@@ -34130,6 +34166,7 @@ function openEventModal(editId, startStr, endStr, allDay) {
   const s = _evSplit(ev ? ev.start : (startStr || ''));
   const e = _evSplit(ev ? ev.end : (endStr || ''));
   const isAllDay = ev ? !!ev.all_day : (allDay === true || (startStr && !String(startStr).includes('T')));
+  closeEventModal();   // never stack a second editor (duplicate-id removal only caught the first)
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay active';
   overlay.id = 'event-modal';
@@ -42094,7 +42131,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.128';
+const CACHE = 'amux-v0.9.129';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
