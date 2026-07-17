@@ -44403,34 +44403,34 @@ class CCHandler(BaseHTTPRequestHandler):
                 pass
             return self._json({"ok": True})
 
-        if path == "/api/history" or path.startswith("/api/history/"):
-            if method == "GET" and path == "/api/events/log":
-                # Append-only execution log (issue #48). ?session= &type= filter;
-                # (path is /api/events/log because /api/events is the SSE stream)
-                # ?since_id=N tails ascending from that id (pollers); default =
-                # latest N descending.
-                db = get_db()
-                _sess = (qs.get("session", [""])[0] or "").strip()
-                _typ = (qs.get("type", [""])[0] or "").strip()
-                _since = int(qs.get("since_id", ["0"])[0] or 0)
-                _lim = min(int(qs.get("limit", ["100"])[0] or 100), 1000)
-                _where, _args = [], []
-                if _sess: _where.append("session=?"); _args.append(_sess)
-                if _typ: _where.append("type LIKE ?"); _args.append(_typ + "%")
-                if _since: _where.append("id > ?"); _args.append(_since)
-                _w = (" WHERE " + " AND ".join(_where)) if _where else ""
-                _order = "ASC" if _since else "DESC"
-                rows = db.execute(
-                    f"SELECT id, ts, session, type, data, idem, source FROM session_events{_w} "
-                    f"ORDER BY id {_order} LIMIT ?", (*_args, _lim)).fetchall()
-                out = []
-                for r in rows:
-                    d = dict(r)
-                    try: d["data"] = json.loads(d["data"]) if d["data"] else None
-                    except Exception: pass
-                    out.append(d)
-                return self._json(out)
+        if method == "GET" and path == "/api/events/log":
+            # Append-only execution log (issue #48). ?session= &type= filter;
+            # (path is /api/events/log because /api/events is the SSE stream)
+            # ?since_id=N tails ascending from that id (pollers); default =
+            # latest N descending.
+            db = get_db()
+            _sess = (qs.get("session", [""])[0] or "").strip()
+            _typ = (qs.get("type", [""])[0] or "").strip()
+            _since = int(qs.get("since_id", ["0"])[0] or 0)
+            _lim = min(int(qs.get("limit", ["100"])[0] or 100), 1000)
+            _where, _args = [], []
+            if _sess: _where.append("session=?"); _args.append(_sess)
+            if _typ: _where.append("type LIKE ?"); _args.append(_typ + "%")
+            if _since: _where.append("id > ?"); _args.append(_since)
+            _w = (" WHERE " + " AND ".join(_where)) if _where else ""
+            _order = "ASC" if _since else "DESC"
+            rows = db.execute(
+                f"SELECT id, ts, session, type, data, idem, source FROM session_events{_w} "
+                f"ORDER BY id {_order} LIMIT ?", (*_args, _lim)).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                try: d["data"] = json.loads(d["data"]) if d["data"] else None
+                except Exception: pass
+                out.append(d)
+            return self._json(out)
 
+        if path == "/api/history" or path.startswith("/api/history/"):
             if method == "GET" and path == "/api/history":
                 limit = int(qs.get("limit", ["500"])[0])
                 offset = int(qs.get("offset", ["0"])[0])
