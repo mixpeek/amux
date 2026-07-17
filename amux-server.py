@@ -4455,8 +4455,8 @@ def _steer_enqueue(name: str, text: str, guard: str = "") -> str:
     try:
         db = get_db()
         db.execute(
-            "INSERT OR REPLACE INTO steering_queue(id, session, text, queued_at) VALUES(?,?,?,?)",
-            (msg_id, name, text, entry["queued_at"]),
+            "INSERT OR REPLACE INTO steering_queue(id, session, text, queued_at, guard) VALUES(?,?,?,?,?)",
+            (msg_id, name, text, entry["queued_at"], guard or None),
         )
         db.commit()
     except Exception:
@@ -6286,6 +6286,9 @@ def _init_db():
         # AMUX-1713: gates are DERIVED from the item type. Default 'code' keeps the
         # strict merge/tests gate for existing items — never silently weaken a gate.
         "ALTER TABLE issues ADD COLUMN type TEXT NOT NULL DEFAULT 'code'",
+        # Guard tag must survive restarts: without it a restored commit-nudge
+        # delivered as a REAL message (own turn, no revalidation/folding).
+        "ALTER TABLE steering_queue ADD COLUMN guard TEXT",
     ]:
         try:
             db.execute(migration)
@@ -6323,13 +6326,14 @@ def _load_steering_from_db():
     """Populate _steering_queue from SQLite on startup."""
     db = get_db()
     rows = db.execute(
-        "SELECT id, session, text, queued_at FROM steering_queue ORDER BY queued_at ASC"
+        "SELECT id, session, text, queued_at, guard FROM steering_queue ORDER BY queued_at ASC"
     ).fetchall()
     with _steering_lock:
         _steering_queue.clear()
         for row in rows:
             _steering_queue.setdefault(row["session"], []).append(
-                {"id": row["id"], "text": row["text"], "queued_at": row["queued_at"]}
+                {"id": row["id"], "text": row["text"], "queued_at": row["queued_at"],
+                 "guard": (row["guard"] if "guard" in row.keys() else None) or ""}
             )
 
 
