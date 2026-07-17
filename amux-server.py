@@ -11623,6 +11623,12 @@ def _verify_submitted(name: str, target: str, text: str, esc_at: float = 0.0,
     return bool(sent_at and _jsonl_user_msg_since(name, text, sent_at))
 
 
+# Claude Code's @-mention autocomplete only opens for an @ that STARTS a token
+# (start of text or after whitespace). The old check ("@" in text) also matched
+# emails (mhoward@lucihub.com) and backticked `@backend` mentions, force-queueing
+# any such message while the session generated — even in Send mode (2026-07-17).
+_AT_PICKER_RE = re.compile(r'(?:^|\s)@\S')
+
 def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy: bool = False) -> tuple[bool, str]:
     iterm2_id = _session_iterm2_id(name)
     if iterm2_id:
@@ -11735,7 +11741,7 @@ def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy:
             # (that rejects the tool) — keep the batch queued for the next tick.
             if _waiting and _from_steering:
                 return False, "session at a selector — retry at next idle boundary"
-            if _generating and ("@" in text or text.lstrip().startswith("/")):
+            if _generating and (_AT_PICKER_RE.search(text) or text.lstrip().startswith("/")):
                 # @/slash text can't be queued as typed input while a turn is
                 # running: the autocomplete picker opens on type and eats the
                 # Enter, and the picker-closer (Escape) would interrupt the
@@ -11798,7 +11804,7 @@ def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy:
             # 20ms is ample for a local PTY; paste-buffer (long text) is atomic so
             # needs even less, but we use the same value for simplicity.
             time.sleep(0.02)
-            if not _generating and ("@" in text or text.lstrip().startswith("/")):
+            if not _generating and (_AT_PICKER_RE.search(text) or text.lstrip().startswith("/")):
                 # An @mention (@path or @session) or slash opens Claude's autocomplete
                 # picker while typing. A bare Enter then SELECTS a picker entry —
                 # rewriting the @path and NOT submitting. Escape closes the picker and
@@ -49573,10 +49579,11 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     _update_meta(name, last_send=int(time.time()), last_send_text=text[:200])
                     _session_prev_status[name] = "active"  # seed for idle detection
                     _summarize_task_bg(name, text)
-                    _emit_event(name, "message.sent",
-                                {"chars": len(text), "preview": text[:120],
-                                 "human": bool(body.get("record_history"))},
-                                idem=("send:" + msg_id) if msg_id else None, source="api-send")
+                    if not str(msg).startswith("queued"):   # steering enqueue emits message.queued itself
+                        _emit_event(name, "message.sent",
+                                    {"chars": len(text), "preview": text[:120],
+                                     "human": bool(body.get("record_history"))},
+                                    idem=("send:" + msg_id) if msg_id else None, source="api-send")
                     # Record to the shared history SERVER-SIDE, atomic with the send,
                     # so the message is in history for EVERY client even if the sending
                     # device's own history POST never lands (flaky phone / suspended
