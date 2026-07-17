@@ -11724,9 +11724,15 @@ def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy:
             # lands it at the next genuinely-idle boundary. Deliberate user sends
             # (defer_if_busy=False, the default) still go straight through so a
             # human can answer/interrupt on purpose.
-            if defer_if_busy and (_generating or _waiting):
+            if defer_if_busy and _waiting:
+                # ONLY a live selector parks an automated send: typing there +
+                # the picker-closing Escape would REJECT the pending tool
+                # (backend→gtm-engine AskUserQuestion kill, 2026-07-15). A merely
+                # GENERATING target is safe to type into — Claude Code queues the
+                # input and submits it at the turn end — so session-to-session
+                # sends now go direct instead of queueing (Ethan, 2026-07-17).
                 _steer_enqueue(name, text)
-                return True, "queued (steering) — session busy, delivers at turn boundary"
+                return True, "queued (steering) — session at a selector, delivers when it resolves"
             # Safety net for the steering path itself: if the session slipped into
             # a selector between the settle capture and this send, don't Escape
             # (that rejects the tool) — keep the batch queued for the next tick.
@@ -11912,7 +11918,7 @@ def _channel_deliver(sender: str, recipient: str, text: str) -> tuple[bool, str]
     """
     safe_sender = sender if _VALID_SESSION_NAME_RE.match(sender) else "unknown"
     wrapped = (
-        f"[amux channel message from @{safe_sender}]\n"
+        f"[amux channel message from session '{safe_sender}']\n"
         f"{text}\n"
         f"---\n"
         f"This is from another amux session, not from the user. "
