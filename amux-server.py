@@ -4732,9 +4732,13 @@ def _snapshot_all_sessions_inner():
             # Guard: 120s cooldown to avoid double-firing if the dialog lingers.
             if (_at_compact_resume_prompt(clean) and
                     now - actions.get("last_compact_prompt", 0) > 120):
-                _ac_row2 = get_db().execute("SELECT value FROM prefs WHERE key='auto_compact_enabled'").fetchone()
-                _ac_enabled2 = (_ac_row2 is None) or (_ac_row2[0] != "0")
-                if _ac_enabled2:
+                # Dedicated pref (default ON): auto_compact_enabled used to gate this
+                # too, so turning off auto-compaction ALSO silently disabled answering
+                # the resume dialog — sessions sat at the selector for hours
+                # (observability's 3am audit blocked until 4:22, 2026-07-17).
+                _ar_row = get_db().execute("SELECT value FROM prefs WHERE key='auto_resume_summary'").fetchone()
+                _ar_enabled = (_ar_row is None) or (_ar_row[0] != "0")
+                if _ar_enabled:
                     actions["last_compact_prompt"] = now
                     subprocess.run(
                         ["tmux", "send-keys", "-t", tmux_target(name), "Enter"],
@@ -4742,6 +4746,8 @@ def _snapshot_all_sessions_inner():
                     )
                     _push_alert("auto_compact", name,
                                 f"Auto-selected 'Resume from summary' for '{name}'")
+                    _emit_event(name, "session.dialog_answered",
+                                {"dialog": "resume_from_summary", "choice": 1}, source="auto-resume")
 
             # ── 2. Reactive: thinking-block corruption → restart + replay ───
             if ("redacted_thinking" in clean and
@@ -17563,6 +17569,14 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             </label>
           </div>
           <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Send /compact when context &lt; 50%</div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
+            <span style="font-size:0.85rem;">Auto-answer resume dialog</span>
+            <label class="theme-toggle">
+              <input type="checkbox" id="auto-resume-checkbox" onchange="toggleAutoResume(this.checked)" checked>
+              <span class="theme-track"><span class="theme-thumb"></span></span>
+            </label>
+          </div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Pick &quot;Resume from summary&quot; automatically when the old-session dialog appears</div>
         </div>
         <div class="settings-sep"></div>
         <div class="settings-section">
@@ -19812,6 +19826,20 @@ async function toggleAutoCompact(checked) {
     body: JSON.stringify({ key: 'auto_compact_enabled', value: checked ? '1' : '0' })
   });
 }
+async function toggleAutoResume(checked) {
+  await fetch('/api/prefs', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ key: 'auto_resume_summary', value: checked ? '1' : '0' })
+  });
+}
+(async function initAutoResume() {
+  try {
+    const r = await fetch('/api/prefs?key=auto_resume_summary');
+    const d = await r.json();
+    const cb = document.getElementById('auto-resume-checkbox');
+    if (cb) cb.checked = d.value !== '0';   // default ON
+  } catch(e) {}
+})();
 (async function initAutoCompact() {
   try {
     const r = await fetch('/api/prefs?key=auto_compact_enabled');
@@ -24593,7 +24621,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.134';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.135';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -42375,7 +42403,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.134';
+const CACHE = 'amux-v0.9.135';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
