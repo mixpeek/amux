@@ -15935,6 +15935,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   body.board-dragging .board-card { transition: none !important; }
   .board-card:active { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(88,166,255,0.2); }
   .board-card-pinned { border-color: rgba(88,166,255,0.35); box-shadow: 0 0 0 1px rgba(88,166,255,0.12); }
+  /* Card the owning session is working on RIGHT NOW (doing + session active) */
+  .board-card-live {
+    border-color: rgba(63,185,80,0.55);
+    box-shadow: 0 0 0 1px rgba(63,185,80,0.25), 0 0 14px rgba(63,185,80,0.12);
+  }
+  .board-live-dot {
+    display:inline-block; width:7px; height:7px; border-radius:50%;
+    background:var(--green,#3fb950); margin-right:5px; vertical-align:1px;
+    animation: boardLivePulse 1.6s ease-in-out infinite;
+  }
+  @keyframes boardLivePulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+  .board-card-live .board-card-session { color: var(--green,#3fb950); border-color: rgba(63,185,80,0.4); }
   .board-pin-btn {
     position: absolute; top: 6px; right: 30px;
     width: 22px; height: 22px; padding: 0; border: none; background: none;
@@ -21272,6 +21284,15 @@ async function fetchSessions() {
       try { localStorage.setItem('amux_sessions_cache', j); }
       catch (e2) { try { localStorage.removeItem('amux_sessions_cache'); } catch (e3) {} }
       render();
+      // Board live-emphasis tracks session activity: re-render the board when the
+      // ACTIVE set changes (signature-guarded so this is rare; never mid-drag).
+      try {
+        const _liveSig = data.filter(s => s.status === 'active').map(s => s.name).sort().join(',');
+        if (window._boardLiveSig !== _liveSig) {
+          window._boardLiveSig = _liveSig;
+          if (activeView === 'board' && !document.body.classList.contains('board-dragging')) renderBoard();
+        }
+      } catch(e) {}
       if (!window._peekEmbed) _fetchGitBranches(sessions);
     }
   } catch(e) {
@@ -24501,7 +24522,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.133';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.134';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -32871,7 +32892,11 @@ function _renderBoardCard(item) {
   const tags = item.tags || [];
   const firstLine = (item.desc || '').split('\n')[0].slice(0, 80);
   const pinned = item.pinned ? 1 : 0;
-  let h = '<div class="board-card' + (pinned ? ' board-card-pinned' : '') + '" data-id="' + item.id + '" onclick="openBoardDetail(\'' + item.id + '\')">';
+  // LIVE emphasis: this card is what its owning session is working on right now
+  // (item in doing + that session's terminal is actively generating).
+  const _liveNow = item.status === 'doing' && item.session &&
+    (typeof sessions !== 'undefined') && (sessions || []).some(s => s.name === item.session && s.status === 'active');
+  let h = '<div class="board-card' + (pinned ? ' board-card-pinned' : '') + (_liveNow ? ' board-card-live' : '') + '" data-id="' + item.id + '"' + (_liveNow ? ' title="' + esc(item.session) + ' is working on this right now"' : '') + ' onclick="openBoardDetail(\'' + item.id + '\')">';
   h += '<div class="board-drag-handle" onclick="event.stopPropagation()" title="Drag to move"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="3.5" cy="2.5" r="1.25"/><circle cx="8.5" cy="2.5" r="1.25"/><circle cx="3.5" cy="6" r="1.25"/><circle cx="8.5" cy="6" r="1.25"/><circle cx="3.5" cy="9.5" r="1.25"/><circle cx="8.5" cy="9.5" r="1.25"/></svg></div>';
   h += '<button class="board-pin-btn' + (pinned ? ' active' : '') + '" onclick="event.stopPropagation();_togglePin(\'' + item.id + '\')" title="' + (pinned ? 'Unpin' : 'Pin to top') + '">&#x1F4CC;</button>';
   h += '<div class="board-card-key">' + esc(item.id) + '</div>';
@@ -32882,7 +32907,7 @@ function _renderBoardCard(item) {
   h += esc(item.title) + '</div>';
   if (firstLine) h += '<div class="board-card-desc">' + esc(firstLine) + ((item.desc || '').length > 80 ? '\u2026' : '') + '</div>';
   h += '<div class="board-card-footer">';
-  if (boardViewMode !== 'session' && item.session) h += '<span class="board-card-session" data-session="' + esc(item.session) + '">' + esc(item.session) + '</span>';
+  if (boardViewMode !== 'session' && item.session) h += '<span class="board-card-session" data-session="' + esc(item.session) + '">' + (_liveNow ? '<span class="board-live-dot"></span>' : '') + esc(item.session) + '</span>';
   if (item.shepherd) h += '<span class="board-card-shepherd" data-session="' + esc(item.shepherd) + '" title="Shepherd: watching this for the owner. NOT accountable for executing it.">&#x1F441; watched by ' + esc(item.shepherd) + '</span>';
   tags.forEach(function(t) { h += '<span class="board-card-tag" data-tag="' + esc(t) + '">' + esc(t) + '</span>'; });
   if (item.due) { const today = new Date().toISOString().slice(0,10); const overdue = item.due < today && item.status !== 'done'; h += '<span class="board-card-time" style="' + (overdue ? 'color:var(--red)' : 'color:var(--accent)') + '">&#x1F4C5; ' + item.due + '</span>'; }
@@ -42279,7 +42304,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.133';
+const CACHE = 'amux-v0.9.134';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
