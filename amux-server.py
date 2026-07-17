@@ -588,6 +588,79 @@ def _bu_call(args: list, timeout_s: int = 30, session: str = "amux") -> dict:
     finally:
         lock.release()
 
+# ── Live-Chrome backend (CDP): same /api/browser verbs, executed in the USER'S
+# real Chrome (real logins, cookies, residential IP) via skills/chrome-cdp.
+# Design (2026-07-17, "get out of the model's way"): amux provides two execution
+# surfaces behind ONE tool interface — a profile browser for parallel/unattended
+# work, the live browser when acting-as-you matters. No agent loop lives here;
+# the session's model does all reasoning against these primitives.
+_CDP_SCRIPT = str(Path(__file__).resolve().parent / "skills" / "chrome-cdp" / "scripts" / "cdp.mjs")
+_live_targets: dict = {}   # amux browser-session name -> CDP target-id prefix
+
+def _cdp_call(args: list, timeout_s: int = 30) -> dict:
+    """Run one cdp.mjs command against the user's real Chrome."""
+    try:
+        r = subprocess.run(["node", _CDP_SCRIPT] + [str(a) for a in args],
+                           capture_output=True, text=True, timeout=timeout_s,
+                           cwd=str(Path(__file__).resolve().parent))
+    except subprocess.TimeoutExpired:
+        return {"error": "live-chrome operation timed out"}
+    except FileNotFoundError:
+        return {"error": "node not found — the live backend needs Node 22+"}
+    out = (r.stdout or "").strip(); err = (r.stderr or "").strip()
+    if r.returncode != 0:
+        msg = err or out or f"cdp exited {r.returncode}"
+        if "Allow" in msg or "Daemon failed" in msg:
+            msg += " | live backend drives YOUR Chrome — click 'Allow debugging?' on the tab (first use only)"
+        elif "ECONNREFUSED" in msg or "connect" in msg.lower():
+            msg += " | enable Chrome remote debugging (relaunch Chrome with --remote-debugging-port=9222)"
+        return {"error": msg[:500]}
+    return {"ok": True, "output": out}
+
+# Observation budgets: hard caps so a page dump can never flood the session's
+# context. The URL is always surfaced as the restorable pointer instead.
+_OBS_EVAL_CAP = 8_000
+_OBS_STATE_CAP = 24_000
+
+def _obs_cap(text, limit: int):
+    if not isinstance(text, str) or len(text) <= limit:
+        return text
+    return text[:limit] + f"\n…[truncated at {limit} chars — page stays live; re-query narrower or reopen via the url pointer]"
+
+_CDP_KEYS = {
+    "Enter": ("Enter", "Enter", 13, "\r"), "Tab": ("Tab", "Tab", 9, "\t"),
+    "Escape": ("Escape", "Escape", 27, ""), "Backspace": ("Backspace", "Backspace", 8, ""),
+    "ArrowDown": ("ArrowDown", "ArrowDown", 40, ""), "ArrowUp": ("ArrowUp", "ArrowUp", 38, ""),
+    "ArrowLeft": ("ArrowLeft", "ArrowLeft", 37, ""), "ArrowRight": ("ArrowRight", "ArrowRight", 39, ""),
+    "PageDown": ("PageDown", "PageDown", 34, ""), "PageUp": ("PageUp", "PageUp", 33, ""),
+}
+
+def _live_key(session: str, key: str) -> dict:
+    tid = _live_targets.get(session)
+    spec = _CDP_KEYS.get(key)
+    if not spec:
+        return {"error": f"unsupported key {key!r} on live backend (supported: {', '.join(sorted(_CDP_KEYS))})"}
+    k, code, vk, text = spec
+    events = [{"type": "rawKeyDown", "key": k, "code": code,
+               "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk}]
+    if text:
+        events.append({"type": "char", "text": text, "key": k})
+    events.append({"type": "keyUp", "key": k, "code": code,
+                   "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk})
+    for ev in events:
+        r = _cdp_call(["evalraw", tid, "Input.dispatchKeyEvent", json.dumps(ev)], 10)
+        if not r.get("ok"):
+            return r
+    return {"ok": True, "key": key}
+
+def _live_url(session: str) -> str:
+    tid = _live_targets.get(session)
+    if not tid:
+        return ""
+    r = _cdp_call(["eval", tid, "location.href"], 10)
+    return (r.get("output") or "").strip() if r.get("ok") else ""
+
+
 def _bu_list_profiles() -> list:
     """List available Chrome profiles via browser-use."""
     try:
@@ -48923,6 +48996,23 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 session = body.get("session", "amux")
                 profile = (body.get("profile") or "").strip()
                 fresh = bool(body.get("fresh"))
+                if (body.get("backend") or "").strip().lower() == "live":
+                    # LIVE backend: a NEW tab in the user's real Chrome — never
+                    # hijacks an existing tab. Session stays bound to this tab
+                    # for every subsequent verb until /stop.
+                    old = _live_targets.pop(session, None)
+                    if old:
+                        _cdp_call(["eval", old, "window.close()"], 8)
+                    r = _cdp_call(["open", url], 20)
+                    if not r.get("ok"):
+                        return self._json(r, 502)
+                    m = re.search(r"Opened new tab:\s+([0-9A-Fa-f]+)", r.get("output", ""))
+                    if not m:
+                        return self._json({"error": "could not parse new tab id", "output": r.get("output", "")[:200]}, 502)
+                    _live_targets[session] = m.group(1)
+                    return self._json({"ok": True, "backend": "live", "target": m.group(1), "url": url,
+                                       "note": "driving YOUR Chrome — first use of a tab needs the 'Allow debugging?' click"})
+                _live_targets.pop(session, None)   # explicit profile start unbinds live
                 return self._json(_bu_open(url, session=session,
                                            explicit_profile=profile, fresh=fresh,
                                            timeout_s=30))
@@ -48936,6 +49026,9 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     return self._json({"error": "url required"}, 400)
                 session = body.get("session", "amux")
                 profile = (body.get("profile") or "").strip()
+                if session in _live_targets:
+                    r = _cdp_call(["nav", _live_targets[session], url], 30)
+                    return self._json({**r, "backend": "live"} if r.get("ok") else r)
                 return self._json(_bu_open(url, session=session,
                                            explicit_profile=profile, timeout_s=30))
 
@@ -48945,6 +49038,17 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                            else qs.get("session", "amux"))
                 url_param = (qs.get("url", [""])[0] if isinstance(qs.get("url"), list)
                              else qs.get("url", ""))
+                if session in _live_targets:
+                    tid = _live_targets[session]
+                    if url_param:
+                        _cdp_call(["nav", tid, url_param], 30)
+                    _sp = Path.home() / ".amux" / "browser-screenshots"
+                    _sp.mkdir(parents=True, exist_ok=True)
+                    _f = str(_sp / f"live-{session}.png")
+                    r = _cdp_call(["shot", tid, _f], 30)
+                    if not r.get("ok"):
+                        return self._json(r, 502)
+                    return self._json({"ok": True, "backend": "live", "path": _f, "url": _live_url(session)})
                 if url_param:
                     _bu_call(["open", url_param], session=session, timeout_s=20)
                     import time as _t; _t.sleep(2)
@@ -48957,6 +49061,12 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
             if method == "GET" and path == "/api/browser/state":
                 session = (qs.get("session", ["amux"])[0] if isinstance(qs.get("session"), list)
                            else qs.get("session", "amux"))
+                if session in _live_targets:
+                    r = _cdp_call(["snap", _live_targets[session]], 30)
+                    if not r.get("ok"):
+                        return self._json(r, 502)
+                    return self._json({"ok": True, "backend": "live", "url": _live_url(session),
+                                       "a11y": _obs_cap(r.get("output", ""), _OBS_STATE_CAP)})
                 res = _bu_call(["state"], session=session)
                 try:
                     raw = (res.get("data") or {}).get("_raw_text", "") if isinstance(res, dict) else ""
@@ -48965,6 +49075,9 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                         res = dict(res)
                         res["elements"] = parsed["elements"]
                         res["viewport"] = parsed["viewport"]
+                        res["url"] = (res.get("data") or {}).get("url", "")
+                        res["data"] = dict(res["data"])
+                        res["data"]["_raw_text"] = _obs_cap(raw, _OBS_STATE_CAP)
                 except Exception:
                     pass
                 return self._json(res)
@@ -49000,6 +49113,40 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 body = self._read_body()
                 action = body.get("action", "")
                 session = body.get("session", "amux")
+                if session in _live_targets:
+                    tid = _live_targets[session]
+                    if action == "click":
+                        sel = body.get("selector")
+                        x, y = body.get("x"), body.get("y")
+                        if sel:
+                            return self._json(_cdp_call(["click", tid, sel], 20))
+                        if x is not None and y is not None:
+                            return self._json(_cdp_call(["clickxy", tid, str(x), str(y)], 20))
+                        return self._json({"error": "live click needs selector or x,y"}, 400)
+                    if action == "type":
+                        return self._json(_cdp_call(["type", tid, body.get("text", "")], 20))
+                    if action == "key":
+                        return self._json(_live_key(session, body.get("key", "")))
+                    if action == "scroll":
+                        dy = body.get("dy", 500)
+                        return self._json(_cdp_call(["eval", tid, f"window.scrollBy(0,{int(dy)})"], 10))
+                    if action == "eval":
+                        script = body.get("script", "")
+                        if not script:
+                            return self._json({"error": "script required"}, 400)
+                        r = _cdp_call(["eval", tid, script], 30)
+                        if r.get("ok"):
+                            r["output"] = _obs_cap(r.get("output", ""), _OBS_EVAL_CAP)
+                        return self._json(r)
+                    if action == "back":
+                        return self._json(_cdp_call(["eval", tid, "history.back()"], 10))
+                    if action == "extract":
+                        r = _cdp_call(["snap", tid], 30)
+                        if r.get("ok"):
+                            r["output"] = _obs_cap(r.get("output", ""), _OBS_STATE_CAP)
+                        return self._json(r)
+                    return self._json({"error": f"action {action!r} not supported on the live backend "
+                                                "(supported: click, type, key, scroll, eval, back, extract)"}, 400)
                 if action == "click":
                     x, y = body.get("x"), body.get("y")
                     index = body.get("index")
@@ -49028,7 +49175,14 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     script = body.get("script", "")
                     if not script:
                         return self._json({"error": "script required"}, 400)
-                    return self._json(_bu_call(["eval", script], session=session))
+                    _res = _bu_call(["eval", script], session=session)
+                    try:
+                        if isinstance(_res, dict) and isinstance((_res.get("data") or {}).get("result"), str):
+                            _res = dict(_res); _res["data"] = dict(_res["data"])
+                            _res["data"]["result"] = _obs_cap(_res["data"]["result"], _OBS_EVAL_CAP)
+                    except Exception:
+                        pass
+                    return self._json(_res)
                 elif action == "wait":
                     selector = body.get("selector", "")
                     text = body.get("text", "")
@@ -49068,6 +49222,11 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
             if method == "POST" and path == "/api/browser/stop":
                 body = self._read_body()
                 session = body.get("session", "amux")
+                tid = _live_targets.pop(session, None)
+                if tid:
+                    _cdp_call(["eval", tid, "window.close()"], 8)
+                    _cdp_call(["stop", tid], 8)
+                    return self._json({"ok": True, "backend": "live", "closed": tid})
                 return self._json(_bu_call(["close"], session=session, timeout_s=10))
 
             # GET /api/browser/sessions
