@@ -19692,6 +19692,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <div class="filter-hint">When on, the search box on the sessions page matches text inside each session's output, not just its name.</div>
       </div>
       <div class="filter-section">
+        <div class="filter-section-title">Status</div>
+        <div id="filter-statuses" class="filter-chip-row"></div>
+      </div>
+      <div class="filter-section">
         <div class="filter-section-title">Provider</div>
         <div id="filter-providers" class="filter-chip-row"></div>
       </div>
@@ -19935,6 +19939,14 @@ let _logSearchTimer = null;
 let _logSearchAbort = null;
 // Filters modal facets (session list). Multi-select within a facet.
 let filterProviders = new Set();   // 'claude' | 'codex' | 'gemini' | 'iterm2'
+let filterStatuses = new Set();    // 'working' | 'waiting' | 'idle' | 'stopped'
+// Stable status key for filtering: card WORKING = 'active' internally.
+function _sessStatusKey(s) {
+  if (!s.running) return 'stopped';
+  if (s.status === 'active') return 'working';
+  if (s.status === 'waiting') return 'waiting';
+  return 'idle';
+}
 let filterModels = new Set();      // coarse model class: opus/sonnet/haiku/gpt/gemini/...
 // Coarse model class for a model string, so "claude-opus-4-8" and a future
 // "claude-opus-5" both filter as "opus".
@@ -21648,7 +21660,8 @@ function render() {
   // Filters modal: provider + model-type facets (multi-select, AND across facets)
   if (filterProviders.size) filtered = filtered.filter(s => filterProviders.has(sessionProvider(s)));
   if (filterModels.size) filtered = filtered.filter(s => filterModels.has(_modelClass(sessionConfiguredModel(s))));
-  if ((q || activeTag || filterProviders.size || filterModels.size) && !filtered.length) {
+  if (filterStatuses.size) filtered = filtered.filter(s => filterStatuses.has(_sessStatusKey(s)));
+  if ((q || activeTag || filterProviders.size || filterModels.size || filterStatuses.size) && !filtered.length) {
     el.innerHTML = '<div class="empty">No matching sessions.</div>';
     _renderArchivedSection();
     _restoreCardFocus(focusedId);
@@ -24688,7 +24701,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.136';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.137';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -28168,7 +28181,7 @@ function toggleLogSearch() { setLogSearchMode(!logSearchMode); }
 
 // ── Filters modal (session list) ─────────────────────────────────────────────
 function _activeFilterCount() {
-  return filterProviders.size + filterModels.size + (logSearchMode ? 1 : 0);
+  return filterProviders.size + filterModels.size + filterStatuses.size + (logSearchMode ? 1 : 0);
 }
 function openFiltersModal() {
   const cb = document.getElementById('filter-logsearch');
@@ -28185,8 +28198,20 @@ function closeFiltersModal() {
 const _PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', iterm2: 'iTerm2' };
 const _MODEL_LABELS = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable', gpt: 'GPT', gemini: 'Gemini', 'o-series': 'o-series' };
 function _mLabel(x){ return _MODEL_LABELS[x] || (x.charAt(0).toUpperCase()+x.slice(1)); }
+const _STATUS_LABELS = { working: 'Working', waiting: 'Needs input', idle: 'Idle', stopped: 'Stopped' };
 function renderFilterOptions() {
   const live = sessions.filter(s => !s.archived);
+  // Status chips — fixed order, only states that exist (or are selected)
+  const sEl = document.getElementById('filter-statuses');
+  if (sEl) {
+    const opts = ['working', 'waiting', 'idle', 'stopped']
+      .filter(k => filterStatuses.has(k) || live.some(x => _sessStatusKey(x) === k));
+    sEl.innerHTML = opts.length ? opts.map(k => {
+      const on = filterStatuses.has(k);
+      const n = live.filter(x => _sessStatusKey(x) === k).length;
+      return `<button class="filter-chip${on?' on':''}" onclick="toggleStatusFilter('${k}')">${_STATUS_LABELS[k]}<span class="filter-chip-n">${n}</span></button>`;
+    }).join('') : '<span class="filter-hint">No sessions.</span>';
+  }
   // Provider chips — options are the providers actually present, plus any selected.
   const provs = [...new Set(live.map(sessionProvider))].filter(Boolean);
   filterProviders.forEach(p => { if (!provs.includes(p)) provs.push(p); });
@@ -28212,12 +28237,16 @@ function toggleProviderFilter(p) {
   if (filterProviders.has(p)) filterProviders.delete(p); else filterProviders.add(p);
   renderFilterOptions(); render(); renderActiveFilters();
 }
+function toggleStatusFilter(k) {
+  if (filterStatuses.has(k)) filterStatuses.delete(k); else filterStatuses.add(k);
+  renderFilterOptions(); render(); renderActiveFilters();
+}
 function toggleModelFilter(m) {
   if (filterModels.has(m)) filterModels.delete(m); else filterModels.add(m);
   renderFilterOptions(); render(); renderActiveFilters();
 }
 function clearAllFilters() {
-  filterProviders.clear(); filterModels.clear();
+  filterProviders.clear(); filterModels.clear(); filterStatuses.clear();
   if (logSearchMode) setLogSearchMode(false); else { render(); }
   const cb = document.getElementById('filter-logsearch'); if (cb) cb.checked = false;
   renderFilterOptions(); renderActiveFilters();
@@ -28235,6 +28264,7 @@ function renderActiveFilters() {
   if (logSearchMode) chips.push(`<span class="active-filter-chip" onclick="setLogSearchMode(false)">Logs search<span class="afx">&#x2715;</span></span>`);
   filterProviders.forEach(p => chips.push(`<span class="active-filter-chip" onclick="toggleProviderFilter('${escJs(p)}')">${esc(_PROVIDER_LABELS[p]||p)}<span class="afx">&#x2715;</span></span>`));
   filterModels.forEach(m => chips.push(`<span class="active-filter-chip" onclick="toggleModelFilter('${escJs(m)}')">${esc(_mLabel(m))}<span class="afx">&#x2715;</span></span>`));
+  filterStatuses.forEach(k => chips.push(`<span class="active-filter-chip" onclick="toggleStatusFilter('${k}')">${_STATUS_LABELS[k]||k}<span class="afx">&#x2715;</span></span>`));
   if (chips.length) chips.push(`<span class="active-filter-clear" onclick="clearAllFilters()">Clear all</span>`);
   el.innerHTML = chips.join('');
   el.style.display = chips.length ? 'flex' : 'none';
@@ -42480,7 +42510,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.136';
+const CACHE = 'amux-v0.9.137';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
