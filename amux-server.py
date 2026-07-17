@@ -3105,6 +3105,7 @@ def backup_session_jsonl(session: str, reason: str = "manual") -> str | None:
                 old.unlink()
             except Exception:
                 pass
+        _emit_event(session, "checkpoint.created", {"reason": reason, "path": str(dest)}, source="jsonl-backup")
         return str(dest)
     except Exception:
         return None
@@ -3872,6 +3873,35 @@ def _rate_limit_loop():
         pass
 
 
+_EVENTS_RETENTION_DAYS = 30
+_events_last_sweep = [0.0]
+
+def _emit_event(session: str, etype: str, data: dict | None = None,
+                idem: str | None = None, source: str = "") -> None:
+    """Append one observable event to the session_events log (issue #48).
+    Append-only, never raises, idempotent when `idem` is set (INSERT OR IGNORE
+    on the unique key — a client retry or server-restart replay can't
+    double-record an externally visible action). Records observable state
+    transitions and action receipts ONLY — never model reasoning."""
+    try:
+        db = get_db()
+        db.execute(
+            "INSERT OR IGNORE INTO session_events (ts, session, type, data, idem, source) "
+            "VALUES (?,?,?,?,?,?)",
+            (time.time(), session or "", etype,
+             json.dumps(data, ensure_ascii=False) if data else None, idem, source))
+        db.commit()
+        now = time.time()
+        if now - _events_last_sweep[0] > 3600:   # hourly retention sweep
+            _events_last_sweep[0] = now
+            db.execute("DELETE FROM session_events WHERE ts < ?",
+                       (now - _EVENTS_RETENTION_DAYS * 86400,))
+            db.commit()
+    except Exception as e:
+        try: slog(f"[events] emit failed ({etype}): {e}")
+        except Exception: pass
+
+
 def _push_alert(alert_type: str, session: str, message: str):
     """Enqueue an alert to be streamed to all SSE clients, and fan it out to
     any registered Web Push subscriptions so it reaches phones even when the
@@ -4427,6 +4457,8 @@ def _steer_enqueue(name: str, text: str, guard: str = "") -> str:
         db.commit()
     except Exception:
         pass
+    _emit_event(name, "message.queued", {"chars": len(text), "preview": text[:120], "guard": guard or None},
+                idem="q:" + msg_id, source="steering")
     return msg_id
 
 
@@ -4516,6 +4548,8 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
                     pass
                 _commit_guard_nudged.pop(name, None)   # tree clean → re-arm the guard
                 slog(f"[commit-guard] {name}: tree clean at delivery — dropped {len(_drop)} stale nudge(s)")
+                _emit_event(name, "message.dropped", {"count": len(_drop), "reason": "tree clean at delivery"},
+                            source="commit-guard")
     with _steering_lock:
         queue = _steering_queue.get(name, [])
         if not queue or not deliverable:
@@ -4574,6 +4608,8 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
             pass
         for m in batch:
             _steer_record_history(name, m["text"], m.get("queued_at"), m["id"])
+            _emit_event(name, "message.delivered", {"preview": m["text"][:120]},
+                        idem="d:" + m["id"], source="steering")
         _push_alert("steering_delivered", name,
                     f"{len(batch)} steering message{'s' if len(batch) > 1 else ''} delivered to '{name}'")
     else:
@@ -4721,6 +4757,8 @@ def _snapshot_all_sessions_inner():
                         time.sleep(6)
                         send_text(sname, msg)
                     threading.Thread(target=_replay, daemon=True).start()
+                _emit_event(name, "session.crashed", {"reason": "thinking_block_corruption", "replayed": bool(last_msg)},
+                            source="self-heal")
                 _push_alert("thinking_reset", name,
                             f"Session '{name}' auto-restarted: thinking block corruption"
                             + (" — last message replayed" if last_msg else ""))
@@ -4740,6 +4778,8 @@ def _snapshot_all_sessions_inner():
                         time.sleep(6)
                         send_text(sname, msg)
                     threading.Thread(target=_replay_id, daemon=True).start()
+                _emit_event(name, "session.crashed", {"reason": "session_id_conflict", "replayed": bool(last_msg)},
+                            source="self-heal")
                 _push_alert("auto_restart", name,
                             f"Session '{name}' auto-restarted: session ID conflict resolved"
                             + (" — last message replayed" if last_msg else ""))
@@ -4768,6 +4808,7 @@ def _snapshot_all_sessions_inner():
                                            capture_output=True, timeout=5)
                             slog(f"[ghost-rescue] session={name} submitted stuck "
                                  f"amux message: {_ghost[:80]!r}")
+                            _emit_event(name, "message.rescued", {"preview": _ghost[:120]}, source="ghost-rescue")
                             _push_alert("ghost_rescue", name,
                                         f"Rescued a stuck message in '{name}' — it was typed but never submitted")
 
@@ -5364,6 +5405,23 @@ CREATE TABLE IF NOT EXISTS schedule_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_sched_audit_sched ON schedule_audit(schedule_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_sched_audit_ts    ON schedule_audit(ts DESC);
+-- Event-sourced session state (issue #48): every OBSERVABLE session action as an
+-- append-only event. Schema records state transitions and action receipts only —
+-- never model reasoning. idem = idempotency key for externally visible events
+-- (unique; INSERT OR IGNORE), so replays/retries can't double-record.
+CREATE TABLE IF NOT EXISTS session_events (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      REAL NOT NULL,
+    session TEXT NOT NULL DEFAULT '',
+    type    TEXT NOT NULL,
+    data    TEXT,
+    idem    TEXT,
+    source  TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sev_idem ON session_events(idem) WHERE idem IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sev_session ON session_events(session, id);
+CREATE INDEX IF NOT EXISTS idx_sev_type    ON session_events(type, id);
+CREATE INDEX IF NOT EXISTS idx_sev_ts      ON session_events(ts);
 -- Real calendar EVENTS — the only layer that syncs to Google Calendar by default.
 -- (The calendar shows three layers: events here, tasks=schedules, issues=board.)
 CREATE TABLE IF NOT EXISTS cal_events (
@@ -6826,6 +6884,7 @@ def _pickup_next_board_task(session_name: str):
         item_id, title, desc = row["id"], row["title"], row["desc"] or ""
         now = int(time.time())
         db.execute("UPDATE issues SET status='doing', updated=? WHERE id=?", (now, item_id))
+        _emit_event(session_name, "task.claimed", {"issue": item_id}, source="auto-pickup")
         db.commit()
         _board_changed()
         _append_board_log(item_id, "Auto-picked up from queue")
@@ -8098,6 +8157,9 @@ def _run_schedule(sched):
     except Exception as log_err:
         slog(f"[sched] failed to log run: {log_err}")
     _push_alert("scheduler", session, f"Ran schedule: {sched['title']}")
+    _emit_event(session or "", "schedule.fired",
+                {"schedule_id": sched["id"], "title": sched.get("title", ""), "status": status},
+                source="scheduler")
     # If watch mode is enabled (tmux only), monitor response in background
     if (sched.get("kind") or "tmux") == "tmux" and sched.get("watch") and status == "ok":
         threading.Thread(
@@ -9195,6 +9257,7 @@ def _commit_guard(name: str) -> bool:
         if is_running(name):
             _commit_guard_daily[(name, _day)] = _cnt + 1
             _steer_enqueue(name, msg, guard="commit")
+            _emit_event(name, "nudge.commit", {"files": n}, source="commit-guard")
         _push_alert("uncommitted", name, f"{n} uncommitted file(s) under {wd} — nudged to commit")
         slog(f"[commit-guard] {name}: nudged ({n} uncommitted)")
         return True
@@ -9253,6 +9316,11 @@ def list_sessions() -> list:
                 status = _detect_session_status(name, raw)
             # Detect session becoming idle → auto-complete board issue, then pick up next queued task
             prev = _session_prev_status.get(name)
+            # Observable status transition → the event log (issue #48). Only on a
+            # real change between KNOWN states, never per poll tick.
+            if prev in ("active", "waiting", "idle") and status in ("active", "waiting", "idle") and status != prev:
+                _emit_event(name, "session." + ("working" if status == "active" else status),
+                            {"prev": prev}, source="status-loop")
             if status == "idle" and prev in ("active", "waiting"):
                 # A worker finished a turn → emit a closed-loop event so any
                 # orchestrator schedule subscribed to 'session_idle' can wake.
@@ -11115,6 +11183,9 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                             "Board snapshot (startup):\n\n" + digest, 60)
                 threading.Thread(target=_send_boot_briefing, daemon=True,
                                  name=f"boot-{name}").start()
+            _emit_event(name, "session.started",
+                        {"resumed": bool(meta.get("cc_session_name") or meta.get("cc_conversation_id"))},
+                        source="start_session")
             return True, "started"
         except subprocess.CalledProcessError as e:
             return False, e.stderr.decode(errors="replace")
@@ -44333,6 +44404,32 @@ class CCHandler(BaseHTTPRequestHandler):
             return self._json({"ok": True})
 
         if path == "/api/history" or path.startswith("/api/history/"):
+            if method == "GET" and path == "/api/events":
+                # Append-only execution log (issue #48). ?session= &type= filter;
+                # ?since_id=N tails ascending from that id (pollers); default =
+                # latest N descending.
+                db = get_db()
+                _sess = (qs.get("session", [""])[0] or "").strip()
+                _typ = (qs.get("type", [""])[0] or "").strip()
+                _since = int(qs.get("since_id", ["0"])[0] or 0)
+                _lim = min(int(qs.get("limit", ["100"])[0] or 100), 1000)
+                _where, _args = [], []
+                if _sess: _where.append("session=?"); _args.append(_sess)
+                if _typ: _where.append("type LIKE ?"); _args.append(_typ + "%")
+                if _since: _where.append("id > ?"); _args.append(_since)
+                _w = (" WHERE " + " AND ".join(_where)) if _where else ""
+                _order = "ASC" if _since else "DESC"
+                rows = db.execute(
+                    f"SELECT id, ts, session, type, data, idem, source FROM session_events{_w} "
+                    f"ORDER BY id {_order} LIMIT ?", (*_args, _lim)).fetchall()
+                out = []
+                for r in rows:
+                    d = dict(r)
+                    try: d["data"] = json.loads(d["data"]) if d["data"] else None
+                    except Exception: pass
+                    out.append(d)
+                return self._json(out)
+
             if method == "GET" and path == "/api/history":
                 limit = int(qs.get("limit", ["500"])[0])
                 offset = int(qs.get("offset", ["0"])[0])
@@ -45662,6 +45759,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 if cur.rowcount == 0:
                     return self._json({"error": "claim failed — taken by another session"}, 409)
                 _board_changed()
+                _emit_event(session_name, "task.claimed", {"issue": bid}, source="api-claim")
                 return self._json(_item_by_id(bid))
 
             # PATCH/DELETE /api/board/<id>
@@ -45856,6 +45954,10 @@ class CCHandler(BaseHTTPRequestHandler):
                     db.commit()
                     _board_changed()
                     updated_item = _item_by_id(bid)
+                    if body.get("status"):
+                        _emit_event(updated_item.get("session") or "",
+                                    "task.completed" if body["status"] in ("done", "verified") else "task.status_changed",
+                                    {"issue": bid, "status": body["status"]}, source="api-board")
                     _gcal_sync_bg(bid, title=updated_item.get("title", ""),
                                   due=updated_item.get("due", "") or "",
                                   due_time=updated_item.get("due_time", "") or "",
@@ -49432,6 +49534,10 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     _update_meta(name, last_send=int(time.time()), last_send_text=text[:200])
                     _session_prev_status[name] = "active"  # seed for idle detection
                     _summarize_task_bg(name, text)
+                    _emit_event(name, "message.sent",
+                                {"chars": len(text), "preview": text[:120],
+                                 "human": bool(body.get("record_history"))},
+                                idem=("send:" + msg_id) if msg_id else None, source="api-send")
                     # Record to the shared history SERVER-SIDE, atomic with the send,
                     # so the message is in history for EVERY client even if the sending
                     # device's own history POST never lands (flaky phone / suspended
@@ -49610,6 +49716,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     try:
                         ok, msg = stop_session(sname)
                         if ok:
+                            _emit_event(sname, "session.stopped", source="api-stop")
                             _complete_session_board_issue(sname)
                     except Exception as e:
                         print(f"[stop] {sname}: background stop error: {e}")
