@@ -1,0 +1,2 @@
+psutil>=5.9
+rumps>=0.4    # menu bar app only

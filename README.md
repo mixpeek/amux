@@ -335,6 +335,46 @@ else, use the board. Overuse defeats the purpose.
 
 ---
 
+## procwarden (optional): keep the machine clean under an agent fleet
+
+A fleet of agents spawns a lot of processes — browser automation servers, MCP
+sidecars, build daemons — and some get orphaned (parent dies, child lingers).
+Real case: 5 orphaned `browser_use.skill_cli.server` processes sat for up to
+**8 days** (ppid=1, ignoring SIGTERM), each showing up as a rocket icon in the
+Dock. Nothing was watching for them.
+
+[`integrations/procwarden`](integrations/procwarden) is an optional,
+self-contained process warden:
+
+- **Dry-run first**: the global `enforce=false` means every sweep only reports.
+  A safety gate protects system/critical processes regardless.
+- **Per-rule enforcement**: one rule can set `"enforce": true` (e.g. reap
+  orphaned agent-spawned servers older than 24h) while everything else stays
+  dry-run. `--dry-run` still forces everything dry.
+- **Escalation**: SIGTERM first; processes that ignore it get SIGKILL after a
+  grace period.
+- **Strike counting** (`for_sweeps: N`): a process must match N consecutive
+  sweeps before anything happens — no one-frame false kills.
+- **Menu bar app** for live visibility, plus `sweep`, `maintain`, `list`,
+  `inspect`, `kill` CLI commands.
+
+Pair it with the amux scheduler for a nightly cleanup pass whose output lands
+in your schedule run history:
+
+```bash
+curl -sk -X POST -H 'Content-Type: application/json' -d '{
+  "title": "procwarden nightly cleanup",
+  "kind": "shell",
+  "command": "cd integrations/procwarden && ./bin/procwarden sweep --quiet 2>&1 | tail -6",
+  "schedule_expr": "daily at 3:37"
+}' $AMUX_URL/api/schedules
+```
+
+Config lives in `~/.procwarden/config.json` (created on first run). Entirely
+optional — amux never invokes it unless you schedule it.
+
+---
+
 ## Tunnel
 
 Expose any localhost port at a stable public HTTPS URL, without opening an inbound

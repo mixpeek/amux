@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Launcher for procwarden. Keeps the project importable without installation.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="$HERE:$PYTHONPATH"
+exec python3 -m procwarden.cli "$@"
