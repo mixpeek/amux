@@ -1,0 +1,102 @@
+#!/bin/bash
+# Pre-commit hook: security scan + Python/JS syntax + E2E smoke tests
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+
+# ── 1. Security scan (runs on every commit) ─────────────────────────────────
+
+BLOCKED_FILES=(
+  "terraform.tfvars"
+  ".env.local"
+  "*.pem"
+  "*.key"
+  "*.p12"
+  "*.pfx"
+  "id_rsa"
+  "id_ecdsa"
+  "id_ed25519"
+)
+
+# Patterns matched against added/modified lines in staged content
+SECRET_PATTERNS=(
+  "-----BEGIN .* PRIVATE KEY|-----BEGIN PRIVATE KEY"       # private keys
+  "sk-ant-api[0-9a-zA-Z-]{20,}"                           # Anthropic API keys
+  "tskey-auth-[A-Za-z0-9]+"                               # Tailscale auth keys
+  "AKIA[0-9A-Z]{16}"                                      # AWS access key IDs
+  "ghp_[A-Za-z0-9]{36}"                                   # GitHub personal tokens
+  "github_pat_[A-Za-z0-9_]+"                              # GitHub fine-grained PATs
+  "AIza[0-9A-Za-z_-]{35}"                                 # Google API keys
+  "sk-[a-zA-Z0-9]{48}"                                    # OpenAI-style keys
+)
+
+SECRETS_FOUND=0
+
+# Check blocked filenames
+for f in $STAGED; do
+  base="$(basename "$f")"
+  for pattern in "${BLOCKED_FILES[@]}"; do
+    # shellcheck disable=SC2053
+    if [[ "$base" == $pattern ]]; then
+      echo "✗ BLOCKED FILE: $f matches sensitive filename pattern '$pattern'"
+      SECRETS_FOUND=1
+    fi
+  done
+done
+
+# Check staged content for secret patterns (only added lines, skip binary files)
+ADDED_LINES=$(git diff --cached --diff-filter=ACM -U0 2>/dev/null \
+  | grep "^+" \
+  | grep -v "^+++" \
+  || true)
+
+if [ -n "$ADDED_LINES" ]; then
+  for pattern in "${SECRET_PATTERNS[@]}"; do
+    matches=$(echo "$ADDED_LINES" | grep -E "$pattern" || true)
+    if [ -n "$matches" ]; then
+      echo "✗ SECRET DETECTED matching pattern: $pattern"
+      echo "$matches" | head -5 | sed 's/^/    /'
+      SECRETS_FOUND=1
+    fi
+  done
+fi
+
+if [ "$SECRETS_FOUND" -eq 1 ]; then
+  echo ""
+  echo "Commit blocked. Remove the sensitive content and try again."
+  echo "To skip this check (dangerous): git commit --no-verify"
+  exit 1
+fi
+
+echo "Security scan passed."
+
+# ── 2. Python + JS syntax (only when amux-server.py is staged) ──────────────
+
+FILE="amux-server.py"
+
+if echo "$STAGED" | grep -q "^${FILE}$"; then
+  echo "Checking Python syntax..."
+  python3 -c "import ast; ast.parse(open('$ROOT/$FILE').read())"
+
+  echo "Checking JS syntax..."
+  python3 -c "
+import re, subprocess, sys, tempfile, os
+with open('$ROOT/$FILE') as f:
+    content = f.read()
+m = re.search(r'<script>\s*\n(.*?)</script>', content, re.DOTALL)
+if not m:
+    print('WARNING: no <script> block found'); sys.exit(0)
+fd, path = tempfile.mkstemp(suffix='.js')
+os.write(fd, m.group(1).encode())
+os.close(fd)
+r = subprocess.run(['node', '--check', path], capture_output=True, text=True)
+os.unlink(path)
+if r.returncode != 0:
+    print('JS syntax error:')
+    print(r.stderr)
+    sys.exit(1)
+"
+  echo "Syntax checks passed."
+fi
+

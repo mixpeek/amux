@@ -1,0 +1,41 @@
+name: checks
+# Contribution gate: syntax + the full test suite on every push and PR.
+# Collaborators push straight to main (no local hook guaranteed) — this is the
+# net that catches what a missing pre-commit hook lets through.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Python syntax (amux-server.py parses)
+        run: python3 -c "import ast; ast.parse(open('amux-server.py').read())"
+      - name: JS syntax (inline dashboard script parses)
+        run: |
+          python3 - <<'PY'
+          import re, subprocess, sys, tempfile, os
+          content = open('amux-server.py').read()
+          m = re.search(r'<script>\s*\n(.*?)</script>', content, re.DOTALL)
+          if not m:
+              print('WARNING: no <script> block found'); sys.exit(0)
+          fd, path = tempfile.mkstemp(suffix='.js')
+          os.write(fd, m.group(1).encode()); os.close(fd)
+          r = subprocess.run(['node', '--check', path], capture_output=True, text=True)
+          os.unlink(path)
+          if r.returncode != 0:
+              print(r.stderr); sys.exit(1)
+          print('JS OK')
+          PY
+      - name: Tests
+        run: |
+          pip install -q pytest psutil
+          python3 -m pytest tests/ -q
