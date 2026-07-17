@@ -4436,7 +4436,11 @@ def _steer_enqueue(name: str, text: str, guard: str = "") -> str:
     entry = {"id": msg_id, "text": text, "queued_at": time.time(), "guard": guard}
     with _steering_lock:
         q = _steering_queue.setdefault(name, [])
-        stale = [m for m in q if m["text"] == text and not m.get("_inflight")]
+        # One nudge max per guard type: a fresh commit-nudge REPLACES a queued
+        # one (file lists differ, so text-dedup alone never matched) — guard
+        # messages were stacking up and saturating queues (2026-07-17).
+        stale = [m for m in q if not m.get("_inflight")
+                 and (m["text"] == text or (guard and m.get("guard") == guard))]
         if stale:
             _steering_queue[name] = [m for m in q if m not in stale]
         _steering_queue[name].append(entry)
@@ -4573,10 +4577,24 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
         # corrections straight into the live turn; Queue is the explicit
         # do-these-in-order tool. A short trailer tells the agent more work is
         # queued so it doesn't over-scope the current turn.
-        batch = [queue[0]]
-        queue[0]["_inflight"] = True
-        _remaining = len(queue) - 1
+        # Guard nudges (commit reminders etc.) must not spend their own turn
+        # ahead of real work: when real messages are queued, every guard item
+        # FOLDS into this delivery as a one-line reminder trailer (2026-07-17).
+        # A guard delivers standalone only when it's all the queue holds.
+        _non_guard = [m for m in queue if not m.get("guard")]
+        _folded = []
+        if _non_guard:
+            _folded = [m for m in queue if m.get("guard") and not m.get("_inflight")]
+            batch = [_non_guard[0]] + _folded
+        else:
+            batch = [queue[0]]
+        for m in batch:
+            m["_inflight"] = True
+        _remaining = len(queue) - len(batch)
     combined = batch[0]["text"]
+    for g in _folded:
+        _first = (g["text"].splitlines() or [""])[0].strip()
+        combined += f"\n\n[amux reminder] {_first} Commit at your next good stopping point."
     if _remaining > 0:
         combined += (f"\n\n[amux: {_remaining} more queued message"
                      f"{'s' if _remaining != 1 else ''} will deliver after this turn, "
