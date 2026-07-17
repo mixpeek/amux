@@ -1485,8 +1485,8 @@ _event_log: "collections.deque[dict]" = collections.deque(maxlen=2000)
 _event_log_lock = threading.Lock()
 _req_tl = threading.local()  # per-request enrichment (set by handlers, read by _route)
 
-def _emit_event(etype: str, action: str, target: str = "", session: str = "",
-                detail: str = "", status: int = 200, ip: str = "") -> None:
+def _emit_http_event(etype: str, action: str, target: str = "", session: str = "",
+                     detail: str = "", status: int = 200, ip: str = "") -> None:
     # Don't emit semantic events (e.g. message-sent, started) for failed requests.
     # Downgrade to a plain http event so they don't spam the event log as false positives.
     if status >= 400 and etype != "http":
@@ -42990,7 +42990,7 @@ class CCHandler(BaseHTTPRequestHandler):
                     session  = tl.get("session", session)
                     detail   = tl.get("detail",  "")
                     _req_tl.event = None
-                _emit_event(etype, action, target, session, detail, self._resp_status, ip)
+                _emit_http_event(etype, action, target, session, detail, self._resp_status, ip)
 
     def _check_auth(self, method: str, path: str) -> bool:
         """Return True if request is authorized. Sends 401 and returns False if not."""
