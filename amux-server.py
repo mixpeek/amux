@@ -24621,7 +24621,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.135';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.136';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -26351,7 +26351,17 @@ function handlePeekPaste(e) {
   });
 })();
 
-let _sendMode = localStorage.getItem('amux_send_mode') || 'queue'; // 'queue' or 'send'
+let _sendMode = localStorage.getItem('amux_send_mode') || 'send'; // 'send' or 'queue'
+// Default flipped to SEND (2026-07-17): pressing Send should send — it types
+// straight into the terminal, and Claude Code itself queues mid-turn input and
+// submits at the turn end, so it's both immediate and safe. The steering Queue
+// (delivers only at a fully idle boundary) stays one tap away on the split
+// button. One-time migration: devices holding the old stored default get
+// flipped; an explicit choice made after this persists normally.
+if (!localStorage.getItem('amux_send_mode_v2')) {
+  _sendMode = 'send';
+  try { localStorage.setItem('amux_send_mode', 'send'); localStorage.setItem('amux_send_mode_v2', '1'); } catch(e) {}
+}
 function _toggleSendMode(e) {
   e?.stopPropagation();
   _sendMode = _sendMode === 'send' ? 'queue' : 'send';
@@ -42403,7 +42413,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.135';
+const CACHE = 'amux-v0.9.136';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
