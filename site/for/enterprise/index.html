@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux for Enterprise Engineering Teams — AI Agent Orchestration at Scale (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Enterprise engineering teams use amux to run parallel AI coding agents at scale — self-hosted, audit-logged, no vendor lock-in. Claude Code, Codex CLI, and Gemini CLI on your own infrastructure with full observability.">
+  <meta name="keywords" content="AI coding agents for enterprise teams 2026, enterprise AI agent orchestration, AI agents for software engineering teams, self-hosted AI coding agents, Claude Code for teams, parallel AI agents enterprise, AI agent management platform enterprise, enterprise developer AI tools">
+  <link rel="canonical" href="https://amux.io/for/enterprise/">
+  <meta property="og:title" content="amux for Enterprise Engineering Teams — AI Agent Orchestration at Scale">
+  <meta property="og:description" content="Enterprise engineering teams use amux to run dozens of parallel AI coding agents — self-hosted on your own infrastructure, with full audit logs, CLAUDE.md style enforcement, and zero external dependencies.">
+  <meta property="og:url" content="https://amux.io/for/enterprise/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux for Enterprise Engineering Teams — AI Agent Orchestration at Scale">
+  <meta name="twitter:description" content="Self-hosted AI agent orchestration for engineering teams. Run Claude Code, Codex, and Gemini CLI agents in parallel with full observability, audit logs, and zero vendor lock-in.">
+  <meta name="twitter:image" content="https://amux.io/og-image.png">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "For Developers", "item": "https://amux.io/for/"},
+      {"@type": "ListItem", "position": 3, "name": "Enterprise", "item": "https://amux.io/for/enterprise/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux for Enterprise Engineering Teams — AI Agent Orchestration at Scale (2026)",
+    "description": "Enterprise engineering teams use amux to run parallel AI coding agents at scale — self-hosted, audit-logged, no vendor lock-in. Claude Code, Codex CLI, and Gemini CLI on your own infrastructure.",
+    "url": "https://amux.io/for/enterprise/",
+    "datePublished": "2026-07-17",
+    "dateModified": "2026-07-17",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["AI coding agents for enterprise", "enterprise AI agent orchestration", "self-hosted AI agents", "Claude Code for teams", "AI engineering team management 2026"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Can enterprise teams run AI coding agents on their own infrastructure?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux is a single Python file with zero external dependencies — it deploys on any Linux VM, internal server, or on-prem machine your team controls. There are no SaaS accounts, no API calls to amux servers, and no data leaving your network. Agents use your own Claude Code, OpenAI Codex, or Gemini CLI credentials. This makes amux suitable for enterprises with data residency requirements, air-gapped environments, or code security policies that prohibit sending source code to third-party platforms."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do AI coding agents coordinate on a shared codebase without overwriting each other?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux uses a kanban board backed by SQLite compare-and-swap (atomic task claiming) to prevent two agents from working on the same task simultaneously. Each agent is assigned to its own session with an isolated git worktree, so file-level conflicts are structurally impossible — agents never share a working directory. The board is the coordination layer: an agent atomically claims a task, works on it in isolation, opens a PR, and marks the task done. Other agents see the task is claimed and pull the next available one. Human engineers review PRs before merge — agents never push directly to main."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does amux handle code quality and style consistency across a large team of agents?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Every amux session reads a CLAUDE.md file from the project root before starting any task. This file is checked into your repository — it contains your coding standards, linting rules, architectural decisions, project-specific gotchas, and style conventions. Every agent that starts a session in that repo reads the same CLAUDE.md and applies the same standards, regardless of which engineer set the agent running. For teams with multiple repos, each repo can have its own CLAUDE.md tailored to that repo's conventions. The board's quality gates can also require agents to acknowledge specific criteria before marking a task done."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What does the audit trail look like for agent actions?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux maintains an append-only execution log per session (event-sourced since commit 02cc251). Every action an agent takes — message sent, tool call made, context compaction triggered, restart, resume — is recorded with a timestamp. The log is accessible via the dashboard and the REST API. Git provides the content audit trail (every agent commit is attributed to the session, with full diff and author metadata). Combined, you can reconstruct exactly what an agent did, when, and in what sequence — which is the typical ask from engineering compliance teams after an incident."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux support multiple AI model providers so we're not locked into one vendor?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux is multi-runtime: each session specifies which AI runtime it uses — Claude Code (Anthropic), Codex CLI (OpenAI), or Gemini CLI (Google). Different sessions can use different runtimes simultaneously. You can run a Claude Code session for one task and a Codex session for another on the same amux instance. This means you can avoid vendor lock-in, test model performance per task type, or comply with internal policies that mandate specific approved AI providers for specific code types."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For Developers</a> <span class="sep">›</span> <span>Enterprise</span></div>
+
+    <h1>amux for Enterprise Engineering Teams</h1>
+    <p class="subtitle">Run a parallel AI engineering team on your own infrastructure. Self-hosted, audit-logged, no vendor lock-in — Claude Code, Codex, and Gemini CLI agents working from a shared task board across all your repositories. <em>Published July 2026.</em></p>
+
+    <div class="answer-box" style="border-left:4px solid var(--accent);background:var(--card);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0;">
+      <strong>Quick answer:</strong> amux is a self-hosted, single-Python-file control plane that gives enterprise engineering teams a shared dashboard for running dozens of parallel AI coding agents (Claude Code, Codex CLI, Gemini CLI) with atomic task coordination, per-repo CLAUDE.md style enforcement, append-only audit logs, and zero external dependencies. It deploys on any Linux server your team controls. Code never leaves your network.
+    </div>
+
+    <p>amux is an open-source control plane for AI agent teams. It launches, monitors, and self-heals simultaneous AI coding sessions across every repository your team owns — with a shared kanban board for task coordination, event-sourced execution logs for compliance, and CLAUDE.md–enforced code quality standards. One Python file. Zero external services. Deploy on a VM inside your VPC. 300 GitHub stars, MIT + Commons Clause licensed.</p>
+
+    <h2>What enterprise engineering teams are solving with AI agents in 2026</h2>
+    <p>The question most engineering leaders are navigating right now is not whether to use AI coding agents — it is how to use them at team scale without losing code quality, introducing security risk, or creating an ungoverned shadow-IT situation where individual engineers run agents however they prefer.</p>
+    <p>The failure mode at enterprise scale: individual engineers run Claude Code locally in ad-hoc sessions. There is no shared visibility into what agents are working on. Two agents touch the same file. One runs against production credentials because the dev had an open shell. A session fails overnight and nobody knows. The agent commits directly to main because YOLO mode was on. There is no audit trail when a compliance team asks "what exactly did the AI change and why?"</p>
+    <p>amux addresses this at the infrastructure level. It is a coordination layer, not just a launcher — it enforces isolation, logs everything, and gives the team a single pane of glass for every running agent across every repo.</p>
+
+    <h2>Self-hosted deployment: code stays inside your network</h2>
+    <p>amux runs on any server your team controls — an EC2 instance in your VPC, an internal GCP VM, an on-prem box. There are no amux cloud accounts, no data transmitted to amux servers, and no external API dependencies beyond the AI model providers your team already uses (Anthropic, OpenAI, or Google). The server is a single Python file. Deploy it in under five minutes:</p>
+
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># On your team's VM or server
+pip install amux   # or: uvx amux serve (zero-install)
+# or: brew install mixpeek/amux/amux (macOS)
+
+amux serve --host 0.0.0.0 --port 8822
+# Dashboard accessible at https://your-server:8822 for your whole team</code></pre>
+
+    <p>Because amux is a single Python file with no external dependencies, it passes most enterprise security review processes faster than SaaS tools: the full source is auditable, there is no third-party CDN, and you can pin a specific commit and diff upgrades before deploying. For environments that prohibit internet egress during code execution, amux can run fully air-gapped — agents use only locally installed CLI tools and your internal git remotes.</p>
+
+    <h2>Shared kanban board with atomic task coordination</h2>
+    <p>The core coordination primitive in amux is a kanban board backed by a SQLite database on the server. Every engineer and every agent shares the same board. Tasks move through `todo → doing → done → verified`. Agents claim tasks atomically via SQLite compare-and-swap — if two agents try to claim the same task simultaneously, exactly one succeeds and the other gets the next task. This prevents the most common multi-agent failure: two agents writing conflicting implementations of the same feature.</p>
+
+    <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1.2rem;overflow-x:auto;font-size:0.85rem;"><code># An engineer adds tasks to the shared board
+amux board add "Refactor UserService to use repository pattern — see ADR-042"
+amux board add "Add rate limiting middleware to /api/v2/* routes"
+amux board add "Write integration tests for PaymentProcessor class"
+
+# Multiple agents claim and work in parallel — no overlap
+# Session agent-1 atomically claims "Refactor UserService"
+# Session agent-2 atomically claims "Add rate limiting"
+# Session agent-3 atomically claims "Write integration tests"</code></pre>
+
+    <p>Board state is the single source of truth for all active agent work across the team. Engineering managers and tech leads can see at a glance which agent is working on which task, what is queued, what is done but not yet verified, and what is verified in production — without reading terminal output or checking individual git branches.</p>
+
+    <p>The board also enforces a distinction between <code>done</code> (agent has opened a PR) and <code>verified</code> (a human has reviewed, CI is green, and it is deployed to production). Agents never self-promote to `verified` — that requires a human to confirm the full pipeline end-to-end. This is an important control for teams that want to track what agents shipped vs. what has actually been validated.</p>
+
+    <h2>CLAUDE.md: organization-wide code quality enforcement</h2>
+    <p>Every amux session reads the <code>CLAUDE.md</code> file from the project root before starting any task. This file is committed to your repository — it is version-controlled, peer-reviewed, and applies uniformly to every agent that ever works in that repo. It is the mechanism for encoding your team's standards into agent behavior without building a custom agent wrapper.</p>
+    <p>A well-written team CLAUDE.md for an enterprise repo typically includes:</p>
+    <ul>
+      <li>Architecture decisions that agents must follow (service layer patterns, dependency injection conventions)</li>
+      <li>Which libraries are approved vs. prohibited (no new ORM dependencies, use the existing HTTP client)</li>
+      <li>Security requirements (no secrets in code, no SQL string interpolation, all user input validated at the controller layer)</li>
+      <li>Testing standards (unit tests required for all new functions, integration tests for all API endpoints)</li>
+      <li>PR conventions (branch naming, commit message format, PR description template)</li>
+      <li>Repo-specific gotchas (known performance cliffs, deprecated APIs to avoid, modules under active rewrite)</li>
+    </ul>
+    <p>Because CLAUDE.md is checked into the repo, it is subject to the same PR review process as code. When your team's conventions evolve, you update CLAUDE.md in a PR, get it reviewed, and all subsequent agent sessions immediately reflect the updated standards. No agent configuration to update, no model fine-tuning — just a markdown file in the repo root.</p>
+
+    <h2>Event-sourced execution logs for compliance and audit</h2>
+    <p>amux maintains an append-only execution log per session. Every agent action — message sent, tool call, file write, context compaction, restart, resume — is recorded with a timestamp and session identifier. The log is accessible via the dashboard and the REST API.</p>
+    <p>This gives compliance teams a direct answer to "what exactly did the AI change and when?" without reconstructing history from git blame. Combined with git commit attribution (each session's commits are attributed to that session name), you get a full audit trail: which human queued the task, which agent session picked it up, what the agent did step by step, and what ended up in the final PR.</p>
+    <p>For SOC2 or ISO 27001 audits, the relevant controls are:</p>
+    <ul>
+      <li><strong>Change management:</strong> All agent changes go through PRs, reviewed by humans before merge. Agents never push directly to main.</li>
+      <li><strong>Access control:</strong> Agents run with the credentials of the user who launched the session. No shared credentials, no agent-specific service accounts required.</li>
+      <li><strong>Audit logging:</strong> Event-sourced execution log per session, retained on your server.</li>
+      <li><strong>Data residency:</strong> All code and logs stay on your infrastructure. The only data leaving your network is the AI model API calls (to Anthropic, OpenAI, or Google, depending on which runtime you use).</li>
+    </ul>
+
+    <h2>Multi-runtime: no vendor lock-in on AI providers</h2>
+    <p>amux is multi-runtime from the start: each session declares its runtime — Claude Code (Anthropic), Codex CLI (OpenAI), or Gemini CLI (Google). You can run sessions using different AI providers simultaneously on the same amux instance. This matters for enterprise teams that need to:</p>
+    <ul>
+      <li>Comply with data processing agreements that restrict which model providers can see which codebases</li>
+      <li>Use the best model for a specific task type (e.g., one provider is better at TypeScript refactors, another at SQL migration scripts)</li>
+      <li>Avoid single-vendor dependency for a critical infrastructure component</li>
+      <li>Test model performance across providers before committing to a company-wide agreement</li>
+    </ul>
+
+    <h2>Team dashboard: one view for all agent activity</h2>
+    <p>The amux web dashboard at <code>https://your-server:8822</code> is designed for team visibility. Multiple engineers can have it open simultaneously. Changes update in real time via SSE — when an agent claims a task, it appears as "doing" on everyone's board within about 2 seconds. When a session emits output, the live-tail view updates for anyone who has it open.</p>
+
+    <p>Key team-facing views in the dashboard:</p>
+    <ul>
+      <li><strong>Sessions grid:</strong> All running agents, their current status, token spend, uptime, and last output line at a glance</li>
+      <li><strong>Board:</strong> Shared kanban with per-agent assignment, task status, and quality gate acknowledgment</li>
+      <li><strong>Peek panel:</strong> Click any session to tail its live output — useful for quickly verifying an agent is on track without sshing into the machine</li>
+      <li><strong>Event log:</strong> Per-session append-only execution history for compliance and debugging</li>
+      <li><strong>Scheduler:</strong> Recurring tasks assigned to specific sessions (e.g., "run security dependency audit every Monday at 9am in the infra-maintenance session")</li>
+    </ul>
+
+    <p>The iOS native app and PWA give team leads and engineering managers the same view from a phone — useful for checking agent status during off-hours or approving a task queue change without opening a laptop.</p>
+
+    <h2>Enterprise vs. self-managed comparison</h2>
+
+    <div style="overflow-x:auto;margin:1.5rem 0;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:var(--surface);border-bottom:2px solid var(--border);">
+            <th style="padding:10px 16px;text-align:left;">Requirement</th>
+            <th style="padding:10px 16px;text-align:left;">Ad-hoc local agents</th>
+            <th style="padding:10px 16px;text-align:left;">amux team deployment</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Shared visibility into agent activity</td>
+            <td style="padding:10px 16px;">None — each engineer sees only their own sessions</td>
+            <td style="padding:10px 16px;">Shared dashboard, real-time updates across team</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Preventing duplicate agent work</td>
+            <td style="padding:10px 16px;">Manual Slack coordination</td>
+            <td style="padding:10px 16px;">Atomic task claiming via SQLite CAS</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Code quality enforcement</td>
+            <td style="padding:10px 16px;">Depends on each engineer's CLAUDE.md (or none)</td>
+            <td style="padding:10px 16px;">Org-wide CLAUDE.md per repo, version-controlled</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Audit trail of agent actions</td>
+            <td style="padding:10px 16px;">Git blame only (no step-by-step agent log)</td>
+            <td style="padding:10px 16px;">Event-sourced execution log per session</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Data residency / code security</td>
+            <td style="padding:10px 16px;">Code sent to AI provider only (no amux exposure)</td>
+            <td style="padding:10px 16px;">Same — amux itself is self-hosted, no code leaves your VPC</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Unattended overnight runs</td>
+            <td style="padding:10px 16px;">Fragile — no watchdog, no resume on crash</td>
+            <td style="padding:10px 16px;">Self-healing watchdog + auto-resume dialog handling</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Multi-repo / multi-team coordination</td>
+            <td style="padding:10px 16px;">No shared coordination layer</td>
+            <td style="padding:10px 16px;">Single amux instance, sessions per repo/team</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">AI provider flexibility</td>
+            <td style="padding:10px 16px;">Depends on individual engineer preferences</td>
+            <td style="padding:10px 16px;">Multi-runtime: Claude Code, Codex CLI, Gemini CLI</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">Ops overhead</td>
+            <td style="padding:10px 16px;">None (but ungoverned)</td>
+            <td style="padding:10px 16px;">Single Python file, no Docker, auto-restarts on file save</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Deploying amux for your team</h2>
+    <p>The recommended enterprise setup is a shared Linux VM (EC2, GCP Compute Engine, or on-prem) that all engineers and agents use as the coordination hub. Individual engineers can still run local sessions, but the shared board, scheduler, and logs live on the server. The server runs continuously; agents connect to it from whatever machine they're running on.</p>
+
+    <ol>
+      <li>
+        <strong>Install on your team's server.</strong>
+        <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1rem;overflow-x:auto;font-size:0.85rem;margin-top:0.5rem;"><code># Recommended: pipx for isolated install
+pipx install amux
+
+# Zero-install alternative (no pip)
+uvx amux serve --host 0.0.0.0 --port 8822</code></pre>
+      </li>
+      <li>
+        <strong>Add org-wide CLAUDE.md to each repository.</strong> Start with your most important repo. The CLAUDE.md should encode standards that currently live only in team memory — things a new engineer would get wrong on their first PR. Commit and have it reviewed like any other change.
+      </li>
+      <li>
+        <strong>Register sessions per team or repo.</strong>
+        <pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1rem;overflow-x:auto;font-size:0.85rem;margin-top:0.5rem;"><code># Register one session per active workstream
+amux register backend-agents --dir /repos/backend --yolo
+amux register frontend-agents --dir /repos/frontend --yolo
+amux register infra-agents --dir /repos/infrastructure --yolo</code></pre>
+      </li>
+      <li>
+        <strong>Use the board for task assignment.</strong> Train your team to add well-scoped tasks to the board instead of giving agents open-ended prompts directly in sessions. Well-scoped board tasks are the single biggest lever for overnight output quality.
+      </li>
+      <li>
+        <strong>Set quality gates on the board.</strong> Use the board's `gate_checked` array on high-stakes task types (security changes, database migrations) to require agents to explicitly acknowledge checklist items before marking a task done.
+      </li>
+      <li>
+        <strong>Restrict push access.</strong> Configure your git remotes so that the agent-running user can push to feature branches but not to main/protected branches. PRs are the merge point — agents open them, humans approve them.
+      </li>
+    </ol>
+
+    <p>For teams that want a hands-on guided setup — including CLAUDE.md templates, CI integration patterns, and board workflow design for your specific team structure — see the <a href="/concierge/">amux Concierge</a>.</p>
+
+    <h2>Frequently asked questions</h2>
+
+    <h3>Can enterprise teams run AI coding agents on their own infrastructure?</h3>
+    <p>Yes. amux is a single Python file with zero external dependencies. It deploys on any Linux server your team controls — EC2, GCP, on-prem — with no data leaving your network except AI model API calls to your chosen provider. Full source is auditable. No third-party CDN. Deploy from a pinned commit.</p>
+
+    <h3>How do agents coordinate on a shared codebase without overwriting each other?</h3>
+    <p>Atomic SQLite compare-and-swap task claiming means exactly one agent can hold a task at a time. Each agent works in its own isolated git worktree — structurally preventing file-level conflicts. The shared board is the coordination layer. Two agents cannot work on the same task simultaneously by design.</p>
+
+    <h3>How does amux handle code quality and style consistency?</h3>
+    <p>CLAUDE.md in each repo root is read by every agent session before starting a task. It is version-controlled, reviewed in PRs, and applies to all agents uniformly — no per-agent configuration required. When your standards evolve, update CLAUDE.md and the change applies to all subsequent sessions.</p>
+
+    <h3>What does the audit trail look like for agent actions?</h3>
+    <p>An append-only execution log records every agent action (message, tool call, restart, resume) per session with timestamps. Accessible via dashboard and REST API. Combined with git commit attribution, you get a complete reconstruction of what each agent did and why — sufficient for SOC2 change management controls.</p>
+
+    <h3>Does amux support multiple AI model providers?</h3>
+    <p>Yes — each session declares its runtime: Claude Code (Anthropic), Codex CLI (OpenAI), or Gemini CLI (Google). Different sessions can use different providers simultaneously. This avoids single-vendor dependency and lets you route task types to the best available model per your data processing agreements.</p>
+
+    <div class="cta-box">
+      <h3>Deploy amux for your engineering team</h3>
+      <p>Self-hosted, single Python file, zero external dependencies. Your code stays inside your network. Runs on any Linux server in under five minutes.</p>
+      <pre><code>pip install amux
+amux serve --host 0.0.0.0 --port 8822
+# Dashboard at https://your-server:8822 for the whole team</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star amux on GitHub</a>
+      <a class="btn" href="/concierge/" style="margin-left:0.75rem;">Talk to us about team setup →</a>
+    </div>
+
+    <p style="margin-top:2rem;"><strong>Related resources:</strong>
+      <a href="/guides/getting-started/">Getting Started Guide</a> ·
+      <a href="/guides/team-workflow-setup/">Team Workflow Setup</a> ·
+      <a href="/guides/claude-code-headless/">Claude Code Headless Mode</a> ·
+      <a href="/use-cases/ai-coding-while-you-sleep/">AI Coding While You Sleep</a> ·
+      <a href="/guides/ai-agent-quality-gates/">AI Agent Quality Gates</a> ·
+      <a href="/concierge/">Concierge</a>
+    </p>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for running an AI engineering team from a single dashboard or your phone.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-title">Product</div>
+          <a href="/docs/">Documentation</a>
+          <a href="/guides/">Guides</a>
+          <a href="/changelog/">Changelog</a>
+          <a href="/demos/">Demos</a>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-title">Compare</div>
+          <a href="/compare/amux-vs-cursor/">vs Cursor</a>
+          <a href="/compare/amux-vs-devin/">vs Devin</a>
+          <a href="/compare/amux-vs-codex/">vs Codex CLI</a>
+          <a href="/compare/">All comparisons</a>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-title">For teams</div>
+          <a href="/for/freelancers/">Freelancers</a>
+          <a href="/for/open-source-maintainers/">Open source</a>
+          <a href="/for/enterprise/">Enterprise</a>
+          <a href="/concierge/">Concierge</a>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>© 2026 Mixpeek. amux is MIT + Commons Clause licensed.</span>
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        <a href="/press/">Press</a>
+        <a href="/blog/">Blog</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

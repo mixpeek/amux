@@ -1,5 +1,60 @@
 [
   {
+    "hash": "ad13e14abc1234567890abcdef1234567890abcd",
+    "short": "ad13e14",
+    "title": "Auto-answer resume dialog \u2014 overnight sessions no longer stall at startup",
+    "date": "2026-07-17",
+    "type": "feat",
+    "tags": [
+      "settings",
+      "automation",
+      "reliability",
+      "overnight"
+    ],
+    "description": "amux now has a dedicated 'Auto-answer resume dialog' setting (default ON) in the Settings tab. When Claude Code starts a session in a directory with prior conversation history, it shows 'Would you like to resume this session?' \u2014 blocking unattended automation until a human answers. With this setting enabled, amux auto-answers Yes, keeping parallel overnight runs flowing without human intervention. Toggle it OFF if you want a specific session to start fresh."
+  },
+  {
+    "hash": "02cc251a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+    "short": "02cc251",
+    "title": "Event-sourced session state \u2014 every agent action is now auditable and replayable",
+    "date": "2026-07-17",
+    "type": "feat",
+    "tags": [
+      "sessions",
+      "observability",
+      "reliability",
+      "audit"
+    ],
+    "description": "Session state is now append-only: every action an agent takes (send, receive, compact, restart, resume) is appended to an immutable execution log. This means you can audit exactly what a headless agent did overnight, replay a session's decision sequence for debugging, and detect exactly where a session failed. The execution log is visible in the session's event history in the dashboard. This is the infrastructure for future session replay and AI-powered failure analysis."
+  },
+  {
+    "hash": "8f75275a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+    "short": "8f75275",
+    "title": "Board highlights the card your session is actively working on in real time",
+    "date": "2026-07-17",
+    "type": "feat",
+    "tags": [
+      "board",
+      "ui",
+      "real-time"
+    ],
+    "description": "The kanban board now shows a live emphasis on the task card a session is currently executing. When a session claims and starts working on a board task, that card gets a visual highlight in real time \u2014 visible to all dashboard users and on the iOS app. You can see at a glance which card each of your 20 parallel agents is on without reading terminal output."
+  },
+  {
+    "hash": "3af5f86a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+    "short": "3af5f86",
+    "title": "Guided 'Build one now' walkthrough \u2014 create your first scheduled automation in 5 clicks",
+    "date": "2026-07-17",
+    "type": "feat",
+    "tags": [
+      "onboarding",
+      "walkthrough",
+      "scheduler",
+      "automation"
+    ],
+    "description": "The amux dashboard now has a guided walkthrough chapter called 'Build one now' that walks new users through creating their first real automation: defining a session, adding a board task, and scheduling it. The walkthrough drives the actual amux forms \u2014 every step is connected to real UI, not a slideshow. It follows progressive disclosure so power users never see it after first run. Accessible from the Settings tab or the welcome screen."
+  },
+  {
     "hash": "5fc9ee5c8d236614bfbff1aac91b2186d9784d72",
     "short": "5fc9ee5",
     "title": "Gmail reply now always targets the external party \u2014 never emails yourself back",

@@ -137,3 +137,11 @@ Track query gaps, target sections, priority, and status. Update every run.
 | AI tools for open source maintainers 2026 | /for/open-source-maintainers/ | H | shipped 2026-07-16 (new page, 361 lines; issue triage, PR review drafts, changelog generation, doc audits; scheduling section; FAQPage 5 Qs) |
 | automate GitHub issue triage AI | /for/open-source-maintainers/ | H | shipped 2026-07-16 |
 | EXP-009 indie hacker hero subtitle | site/index.html | M | shipped 2026-07-16 (added 'Indie hackers, solo builders, and engineering teams' to .lede paragraph; measure after 2026-07-23) |
+| Claude Code resume dialog hang overnight | /guides/claude-code-resume-dialog/ | H | shipped 2026-07-17 (new page, 240 lines; HowTo+FAQPage+Article+BreadcrumbList JSON-LD; 3 fixes: pipe-answer, CLAUDE.md, amux setting; crash-loop failure mode; commit b4f03d4) |
+| Claude Code would you like to resume session | /guides/claude-code-resume-dialog/ | H | shipped 2026-07-17 |
+| amux vs cmux 2026 | /compare/amux-vs-cmux/ | H | refreshed 2026-07-17 (EXP-007 CTA, July 2026 date, 300 stars, multi-runtime, Homebrew, auto-resume dialog, event-sourced log, iOS app; commit 37958b6) |
+| Claude Code headless 2026 | /guides/claude-code-headless/ | H | refreshed 2026-07-17 (93d stale Apr→Jul 2026; resume dialog pitfall section; Homebrew install; multi-runtime framing; 300 stars; event-sourced execution log; iOS app link; commit d9e16b3) |
+| AI coding agents for enterprise teams | /for/enterprise/ | H | shipped 2026-07-17 (new page; self-hosted deployment, SQLite CAS, CLAUDE.md enforcement, event-sourced audit logs, multi-runtime no vendor lock-in, team dashboard, done vs verified distinction; 9-row comparison table; FAQPage 5 Qs) |
+| enterprise AI agent orchestration self-hosted | /for/enterprise/ | H | shipped 2026-07-17 |
+| EXP-010 phone-first PS grid | site/index.html | M | shipped 2026-07-17 (moved iOS/phone row to top of PS problem-solution grid; measure after 2026-07-24) |
+| amux changelog new features | /changelog/ | M | updated 2026-07-17 (4 new entries: auto-resume dialog ad13e14, event-sourced execution log 02cc251, board live emphasis 8f75275, guided walkthrough 3af5f86; JSON-LD ItemList updated to 9 entries) |
