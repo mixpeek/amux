@@ -428,9 +428,26 @@ def main():
         log(f"Deleting stale test user: {old_user['id']}")
         try:
             clerk_delete_user(old_user["id"])
+            time.sleep(2)
         except Exception as e:
             warn(f"Failed to delete stale user: {e}")
-    user = clerk_create_user()
+    for _attempt in range(3):
+        try:
+            user = clerk_create_user()
+            break
+        except RuntimeError as e:
+            if "form_identifier_exists" in str(e) and _attempt < 2:
+                log("Email still exists after deletion, retrying...")
+                time.sleep(3)
+                stale = clerk_find_test_user()
+                if stale:
+                    try:
+                        clerk_delete_user(stale["id"])
+                        time.sleep(2)
+                    except Exception:
+                        pass
+            else:
+                raise
     user_id = user["id"]
     ok(f"Created test user: {user_id}")
 
