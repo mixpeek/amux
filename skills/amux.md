@@ -146,7 +146,7 @@ curl -sk -X POST https://localhost:8822/api/notes/my-note/pin
 
 ## Email (via Mail.app)
 
-Accounts: ethan@mixpeek.com · esteininger21@gmail.com · beefinethan@icloud.com
+Accounts: ethan@mixpeek.com · esteininger21@gmail.com
 
 ```bash
 # Read inbox (returns recent messages with subject, from, date, body, message_id)
