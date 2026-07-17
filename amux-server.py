@@ -3050,6 +3050,48 @@ def _session_work_dir_early(name: str) -> str:
     return ""
 
 
+_GIT_AUTH_ERR = ("permission denied", "could not read username", "authentication failed",
+                 "host key verification failed", "publickey", "repository not found",
+                 "could not read from remote repository", "connection closed by remote",
+                 "connection refused", "operation timed out")
+
+def _https_equiv(remote_url: str) -> str:
+    """Anonymous-HTTPS equivalent of a git remote URL (public repos only).
+    git@github.com:owner/repo.git → https://github.com/owner/repo.git"""
+    m = re.match(r"^(?:ssh://)?git@([^:/]+)[:/](.+?)(?:\.git)?$", remote_url.strip())
+    if m:
+        return f"https://{m.group(1)}/{m.group(2)}.git"
+    return remote_url
+
+def _git_pull_with_fallback(repo_dir: str) -> tuple[bool, str]:
+    """git pull --ff-only; on an AUTH failure (SSH key missing in a cron env,
+    stale HTTPS credential — Doron's silent hourly failures, 2026-07-17), retry
+    anonymously over HTTPS: amux is a public repo, so UPDATING must never depend
+    on the user's git credentials. The origin remote config is left untouched."""
+    r = subprocess.run(["git", "pull", "--ff-only"],
+                       cwd=repo_dir, capture_output=True, text=True, timeout=30)
+    output = (r.stdout + r.stderr).strip()
+    if r.returncode == 0:
+        return True, output
+    if any(k in output.lower() for k in _GIT_AUTH_ERR):
+        ru = subprocess.run(["git", "remote", "get-url", "origin"],
+                            cwd=repo_dir, capture_output=True, text=True, timeout=10)
+        https_url = _https_equiv(ru.stdout.strip()) if ru.returncode == 0 else ""
+        br = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                            cwd=repo_dir, capture_output=True, text=True, timeout=10)
+        branch = br.stdout.strip() or "main"
+        if https_url.startswith("https://"):
+            r2 = subprocess.run(
+                ["git", "-c", "credential.helper=", "pull", "--ff-only", https_url, branch],
+                cwd=repo_dir, capture_output=True, text=True, timeout=30,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+            out2 = (r2.stdout + r2.stderr).strip()
+            if r2.returncode == 0:
+                return True, (f"origin auth failed — pulled anonymously via {https_url}\n{out2}")
+            output += "\n[https fallback also failed] " + out2
+    return False, output
+
+
 def _install_channel() -> str:
     """How this copy of amux was installed: 'source' (git checkout — updates via
     git pull), 'brew' (Homebrew cellar), 'pip' (site-packages via pip/pipx), or
@@ -44777,13 +44819,9 @@ class CCHandler(BaseHTTPRequestHandler):
                     break
                 _candidate = _candidate.parent
             try:
-                r = subprocess.run(
-                    ["git", "pull", "--ff-only"],
-                    cwd=str(repo_dir), capture_output=True, text=True, timeout=30,
-                )
-                output = (r.stdout + r.stderr).strip()
-                slog(f"[pull] rc={r.returncode} {output[:200]}")
-                if r.returncode == 0:
+                ok, output = _git_pull_with_fallback(str(repo_dir))
+                slog(f"[pull] ok={ok} {output[:200]}")
+                if ok:
                     return self._json({"ok": True, "output": output})
                 if "not a git repository" in output:
                     return self._json({"ok": False, "output": "No git repo here — updates deploy automatically."})
