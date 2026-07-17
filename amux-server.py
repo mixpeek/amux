@@ -4565,31 +4565,22 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
             return  # idle, but not for long enough yet — keep waiting
         if any(m.get("_inflight") for m in queue):
             return
-        # Deliver the WHOLE queue as ONE turn (size-capped), not one message per
-        # turn boundary. Observed live on mvs-infra: per-message delivery let a
-        # busy session backlog 5+ messages, so a correction ("⚠️ before you act
-        # on my ruling") sat queued while the session could act on the wrong
-        # ruling for a full turn — and each drained message cost its own
-        # full-context turn. One batched turn delivers corrections WITH what
-        # they correct and costs 1× context instead of N×.
-        batch, size = [], 0
-        for m in queue:
-            if batch and size + len(m["text"]) > 12000:
-                break  # leave the rest for the next boundary
-            batch.append(m)
-            size += len(m["text"])
-        for m in batch:
-            m["_inflight"] = True
-    if len(batch) == 1:
-        combined = batch[0]["text"]
-    else:
-        now_t = time.time()
-        parts = [f"You have {len(batch)} queued messages (oldest first — read ALL "
-                 f"before acting; later ones may correct earlier ones):"]
-        for i, m in enumerate(batch, 1):
-            age = max(0, int((now_t - m.get("queued_at", now_t)) / 60))
-            parts.append(f"--- [{i}/{len(batch)}] queued {age}m ago ---\n{m['text']}")
-        combined = "\n\n".join(parts)
+        # Deliver ONE message per turn boundary, oldest first (2026-07-17). The
+        # queue is a sequential task list: batching N messages into one turn made
+        # the agent do them "all at once" instead of task-by-task. The original
+        # reason for batching — a correction sitting queued behind the thing it
+        # corrects — is covered differently now: Send (the default mode) types
+        # corrections straight into the live turn; Queue is the explicit
+        # do-these-in-order tool. A short trailer tells the agent more work is
+        # queued so it doesn't over-scope the current turn.
+        batch = [queue[0]]
+        queue[0]["_inflight"] = True
+        _remaining = len(queue) - 1
+    combined = batch[0]["text"]
+    if _remaining > 0:
+        combined += (f"\n\n[amux: {_remaining} more queued message"
+                     f"{'s' if _remaining != 1 else ''} will deliver after this turn, "
+                     f"oldest first — finish THIS task first]")
     ok, err = send_text(name, combined, _from_steering=True)
     if ok:
         ids = {m["id"] for m in batch}
