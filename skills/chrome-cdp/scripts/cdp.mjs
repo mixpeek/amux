@@ -719,6 +719,7 @@ Usage: cdp <command> [args]
   evalraw <target> <method> [json]  Send a raw CDP command; returns JSON result
                                     e.g. evalraw <t> "DOM.getDocument" '{}'
   open  [url]                       Open a new tab (default: about:blank)
+  close <target>                    Close a tab (Target.closeTarget)
                                     Note: each new tab triggers a fresh "Allow debugging?" prompt
   stop  [target]                    Stop daemon(s)
 
@@ -794,6 +795,22 @@ async function main() {
     writeFileSync(PAGES_CACHE, JSON.stringify(pages), { mode: 0o600 });
     console.log(`Opened new tab: ${targetId.slice(0, 8)}  ${url}`);
     console.log('Note: this tab will need "Allow debugging?" approval on first access.');
+    return;
+  }
+
+  // Close a tab (browser-level Target.closeTarget — window.close() can't close
+  // tabs the page didn't open; needed so amux's live-backend /stop really closes
+  // the tab it created)
+  if (cmd === 'close') {
+    const prefix = args[0];
+    if (!prefix) { console.error('close needs a target'); process.exit(1); }
+    const cdp = new CDP();
+    await cdp.connect(getWsUrl());
+    const pages = await getPages(cdp);
+    const target = resolvePrefix(prefix, pages.map(p => p.targetId), 'target');
+    await cdp.send('Target.closeTarget', { targetId: target });
+    cdp.close();
+    console.log(`Closed tab ${target.slice(0, 8)}`);
     return;
   }
 

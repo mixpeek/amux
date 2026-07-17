@@ -49224,7 +49224,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 session = body.get("session", "amux")
                 tid = _live_targets.pop(session, None)
                 if tid:
-                    _cdp_call(["eval", tid, "window.close()"], 8)
+                    _cdp_call(["close", tid], 10)   # browser-level closeTarget — window.close() can't close our tab
                     _cdp_call(["stop", tid], 8)
                     return self._json({"ok": True, "backend": "live", "closed": tid})
                 return self._json(_bu_call(["close"], session=session, timeout_s=10))
