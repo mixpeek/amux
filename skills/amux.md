@@ -176,6 +176,13 @@ curl -sk https://localhost:8822/api/email/events
 
 ## Browser Automation
 
+**Live backend** — same verbs, executed in YOUR real Chrome (real logins, real IP). Opens a NEW tab (never touches existing tabs); first use needs one "Allow debugging?" click. Use when acting-as-you matters (SSO dashboards, bot-walled sites); the default profile backend is for parallel/unattended work.
+
+```bash
+curl -sk -X POST -H 'Content-Type: application/json' -d '{"backend":"live","url":"https://example.com"}' $AMUX_URL/api/browser/start
+# navigate/screenshot/state/action/stop then work identically; live click takes {"selector":"..."} or x,y.
+```
+
 Shared Playwright instance with saved auth profiles.
 
 ```bash
