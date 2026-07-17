@@ -44404,8 +44404,9 @@ class CCHandler(BaseHTTPRequestHandler):
             return self._json({"ok": True})
 
         if path == "/api/history" or path.startswith("/api/history/"):
-            if method == "GET" and path == "/api/events":
+            if method == "GET" and path == "/api/events/log":
                 # Append-only execution log (issue #48). ?session= &type= filter;
+                # (path is /api/events/log because /api/events is the SSE stream)
                 # ?since_id=N tails ascending from that id (pollers); default =
                 # latest N descending.
                 db = get_db()
