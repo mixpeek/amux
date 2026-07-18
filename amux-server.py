@@ -14534,11 +14534,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .fe-crumb { color: var(--accent); cursor: pointer; }
   .fe-crumb:hover { text-decoration: underline; }
   .fe-crumb-sep { color: var(--dim); margin: 0 2px; }
-  .fe-scroll { flex: 1; min-height: 0; display: flex; flex-direction: column;
-    overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* ONE scroll container for header + rows (both axes) with a STICKY header —
+     header and rows share the exact same horizontal scroll, so columns can
+     never desync (the two-container version misaligned on iOS). */
+  .fe-scroll { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; }
   .fe-col-headers {
     display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 30px;
     padding: 0 4px; border-bottom: 2px solid var(--border); flex-shrink: 0;
+    position: sticky; top: 0; z-index: 2;
     background: var(--card);
   }
   .fe-col-hdr {
@@ -18000,9 +18003,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="fe-tb-btn" id="files-back-session-btn" onclick="closeExplore()" title="Return to session" style="display:none;background:var(--purple,#8957e5);color:#fff;border-color:var(--purple,#8957e5);font-size:0.72rem;white-space:nowrap;gap:4px;font-weight:600;">
       &#x2190; <span id="files-back-session-label">Back</span>
     </button>
-    <button class="fe-tb-btn" id="files-up-btn" onclick="loadFiles(_filesLastData?.data?.parent||'/')" title="Go up">
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 10V2M2 6l4-4 4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </button>
     <div id="files-breadcrumb" class="fe-breadcrumb"></div>
     <!-- Desktop action buttons (hidden on mobile) -->
     <div class="fe-tb-actions">
@@ -18113,7 +18113,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <div class="fe-col-hdr" id="fe-hdr-modified" onclick="_filesSetSort('modified')">Modified</div>
       <div class="fe-col-hdr-actions"></div>
     </div>
-    <div id="files-body" style="flex:1;min-height:0;overflow-y:auto;"></div>
+    <div id="files-body"></div>
   </div>
   <div id="fe-status" class="fe-status"></div>
 </div>
@@ -24809,7 +24809,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.143';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.144';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -42624,7 +42624,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.143';
+const CACHE = 'amux-v0.9.144';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
