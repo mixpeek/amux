@@ -24774,7 +24774,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.137';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.138';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -32893,7 +32893,9 @@ async function skipSchedule(id) {
 async function toggleSchedEnabled(id, enabled) {
   await apiCall(API + '/api/schedules/' + id, {
     method: 'PATCH', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ enabled: enabled ? 1 : 0 })
+    // Tag UI toggles so an audit flip reads "dashboard", not UNATTRIBUTED
+    // (the recurring-disabler mystery, AMUX-1765 — it was this control).
+    body: JSON.stringify({ enabled: enabled ? 1 : 0, by: 'dashboard' })
   });
   await fetchSchedules();
   renderScheduler();
@@ -42583,7 +42585,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.137';
+const CACHE = 'amux-v0.9.138';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -46378,7 +46380,16 @@ class CCHandler(BaseHTTPRequestHandler):
                 body = self._read_body()
                 _AUDIT_FIELDS = ("enabled","session","command","schedule_expr","done_action","trigger_on","kind")
                 _old_vals = {k: sched.get(k) for k in _AUDIT_FIELDS}
-                _by = str(body.get("by") or body.get("source_session") or "").strip()[:64]
+                # Attribution can never be truly anonymous (AMUX-1765): explicit
+                # `by` wins, else the cloud user-email header, else the client IP.
+                # The "recurring UNATTRIBUTED disabler" was the DASHBOARD toggle —
+                # it sent no `by`, so human UI flips looked like a rogue script to
+                # the guardian. Now every flip carries at least its origin.
+                _by = str(body.get("by") or body.get("source_session") or "").strip()
+                if not _by:
+                    _by = (self.headers.get("X-Amux-User-Email", "").strip()
+                           or ("ip:" + (self.client_address[0] if self.client_address else "?")))
+                _by = _by[:64]
                 for k in ("title","session","command","kind","sched_type","recurrence","run_at","enabled","schedule_expr",
                           "watch","watch_timeout","done_pattern","done_action","trigger_on","trigger_cooldown","trigger_sessions"):
                     if k in body:
