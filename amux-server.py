@@ -20094,6 +20094,7 @@ function _schedulePeekPoll() {
       _peekPrevStatus = _st;
       const needFull = turnEnded || (performance.now() - _peekLastFullMs > _PEEK_HISTORY_REFRESH_MS);
       await refreshPeek(!needFull);
+      _peekUpdateBranch();   // keep the dir-bar branch fresh (also catches cold-load gitInfo)
     } catch(e) {}
     _schedulePeekPoll();
   }, _peekPollInterval());
@@ -24801,7 +24802,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.140';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.141';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -42613,7 +42614,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.140';
+const CACHE = 'amux-v0.9.141';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
