@@ -12089,6 +12089,9 @@ _ALLOWED_TMUX_KEYS = frozenset({
     "PageUp", "PageDown", "IC", "DC",  # Insert, Delete
     "C-c", "C-d", "C-z", "C-l", "C-a", "C-e", "C-k", "C-u",
     "C-r", "C-p", "C-n", "C-b", "C-f", "C-w",
+    "C-o", "C-x",  # C-o = the "Accept & continue" quick-key chip; C-x = the Ctrl+X
+                   # peek shortcut. Both are sent by the UI — omitting them made
+                   # send_keys 500 → offline queue retried forever (2026-07-18).
     "M-b", "M-f", "M-d",  # Alt/Meta combos
     "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
     "y", "n", "q",  # common single-char confirmations
@@ -49926,7 +49929,17 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 ok, msg = send_keys(name, keys)
                 if ok:
                     _update_meta(name, last_send=int(time.time()))
-                code = 200 if ok else (409 if msg == "not running" else 500)
+                    code = 200
+                elif msg == "not running":
+                    code = 409
+                elif "not in allowed set" in msg:
+                    # A disallowed key can NEVER succeed → CLIENT error, not 500.
+                    # The offline queue re-queues only on >=500, so a 500 here made
+                    # a bad keystroke retry forever ("0 synced, 1 failed" every
+                    # reconnect). 400 lets the queue drop it (2026-07-18).
+                    code = 400
+                else:
+                    code = 500
                 return self._json({"ok": ok, "message": msg}, code)
             if action == "resize":
                 # Fit the pane to the peek viewer so Claude reflows to the
