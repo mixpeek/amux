@@ -14806,6 +14806,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     color: var(--dim); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
     border-bottom: 1px solid var(--border); background: var(--bg); pointer-events: none; }
   .at-item .at-at { color: var(--accent); }
+  .at-item b { color: var(--accent); font-weight: 700; }
 
   /* Search input with clear button */
   .search-wrap {
@@ -24822,7 +24823,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.144';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.145';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -26976,18 +26977,53 @@ function _atQuery(inp) {
   return { q: fragment.toLowerCase(), idx: atIdx };
 }
 
-// Populate dropdown with @session matches; returns true if @ mode active
+// Fuzzy subsequence match + score: chars of the query must appear in order in
+// the name. Rewards contiguous runs, start-of-name / word-boundary hits, and a
+// shorter name — so "mg"→mixpeek-general, "gen"→…-general beats …-orchestrator.
+// Returns {score, hits:Set of matched indices} or null if not a subsequence.
+function _fuzzyScore(q, name) {
+  if (!q) return { score: 0, hits: null };
+  const n = name.toLowerCase();
+  let qi = 0, score = 0, run = 0, hits = [];
+  for (let i = 0; i < n.length && qi < q.length; i++) {
+    if (n[i] === q[qi]) {
+      hits.push(i);
+      run += 1;
+      let pt = 1 + run;                         // contiguity bonus
+      if (i === 0) pt += 6;                      // start of name
+      else if (/[^a-z0-9]/.test(n[i - 1])) pt += 4; // after -/_/. (word start)
+      score += pt;
+      qi += 1;
+    } else { run = 0; }
+  }
+  if (qi < q.length) return null;               // not all query chars matched
+  if (n.startsWith(q)) score += 10;             // exact prefix is best
+  score -= name.length * 0.05;                  // gently prefer shorter names
+  return { score, hits: new Set(hits) };
+}
+
+// Populate dropdown with @session matches; returns true if @ mode active.
+// Empty @ lists ALL sessions (running first); a query fuzzy-matches + ranks.
 function _atRender(inp, el, pickCall) {
   const at = _atQuery(inp);
   if (at === null) return false;
-  const matches = (sessions || []).filter(s => s.name.toLowerCase().startsWith(at.q)).slice(0, 8);
-  if (!matches.length) { el.classList.remove('open'); return true; }
-  el.innerHTML = matches.map((s, i) =>
-    `<div class="ac-item at-item" onmousedown="${pickCall}(${i})">` +
-    `<span class="at-at">@</span>${esc(s.name)}` +
-    `<span class="ac-desc">${s.running ? '● ' : '○ '}open channel &rarr;</span></div>`
-  ).join('');
-  el._atItems = matches;
+  let ranked = (sessions || []).map(s => {
+    const f = _fuzzyScore(at.q, s.name);
+    return f ? { s, score: f.score, hits: f.hits } : null;
+  }).filter(Boolean);
+  ranked.sort((a, b) =>
+    (b.s.running - a.s.running) || (b.score - a.score) || a.s.name.localeCompare(b.s.name));
+  ranked = ranked.slice(0, 20);
+  if (!ranked.length) { el.classList.remove('open'); return true; }
+  el.innerHTML = ranked.map((r, i) => {
+    const name = r.hits
+      ? [...r.s.name].map((ch, ci) => r.hits.has(ci) ? `<b>${esc(ch)}</b>` : esc(ch)).join('')
+      : esc(r.s.name);
+    return `<div class="ac-item at-item" onmousedown="${pickCall}(${i})">` +
+      `<span class="at-at">@</span>${name}` +
+      `<span class="ac-desc">${r.s.running ? '● ' : '○ '}open channel &rarr;</span></div>`;
+  }).join('');
+  el._atItems = ranked.map(r => r.s);
   el.classList.add('open');
   return true;
 }
@@ -42637,7 +42673,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.144';
+const CACHE = 'amux-v0.9.145';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
