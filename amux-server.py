@@ -14534,6 +14534,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .fe-crumb { color: var(--accent); cursor: pointer; }
   .fe-crumb:hover { text-decoration: underline; }
   .fe-crumb-sep { color: var(--dim); margin: 0 2px; }
+  .fe-scroll { flex: 1; min-height: 0; display: flex; flex-direction: column;
+    overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .fe-col-headers {
     display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 30px;
     padding: 0 4px; border-bottom: 2px solid var(--border); flex-shrink: 0;
@@ -14592,9 +14594,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .fe-back-row:hover { background: var(--hover, rgba(139,148,158,0.07)); }
   @media (max-width: 600px) {
-    .fe-col-headers { grid-template-columns: minmax(0,1fr) 32px; }
-    .fe-row, .fe-back-row { grid-template-columns: minmax(0,1fr) 32px; }
-    .fe-cell-size, .fe-cell-date, .fe-col-hdr:nth-child(2), .fe-col-hdr:nth-child(3) { display: none; }
+    /* Keep every column on mobile and let the table scroll sideways (standard
+       mobile data-table UX) instead of hiding Size/Modified. min-width forces
+       the horizontal overflow #fe-scroll then scrolls; header stays aligned. */
+    .fe-col-headers, .fe-row, .fe-back-row { min-width: 460px; }
     .fe-cell-name { padding: 7px 8px; }
     .fe-cell-name span { font-size: 0.9rem; }
     .fe-menu-btn { opacity: 0.5; font-size: 1.1rem; }
@@ -18100,14 +18103,18 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:4px 9px;font-size:0.8rem;color:var(--text);outline:none;"
       oninput="_filesSearchFilter(this.value)">
   </div>
-  <!-- Column headers -->
-  <div id="fe-col-headers" class="fe-col-headers" style="display:none;">
-    <div class="fe-col-hdr" id="fe-hdr-name" onclick="_filesSetSort('name')">Name</div>
-    <div class="fe-col-hdr" id="fe-hdr-size" onclick="_filesSetSort('size')">Size</div>
-    <div class="fe-col-hdr" id="fe-hdr-modified" onclick="_filesSetSort('modified')">Modified</div>
-    <div class="fe-col-hdr-actions"></div>
+  <!-- Header + rows share ONE horizontal-scroll container so on a narrow
+       (mobile) screen you scroll sideways to reveal Size/Modified with the
+       header staying aligned, instead of those columns being hidden. -->
+  <div id="fe-scroll" class="fe-scroll">
+    <div id="fe-col-headers" class="fe-col-headers" style="display:none;">
+      <div class="fe-col-hdr" id="fe-hdr-name" onclick="_filesSetSort('name')">Name</div>
+      <div class="fe-col-hdr" id="fe-hdr-size" onclick="_filesSetSort('size')">Size</div>
+      <div class="fe-col-hdr" id="fe-hdr-modified" onclick="_filesSetSort('modified')">Modified</div>
+      <div class="fe-col-hdr-actions"></div>
+    </div>
+    <div id="files-body" style="flex:1;min-height:0;overflow-y:auto;"></div>
   </div>
-  <div id="files-body" style="flex:1;overflow-y:auto;"></div>
   <div id="fe-status" class="fe-status"></div>
 </div>
 
@@ -24802,7 +24809,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.142';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.143';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -42617,7 +42624,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.142';
+const CACHE = 'amux-v0.9.143';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
