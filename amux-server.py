@@ -24802,7 +24802,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.141';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.142';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -24847,6 +24847,9 @@ function openPeek(name, opts) {
   // Update dir bar
   document.getElementById('peek-dir-text').textContent = peekSessionDir || '(unknown)';
   _peekUpdateBranch();
+  // If we don't yet know this session's branch (cold load / new session), fetch
+  // it now so the badge appears promptly instead of after the next 20s cycle.
+  if (peekSessionDir && !(gitInfo[peekSession] || {}).branch) { _gitBranchesLast = 0; _fetchGitBranches(sessions); }
   const prefillQuery = opts && opts.query ? opts.query : '';
   peekSearchQuery = prefillQuery;
   peekSearchIndex = 0;
@@ -42614,7 +42617,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.141';
+const CACHE = 'amux-v0.9.142';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
