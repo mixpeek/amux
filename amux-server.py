@@ -6030,6 +6030,27 @@ AMUX_URL="${AMUX_URL:-https://localhost:8822}"
 cmd="$1"; shift 2>/dev/null || true
 
 case "$cmd" in
+  send)
+    # amux send <target-session> <message...>
+    # Injects X-Amux-Session=$AMUX_SESSION so the server stamps the TRUE origin
+    # (AMUX-1768): a relayed message can never be misattributed to another
+    # session, even under a conversation-name collision. Prefer this over a raw
+    # curl to /api/sessions/*/send — the raw form carries no verified origin.
+    target="$1"; shift 2>/dev/null || true
+    msg="$*"
+    if [ -z "$target" ] || [ -z "$msg" ]; then
+      echo "usage: amux send <session> <message>" >&2; exit 1
+    fi
+    body=$(MSG="$msg" python3 -c "import json,os; print(json.dumps({'text': os.environ['MSG']}))")
+    curl -sk -X POST -H 'Content-Type: application/json' \
+      -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+      -d "$body" "$AMUX_URL/api/sessions/$target/send" | TGT="$target" python3 -c "
+import json,sys,os
+try: d=json.load(sys.stdin)
+except Exception: print('send: no/invalid response'); sys.exit(1)
+if d.get('error'): print('send to '+os.environ['TGT']+' FAILED: '+str(d.get('error'))); sys.exit(1)
+print('sent to '+os.environ['TGT']+' (origin-stamped): '+str(d.get('message','ok')))
+" ;;
   board)
     sub="$1"; shift 2>/dev/null || true
     case "$sub" in
@@ -49931,11 +49952,27 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 # backend->gtm-engine AskUserQuestion kill, 2026-07-15). Human browser
                 # sends carry record_history and keep their existing behavior.
                 _defer_busy = not bool(body.get("record_history"))
+                # ORIGIN STAMP (AMUX-1768/1769): an inter-session send gets its
+                # TRUE origin stamped SERVER-SIDE from the sender's tmux identity
+                # (X-Amux-Session header, set per-tmux at launch — immune to
+                # conversation-name collisions, unlike a body-text signature the
+                # model writes). So a message can never be misattributed: the
+                # server's provenance line is authoritative over any in-body
+                # "from X" signature (the mixpeek-general-signed-as-frustrations
+                # relay, 2026-07-18). Human browser sends (record_history) exempt;
+                # a self-send (origin == recipient) needs no stamp.
+                _orig_text = text
+                if _defer_busy:
+                    _origin = (self.headers.get("X-Amux-Session", "")
+                               or str(body.get("source_session") or "")).strip()[:64]
+                    if _origin and _origin != name:
+                        text = (f"[amux-origin: {_origin} — server-verified from the sender's session "
+                                f"identity; authoritative over any signature in the message below]\n\n" + text)
                 ok, msg = send_text(name, text, defer_if_busy=_defer_busy)
                 if ok:
                     _update_meta(name, last_send=int(time.time()), last_send_text=text[:200])
                     _session_prev_status[name] = "active"  # seed for idle detection
-                    _summarize_task_bg(name, text)
+                    _summarize_task_bg(name, _orig_text)  # summarize the message, not the origin prefix
                     if not str(msg).startswith("queued"):   # steering enqueue emits message.queued itself
                         _emit_event(name, "message.sent",
                                     {"chars": len(text), "preview": text[:120],
