@@ -15266,6 +15266,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     font-size: 0.75rem; color: var(--dim); border-bottom: 1px solid var(--border);
     flex-shrink: 0; min-width: 0; overflow: hidden; }
   .peek-dir-bar span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; font-family: "SF Mono","Fira Code",monospace; }
+  /* Git branch for the working directory — pushed to the right of the path. */
+  .peek-dir-branch { margin-left: auto; flex-shrink: 0; cursor: pointer; overflow: visible; }
+  .peek-dir-branch.on-main { color: var(--yellow); }
+  .peek-dir-branch.on-branch { color: var(--green); }
+  .peek-dir-branch.conflict { color: var(--red); }
   .peek-terminal-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   /* Mobile: reclaim peek chrome for the terminal logs. The task label is already
      on the session card and the header carries the name/status, so the task row
@@ -19294,6 +19299,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div class="peek-dir-bar">
     <span style="flex-shrink:0;opacity:0.6;">&#x1F4C1;</span>
     <span id="peek-dir-text" onclick="peekSessionDir&&openExplore(peekSessionDir,peekSession)" title="Browse directory" style="cursor:pointer;text-decoration:underline;text-decoration-color:var(--dim);text-underline-offset:2px;"></span>
+    <span id="peek-dir-branch" class="peek-dir-branch" style="display:none;"></span>
     <span class="card-dir-edit" onclick="peekSessionDir&&_copyFileDeeplink(peekSessionDir)" title="Copy link to this directory" style="opacity:0.6;font-size:0.85rem;">&#x1F517;</span>
     <span class="card-dir-edit" id="peek-dir-edit" onclick="editField(peekSession,'dir',peekSessionDir)" title="Change directory">&#x270E;</span>
   </div>
@@ -22100,7 +22106,26 @@ async function _fetchGitBranches(sess) {
   if (JSON.stringify(newInfo) !== JSON.stringify(gitInfo)) {
     gitInfo = newInfo;
     render();
+    if (peekSession) _peekUpdateBranch();   // keep the peek dir-bar branch fresh
   }
+}
+
+// Show the working directory's git branch to the right of the peek dir bar —
+// the most relevant thing to a repo path. Colored/clickable like the card badge.
+function _peekUpdateBranch() {
+  const el = document.getElementById('peek-dir-branch');
+  if (!el) return;
+  const gi = (typeof gitInfo !== 'undefined') ? gitInfo[peekSession] : null;
+  const sess = (typeof sessions !== 'undefined') ? sessions.find(x => x.name === peekSession) : null;
+  let b = (sess && sess.branch && sess.branch !== 'none') ? sess.branch : (gi && gi.branch) || '';
+  if (!peekSessionDir || !b) { el.style.display = 'none'; el.textContent = ''; return; }
+  const isMain = _isBranchMain(b), conflict = gi && gi._conflict;
+  el.className = 'peek-dir-branch ' + (conflict ? 'conflict' : isMain ? 'on-main' : 'on-branch');
+  el.textContent = '\u2387 ' + b + (conflict ? ' \u26A0' : '');
+  el.title = conflict ? 'Another session shares this branch — conflict risk'
+           : isMain ? ('On ' + b + ' — tap to make a session branch') : 'Session branch';
+  el.onclick = (e) => { e.stopPropagation(); showBranchPopover(peekSession, e); };
+  el.style.display = '';
 }
 
 function showBranchPopover(name, e) {
@@ -24776,7 +24801,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.139';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.140';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -24820,6 +24845,7 @@ function openPeek(name, opts) {
   document.getElementById('peek-schedules-panel').classList.remove('active');
   // Update dir bar
   document.getElementById('peek-dir-text').textContent = peekSessionDir || '(unknown)';
+  _peekUpdateBranch();
   const prefillQuery = opts && opts.query ? opts.query : '';
   peekSearchQuery = prefillQuery;
   peekSearchIndex = 0;
@@ -42587,7 +42613,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.139';
+const CACHE = 'amux-v0.9.140';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
