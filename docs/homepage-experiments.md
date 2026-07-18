@@ -74,11 +74,12 @@
 - **Hypothesis:** Embedding a star-history chart image on the homepage (showing growth trend) increases GitHub clicks from visitors who aren't sure if the project is active
 - **Page:** `/`
 - **KPI:** GitHub stars
-- **Status:** `running`
+- **Status:** `inconclusive — extending`
 - **Started:** 2026-07-11
 - **Implementation:** Added star-history.com SVG embed (dark/light via `<picture>`) between features grid and final CTA on homepage. 291 stars caption, GitHub CTA button below the chart. Uses `https://api.star-history.com/svg?repos=mixpeek/amux&type=Date` (dark theme variant via `&theme=dark` in `<source>`). `loading="lazy"` so it doesn't block paint.
 - **Effort:** S
 - **Measure after:** 2026-07-18 (7 days minimum)
+- **Score (2026-07-18):** Inconclusive — insufficient baseline. PostHog daily homepage KPI clicks: pre-EXP-005: only 2026-07-10=21 (1 day); post-EXP-005 (7d): avg ~13.5/day. Cannot attribute the drop to EXP-005 vs. weekday pattern vs. simultaneous experiments (EXP-006, EXP-007, EXP-008, EXP-009 all started within 5 days). Extending to 2026-07-25 for cleaner measurement.
 
 ### EXP-013 — GitHub CTA on high-traffic guides
 - **Hypothesis:** PostHog shows /guides/best-ai-model-for-coding-2026/ gets 84 pageviews (2nd highest after homepage) but zero KPI clicks. Adding a compact GitHub CTA box at the top of that guide (and other high-traffic guides with no CTA) increases GitHub stars from guide traffic.
@@ -153,9 +154,11 @@
 - **Hypothesis:** The new Plan strip feature (v0.9.44, July 2026) — which lets you see exactly what your Claude Code agent is planning — is a unique differentiator not communicated on the homepage. Adding a one-line callout in the feature list increases clicks from developers frustrated with agent opacity.
 - **Page:** `/` (feature grid or "new" badge on relevant feature row)
 - **KPI:** GitHub stars (developer audience)
-- **Status:** `queued`
-- **Implementation:** Add "Plan strip — see your agent's task list in real time (new)" row or badge to homepage feature table
+- **Status:** `running`
+- **Started:** 2026-07-18
+- **Implementation:** Added "No idea what your agent is actually planning or working on right now" → "Plan strip — see your agent's live task list and next steps in real time inside the peek panel. [new badge]" row to the PS grid, between "Web dashboard" and "Kanban board" rows. New badge uses `rgba(110,231,183,.15)` / `#6ee7b7` green pill styling.
 - **Effort:** XS
+- **Measure after:** 2026-07-25 (7 days minimum)
 
 ### EXP-014 — Replicate high-conversion guide pattern on other guides
 - **Hypothesis:** /guides/best-ai-agent-multiplexers-2026/ drove 16 GitHub KPI clicks in 7 days — the highest non-homepage conversion rate. PostHog shows this page has unusually high intent. Hypothesis: "best-of" / list-style guide titles convert better than how-to guides because visitors are in evaluation mode. Replicating the page structure (answer-box at top, feature matrix, CTA after matrix) on 3-5 other guides should increase their GitHub click rate from near-zero to 3–8 clicks/week each.

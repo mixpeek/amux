@@ -1,5 +1,61 @@
 [
   {
+    "hash": "2444b9d0000000000000000000000000000000000",
+    "short": "2444b9d",
+    "title": "Drive your real Chrome with AI \u2014 live-browser backend with observation budgets",
+    "date": "2026-07-18",
+    "type": "feat",
+    "tags": [
+      "browser",
+      "automation",
+      "live-chrome",
+      "observation"
+    ],
+    "description": "amux now supports two browser backends: the existing saved-profile backend (Playwright, headless, for parallel/unattended work) and a new live-Chrome backend that binds to a NEW tab in your actual Chrome browser via Chrome DevTools Protocol. The live backend uses your real logged-in sessions and residential IP \u2014 great for tasks where saved-profile auth fails. Both backends now have observation budgets: page state is capped at 24K tokens and eval results at 8K, so a big page dump can never flood a session's context. Switch backends by passing backend:\"live\" to /api/browser/start."
+  },
+  {
+    "hash": "a838378a000000000000000000000000000000000",
+    "short": "a838378",
+    "title": "Filter sessions by status \u2014 Working, Needs Input, Idle, or Stopped",
+    "date": "2026-07-18",
+    "type": "feat",
+    "tags": [
+      "sessions",
+      "filters",
+      "ui",
+      "fleet"
+    ],
+    "description": "The Filters modal now has a Status facet alongside Provider and Model type. Multi-select chips (Working / Needs Input / Idle / Stopped) filter the sessions grid in real time with live counts per state. Combined with the Provider and Model filters, you can quickly isolate exactly which agents need attention \u2014 for example, 'all Idle Claude Code sessions' or 'all Needs Input sessions across any provider'. The filter state is reflected in the badge count on the Filters button."
+  },
+  {
+    "hash": "4644215a000000000000000000000000000000000",
+    "short": "4644215",
+    "title": "Agent-to-agent messages deliver instantly \u2014 no more waiting at turn boundaries",
+    "date": "2026-07-18",
+    "type": "feat",
+    "tags": [
+      "sessions",
+      "orchestration",
+      "messaging",
+      "agents"
+    ],
+    "description": "Inter-session sends (automated messages from the REST API, scheduler, or other agents) now type directly into the target session's terminal just like a human send \u2014 Claude Code queues mid-turn input and submits it at the end of the current turn. Previously these messages parked in the steering queue and waited for a fully idle turn boundary, so a busy agent processing a long task wouldn't see the message for minutes. The only exception is a live tool-approval selector, where the message still parks to avoid accidentally closing the picker."
+  },
+  {
+    "hash": "4aa8636a000000000000000000000000000000000",
+    "short": "4aa8636",
+    "title": "Sending a message now sends immediately \u2014 queue is opt-in",
+    "date": "2026-07-18",
+    "type": "feat",
+    "tags": [
+      "peek",
+      "ui",
+      "ux",
+      "send"
+    ],
+    "description": "The Send split button in the peek panel now defaults to Send mode (direct, immediate delivery) instead of Queue mode. Previously the default was Queue, so every message sat in the steering queue until the agent reached an idle boundary \u2014 on a long task that read as the message vanishing into nowhere. Direct send types straight into the terminal; Claude Code handles mid-turn buffering on its own. Devices previously set to Queue get a one-time migration to Send; explicit choices persist per device after that."
+  },
+  {
     "hash": "ad13e14abc1234567890abcdef1234567890abcd",
     "short": "ad13e14",
     "title": "Auto-answer resume dialog \u2014 overnight sessions no longer stall at startup",
