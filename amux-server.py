@@ -21827,10 +21827,8 @@ function render() {
           ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();doStop('${s.name}')"><span class="mi">&#x23F9;</span> Stop</div>` : ''}
           ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();clearScrollback('${s.name}')"><span class="mi">&#x239A;</span> Clear scrollback</div>` : ''}
           <div class="card-menu-item" onclick="event.stopPropagation();duplicateSession('${s.name}')"><span class="mi">&#x2398;</span> Duplicate</div>
-          ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();cloneSession('${s.name}')"><span class="mi">&#x1F504;</span> Clone &amp; continue</div>` : ''}
           ${!s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();newConversation('${s.name}')"><span class="mi">&#x1F195;</span> New conversation</div>` : ''}
           <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();shareSession('${s.name}')"><span class="mi">&#x1F517;</span> Share link</div>
-          <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();copyMoshCmd('${s.name}')"><span class="mi">&#x1F4CB;</span> Copy mosh command</div>
           <div class="card-menu-item" onclick="event.stopPropagation();archiveSession('${s.name}')"><span class="mi">&#x1F4E6;</span> Archive</div>
           <div class="card-menu-sep"></div>
           <div class="card-menu-item danger" onclick="event.stopPropagation();deleteSession('${s.name}')"><span class="mi">&#x2716;</span> Delete</div>
@@ -24837,7 +24835,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.145';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.146';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -42687,7 +42685,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.145';
+const CACHE = 'amux-v0.9.146';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
