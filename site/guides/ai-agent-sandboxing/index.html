@@ -39,7 +39,7 @@
     "author":{"@type":"Organization","name":"amux","url":"https://amux.io"},
     "publisher":{"@type":"Organization","name":"amux","url":"https://amux.io","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},
     "datePublished":"2026-05-13",
-    "dateModified":"2026-05-13",
+    "dateModified":"2026-07-18",
     "mainEntityOfPage":"https://amux.io/guides/ai-agent-sandboxing/"
   }</script>
   <script type="application/ld+json">{
@@ -69,7 +69,8 @@
       {"@type":"Question","name":"How do I sandbox AI agents running in parallel with amux?","acceptedAnswer":{"@type":"Answer","text":"amux manages parallel AI agent sessions in tmux. For sandboxing, you have several options: (1) Run each agent in its own Docker container with mounted project directories. (2) Use git worktree isolation (amux's built-in conflict detection) to give each agent its own branch and working directory. (3) For maximum isolation, run agents in E2B sandboxes and connect them to amux via the REST API. (4) Combine approaches: worktree isolation for git conflicts plus Docker for filesystem/network isolation. amux's self-healing watchdog works with all these configurations."}},
       {"@type":"Question","name":"Is Docker secure enough for AI agent sandboxing?","acceptedAnswer":{"@type":"Answer","text":"Docker with default settings provides reasonable isolation for most use cases but is not bulletproof. Container escapes via kernel exploits (CVE-2024-21626, CVE-2019-5736) have been demonstrated. To harden Docker for AI agents: (1) Use --security-opt=no-new-privileges, (2) Drop all capabilities with --cap-drop=ALL, (3) Use --network=none to disable networking, (4) Mount project directories read-only where possible, (5) Run as non-root user, (6) Enable seccomp and AppArmor profiles. For higher-security requirements, add gVisor as the container runtime or switch to Firecracker microVMs."}},
       {"@type":"Question","name":"What is E2B and why is it popular for AI agent sandboxing?","acceptedAnswer":{"@type":"Answer","text":"E2B (pronounced 'e-to-b') is an open-source platform that provides cloud sandboxes built on Firecracker microVMs specifically designed for AI agent code execution. Each sandbox boots in under 100ms, runs a full Linux environment, and is completely isolated from the host and other sandboxes. E2B is popular because it was purpose-built for AI agents — the API is designed for programmatic sandbox creation, file upload, command execution, and cleanup. It's used by AI coding tools, chatbots, and data analysis agents that need to execute untrusted code safely."}},
-      {"@type":"Question","name":"What are the best free and open-source sandboxing options?","acceptedAnswer":{"@type":"Answer","text":"The best free and open-source options are: Docker (Apache 2.0) — the most widely available, runs everywhere. Podman (Apache 2.0) — rootless containers without a daemon. Firecracker (Apache 2.0) — microVMs with near-VM isolation, requires KVM (Linux only). gVisor (Apache 2.0) — userspace kernel that intercepts syscalls, runs as a Docker/containerd runtime. nsjail (Apache 2.0) — lightweight Linux process isolation. Bubblewrap (LGPL) — unprivileged sandboxing used by Flatpak. E2B Code Interpreter is open-source, though the managed platform is a paid service."}}
+      {"@type":"Question","name":"What are the best free and open-source sandboxing options?","acceptedAnswer":{"@type":"Answer","text":"The best free and open-source options are: Docker (Apache 2.0) — the most widely available, runs everywhere. Podman (Apache 2.0) — rootless containers without a daemon. Firecracker (Apache 2.0) — microVMs with near-VM isolation, requires KVM (Linux only). gVisor (Apache 2.0) — userspace kernel that intercepts syscalls, runs as a Docker/containerd runtime. nsjail (Apache 2.0) — lightweight Linux process isolation. Bubblewrap (LGPL) — unprivileged sandboxing used by Flatpak. E2B Code Interpreter is open-source, though the managed platform is a paid service."}},
+      {"@type":"Question","name":"Does amux run agents in a sandbox?","acceptedAnswer":{"@type":"Answer","text":"By default, amux runs agents in tmux panes on the host machine — there is no sandbox layer built in. This is intentional: amux is an orchestration and control plane, not an isolation layer. For sandboxing, you add it on top: (1) Run each tmux session inside a Docker container with --network=none and --cap-drop=ALL for filesystem and network isolation. (2) Use amux's built-in git worktree isolation to give each agent its own branch and working directory, preventing agents from stepping on each other's code. (3) For code execution that requires stronger isolation (e.g., running untrusted user-submitted code), connect E2B sandboxes to amux via the REST API — agents submit code to E2B, results come back through the API. (4) Combine approaches: worktree isolation for git conflicts, Docker for system-level isolation, and E2B for untrusted code execution. amux's self-healing watchdog (auto-compact, crash-restart, last-message replay) works with all these configurations."}}
     ]
   }</script>
 
@@ -153,7 +154,16 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>AI Agent Sandboxing</span></div>
 
     <h1>AI Agent Sandboxing in 2026: How to Run Coding Agents Without Risking Your System</h1>
-    <p class="subtitle">AI coding agents execute arbitrary code on your machine &mdash; shell commands, package installs, file modifications, network requests. Without isolation, a prompt injection or hallucinated <code>rm -rf</code> can compromise your entire system. This guide compares 8 sandboxing technologies and the built-in safety models of <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, and <a href="https://cursor.com" target="_blank" rel="noopener">Cursor</a> &mdash; so you can run agents autonomously without staying up all night watching them.</p>
+    <p class="subtitle">AI coding agents execute arbitrary code on your machine &mdash; shell commands, package installs, file modifications, network requests. Without isolation, a prompt injection or hallucinated <code>rm -rf</code> can compromise your entire system. This guide compares 8 sandboxing technologies and the built-in safety models of <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, and <a href="https://cursor.com" target="_blank" rel="noopener">Cursor</a> &mdash; so you can run agents autonomously without staying up all night watching them. <em style="font-size:.85rem;color:var(--muted);">Updated July 2026.</em></p>
+
+    <!-- EXP-007 -->
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:1.25rem 1.5rem;margin:1.5rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
+      <div>
+        <p style="margin:0;font-size:.92rem;color:var(--text);">Considering amux? See it in action before deciding &rarr;</p>
+        <p style="margin:.25rem 0 0;font-size:.8rem;color:var(--muted);">Open-source control plane for AI agent teams &mdash; run dozens of parallel agents with sandboxing, self-healing, and a shared task board.</p>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog.capture('exp007_compare_github_cta_click',{page:window.location.pathname})" style="background:var(--accent);color:#fff;padding:.6rem 1.25rem;border-radius:6px;text-decoration:none;font-weight:600;font-size:.9rem;white-space:nowrap;flex-shrink:0;">&#11088; Star amux on GitHub</a>
+    </div>
 
     <!-- ───────── TL;DR ───────── -->
     <div class="tldr">
@@ -641,28 +651,33 @@
       <div class="tool-meta">
         <span>By <a href="https://mixpeek.com" target="_blank" rel="noopener">Mixpeek</a></span>
         <span>MIT License</span>
-        <span>Free &amp; open source</span>
+        <span>Free &amp; open source &mdash; 303 GitHub stars</span>
       </div>
-      <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> manages fleets of AI agents in <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> sessions with built-in isolation features. For sandboxing at fleet scale:</p>
+      <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches, monitors, and self-heals dozens of parallel <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, or <a href="https://deepmind.google/technologies/gemini/code/" target="_blank" rel="noopener">Gemini CLI</a> sessions in <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> with built-in isolation. For sandboxing at fleet scale:</p>
       <ul>
         <li><strong>Git worktree isolation</strong> &mdash; each agent gets its own branch and working directory via <a href="https://git-scm.com/docs/git-worktree" target="_blank" rel="noopener">git worktrees</a>, preventing merge conflicts between parallel agents</li>
+        <li><strong>Self-healing</strong> &mdash; auto-compacts context when near the limit, restarts on crash, and replays the last message so agents recover without human intervention</li>
         <li><strong>Atomic task claiming</strong> &mdash; SQLite-backed kanban board with atomic <code>CLAIM</code> operations ensures no two agents work on the same task</li>
-        <li><strong>Self-healing watchdog</strong> &mdash; detects crashed, stuck, or runaway agents and restarts them automatically</li>
         <li><strong>Token tracking</strong> &mdash; per-session daily spend monitoring catches cost runaways before they escalate</li>
         <li><strong>Container integration</strong> &mdash; run each <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> session inside a <a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a> container for filesystem/network isolation</li>
         <li><strong>REST API</strong> &mdash; programmatic control over session lifecycle, enabling automated sandbox provisioning and teardown</li>
+        <li><strong>Mobile dashboard</strong> &mdash; monitor and control your agent fleet from the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a> while agents run unattended</li>
       </ul>
       <div class="tool-verdict"><strong>The pattern:</strong> <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> handles orchestration (session management, crash recovery, task coordination). <a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a> / <a href="https://gvisor.dev/" target="_blank" rel="noopener">gVisor</a> handles isolation. <a href="https://git-scm.com/docs/git-worktree" target="_blank" rel="noopener">Git worktrees</a> handle code isolation. Each layer addresses a different risk.</div>
     </div>
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.6rem;margin:2rem 0;">
       <h3 style="margin:0 0 0.6rem;">Get started with sandboxed agent fleets</h3>
-      <p style="font-size:0.88rem;color:var(--dim);margin:0 0 1.2rem;line-height:1.7;">Run 50+ <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a> agents in parallel with self-healing, git isolation, and a web dashboard. Free, open-source, MIT licensed.</p>
-      <pre style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:1rem;font-size:0.82rem;overflow-x:auto;margin:0 0 1.2rem;"><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # open https://localhost:8822</code></pre>
-      <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="display:inline-block;background:var(--green);color:var(--bg);padding:0.6rem 1.4rem;border-radius:6px;text-decoration:none;font-weight:600;font-size:0.88rem;">View on GitHub</a>
+      <p style="font-size:0.88rem;color:var(--dim);margin:0 0 1.2rem;line-height:1.7;">Run an AI engineering team from one dashboard &mdash; dozens of parallel <a href="https://code.claude.com/" target="_blank" rel="noopener">Claude Code</a>, <a href="https://github.com/openai/codex" target="_blank" rel="noopener">Codex CLI</a>, or <a href="https://deepmind.google/technologies/gemini/code/" target="_blank" rel="noopener">Gemini CLI</a> agents with self-healing, git isolation, and a web dashboard. Learn how to <a href="/guides/claude-code-headless/">run Claude Code headless</a> as part of an agent fleet. Free, open-source, MIT licensed.</p>
+      <pre style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:1rem;font-size:0.82rem;overflow-x:auto;margin:0 0 1.2rem;"><code># Homebrew (recommended)
+brew install mixpeek/amux/amux && amux serve
+
+# PyPI
+pipx install amux && amux serve
+
+# Zero-install
+uvx amux serve  # open https://localhost:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="display:inline-block;background:var(--green);color:var(--bg);padding:0.6rem 1.4rem;border-radius:6px;text-decoration:none;font-weight:600;font-size:0.88rem;">&#11088; Star amux on GitHub</a>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════
@@ -702,6 +717,10 @@ amux serve  # open https://localhost:8822</code></pre>
       <div class="tool-card">
         <h3>Best free / open-source sandboxing options?</h3>
         <p><a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a> (Apache 2.0) &mdash; the most widely available. <a href="https://podman.io/" target="_blank" rel="noopener">Podman</a> (Apache 2.0) &mdash; rootless by default. <a href="https://github.com/firecracker-microvm/firecracker" target="_blank" rel="noopener">Firecracker</a> (Apache 2.0) &mdash; microVMs, requires KVM. <a href="https://gvisor.dev/" target="_blank" rel="noopener">gVisor</a> (Apache 2.0) &mdash; userspace kernel for containers. <a href="https://github.com/google/nsjail" target="_blank" rel="noopener">nsjail</a> (Apache 2.0) &mdash; lightweight Linux process isolation. All free and self-hostable.</p>
+      </div>
+      <div class="tool-card">
+        <h3>Does amux run agents in a sandbox?</h3>
+        <p>By default, <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> runs agents in tmux panes on the host machine &mdash; there is no sandbox layer built in. amux is an orchestration and control plane, not an isolation layer. Sandboxing is layered on top: (1) run each tmux session inside a <a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a> container with <code>--network=none --cap-drop=ALL</code>; (2) use amux&rsquo;s built-in git worktree isolation so agents can&rsquo;t step on each other&rsquo;s code; (3) for untrusted code execution, connect <a href="https://e2b.dev/" target="_blank" rel="noopener">E2B</a> sandboxes via the amux REST API. amux&rsquo;s self-healing (auto-compact, crash-restart, last-message replay) works with all these configurations.</p>
       </div>
     </div>
 
