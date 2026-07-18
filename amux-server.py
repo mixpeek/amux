@@ -4145,7 +4145,11 @@ def _send_urgent_alert(message: str, session: str = "", reason: str = ""):
             channels["push"] = f"error: {str(e)[:80]}"
     phone = os.environ.get("AMUX_OWNER_PHONE", "")
     if os.environ.get("AMUX_URGENT_SMS", "1") != "0" and phone:
-        ok, detail = _send_sms(phone, "amux URGENT: " + msg.replace("\n", " — "))
+        # Stamp the originating session into the SMS/iMessage so the owner has a
+        # reference for WHICH session raised the alarm (the push already carries
+        # it as the notification title; the SMS previously dropped it).
+        _sms_prefix = f"amux URGENT [{session}]: " if session else "amux URGENT: "
+        ok, detail = _send_sms(phone, _sms_prefix + msg.replace("\n", " — "))
         channels["sms"] = detail if ok else ("failed: " + detail)
     slog(f"[urgent-alert] session={session!r} reason={reason!r} channels={channels} msg={message[:120]!r}")
     return {"ok": True, "channels": channels, "message": msg}
