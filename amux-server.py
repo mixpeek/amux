@@ -11910,12 +11910,26 @@ def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy:
             _esc_at = 0.0
             _sent_at = time.time()   # JSONL evidence gate: only messages stamped after this count
             if not _generating:
-                # Close any picker left open by a previous attempt, so the C-u below
-                # actually reaches the input. Without this a retry appends and the
-                # message is submitted twice ("msg msg").
-                subprocess.run(["tmux", "send-keys", "-t", t, "Escape"], capture_output=True, timeout=5)
-                _esc_at = time.monotonic()
-                time.sleep(0.05)
+                # FRESH re-check right before the Escape. The _detect_claude_status
+                # capture above can be stale or misread a live turn as idle; the
+                # picker-closing Escape then lands as an INTERRUPT and cuts off the
+                # session's response ("[Request interrupted by user]" — queued
+                # messages killing active work, 2026-07-18). "esc to interrupt" in
+                # the pane is the reliable generating signal: if it's there, the
+                # session is mid-turn — do NOT Escape.
+                if "esc to interrupt" in (tmux_capture(name, 12) or "").lower():
+                    _generating = True
+                    if _from_steering:
+                        # Steering must land at a real idle boundary, never type
+                        # into a live turn — re-queue for the next tick.
+                        return False, "session started generating — retry at next turn boundary"
+                else:
+                    # Close any picker left open by a previous attempt, so the C-u
+                    # below actually reaches the input. Without this a retry appends
+                    # and the message is submitted twice ("msg msg").
+                    subprocess.run(["tmux", "send-keys", "-t", t, "Escape"], capture_output=True, timeout=5)
+                    _esc_at = time.monotonic()
+                    time.sleep(0.05)
             # Type into a clean input line. A mid-render send can paint characters
             # onto the terminal without them entering Claude's input buffer ("ghost
             # text") — Enter then submits an empty buffer and the message is lost.
