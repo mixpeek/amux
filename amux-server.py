@@ -15267,14 +15267,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     flex-shrink: 0; min-width: 0; overflow: hidden; }
   .peek-dir-bar span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; font-family: "SF Mono","Fira Code",monospace; }
   .peek-terminal-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-  /* Mobile: reclaim peek chrome for the terminal logs. The task label and the
-     directory path are already on the session card, and the header carries the
-     name/status; dropping the two redundant rows + tightening the header gives
-     the log area ~70px more height on a phone. */
+  /* Mobile: reclaim peek chrome for the terminal logs. The task label is already
+     on the session card and the header carries the name/status, so the task row
+     is dropped; the directory row is KEPT (Ethan, 2026-07-18 — wanted it visible
+     on the phone) but compacted so it costs minimal height. Focus mode and the
+     keyboard-open (vv-compact) state still hide it — those are deliberate
+     space-saving modes. */
   @media (max-width: 600px) {
     #peek-overlay .overlay-header { padding-bottom: 2px !important; gap: 2px !important; }
     #peek-overlay #peek-task-row { display: none !important; }
-    #peek-overlay .peek-dir-bar { display: none !important; }
+    #peek-overlay .peek-dir-bar { padding: 2px 10px; font-size: 0.68rem; }
     #peek-overlay .peek-tabs { padding: 0 8px; }
     /* Reclaim the "Updated … · vX" status line on mobile — its ~20px is
        better spent on the terminal. (The version/updated info is still
@@ -24774,7 +24776,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.138';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.139';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -42585,7 +42587,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.138';
+const CACHE = 'amux-v0.9.139';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
