@@ -2601,6 +2601,16 @@ def _session_cc_tasks(name: str) -> dict:
     the amux board (the durable, gated ledger stays the source of truth).
     Returns {tasks, counts, active, total}."""
     try:
+        # Cross-link guard (AMUX-1730): if this session's metadata is pinned to
+        # ANOTHER session's Claude conversation — two amux sessions collided onto
+        # one conversation (both `--resume` the same id) — the resolved plan is
+        # the OTHER session's live, actively-updated plan bleeding onto this one,
+        # so it never clears (mixpeek-general showing mixpeek-frustrations'
+        # MF-323 plan, 2026-07-18). A session must only surface ITS OWN plan.
+        _owner = (_load_meta(name).get("cc_session_name") or "").strip()
+        if _owner and _owner != name:
+            return {"tasks": [], "counts": {}, "active": None, "total": 0,
+                    "_suppressed": "cross-linked to " + _owner}
         p = _session_jsonl_path(name)
         if not p:
             return {"tasks": [], "counts": {}, "active": None, "total": 0}
