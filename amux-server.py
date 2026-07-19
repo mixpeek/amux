@@ -20032,11 +20032,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="peek-steering-scroll" style="flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;">
       <div class="peek-tasks-list" id="peek-steering-list" style="gap:6px;flex:none;"></div>
       <div id="peek-steering-history-wrap" style="margin-top:14px;display:none;">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <div onclick="_steerHistToggle()" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;cursor:pointer;user-select:none;" title="Show/hide sent history">
+          <span id="peek-steering-history-caret" style="font-size:0.7rem;color:var(--dim);display:inline-block;width:10px;">&#9656;</span>
           <span style="font-size:0.8rem;font-weight:600;">Sent history</span>
           <span id="peek-steering-history-count" style="font-size:0.72rem;color:var(--dim);flex:1;"></span>
         </div>
-        <div class="peek-tasks-list" id="peek-steering-history-list" style="gap:6px;flex:none;"></div>
+        <div class="peek-tasks-list" id="peek-steering-history-list" style="gap:6px;flex:none;display:none;"></div>
       </div>
     </div>
   </div>
@@ -24234,7 +24235,17 @@ async function _steeringLoadHistory() {
         <div style="font-size:0.72rem;color:var(--dim);margin-top:4px;">Sent ${timeAgo(m.delivered_at)}</div>
       </div>
     </div>`).join('');
+    _steerHistApply();   // keep the accordion state (collapsed by default)
   } catch(e) { /* keep whatever was shown */ }
+}
+// Sent-history accordion — collapsed by default; state persists while the tab is open.
+let _steerHistOpen = false;
+function _steerHistToggle() { _steerHistOpen = !_steerHistOpen; _steerHistApply(); }
+function _steerHistApply() {
+  const list = document.getElementById('peek-steering-history-list');
+  const caret = document.getElementById('peek-steering-history-caret');
+  if (list) list.style.display = _steerHistOpen ? '' : 'none';
+  if (caret) caret.innerHTML = _steerHistOpen ? '▾' : '▸';   // ▾ / ▸
 }
 
 function _steeringUpdateBadge() {
@@ -25432,7 +25443,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.159';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.160';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -43749,7 +43760,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.159';
+const CACHE = 'amux-v0.9.160';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
