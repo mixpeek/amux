@@ -146,6 +146,230 @@ def _is_path_allowed(p: Path) -> bool:
     return True
 
 
+# ── Ebook → self-contained HTML (pure stdlib) ────────────────────────────────
+# EPUB/FB2/CBZ are converted server-side into a single HTML doc with images/CSS
+# inlined as data URLs, so it renders in a sandboxed (no-network) iframe AND
+# caches cleanly for offline reading. Proprietary formats (MOBI/AZW/CBR/DJVU)
+# aren't decodable in stdlib — they fall through to a download card client-side.
+_EB_IMG_MIME = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+    ".bmp": "image/bmp",
+}
+EBOOK_RENDERABLE = {".epub", ".fb2", ".cbz"}
+EBOOK_DOWNLOAD_ONLY = {".mobi", ".azw", ".azw3", ".azw4", ".kfx", ".cbr", ".djvu", ".lit", ".pdb"}
+EBOOK_EXTS = EBOOK_RENDERABLE | EBOOK_DOWNLOAD_ONLY
+_EB_INLINE_BUDGET = 30 * 1024 * 1024  # stop inlining images past this (protect memory/IDB)
+_EB_READER_CSS = (
+    ":root{color-scheme:light}html,body{margin:0;padding:0;background:#f7f6f3}"
+    ".ebk{max-width:44em;margin:0 auto;padding:28px 24px 96px;"
+    "font:1.05rem/1.7 Georgia,'Iowan Old Style','Times New Roman',serif;color:#1a1a1a;-webkit-text-size-adjust:100%}"
+    ".ebk img{max-width:100%;height:auto;display:block;margin:1em auto}"
+    ".ebk h1,.ebk h2,.ebk h3{font-family:-apple-system,system-ui,sans-serif;line-height:1.25}"
+    ".ebk a{color:#0a58ca}.ebk-chap{border:0;border-top:1px solid #ddd;margin:2.5em 0}"
+    ".ebk pre,.ebk code{font-family:ui-monospace,Menlo,monospace}"
+    "@media(prefers-color-scheme:dark){html,body{background:#181818}.ebk{color:#e6e6e6}"
+    ".ebk a{color:#6ea8fe}.ebk-chap{border-top-color:#333}}"
+)
+
+
+def _eb_data_url(raw: bytes, ext: str) -> str:
+    import posixpath
+    mime = _EB_IMG_MIME.get(ext.lower(), "application/octet-stream")
+    return "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode())
+
+
+def _eb_wrap(inner: str, title) -> str:
+    t = re.sub(r"[<>]", "", title or "ebook")
+    return ("<!doctype html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>%s</title><style>%s</style></head>"
+            "<body><div class='ebk'>%s</div></body></html>") % (t, _EB_READER_CSS, inner)
+
+
+def _eb_epub(raw: bytes):
+    import io, posixpath, zipfile
+    import xml.etree.ElementTree as ET
+    z = zipfile.ZipFile(io.BytesIO(raw))
+    names = z.namelist()
+    lower = {n.lower(): n for n in names}
+    opf_path = None
+    cxml = lower.get("meta-inf/container.xml")
+    if cxml:
+        m = re.search(r'full-path="([^"]+)"', z.read(cxml).decode("utf-8", "replace"))
+        if m:
+            opf_path = m.group(1)
+    if not opf_path or opf_path not in names:
+        opf_path = next((n for n in names if n.lower().endswith(".opf")), None)
+    if not opf_path:
+        raise ValueError("EPUB: no OPF package found")
+    opf_dir = posixpath.dirname(opf_path)
+    root = ET.fromstring(z.read(opf_path))
+    href_by_id = {}
+    for it in root.findall(".//{*}manifest/{*}item"):
+        iid, href = it.get("id"), it.get("href")
+        if iid and href:
+            href_by_id[iid] = href
+    spine = [ir.get("idref") for ir in root.findall(".//{*}spine/{*}itemref") if ir.get("idref")]
+    if not spine:
+        spine = [i for i, h in href_by_id.items() if h.lower().endswith((".xhtml", ".html", ".htm"))]
+    title = None
+    tnode = root.find(".//{*}metadata/{*}title")
+    if tnode is not None and tnode.text:
+        title = tnode.text.strip()
+
+    def zpath(base_dir, href):
+        href = href.split("#")[0].split("?")[0]
+        return posixpath.normpath(posixpath.join(base_dir, href)) if base_dir else posixpath.normpath(href)
+
+    state = {"spent": 0}
+
+    def inline_asset(zp):
+        real = lower.get(zp.lower())
+        if not real or state["spent"] >= _EB_INLINE_BUDGET:
+            return None
+        try:
+            b = z.read(real)
+        except Exception:
+            return None
+        state["spent"] += len(b)
+        return _eb_data_url(b, posixpath.splitext(zp)[1])
+
+    def rewrite_css(css_text, css_dir):
+        def repl(m):
+            u = m.group(1).strip("'\"")
+            if u.startswith("data:") or u.startswith("http"):
+                return m.group(0)
+            du = inline_asset(zpath(css_dir, u))
+            return "url(%s)" % du if du else m.group(0)
+        return re.sub(r"url\(\s*([^)]+?)\s*\)", repl, css_text)
+
+    parts = []
+    for idref in spine:
+        href = href_by_id.get(idref)
+        if not href:
+            continue
+        zp = zpath(opf_dir, href)
+        real = lower.get(zp.lower())
+        if not real:
+            continue
+        try:
+            doc = z.read(real).decode("utf-8", "replace")
+        except Exception:
+            continue
+        doc_dir = posixpath.dirname(zp)
+        mb = re.search(r"<body[^>]*>(.*)</body>", doc, re.S | re.I)
+        frag = mb.group(1) if mb else doc
+
+        def link_repl(m):
+            h2 = re.search(r'href=["\']([^"\']+)["\']', m.group(0))
+            if not h2:
+                return ""
+            real2 = lower.get(zpath(doc_dir, h2.group(1)).lower())
+            if not real2:
+                return ""
+            try:
+                css = z.read(real2).decode("utf-8", "replace")
+            except Exception:
+                return ""
+            return "<style>%s</style>" % rewrite_css(css, posixpath.dirname(zpath(doc_dir, h2.group(1))))
+        frag = re.sub(r"<link\b[^>]*rel=[\"']stylesheet[\"'][^>]*>", link_repl, frag, flags=re.I)
+
+        def img_repl(m):
+            attr, q, url = m.group(1), m.group(2), m.group(3)
+            if url.startswith("data:") or url.startswith("http") or url.startswith("#"):
+                return m.group(0)
+            du = inline_asset(zpath(doc_dir, url))
+            return "%s=%s%s%s" % (attr, q, du, q) if du else m.group(0)
+        frag = re.sub(r'(src|href|xlink:href)\s*=\s*(["\'])([^"\']+)\2', img_repl, frag)
+        frag = re.sub(r"<script\b.*?</script>", "", frag, flags=re.S | re.I)
+        parts.append("<section class='ebk-doc'>%s</section>" % frag)
+    if not parts:
+        raise ValueError("EPUB: no readable content")
+    return _eb_wrap("<hr class='ebk-chap'>".join(parts), title), title
+
+
+def _eb_fb2(raw: bytes):
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(raw)
+    bins = {}
+    for b in root.findall(".//{*}binary"):
+        bid, ct = b.get("id"), b.get("content-type", "image/jpeg")
+        if bid and b.text:
+            bins[bid] = "data:%s;base64,%s" % (ct, b.text.strip())
+    title = None
+    tn = root.find(".//{*}title-info/{*}book-title")
+    if tn is not None and tn.text:
+        title = tn.text.strip()
+
+    def render(el):
+        tag = el.tag.split("}")[-1]
+        inner = el.text or ""
+        for c in el:
+            inner += render(c) + (c.tail or "")
+        if tag == "p":
+            return "<p>%s</p>" % inner
+        if tag == "empty-line":
+            return "<br>"
+        if tag == "title":
+            return "<h2>%s</h2>" % inner
+        if tag == "subtitle":
+            return "<h3>%s</h3>" % inner
+        if tag == "emphasis":
+            return "<em>%s</em>" % inner
+        if tag == "strong":
+            return "<strong>%s</strong>" % inner
+        if tag in ("section", "epigraph", "cite", "annotation", "poem", "stanza"):
+            return "<div class='fb2-%s'>%s</div>" % (tag, inner)
+        if tag == "v":
+            return "<div>%s</div>" % inner
+        if tag == "image":
+            href = el.get("href") or el.get("{http://www.w3.org/1999/xlink}href") or ""
+            src = bins.get(href.lstrip("#"))
+            return "<img src='%s'>" % src if src else ""
+        return inner
+
+    inner = "".join(render(bd) for bd in root.findall(".//{*}body"))
+    if not inner.strip():
+        raise ValueError("FB2: empty")
+    return _eb_wrap(inner, title), title
+
+
+def _eb_cbz(raw: bytes):
+    import io, posixpath, zipfile
+    z = zipfile.ZipFile(io.BytesIO(raw))
+    imgs = sorted(n for n in z.namelist()
+                  if posixpath.splitext(n)[1].lower() in _EB_IMG_MIME and not n.startswith("__MACOSX"))
+    if not imgs:
+        raise ValueError("CBZ: no images")
+    parts, spent, shown = [], 0, 0
+    for n in imgs:
+        if spent >= _EB_INLINE_BUDGET:
+            parts.append("<p style='text-align:center;color:#999'>… %d more page(s) not shown (size limit)</p>"
+                         % (len(imgs) - shown))
+            break
+        try:
+            b = z.read(n)
+        except Exception:
+            continue
+        spent += len(b)
+        shown += 1
+        parts.append("<img src='%s'>" % _eb_data_url(b, posixpath.splitext(n)[1]))
+    return _eb_wrap("".join(parts), None), None
+
+
+def ebook_to_html(raw: bytes, ext: str):
+    """Dispatch by extension → (html, title). Raises on any failure."""
+    ext = ext.lower()
+    if ext == ".epub":
+        return _eb_epub(raw)
+    if ext == ".fb2":
+        return _eb_fb2(raw)
+    if ext == ".cbz":
+        return _eb_cbz(raw)
+    raise ValueError("unsupported ebook: " + ext)
+
+
 # Basenames/dirs that must NEVER be written via the file APIs regardless of
 # extension — writing any of these is a code-execution primitive (shell rc
 # files, login items, launch agents). Checked on write/upload in addition to
@@ -24861,7 +25085,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.148';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.149';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -26437,6 +26661,7 @@ function _fileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
   if (['png','jpg','jpeg','gif','webp','bmp'].includes(ext)) return '🖼';
   if (ext === 'pdf') return '📄';
+  if (['epub','fb2','cbz','cbr','mobi','azw','azw3','azw4','kfx','djvu','lit','pdb'].includes(ext)) return '📚';
   if (['txt','md','log'].includes(ext)) return '📝';
   if (['csv','json'].includes(ext)) return '📊';
   return '📎';
@@ -28772,6 +28997,19 @@ function _renderFileBody(data, mode) {
     body.innerHTML = `<embed src="${data.data_url}" type="application/pdf" style="width:100%;height:100%;min-height:520px;border-radius:4px;">`;
     return;
   }
+  // Renderable ebook (EPUB/FB2/CBZ): server already inlined everything into a
+  // self-contained HTML doc — render it in a sandboxed (no-script) iframe.
+  if (data.is_ebook && data.content && !data.is_binary) {
+    body.className = 'file-overlay-body file-html-preview file-ebook';
+    const iframe = document.createElement('iframe');
+    iframe.sandbox = 'allow-same-origin';
+    iframe.setAttribute('scrolling', 'yes');
+    iframe.style.cssText = 'width:100%;flex:1;min-height:0;border:none;background:#f7f6f3;';
+    body.innerHTML = '';
+    body.appendChild(iframe);
+    iframe.srcdoc = data.content;
+    return;
+  }
   if (data.is_video) {
     // Close the file overlay and open in the full custom video player (with resume)
     closeFilePreview();
@@ -28801,7 +29039,11 @@ function _renderFileBody(data, mode) {
     const fname = data.path.split('/').pop();
     const sizeMB = data.size ? (data.size / 1048576).toFixed(1) + ' MB' : '';
     const rawUrl = API + '/api/file/raw?path=' + encodeURIComponent(data.path) + (peekSessionDir ? '&cwd=' + encodeURIComponent(peekSessionDir) : '');
-    body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:32px;"><div style="font-size:2.5rem;">📦</div><div style="font-size:0.95rem;color:var(--muted);">${fname}${sizeMB ? ' · ' + sizeMB : ''}${data.ext ? ' · ' + data.ext : ''}</div><a href="${_authUrl(rawUrl)}" download="${fname}" style="padding:8px 18px;background:var(--green);color:#fff;border-radius:6px;font-size:0.85rem;font-weight:600;text-decoration:none;">Download</a></div>`;
+    // Ebook formats we can't render in-browser (MOBI/AZW/CBR/DJVU…) get a
+    // reader-styled card rather than the generic binary blob.
+    const icon = data.is_ebook ? '📚' : '📦';
+    const note = data.is_ebook ? `<div style="font-size:0.78rem;color:var(--dim);text-align:center;max-width:22em;">This ebook format (${data.ebook_kind || data.ext}) can’t be previewed in the browser — download to open in your reader.</div>` : '';
+    body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:32px;"><div style="font-size:2.5rem;">${icon}</div><div style="font-size:0.95rem;color:var(--muted);">${fname}${sizeMB ? ' · ' + sizeMB : ''}${data.ext ? ' · ' + data.ext : ''}</div>${note}<a href="${_authUrl(rawUrl)}" download="${fname}" style="padding:8px 18px;background:var(--green);color:#fff;border-radius:6px;font-size:0.85rem;font-weight:600;text-decoration:none;">Download</a></div>`;
     return;
   }
   // Text files — Raw / Edit / Preview
@@ -29016,7 +29258,7 @@ async function openFilePreview(path) {
     }
     _fileData = data;
     // Show tabs only for text files
-    const isTextFile = !data.is_image && !data.is_pdf && !data.is_video && !data.is_audio && !data.is_binary;
+    const isTextFile = !data.is_image && !data.is_pdf && !data.is_video && !data.is_audio && !data.is_binary && !data.is_ebook;
     if (isTextFile) {
       document.getElementById('file-view-tabs').style.display = '';
       // Show Edit tab only for markdown
@@ -29032,23 +29274,23 @@ async function openFilePreview(path) {
     dlBtn.dataset.filename = data.path.split('/').pop();
     dlBtn.style.display = '';
     _renderFileBody(data, _fileViewMode);
-    // Cache for offline viewing — but only SMALL text (e.g. .md) + small images.
-    // Never large binaries / video / audio / pdf: their data_url (base64) would
-    // bloat IndexedDB, and the user explicitly asked not to store large binaries.
-    const _dot = path.lastIndexOf('.'); const _ext = _dot >= 0 ? path.slice(_dot).toLowerCase() : '';
-    const _sz = data.size || (data.data_url ? data.data_url.length : (data.content ? data.content.length : 0));
-    const _cacheable = isTextFile ? (_sz <= 1024 * 1024)
-                                  : (_CACHEABLE_IMG_EXTS.has(_ext) && _sz <= 256 * 1024);
-    if (_cacheable) _idb.setFile(path, { type: 'file', data });
+    // Save EVERY opened previewable file for offline viewing (text, images, PDF,
+    // ebooks, HTML, CSV) up to a per-file cap. setFile stamps ts=now, so ts is
+    // the last-opened time — the 30-day pruner (_idb.pruneFiles, run at startup)
+    // evicts anything not opened in 30 days. Streaming media (video/audio) has
+    // no data_url/content so it's naturally skipped — it can't live in IDB.
+    const _payload = (data.data_url ? data.data_url.length : 0) + (data.content ? data.content.length : 0);
+    if (_payload > 0 && _payload <= _FILE_CACHE_MAX) _idb.setFile(path, { type: 'file', data });
   } catch(e) {
     // Offline: try IDB cache
     const cached = await _idb.getFile(path);
     if (cached && cached.type === 'file') {
+      _idb.touchFile(path);   // opening refreshes the 30-day clock, even offline
       _fileData = cached.data;
       const age = Math.round((Date.now() - cached.ts) / 60000);
       const ageStr = age < 60 ? age + 'm ago' : Math.round(age/60) + 'h ago';
       document.getElementById('file-title').textContent = path.split('/').pop() + ' \u2022 cached ' + ageStr;
-      const cachedIsText = !cached.data.is_image && !cached.data.is_pdf && !cached.data.is_video && !cached.data.is_audio && !cached.data.is_binary;
+      const cachedIsText = !cached.data.is_image && !cached.data.is_pdf && !cached.data.is_video && !cached.data.is_audio && !cached.data.is_binary && !cached.data.is_ebook;
       if (cachedIsText) {
         document.getElementById('file-view-tabs').style.display = '';
       }
@@ -29625,6 +29867,8 @@ const _CACHEABLE_TEXT_EXTS = new Set([
   '.ini','.cfg','.conf','.lock','.mod','.sum','.dockerfile','.makefile',
 ]);
 const _CACHEABLE_IMG_EXTS = new Set(['.png','.jpg','.jpeg','.gif','.webp','.svg','.bmp','.ico']);
+const _FILE_CACHE_MAX = 25 * 1024 * 1024;   // per-file offline-cache cap (protects IndexedDB)
+const _FILE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;   // evict files not opened in 30 days
 const _SKIP_CACHE_DIRS = new Set(['.git','node_modules','__pycache__','.next','.nuxt','dist','build','.venv','venv','.tox','.mypy_cache','target','vendor']);
 
 async function cacheFilesDir(rootPath, maxDepth = 2) {
@@ -35911,9 +36155,35 @@ const _idb = (() => {
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
     })).catch(() => null),
+    // Bump a cached file's ts to now (last-opened) without rewriting its blob.
+    touchFile: (path) => open().then(d => new Promise((resolve) => {
+      const tx = d.transaction('files', 'readwrite');
+      const os = tx.objectStore('files');
+      const g = os.get(path);
+      g.onsuccess = () => { const r = g.result; if (r) { r.ts = Date.now(); os.put(r); } resolve(); };
+      g.onerror = () => resolve();
+    })).catch(() => {}),
+    // Evict cached files whose last-opened ts is older than maxAgeMs. Returns count.
+    pruneFiles: (maxAgeMs) => open().then(d => new Promise((resolve) => {
+      const cutoff = Date.now() - maxAgeMs;
+      const tx = d.transaction('files', 'readwrite');
+      const cur = tx.objectStore('files').openCursor();
+      let removed = 0;
+      cur.onsuccess = (e) => {
+        const c = e.target.result;
+        if (c) { if ((c.value.ts || 0) < cutoff) { c.delete(); removed++; } c.continue(); }
+        else resolve(removed);
+      };
+      cur.onerror = () => resolve(removed);
+    })).catch(() => 0),
     clearFiles: () => _txw('files', os => os.clear()),
   };
 })();
+
+// Expire offline-cached files not opened in the last 30 days (LRU by last-open ts).
+_idb.pruneFiles(_FILE_CACHE_TTL_MS).then(n => {
+  if (n) console.log('[files] evicted ' + n + ' offline file(s) not opened in 30 days');
+});
 
 // IDB fallback: restore statuses from IndexedDB (preserves column order across reloads)
 _idb.getAll('statuses').then(items => {
@@ -42792,7 +43062,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.148';
+const CACHE = 'amux-v0.9.149';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -45369,6 +45639,22 @@ class CCHandler(BaseHTTPRequestHandler):
                                        "profile": meta.get("profile"), "task": meta.get("task")})
                 if ext in AUDIO_MIMES:
                     return self._json({"path": str(p), "is_audio": True, "mime": AUDIO_MIMES[ext], "size": p.stat().st_size})
+                # Ebooks: EPUB/FB2/CBZ convert to inline HTML (renders + caches
+                # offline); proprietary formats become an ebook download card.
+                if ext in EBOOK_EXTS:
+                    fsize = p.stat().st_size
+                    kind = ext.lstrip(".")
+                    cap = 60_000_000 if ext == ".cbz" else 25_000_000
+                    if ext in EBOOK_RENDERABLE and fsize <= cap:
+                        try:
+                            html, title = ebook_to_html(p.read_bytes(), ext)
+                            return self._json({"path": str(p), "is_ebook": True, "ebook_kind": kind,
+                                               "content": html, "title": title, "size": fsize})
+                        except Exception as _ee:
+                            slog(f"[ebook] convert failed for {p.name}: {_ee}")
+                    # too big or unsupported/proprietary → download card
+                    return self._json({"path": str(p), "is_binary": True, "is_ebook": True,
+                                       "ebook_kind": kind, "size": fsize, "ext": ext})
                 # Detect other binary files (non-printable bytes in first 8KB)
                 try:
                     sample = p.read_bytes()[:8192]
