@@ -500,6 +500,166 @@ def ebook_to_html(raw: bytes, ext: str):
     raise ValueError("unsupported ebook: " + ext)
 
 
+# ── Library index (a folder of ebooks → flat, metadata-rich book list) ───────
+# Prefers a Calibre metadata.db; falls back to scanning .opf sidecars/filenames.
+_LIB_EBOOK_EXTS = {".epub", ".mobi", ".azw", ".azw3", ".azw4", ".kfx", ".fb2", ".cbz", ".cbr", ".pdf", ".djvu"}
+_LIB_FMT_RANK = {"epub": 0, "azw3": 1, "mobi": 2, "fb2": 3, "cbz": 4, "pdf": 5, "azw": 6, "djvu": 9}
+
+
+def _lib_fmt_rank(fmt):
+    return _LIB_FMT_RANK.get(fmt.lower(), 8)
+
+
+def _lib_calibre(db_path, root, limit=5000):
+    con = sqlite3.connect("file:%s?mode=ro&immutable=1" % str(db_path), uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        books = {}
+        for r in con.execute("SELECT id,title,author_sort,path,has_cover,pubdate,series_index,timestamp "
+                             "FROM books ORDER BY timestamp DESC LIMIT ?", (limit,)):
+            books[r["id"]] = {
+                "id": r["id"], "title": r["title"] or "Untitled",
+                "authors": [], "tags": [], "series": None,
+                "series_index": r["series_index"], "formats": [],
+                "cover": None, "pubdate": (r["pubdate"] or "")[:10],
+                "rating": 0, "_path": r["path"], "_has_cover": r["has_cover"],
+            }
+
+        def link(sql):
+            for r in con.execute(sql):
+                if r["book"] in books:
+                    yield r
+        for r in link("SELECT bal.book, a.name FROM books_authors_link bal JOIN authors a ON a.id=bal.author ORDER BY bal.id"):
+            books[r["book"]]["authors"].append(r["name"])
+        for r in link("SELECT btl.book, t.name FROM books_tags_link btl JOIN tags t ON t.id=btl.tag ORDER BY t.name"):
+            books[r["book"]]["tags"].append(r["name"])
+        for r in link("SELECT bsl.book, s.name FROM books_series_link bsl JOIN series s ON s.id=bsl.series"):
+            books[r["book"]]["series"] = r["name"]
+        for r in link("SELECT brl.book, rt.rating FROM books_ratings_link brl JOIN ratings rt ON rt.id=brl.rating"):
+            books[r["book"]]["rating"] = round((r["rating"] or 0) / 2, 1)
+        for r in con.execute("SELECT book, format, name, uncompressed_size FROM data"):
+            b = books.get(r["book"])
+            if not b:
+                continue
+            fp = root / b["_path"] / ("%s.%s" % (r["name"], r["format"].lower()))
+            b["formats"].append({"fmt": r["format"].upper(), "path": str(fp),
+                                 "size": r["uncompressed_size"] or 0})
+    finally:
+        con.close()
+
+    out = []
+    for b in books.values():
+        b["formats"] = [f for f in b["formats"] if os.path.exists(f["path"])]
+        if not b["formats"]:
+            continue
+        if b["_has_cover"]:
+            cov = root / b["_path"] / "cover.jpg"
+            if cov.exists():
+                b["cover"] = str(cov)
+        b["formats"].sort(key=lambda f: _lib_fmt_rank(f["fmt"]))
+        if not b["authors"]:
+            b["authors"] = ["Unknown"]
+        for k in ("_path", "_has_cover"):
+            b.pop(k, None)
+        out.append(b)
+    out.sort(key=lambda x: (x["title"] or "").lower())
+    return out
+
+
+def _lib_parse_opf(opf):
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(opf.read_bytes())
+    except Exception:
+        return {}
+    def txt(tag):
+        e = root.find(".//{*}%s" % tag)
+        return (e.text or "").strip() if e is not None and e.text else None
+    authors = [e.text.strip() for e in root.findall(".//{*}creator") if e is not None and e.text]
+    tags = [e.text.strip() for e in root.findall(".//{*}subject") if e is not None and e.text]
+    series = None
+    for m in root.findall(".//{*}meta"):
+        if (m.get("name") or "") == "calibre:series":
+            series = m.get("content")
+    return {"title": txt("title"), "authors": authors, "tags": tags, "series": series}
+
+
+def _lib_opf_scan(root, limit=5000):
+    import posixpath
+    by_dir, count = {}, 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")][:2000]
+        ebs = [f for f in filenames if posixpath.splitext(f)[1].lower() in _LIB_EBOOK_EXTS]
+        if not ebs:
+            continue
+        d = Path(dirpath)
+        meta = _lib_parse_opf(d / "metadata.opf") if (d / "metadata.opf").exists() else {}
+        cover = None
+        for cname in ("cover.jpg", "cover.jpeg", "cover.png"):
+            if (d / cname).exists():
+                cover = str(d / cname); break
+        groups = {}
+        for f in ebs:
+            base, ext = posixpath.splitext(f)
+            groups.setdefault(base, []).append((ext.lower().lstrip("."), f))
+        for base, fmts in groups.items():
+            title = meta.get("title") or re.sub(r"\s*-\s*[^-]+$", "", base).strip() or base
+            authors = meta.get("authors") or []
+            if not authors:
+                m = re.search(r"-\s*([^-]+)$", base)
+                authors = [m.group(1).strip()] if m else ["Unknown"]
+            formats = []
+            for ext, fname in fmts:
+                fp = d / fname
+                formats.append({"fmt": ext.upper(), "path": str(fp),
+                                "size": fp.stat().st_size if fp.exists() else 0})
+            formats.sort(key=lambda x: _lib_fmt_rank(x["fmt"]))
+            by_dir[str(d / base)] = {
+                "id": count, "title": title, "authors": authors,
+                "tags": meta.get("tags") or [], "series": meta.get("series"),
+                "series_index": None, "formats": formats, "cover": cover,
+                "pubdate": "", "rating": 0,
+            }
+            count += 1
+            if count >= limit:
+                break
+        if count >= limit:
+            break
+    out = list(by_dir.values())
+    out.sort(key=lambda x: (x["title"] or "").lower())
+    return out
+
+
+def _lib_facets(books):
+    authors, formats, tags, series = {}, {}, {}, {}
+    for b in books:
+        for a in b["authors"]:
+            authors[a] = authors.get(a, 0) + 1
+        seen = set()
+        for f in b["formats"]:
+            if f["fmt"] not in seen:
+                formats[f["fmt"]] = formats.get(f["fmt"], 0) + 1
+                seen.add(f["fmt"])
+        for t in b["tags"]:
+            tags[t] = tags.get(t, 0) + 1
+        if b["series"]:
+            series[b["series"]] = series.get(b["series"], 0) + 1
+
+    def top(d, n=60):
+        return [{"name": k, "count": v} for k, v in sorted(d.items(), key=lambda kv: (-kv[1], kv[0].lower()))[:n]]
+    return {"authors": top(authors), "formats": top(formats, 12), "tags": top(tags), "series": top(series)}
+
+
+def _lib_index(root):
+    db = root / "metadata.db"
+    if db.exists():
+        books, source = _lib_calibre(db, root), "calibre"
+    else:
+        books, source = _lib_opf_scan(root), "opf"
+    return {"is_library": bool(books), "source": source, "count": len(books),
+            "books": books, "facets": _lib_facets(books)}
+
+
 # Basenames/dirs that must NEVER be written via the file APIs regardless of
 # extension — writing any of these is a code-execution primitive (shell rc
 # files, login items, launch agents). Checked on write/upload in addition to
@@ -14996,6 +15156,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     padding: 4px 14px; font-size: 0.7rem; color: var(--dim); flex-shrink: 0;
     border-top: 1px solid var(--border); background: var(--card);
   }
+  .lib-facet {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+    color: var(--text); font-size: 0.72rem; padding: 4px 6px; max-width: 130px;
+    cursor: pointer; outline: none;
+  }
+  #lib-grid .lib-card:active { transform: scale(0.98); }
+  #lib-grid .lib-card { transition: transform 0.08s; }
   .fe-back-row {
     display: grid; grid-template-columns: minmax(0,1fr) 60px 92px 30px;
     padding: 0 4px; border-bottom: 1px solid rgba(139,148,158,0.08);
@@ -18504,6 +18671,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <span id="files-bm-label" style="font-size:0.7rem;color:var(--dim);white-space:nowrap;flex-shrink:0;">Quick:</span>
     <div id="files-bookmarks-list" style="display:flex;gap:5px;flex-wrap:nowrap;"></div>
     <button id="files-bm-add" onclick="_filesAddBookmark()" style="background:none;border:1px dashed var(--border);border-radius:4px;color:var(--dim);font-size:0.7rem;padding:2px 6px;cursor:pointer;white-space:nowrap;flex-shrink:0;" title="Bookmark current folder">+</button>
+    <button id="files-lib-btn" onclick="_libOpen()" style="display:none;margin-left:auto;background:var(--accent);color:#000;border:none;border-radius:4px;font-size:0.7rem;font-weight:600;padding:3px 9px;cursor:pointer;white-space:nowrap;flex-shrink:0;" title="View this folder as a searchable library">&#x1F4DA; Library</button>
   </div>
   <!-- Search -->
   <div style="padding:5px 10px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--card);">
@@ -18524,6 +18692,26 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="files-body"></div>
   </div>
   <div id="fe-status" class="fe-status"></div>
+  <!-- Library view: flat, searchable, faceted cover grid (ebook folders) -->
+  <div id="files-library" style="display:none;flex-direction:column;flex:1;min-height:0;">
+    <div style="padding:6px 10px;border-bottom:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap;align-items:center;background:var(--card);">
+      <button onclick="_libClose()" title="Back to file list" style="background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:0.72rem;padding:4px 9px;cursor:pointer;white-space:nowrap;">&#9776; Files</button>
+      <input id="lib-search" type="search" placeholder="Search title, author, tag&hellip;" autocomplete="off" oninput="_libRender()"
+        style="flex:1;min-width:120px;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:4px 9px;font-size:0.8rem;color:var(--text);outline:none;">
+      <select id="lib-author" onchange="_libRender()" class="lib-facet"></select>
+      <select id="lib-format" onchange="_libRender()" class="lib-facet"></select>
+      <select id="lib-tag" onchange="_libRender()" class="lib-facet"></select>
+      <select id="lib-sort" onchange="_libRender()" class="lib-facet">
+        <option value="title">Sort: Title</option>
+        <option value="author">Sort: Author</option>
+        <option value="date">Sort: Newest</option>
+        <option value="rating">Sort: Rating</option>
+        <option value="size">Sort: Size</option>
+      </select>
+      <span id="lib-count" style="font-size:0.7rem;color:var(--dim);white-space:nowrap;"></span>
+    </div>
+    <div id="lib-grid" style="flex:1;overflow-y:auto;padding:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:14px;align-content:start;"></div>
+  </div>
 </div>
 
 <div id="proxies-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
@@ -25216,7 +25404,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.154';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.155';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -29792,6 +29980,117 @@ function _filesAddBookmarkPath(path, type) {
 
 function _filesAddBookmark() { _filesAddBookmarkPath(_filesPath || '/', 'dir'); }
 
+// ── Library view: a folder of ebooks → flat, searchable, faceted cover grid ──
+let _libData = null;         // last /api/library payload
+let _libOpenedPath = null;   // path the grid was opened for (auto-close on nav away)
+const _LIB_EB = ['.epub','.mobi','.azw','.azw3','.azw4','.fb2','.cbz','.cbr','.pdf','.djvu'];
+function _libLooksLikeLibrary(entries) {
+  if (!Array.isArray(entries)) return false;
+  let ebooks = 0;
+  for (const e of entries) {
+    const n = (e.name || '').toLowerCase();
+    if (n === 'metadata.db') return true;               // Calibre library
+    if (e.type !== 'dir' && _LIB_EB.some(x => n.endsWith(x))) ebooks++;
+  }
+  return ebooks >= 3;
+}
+// Called from the file-list render: show the button for library-like folders,
+// and auto-close the grid if the user navigated to a different folder.
+function _libUpdateBtn(entries) {
+  const btn = document.getElementById('files-lib-btn');
+  if (btn) btn.style.display = _libLooksLikeLibrary(entries) ? '' : 'none';
+  const lib = document.getElementById('files-library');
+  if (lib && lib.style.display !== 'none' && _filesPath !== _libOpenedPath) _libClose();
+}
+async function _libOpen() {
+  const btn = document.getElementById('files-lib-btn');
+  const label = btn ? btn.innerHTML : '';
+  if (btn) btn.innerHTML = '⏳';
+  try {
+    const r = await fetch(API + '/api/library?path=' + encodeURIComponent(_filesPath));
+    const d = await r.json();
+    if (d.error || !d.is_library) { showToast(d.error || 'No ebooks found here'); return; }
+    _libData = d; _libOpenedPath = _filesPath;
+    _libBuildFacet('lib-author', d.facets.authors, 'All authors');
+    _libBuildFacet('lib-format', d.facets.formats, 'All formats');
+    _libBuildFacet('lib-tag', d.facets.tags, 'All tags');
+    document.getElementById('files-library').style.display = 'flex';
+    document.getElementById('fe-scroll').style.display = 'none';
+    document.getElementById('fe-status').style.display = 'none';
+    const searchWrap = document.getElementById('files-search').parentElement;
+    if (searchWrap) searchWrap.style.display = 'none';
+    _libRender();
+  } catch(e) { showToast('Library load failed'); }
+  finally { if (btn) btn.innerHTML = label || '📚 Library'; }
+}
+function _libClose() {
+  document.getElementById('files-library').style.display = 'none';
+  document.getElementById('fe-scroll').style.display = '';
+  document.getElementById('fe-status').style.display = '';
+  const searchWrap = document.getElementById('files-search').parentElement;
+  if (searchWrap) searchWrap.style.display = '';
+}
+function _libBuildFacet(id, items, allLabel) {
+  const sel = document.getElementById(id);
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">' + allLabel + '</option>' +
+    (items || []).map(it => '<option value="' + esc(it.name) + '">' + esc(it.name) + ' (' + it.count + ')</option>').join('');
+  sel.value = cur;   // preserve selection across re-open if still present
+}
+function _libRender() {
+  if (!_libData) return;
+  const q = (document.getElementById('lib-search').value || '').toLowerCase().trim();
+  const fa = document.getElementById('lib-author').value;
+  const ff = document.getElementById('lib-format').value;
+  const ft = document.getElementById('lib-tag').value;
+  const sort = document.getElementById('lib-sort').value;
+  let books = _libData.books.filter(b => {
+    if (fa && !b.authors.includes(fa)) return false;
+    if (ff && !b.formats.some(f => f.fmt === ff)) return false;
+    if (ft && !b.tags.includes(ft)) return false;
+    if (q) {
+      const hay = (b.title + ' ' + b.authors.join(' ') + ' ' + b.tags.join(' ') + ' ' + (b.series || '')).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  const cmp = {
+    title: (a, b) => (a.title || '').localeCompare(b.title || ''),
+    author: (a, b) => (a.authors[0] || '').localeCompare(b.authors[0] || ''),
+    date: (a, b) => (b.pubdate || '').localeCompare(a.pubdate || ''),
+    rating: (a, b) => (b.rating || 0) - (a.rating || 0),
+    size: (a, b) => ((b.formats[0] || {}).size || 0) - ((a.formats[0] || {}).size || 0),
+  }[sort];
+  if (cmp) books = books.slice().sort(cmp);
+  document.getElementById('lib-count').textContent = books.length + ' book' + (books.length !== 1 ? 's' : '');
+  const grid = document.getElementById('lib-grid');
+  grid.innerHTML = books.length
+    ? books.map(b => _libCard(b, _libData.books.indexOf(b))).join('')
+    : '<div style="color:var(--dim);padding:20px;grid-column:1/-1;">No matches.</div>';
+}
+function _libCard(b, idx) {
+  const coverUrl = b.cover ? _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(b.cover)) : '';
+  const ph = '<div class="lib-ph" style="width:100%;aspect-ratio:2/3;border-radius:4px;background:var(--bg);display:flex;align-items:center;justify-content:center;font-size:1.8rem;">📚</div>';
+  const cover = coverUrl
+    ? '<img loading="lazy" src="' + coverUrl + '" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';" style="width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:4px;background:var(--bg);display:block;">' +
+      '<div class="lib-ph" style="display:none;width:100%;aspect-ratio:2/3;border-radius:4px;background:var(--bg);align-items:center;justify-content:center;font-size:1.8rem;">📚</div>'
+    : ph;
+  const badges = b.formats.map(f => '<span style="font-size:0.58rem;background:var(--surface);border:1px solid var(--border);border-radius:3px;padding:0 3px;color:var(--dim);">' + esc(f.fmt) + '</span>').join(' ');
+  const stars = b.rating ? '<span style="color:#f5a623;font-size:0.62rem;" title="' + b.rating + '">' + '★'.repeat(Math.round(b.rating)) + '</span>' : '';
+  return '<div class="lib-card" onclick="_libOpenBook(' + idx + ')" style="cursor:pointer;display:flex;flex-direction:column;gap:4px;" title="' + esc(b.title) + '\\n' + esc(b.authors.join(', ')) + '">' +
+    '<div style="position:relative;box-shadow:0 1px 5px rgba(0,0,0,0.18);border-radius:4px;">' + cover + '</div>' +
+    '<div style="font-size:0.73rem;font-weight:600;color:var(--text);line-height:1.2;max-height:2.4em;overflow:hidden;">' + esc(b.title) + '</div>' +
+    '<div style="font-size:0.65rem;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(b.authors.join(', ')) + '</div>' +
+    '<div style="display:flex;gap:3px;flex-wrap:wrap;align-items:center;">' + badges + (stars ? ' ' + stars : '') + '</div>' +
+  '</div>';
+}
+function _libOpenBook(idx) {
+  const b = _libData && _libData.books[idx];
+  if (!b || !b.formats.length) return;
+  openFilePreview(b.formats[0].path);   // formats are rank-sorted — most readable first
+}
+
 function _filesRemoveBookmark(idx) {
   const bm = _filesGetBookmarks();
   const removed = bm.splice(idx, 1);
@@ -29993,6 +30292,7 @@ async function _feToggleExpand(btn) {
 }
 function _renderFilesEntries(body, path, data, cacheTs) {
   _filesLastData = { path, data, cacheTs };
+  _libUpdateBtn(data.entries);   // show the Library button for ebook folders (+ auto-close on nav)
   body.innerHTML = '';
 
   // Show/hide column headers and update sort indicators
@@ -43344,7 +43644,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.154';
+const CACHE = 'amux-v0.9.155';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -45865,6 +46165,24 @@ class CCHandler(BaseHTTPRequestHandler):
                 return self._json({"error": str(e)}, 500)
 
         # GET /api/file?path=...&cwd=...
+        # GET /api/library?path=<dir> — flat metadata index of an ebook folder
+        # (Calibre metadata.db or generic .opf scan) for the library grid view.
+        if method == "GET" and path == "/api/library":
+            dpath = qs.get("path", [""])[0]
+            if not dpath:
+                return self._json({"error": "missing path"}, 400)
+            d = Path(dpath).expanduser()
+            if not d.is_absolute():
+                return self._json({"error": "absolute path required"}, 400)
+            if not _is_path_allowed(d):
+                return self._json({"error": "access denied"}, 403)
+            if not d.is_dir():
+                return self._json({"error": "not a directory"}, 404)
+            try:
+                return self._json(_lib_index(d))
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
+
         if method == "GET" and path == "/api/file":
             fpath = qs.get("path", [""])[0]
             cwd = qs.get("cwd", [""])[0]
