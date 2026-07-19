@@ -25432,7 +25432,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.158';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.159';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -28791,7 +28791,25 @@ function _cmdHistItemHTML(e) {
   const meta = tag + sessTag + tsTag;
   const locSess = (session || peekSession || '').replace(/'/g,'');
   const locate = locSess ? `<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" title="Open the peek and scroll to where this was sent" onclick="event.stopPropagation();_msgLocate('${locSess}','${enc}')">&#x2316;</button>` : '';
-  return `<div onclick="_pickCmdHistory(decodeURIComponent('${enc}'))" style="cursor:pointer;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:10px;align-items:flex-start;" onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="this.style.borderColor='var(--border)'"><div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${safe}</div>${locate}</div>`;
+  return `<div onclick="_msgCopy(this,'${enc}')" title="Click to copy" style="cursor:pointer;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:10px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="this.style.borderColor='var(--border)'"><div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${safe}</div>${locate}</div>`;
+}
+// Click a message → copy its text + flash a "Copied" badge on the card.
+function _msgCopy(el, enc) {
+  const text = decodeURIComponent(enc);
+  const flash = () => {
+    showToast('Copied');
+    if (el && !el.querySelector('.msg-copied-badge')) {
+      const badge = document.createElement('div');
+      badge.className = 'msg-copied-badge';
+      badge.textContent = '✓ Copied';
+      badge.style.cssText = 'position:absolute;top:6px;right:8px;background:var(--green);color:#fff;font-size:0.66rem;font-weight:600;padding:1px 7px;border-radius:4px;pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,0.2);';
+      el.appendChild(badge);
+      setTimeout(() => badge.remove(), 1100);
+    }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(flash, () => { _copyExplorePathFallback(text); flash(); });
+  } else { _copyExplorePathFallback(text); flash(); }
 }
 function _peekMessagesFor() {
   if (!peekSession) return [];
@@ -43731,7 +43749,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.158';
+const CACHE = 'amux-v0.9.159';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
