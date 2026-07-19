@@ -24275,13 +24275,22 @@ async function _steeringSendNow(msgId) {
   const msg = ((sess && sess.steering) || []).find(m => m.id === msgId);
   if (!msg) return;
   try {
+    // Deliver FIRST with deliver_now (forces a direct send instead of the
+    // defer-at-a-selector path that used to silently re-queue it), and only
+    // remove it from the queue once it actually lands — so a failed send never
+    // loses the message.
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/send', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text: msg.text, deliver_now: true})
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok || String(d.message || '').startsWith('queued')) {
+      showToast(d.message ? ('Not sent: ' + d.message) : 'Not sent — kept in queue');
+      return;
+    }
     await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', {
       method: 'DELETE', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id: msgId, sent: true})
-    });
-    await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/send', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text: msg.text})
     });
     await fetchSessions();
     _steeringRender();
@@ -25455,7 +25464,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.160';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.161';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -43772,7 +43781,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.160';
+const CACHE = 'amux-v0.9.161';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -51051,7 +51060,11 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 # tool-approval / selector instead of Escape-cancelling it (the
                 # backend->gtm-engine AskUserQuestion kill, 2026-07-15). Human browser
                 # sends carry record_history and keep their existing behavior.
-                _defer_busy = not bool(body.get("record_history"))
+                # deliver_now: the "Send now" button on a queued steer message — a
+                # deliberate human action that must land DIRECTLY (not defer/re-queue
+                # at a selector), yet without re-recording to history (the message is
+                # already there from when it was queued).
+                _defer_busy = not (bool(body.get("record_history")) or bool(body.get("deliver_now")))
                 # ORIGIN STAMP (AMUX-1768/1769): an inter-session send gets its
                 # TRUE origin stamped SERVER-SIDE from the sender's tmux identity
                 # (X-Amux-Session header, set per-tmux at launch — immune to
