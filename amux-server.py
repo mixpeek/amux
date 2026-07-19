@@ -23732,7 +23732,8 @@ function showSendingIndicator() {
       peekWrap.appendChild(ind);
     }
     ind.style.display = '';
-    // Rapid refresh burst to detect output change quickly
+    // Rapid refresh burst to detect output change quickly (early paint at 150ms)
+    setTimeout(refreshPeek, 150);
     setTimeout(refreshPeek, 500);
     setTimeout(refreshPeek, 1500);
   }
@@ -25215,7 +25216,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.153';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.154';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -27035,17 +27036,28 @@ async function sendPeekCmd() {
   await doSend(peekSession, message);
   inp.style.borderColor = 'var(--green)';
   setTimeout(() => { inp.style.borderColor = ''; }, 400);
-  setTimeout(refreshPeek, 500);
+  _refreshPeekSoon();
+}
+// Repaint the peek FAST after a send/keystroke instead of a fixed 500ms wait:
+// Claude repaints a picker/selection in <50ms and the peek endpoint serves in
+// ~8ms, so a 90ms refresh + one catch-up feels instant. Coalesced so holding an
+// arrow key (or rapid selection) doesn't storm the endpoint.
+let _peekSoonA = null, _peekSoonB = null;
+function _refreshPeekSoon() {
+  if (!peekSession) return;
+  clearTimeout(_peekSoonA); clearTimeout(_peekSoonB);
+  _peekSoonA = setTimeout(() => refreshPeek(), 90);
+  _peekSoonB = setTimeout(() => refreshPeek(), 320);
 }
 async function peekQuickSend(text) {
   if (!peekSession) return;
   await doSend(peekSession, text);
-  setTimeout(refreshPeek, 500);
+  _refreshPeekSoon();
 }
 async function peekQuickKeys(keys) {
   if (!peekSession) return;
   await doKeys(peekSession, keys);
-  setTimeout(refreshPeek, 500);
+  _refreshPeekSoon();
 }
 async function _submitSuggestion(name, isPeek, fallbackKeys) {
   showSendingIndicator();
@@ -27062,7 +27074,7 @@ async function _submitSuggestion(name, isPeek, fallbackKeys) {
       showToast('Sent suggestion');
     }
   } catch(e) {}
-  if (isPeek) setTimeout(refreshPeek, 500);
+  if (isPeek) _refreshPeekSoon();
   else if (_gridPanes && _gridPanes[name]) setTimeout(() => _updateGridPane(name), 500);
 }
 
@@ -43332,7 +43344,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.153';
+const CACHE = 'amux-v0.9.154';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
