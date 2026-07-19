@@ -225,6 +225,11 @@ def _eb_epub(raw: bytes):
     state = {"spent": 0}
 
     def inline_asset(zp):
+        # ONLY inline images. Without this, an href/xlink:href to another
+        # chapter (TOC / next-prev links) would inline that whole HTML file as
+        # base64 — a 466 KB EPUB exploded to 20 MB and stalled mobile Safari.
+        if posixpath.splitext(zp)[1].lower() not in _EB_IMG_MIME:
+            return None
         real = lower.get(zp.lower())
         if not real or state["spent"] >= _EB_INLINE_BUDGET:
             return None
