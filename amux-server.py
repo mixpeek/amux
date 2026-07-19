@@ -25215,7 +25215,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.152';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.153';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -29103,7 +29103,84 @@ function _fileMenuOutside(e) {
   }
 }
 
+// ── Reading position (resume where you left off) ─────────────────────────────
+// Mirrors the video/audio resume: remember how far through a document you are so
+// reopening it restores the scroll. Stored as a FRACTION (0..1) keyed by path in
+// localStorage, so it survives across differently-sized screens. Applies to
+// ebooks, HTML, markdown, CSV and plain text; native <embed> PDFs can't be
+// tracked (no access to the built-in viewer's scroll).
+function _readPosGet(path) {
+  try {
+    const e = (JSON.parse(localStorage.getItem('amux_read_pos') || '{}'))[path];
+    return e ? (typeof e === 'number' ? e : (e.f || 0)) : 0;
+  } catch(e) { return 0; }
+}
+function _readPosSave(path, frac) {
+  if (!path || !isFinite(frac)) return;
+  try {
+    const s = JSON.parse(localStorage.getItem('amux_read_pos') || '{}');
+    if (frac <= 0.01 || frac >= 0.985) delete s[path];   // at the very start or basically finished → forget
+    else s[path] = { f: frac, ts: Date.now() };
+    const keys = Object.keys(s);
+    if (keys.length > 320) {   // cap growth: evict the oldest, keep ~300 most-recent
+      keys.map(k => [k, (s[k] && s[k].ts) || 0]).sort((a, b) => a[1] - b[1])
+          .slice(0, keys.length - 300).forEach(([k]) => delete s[k]);
+    }
+    localStorage.setItem('amux_read_pos', JSON.stringify(s));
+  } catch(e) {}
+}
+let _readPosCleanup = null;   // detaches the current scroll listener
+let _readPosFlush = null;     // saves the current position immediately
+function _readPosDetach() {
+  if (_readPosFlush) { try { _readPosFlush(); } catch(e) {} }
+  if (_readPosCleanup) { try { _readPosCleanup(); } catch(e) {} }
+  _readPosFlush = null; _readPosCleanup = null;
+}
+// Bind resume to a scrollable element (#file-body for md/csv/text).
+function _bindReadPosDiv(el, path) {
+  if (!el || !path) return;
+  const frac = _readPosGet(path);
+  const maxOf = () => el.scrollHeight - el.clientHeight;
+  if (frac > 0) requestAnimationFrame(() => requestAnimationFrame(() => {
+    const max = maxOf(); if (max > 40) el.scrollTop = frac * max;
+  }));
+  let t = null;
+  const onScroll = () => { clearTimeout(t); t = setTimeout(() => {
+    const max = maxOf(); if (max > 40) _readPosSave(path, el.scrollTop / max);
+  }, 400); };
+  el.addEventListener('scroll', onScroll, { passive: true });
+  _readPosFlush = () => { const max = maxOf(); if (max > 40) _readPosSave(path, el.scrollTop / max); };
+  _readPosCleanup = () => { clearTimeout(t); el.removeEventListener('scroll', onScroll); };
+}
+// Bind resume to a same-origin iframe (ebook / HTML reader). Registered BEFORE
+// srcdoc is set so it catches the load.
+function _bindReadPosFrame(iframe, path) {
+  if (!iframe || !path) return;
+  const frac = _readPosGet(path);
+  iframe.addEventListener('load', () => {
+    let win, doc;
+    try { win = iframe.contentWindow; doc = iframe.contentDocument; } catch(e) { return; }
+    if (!win || !doc) return;
+    const de = doc.scrollingElement || doc.documentElement || doc.body;
+    const maxOf = () => de.scrollHeight - win.innerHeight;
+    if (frac > 0) requestAnimationFrame(() => requestAnimationFrame(() => {
+      const max = maxOf(); if (max > 40) win.scrollTo(0, frac * max);
+    }));
+    let t = null;
+    const onScroll = () => { clearTimeout(t); t = setTimeout(() => {
+      const max = maxOf(); if (max > 40) _readPosSave(path, (win.scrollY || de.scrollTop || 0) / max);
+    }, 400); };
+    win.addEventListener('scroll', onScroll, { passive: true });
+    _readPosFlush = () => { const max = maxOf(); if (max > 40) _readPosSave(path, (win.scrollY || de.scrollTop || 0) / max); };
+    _readPosCleanup = () => { clearTimeout(t); try { win.removeEventListener('scroll', onScroll); } catch(e) {} };
+  }, { once: true });
+}
+// Save reading position when the tab/PWA is backgrounded or closed mid-read.
+document.addEventListener('visibilitychange', () => { if (document.hidden && _readPosFlush) { try { _readPosFlush(); } catch(e) {} } });
+window.addEventListener('pagehide', () => { if (_readPosFlush) { try { _readPosFlush(); } catch(e) {} } });
+
 function _renderFileBody(data, mode) {
+  _readPosDetach();   // flush + detach the previous file's reading-position tracker
   // Tear down any active markdown-search highlights before re-rendering
   if (_mdSearchHits && _mdSearchHits.length) { _mdSearchHits = []; _mdSearchIdx = -1; }
   const body = document.getElementById('file-body');
@@ -29137,6 +29214,7 @@ function _renderFileBody(data, mode) {
     iframe.style.cssText = 'width:100%;flex:1;min-height:0;border:none;background:#f7f6f3;';
     body.innerHTML = '';
     body.appendChild(iframe);
+    _bindReadPosFrame(iframe, data.path);   // resume reading position
     iframe.srcdoc = data.content;
     return;
   }
@@ -29192,16 +29270,19 @@ function _renderFileBody(data, mode) {
   if (mode === 'raw') {
     body.className = 'file-overlay-body file-raw';
     body.textContent = data.content;
+    _bindReadPosDiv(body, data.path);   // resume reading position
     return;
   }
   // Preview
   if (data.is_csv) {
     body.className = 'file-overlay-body file-csv';
     body.innerHTML = renderCsvTable(data.content);
+    _bindReadPosDiv(body, data.path);
   } else if (data.is_markdown) {
     body.className = 'file-overlay-body markdown md-content';
     body.innerHTML = renderMarkdown(data.content);
     _fileBindAnchors(body);
+    _bindReadPosDiv(body, data.path);
   } else if (data.is_html) {
     body.className = 'file-overlay-body file-html-preview';
     const iframe = document.createElement('iframe');
@@ -29211,6 +29292,7 @@ function _renderFileBody(data, mode) {
     iframe.style.cssText = 'width:100%;flex:1;min-height:0;border:none;background:#fff;';
     body.innerHTML = '';
     body.appendChild(iframe);
+    _bindReadPosFrame(iframe, data.path);   // resume reading position
     iframe.srcdoc = data.content;
     iframe.onload = function() {
       // Bind anchor links inside iframe to scroll within it
@@ -29232,6 +29314,7 @@ function _renderFileBody(data, mode) {
     // plain text — preview = same as raw
     body.className = 'file-overlay-body file-raw';
     body.textContent = data.content;
+    _bindReadPosDiv(body, data.path);
   }
 }
 
@@ -29432,6 +29515,7 @@ async function openFilePreview(path) {
 }
 
 function closeFilePreview() {
+  _readPosDetach();   // flush the reading position before tearing down
   const v = document.querySelector('#file-body video');
   if (v) { v.pause(); v.src = ''; }
   _mdSearchClose();
@@ -43248,7 +43332,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.152';
+const CACHE = 'amux-v0.9.153';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
