@@ -19896,6 +19896,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div class="peek-tabs">
     <button class="peek-tab active" id="peek-tab-terminal" onclick="setPeekTab('terminal')">Terminal</button>
     <button class="peek-tab" id="peek-tab-steering" onclick="setPeekTab('steering')">Steering<span class="peek-tab-count" id="peek-tab-steering-count"></span></button>
+    <button class="peek-tab" id="peek-tab-messages" onclick="setPeekTab('messages')" title="Every message sent to this session">Messages<span class="peek-tab-count" id="peek-tab-messages-count"></span></button>
     <button class="peek-tab" id="peek-tab-schedules" onclick="setPeekTab('schedules')">Schedules<span class="peek-tab-count" id="peek-tab-schedules-count"></span></button>
     <button class="peek-tab" id="peek-tab-issues" onclick="setPeekTab('issues')">Board<span class="peek-tab-count" id="peek-tab-issues-count"></span></button>
     <button class="peek-tab" id="peek-tab-transcript" onclick="setPeekTab('transcript')" title="Clean conversation transcript (from Claude Code's JSONL — gap-free, never torn)">Transcript</button>
@@ -20042,6 +20043,15 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="btn primary" style="font-size:0.8rem;padding:5px 12px;" onclick="openBoardAdd('backlog')">+ New issue</button>
     </div>
     <div class="peek-tasks-list" id="peek-issues-list"></div>
+  </div>
+
+  <div id="peek-messages-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
+    <div class="peek-tasks-add" style="gap:8px;padding:8px 10px;">
+      <input type="search" id="peek-messages-search" placeholder="Search messages sent to this session&hellip;" oninput="_peekMessagesRender()"
+        style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:0.82rem;color:var(--text);outline:none;">
+      <span id="peek-messages-count" style="font-size:0.72rem;color:var(--dim);align-self:center;white-space:nowrap;"></span>
+    </div>
+    <div id="peek-messages-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:10px;"></div>
   </div>
   <!-- Memory editor panel -->
   <div id="peek-memory-panel" class="peek-memory-editor">
@@ -24092,6 +24102,7 @@ function setPeekTab(tab) {
   document.getElementById('peek-tab-terminal').classList.toggle('active', tab === 'terminal');
   document.getElementById('peek-tab-transcript').classList.toggle('active', tab === 'transcript');
   document.getElementById('peek-tab-steering').classList.toggle('active', tab === 'steering');
+  document.getElementById('peek-tab-messages').classList.toggle('active', tab === 'messages');
   document.getElementById('peek-tab-issues').classList.toggle('active', tab === 'issues');
   document.getElementById('peek-tab-git').classList.toggle('active', tab === 'git');
   document.getElementById('peek-tab-commits').classList.toggle('active', tab === 'commits');
@@ -24108,6 +24119,9 @@ function setPeekTab(tab) {
   const steering = document.getElementById('peek-steering-panel');
   if (tab === 'steering') { steering.classList.add('active'); _steerHistLoadedFor = null; _steeringRender(); loadPeekInstructions(); }
   else { steering.classList.remove('active'); }
+  const messages = document.getElementById('peek-messages-panel');
+  if (tab === 'messages') { messages.classList.add('active'); _peekMessagesLoad(); }
+  else { messages.classList.remove('active'); }
   const issues = document.getElementById('peek-issues-panel');
   if (tab === 'issues') { issues.classList.add('active'); renderPeekIssues(); }
   else { issues.classList.remove('active'); }
@@ -25409,7 +25423,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.155';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.156';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -25451,6 +25465,8 @@ function openPeek(name, opts) {
   document.getElementById('peek-git-panel').classList.remove('active');
   document.getElementById('peek-commits-panel').classList.remove('active');
   document.getElementById('peek-schedules-panel').classList.remove('active');
+  document.getElementById('peek-messages-panel').classList.remove('active');
+  _peekMessagesBadge();
   // Update dir bar
   document.getElementById('peek-dir-text').textContent = peekSessionDir || '(unknown)';
   _peekUpdateBranch();
@@ -28656,6 +28672,8 @@ function cmdHistoryAdd(text, opts) {
   // (the "sent from phone, missing on desktop" bug, 2026-07-16). The push above
   // is just this device's optimistic local copy; the server pull reconciles it.
   _cmdHistoryIdx = -1;
+  // Keep the peek Messages tab + its count badge live as you send.
+  try { _peekMessagesBadge(); if (_peekTab === 'messages') _peekMessagesRender(); } catch(e) {}
 }
 
 function cmdHistoryReset() { _cmdHistoryIdx = -1; }
@@ -28741,6 +28759,55 @@ function _renderCmdHistoryList() {
       + safe + '</div>' + locate + '</div>';
   }).join('');
 }
+// ── Peek Messages tab: the message history, scoped to the open session ──
+// One entry → its card HTML (same look as the Message-history modal). Kept as a
+// standalone renderer so the tab stays independent of the modal.
+function _cmdHistItemHTML(e) {
+  const text = typeof e === 'string' ? e : e.text;
+  const type = typeof e === 'string' ? '' : (e.type || '');
+  const session = typeof e === 'string' ? '' : (e.session || '');
+  const ts = typeof e === 'string' ? '' : (e.time ? new Date(e.time).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '');
+  const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const enc = encodeURIComponent(text);
+  const isSteer = type === 'steering';
+  const tag = type ? `<span style="display:inline-block;font-size:0.7rem;padding:1px 6px;border-radius:3px;background:${isSteer?'rgba(137,87,229,0.15)':'rgba(128,128,128,0.1)'};color:${isSteer?'var(--purple,#8957e5)':'var(--dim)'};margin-right:6px;">${isSteer?'queued':'direct'}</span>` : '';
+  const sessTag = session ? `<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">${session.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>` : '';
+  const tsTag = ts ? `<span style="color:var(--dim);font-size:0.7rem;">${ts}</span>` : '';
+  const meta = tag + sessTag + tsTag;
+  const locSess = (session || peekSession || '').replace(/'/g,'');
+  const locate = locSess ? `<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" title="Open the peek and scroll to where this was sent" onclick="event.stopPropagation();_msgLocate('${locSess}','${enc}')">&#x2316;</button>` : '';
+  return `<div onclick="_pickCmdHistory(decodeURIComponent('${enc}'))" style="cursor:pointer;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:10px;align-items:flex-start;" onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="this.style.borderColor='var(--border)'"><div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${safe}</div>${locate}</div>`;
+}
+function _peekMessagesFor() {
+  if (!peekSession) return [];
+  return _cmdHistory.slice().reverse().filter(e => (typeof e === 'string' ? '' : (e.session || '')) === peekSession);
+}
+function _peekMessagesBadge() {
+  const badge = document.getElementById('peek-tab-messages-count');
+  if (!badge) return;
+  const n = _peekMessagesFor().length;
+  badge.textContent = n ? n : '';
+  badge.classList.toggle('has-count', n > 0);
+}
+function _peekMessagesRender() {
+  const list = document.getElementById('peek-messages-list');
+  if (!list) return;
+  const q = (document.getElementById('peek-messages-search')?.value || '').trim().toLowerCase();
+  let items = _peekMessagesFor();
+  if (q) items = items.filter(e => (typeof e === 'string' ? e : e.text).toLowerCase().includes(q));
+  const cnt = document.getElementById('peek-messages-count');
+  if (cnt) cnt.textContent = items.length + (items.length === 1 ? ' message' : ' messages');
+  list.innerHTML = items.length
+    ? items.map(_cmdHistItemHTML).join('')
+    : `<div style="color:var(--dim);font-size:0.85rem;padding:20px;text-align:center;">${q ? 'No matches.' : 'No messages sent to this session yet.'}</div>`;
+  _peekMessagesBadge();
+}
+async function _peekMessagesLoad() {
+  _peekMessagesRender();                       // paint from local cache instantly
+  try { await _loadCmdHistoryFromServer(); } catch(e) {}   // refresh (cross-device)
+  _peekMessagesRender();
+}
+
 function _pickCmdHistory(text) {
   const inp = document.getElementById('peek-cmd-input');
   if (inp) {
@@ -43649,7 +43716,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.155';
+const CACHE = 'amux-v0.9.156';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
