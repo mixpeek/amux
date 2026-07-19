@@ -24860,7 +24860,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.146';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.147';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -37859,27 +37859,36 @@ async function pullFromRemote(btn) {
         title: 'A real browser with your logins',
         body: 'Agents drive a browser with saved auth profiles — pull invoices, publish content, work dashboards that have no API. End-to-end business workflows, unattended.' }
     ]},
-    build: { label: '\u{1F6E0} Build one now (guided)', cleanup: function() {
+    build: { label: '\u{1F6E0} Set up your command center (guided)', cleanup: function() {
         try { closeEventModal(); } catch(e) {}
         try { closeSchedModal(); } catch(e) {}
+        try { closeBoardEdit(); } catch(e) {}
         try { closeCreate(); } catch(e) {}
         try { switchView('sessions'); } catch(e) {}
       }, steps: [
       { action: function() { switchView('sessions'); openCreate(); }, wait: 350,
         target: '#create-dir', targetFallback: '#create-overlay', pos: 'bottom',
-        title: 'This is the real create dialog',
-        body: 'Point an agent at your code: drop a repo or folder path here. Each agent gets its own terminal in that directory.' },
+        title: 'Spin up your first agent',
+        body: 'This is the real create dialog. Point an agent at your code \u2014 drop a repo or folder path here; each agent gets its own terminal in that directory.' },
       { target: '#create-prompt', targetFallback: '#create-overlay', pos: 'bottom',
         title: 'Give it its first task',
         body: 'Whatever you type here is the agent\u2019s opening prompt \u2014 \u201Cfix the failing tests\u201D, \u201Ctriage my inbox and draft replies\u201D. Hit Start to create it for REAL, or Next to keep touring.' },
-      { action: function() { try { closeCreate(); } catch(e) {} switchView('scheduler'); openSchedModal(null); }, wait: 400,
+      { action: function() { try { closeCreate(); } catch(e) {} switchView('board'); setTimeout(function(){ openBoardAdd('backlog'); }, 220); }, wait: 500, revealTab: 'board',
+        target: '#be-title', targetFallback: '#board-edit-overlay', pos: 'bottom',
+        title: 'Add your first task to the board',
+        body: 'The board is your shared command center \u2014 every agent reads and CLAIMS from it (atomically, no duplicates). Add a task here; it\u2019s the backlog your fleet works from. Save it or Next to move on.' },
+      { action: function() { try { closeBoardEdit(); } catch(e) {} switchView('scheduler'); openSchedModal(null); }, wait: 500, revealTab: 'scheduler',
         target: '#sched-title', targetFallback: '#sched-overlay', pos: 'bottom',
-        title: 'An automation is a prompt on a timer',
-        body: 'This is the real schedule form. The command is just a message to an agent \u2014 \u201Cevery morning: triage my inbox and email me a digest\u201D. Save it and you\u2019ve automated your first business process.' },
-      { action: function() { try { closeSchedModal(); } catch(e) {} switchView('calendar'); setTimeout(function(){ openEventModal(null); }, 250); }, wait: 650,
+        title: 'Automate a routine',
+        body: 'An automation is just a prompt on a timer. The command is a message to an agent \u2014 \u201Cevery morning: triage my inbox and email me a digest\u201D. Save it and you\u2019ve automated your first business process.' },
+      { action: function() { try { closeSchedModal(); } catch(e) {} switchView('calendar'); setTimeout(function(){ openEventModal(null); }, 250); }, wait: 650, revealTab: 'calendar',
         target: '#event-modal .modal', targetFallback: '#fc-container', pos: 'bottom',
-        title: 'Integrations are first-class',
-        body: 'A real calendar event \u2014 it syncs to the private feed your Google/Apple calendar subscribes to. Agents use these same integrations by API: in-thread email, CRM, browser automation. Save one or Cancel.' }
+        title: 'Put it on a real calendar',
+        body: 'A real event \u2014 it syncs to the private ICS feed your Google/Apple calendar subscribes to. Agents create these by API, alongside in-thread email and CRM. Save one or Cancel.' },
+      { action: function() { try { closeEventModal(); } catch(e) {} switchView('crm'); }, wait: 450, revealTab: 'crm',
+        target: '#crm-view', targetFallback: '.tab-bar-outer', pos: 'top',
+        title: 'Your people live here',
+        body: 'CRM is now on your tab bar. Agents log contacts, interactions, and follow-ups here as they run outreach and support \u2014 tap \u201C+ contact\u201D to add your first. Finish to return to Sessions with your command center set up.' }
     ]}
   };
   var _wtSteps = _WT_CORE;
@@ -37976,8 +37985,27 @@ async function pullFromRemote(btn) {
   // Enter a step: run its live action (open the real dialog/tab) first, then
   // position once the UI has settled — this is what makes the guided-build
   // chapter walk REAL forms instead of pointing at closed doors.
+  // Make the tab a step highlights actually VISIBLE — a user may have hidden it
+  // via the customizer, and the tour should reveal it (not fall back to the tab
+  // bar) so the spotlight lands on the real control and the tab stays on their
+  // bar afterward (bootstrapping the command center). Reveal fires for a
+  // `#tab-<id>` target or an explicit step.revealTab.
+  function _wtRevealTabFor(st) {
+    if (!st || typeof hiddenTabs === 'undefined') return;
+    var id = st.revealTab;
+    if (!id && typeof st.target === 'string') {
+      var m = /^#tab-([a-z-]+)$/.exec(st.target);
+      if (m) id = m[1];
+    }
+    if (id && hiddenTabs.has(id)) {
+      hiddenTabs.delete(id);
+      try { _saveHiddenTabs(); } catch(e) {}
+      try { _applyTabVisibility(); } catch(e) {}
+    }
+  }
   function _wtGo() {
     var st = _wtSteps[_wtStep];
+    _wtRevealTabFor(st);   // un-hide the target tab BEFORE acting/positioning
     if (st && st.action) {
       try { st.action(); } catch(e) {}
       setTimeout(_wtPosition, st.wait || 300);
@@ -42710,7 +42738,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.146';
+const CACHE = 'amux-v0.9.147';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
