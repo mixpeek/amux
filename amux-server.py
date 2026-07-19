@@ -25085,7 +25085,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.149';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.150';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -29499,18 +29499,27 @@ function _filesGetBookmarks() {
 }
 
 function _filesSaveBookmarks(bm) {
-  localStorage.setItem('amux_files_bookmarks', JSON.stringify(bm));
+  const json = JSON.stringify(bm);
+  localStorage.setItem('amux_files_bookmarks', json);   // fast local mirror (also offline)
+  // Persist server-side too so shortcuts follow you across every device (like files_cwd).
+  fetch(API + '/api/prefs', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({key:'files_bookmarks', value: json})}).catch(()=>{});
 }
 
 function _filesRenderBookmarks() {
   const container = document.getElementById('files-bookmarks-list');
   if (!container) return;
   const bm = _filesGetBookmarks();
+  // Chip = tappable label (navigate) + a × button (remove). The × works on
+  // touch too — right-click can't (mobile-first). Right-click still removes.
   container.innerHTML = bm.map((b, i) =>
-    '<button onclick="loadFiles(\'' + esc(b.path) + '\')" oncontextmenu="event.preventDefault();_filesRemoveBookmark(' + i + ')" '
-    + 'style="background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:3px 9px;font-size:0.73rem;color:var(--text);cursor:pointer;white-space:nowrap;flex-shrink:0;" '
-    + 'title="' + esc(b.path) + ' (right-click to remove)">'
-    + esc(b.label) + '</button>'
+    '<span class="files-bm-chip" oncontextmenu="event.preventDefault();_filesRemoveBookmark(' + i + ')" '
+    + 'style="display:inline-flex;align-items:center;gap:2px;background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:2px 3px 2px 9px;font-size:0.73rem;color:var(--text);white-space:nowrap;flex-shrink:0;" '
+    + 'title="' + esc(b.path) + '">'
+    + '<span style="cursor:pointer;" onclick="loadFiles(\'' + esc(b.path) + '\')">' + esc(b.label) + '</span>'
+    + '<button onclick="event.stopPropagation();_filesRemoveBookmark(' + i + ')" title="Remove shortcut" aria-label="Remove ' + esc(b.label) + '" '
+    + 'style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:0.95rem;line-height:1;padding:2px 4px;min-width:24px;min-height:24px;border-radius:4px;">×</button>'
+    + '</span>'
   ).join('');
 }
 
@@ -29540,14 +29549,21 @@ let _exploreSession = null;  // set when explore overlay is opened from a sessio
 // Load saved working dir + hidden files pref from server prefs
 (async () => {
   try {
-    const [r1, r2] = await Promise.all([
+    const [r1, r2, r3] = await Promise.all([
       fetch(API + '/api/prefs?key=files_cwd'),
       fetch(API + '/api/prefs?key=files_show_hidden'),
+      fetch(API + '/api/prefs?key=files_bookmarks'),
     ]);
     const d1 = await r1.json();
     if (d1.value) { _filesPath = d1.value; _filesCwd = d1.value; }
     const d2 = await r2.json();
     if (d2.value !== undefined && d2.value !== null) _filesShowHidden = d2.value === '1';
+    // Server-synced shortcuts win over the local mirror, so they follow you across devices.
+    const d3 = await r3.json();
+    if (d3 && d3.value) {
+      try { localStorage.setItem('amux_files_bookmarks', d3.value); } catch(e) {}
+      _filesRenderBookmarks();
+    }
   } catch(e) {}
 })();
 function setFilesCwd() {
@@ -43062,7 +43078,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.149';
+const CACHE = 'amux-v0.9.150';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
