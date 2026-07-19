@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>amux vs Claude Code Agent Teams — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Compare amux with Anthropic's built-in Agent Teams feature for running parallel Claude Code sessions.">
-  <meta name="keywords" content="amux vs agent teams, claude code agent teams, parallel claude code, multi-agent claude">
+  <title>amux vs Claude Code Agent Teams (2026) — Fleet Orchestration vs Sub-Agent Fan-Out</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Compare amux and Claude Code Agent Teams for running parallel Claude Code sessions. Agent Teams fans out within a single task; amux runs independent long-lived fleets with a web dashboard, self-healing, and mobile access.">
+  <meta name="keywords" content="amux vs claude code agent teams, claude code agent teams alternative, parallel claude code sessions, multi-agent claude, claude code orchestration, agent teams experimental, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-claude-code-agent-teams/">
-  <meta property="og:title" content="amux vs Claude Code Agent Teams — amux">
-  <meta property="og:description" content="Compare amux with Anthropic's built-in Agent Teams feature for running parallel Claude Code sessions.">
+  <meta property="og:title" content="amux vs Claude Code Agent Teams (2026) — Fleet Orchestration vs Sub-Agent Fan-Out">
+  <meta property="og:description" content="Both run parallel Claude Code sessions. Agent Teams fans out within one task; amux runs independent long-lived fleets with dashboard, self-healing, and mobile control.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-claude-code-agent-teams/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -21,8 +21,84 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Claude Code Agent Teams","description":"Compare amux with Anthropic Agent Teams for parallel Claude Code sessions"}</script>
-  </head>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},
+      {"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},
+      {"@type":"ListItem","position":3,"name":"amux vs Claude Code Agent Teams","item":"https://amux.io/compare/amux-vs-claude-code-agent-teams/"}
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "amux vs Claude Code Agent Teams (2026): Fleet Orchestration vs Sub-Agent Fan-Out",
+    "description": "Both run parallel Claude Code sessions. Claude Code Agent Teams fans out within a single task using git worktrees. amux runs independent long-lived fleets with a web dashboard, self-healing watchdog, mobile access, and support for multiple AI runtimes.",
+    "url": "https://amux.io/compare/amux-vs-claude-code-agent-teams/",
+    "datePublished": "2026-07-18",
+    "dateModified": "2026-07-18",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "publisher": {
+      "@type": "Organization",
+      "name": "amux",
+      "url": "https://amux.io/",
+      "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}
+    }
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is Claude Code Agent Teams?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Claude Code Agent Teams is an experimental Anthropic feature (enabled via the environment variable CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1, requires Claude Code v2.1.32+) that lets a parent Claude Code session spawn and coordinate child sub-agents using git worktrees for branch isolation. Each child agent works on its own worktree and reports results back to the parent. As of July 2026 it is not default-enabled and is still marked experimental."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I use Claude Code Agent Teams and amux together?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes — they operate at different scopes. Agent Teams handles sub-task fan-out within a single Claude Code session, while amux manages the fleet of independent top-level sessions and provides the dashboard, self-healing, mobile access, kanban, and scheduling layer on top. You can use Agent Teams for tightly-coupled decomposition inside an amux-managed session and still benefit from amux's observability and self-healing across the whole fleet."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does amux replace Claude Code Agent Teams?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. amux and Agent Teams solve different problems at different scopes. Agent Teams is a sub-agent fan-out mechanism built into Claude Code for tightly-coupled parallel work within a single parent session. amux is a fleet-level control plane for long-running, independent sessions across many projects, with a web dashboard, self-healing watchdog, mobile app, and support for Claude Code, Codex CLI, and Gemini CLI side by side."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does amux handle agent coordination compared to Agent Teams?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Agent Teams coordinates via a parent Claude Code session: the parent spawns children, delegates tasks, and collects results — all within one Claude Code process tree. amux coordinates via a shared SQLite kanban board with atomic compare-and-swap claiming: any independent session can claim the next todo item without the risk of two agents duplicating the same task. amux also supports inter-session messaging via a REST API, scheduled tasks, and board-level quality gates."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is Claude Code Agent Teams free?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The Agent Teams feature itself is free and ships with Claude Code (v2.1.32+), but you still pay Anthropic API token costs for every sub-agent spawned. Each child agent consumes tokens independently, so a fan-out of 5 sub-agents may multiply your token spend by 5x or more depending on context sizes. amux similarly has no separate fee beyond the underlying API provider costs, and its open-source self-hosted tier is free."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -37,26 +113,520 @@
     </nav>
   </header>
   <main>
-    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Claude Code Agent Teams</span></div>
+    <div class="breadcrumb">
+      <a href="/">amux</a>
+      <span class="sep">›</span>
+      <a href="/compare/">Compare</a>
+      <span class="sep">›</span>
+      <span>amux vs Claude Code Agent Teams</span>
+    </div>
+
+    <div class="kicker">// compare</div>
     <h1>amux vs Claude Code Agent Teams</h1>
-<p class="subtitle">Both run multiple Claude Code sessions in parallel. Here's how they differ.</p>
-<p>Anthropic's <strong>Agent Teams</strong> is an experimental built-in feature that lets Claude Code spawn sub-agents. amux takes a different approach: it manages independent tmux sessions with a web dashboard, self-healing watchdog, and shared kanban board.</p>
-<h2>Key differences</h2>
-<table><thead><tr><th>Feature</th><th>amux</th><th>Agent Teams</th></tr></thead><tbody><tr><td>Parallel sessions</td><td>Unlimited independent sessions</td><td>Sub-agents spawned by parent</td></tr><tr><td>Self-healing</td><td>Auto-compact, restart, unstick</td><td>Relies on parent session</td></tr><tr><td>Web dashboard</td><td>Full UI with peek, board, calendar</td><td>CLI only</td></tr><tr><td>Mobile access</td><td>PWA with offline support</td><td>No mobile support</td></tr><tr><td>Task coordination</td><td>SQLite kanban with atomic claiming</td><td>Parent delegates to children</td></tr><tr><td>Session persistence</td><td>Survives restarts with UUID tracking</td><td>Tied to parent lifecycle</td></tr><tr><td>Git isolation</td><td>Conflict detection + branch helpers</td><td>Git worktree per agent</td></tr><tr><td>Token tracking</td><td>Per-session daily spend dashboards</td><td>Aggregated in parent</td></tr></tbody></table>
-<h2>When to use Agent Teams</h2>
-<p>Agent Teams works well for <strong>short-lived, tightly-coupled tasks</strong> where a parent agent needs to fan out work and collect results. It requires no setup beyond Claude Code itself.</p>
-<h2>When to use amux</h2>
-<p>amux is built for <strong>long-running, independent agents</strong> that work on separate concerns. The web dashboard, self-healing, and mobile access make it ideal for running agents overnight or managing a fleet of workers across multiple projects.</p>
-<ul>
-<li>You want agents that survive context compaction crashes</li>
-<li>You need a visual dashboard to monitor 10+ sessions</li>
-<li>You want to manage agents from your phone</li>
-<li>You need a shared task board with atomic claiming</li>
-</ul>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux start myproject
-amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+    <p class="subtitle">
+      Both run parallel Claude Code sessions. Agent Teams fans out within a single task.
+      amux operates a long-lived fleet. Different scopes, different use cases.
+    </p>
+    <p style="color:var(--muted);font-size:0.85rem">Last updated: July 2026</p>
+
+    <!-- EXP-007: compare pages GitHub CTA -->
+    <div style="display:flex;align-items:center;gap:1rem;background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:0.875rem 1.125rem;margin:1.5rem 0;flex-wrap:wrap">
+      <span style="font-size:13px;color:var(--fg-mute,#8892a4);flex:1;min-width:180px">Considering amux? See it in action before deciding →</span>
+      <a href="https://github.com/mixpeek/amux"
+         target="_blank"
+         rel="noopener"
+         onclick="if(window.posthog) posthog.capture('exp007_compare_github_cta_click', {page: window.location.pathname})"
+         style="display:inline-flex;align-items:center;gap:0.5rem;background:#24292e;color:#fff;text-decoration:none;padding:0.5rem 1rem;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 .5C5.7.5.5 5.7.5 12c0 5 3.3 9.3 7.9 10.8.6.1.8-.2.8-.6v-2.2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.7 1.2 3.4.9.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2.9-.3 1.9-.4 2.9-.4s2 .1 2.9.4c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.7.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.8C23.5 5.7 18.3.5 12 .5z"/>
+        </svg>
+        ⭐ Star amux on GitHub
+      </a>
+    </div>
+
+    <div style="background:var(--surface-2,#1a1f2e);border-left:3px solid var(--accent,#6ee7b7);padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
+      <strong>Quick answer:</strong> If you want to decompose a single complex coding task into
+      parallel sub-tasks with one Claude Code parent coordinating the children,
+      <strong>Claude Code Agent Teams</strong> is built for that. If you want to run dozens of
+      <em>independent</em> long-lived sessions across many projects — with a web dashboard,
+      self-healing, mobile monitoring, a shared kanban, and support for Codex CLI or Gemini CLI
+      alongside Claude Code — <strong>amux</strong> is the right layer. Both run parallel Claude
+      Code sessions but serve different scale and oversight needs.
+    </div>
+
+    <h2>What each tool is built for</h2>
+
+    <p>
+      <strong>Claude Code Agent Teams</strong> is an experimental Anthropic feature introduced in
+      Claude Code v2.1.32. Enabled with the environment variable
+      <code>CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1</code>, it lets a parent Claude Code session
+      spawn child sub-agents and delegate portions of a task to them. Each child runs in an
+      isolated git worktree, works its piece of the problem, and reports results back to the
+      parent. The coordination model is hierarchical: one parent, N children, all sharing the
+      same task context originating from the parent session. As of July 2026, Agent Teams is
+      not default-enabled — it requires the experimental flag and a recent Claude Code version.
+      There is no external dashboard, no mobile interface, and no self-healing if the parent
+      session crashes or the context window fills up.
+    </p>
+
+    <p>
+      <strong>amux</strong> (304 GitHub stars, MIT license) is the open-source control plane for
+      running an AI engineering team from a single dashboard or your phone. It launches, monitors,
+      and self-heals dozens of parallel
+      <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>,
+      OpenAI Codex CLI, or Gemini CLI sessions headlessly in tmux — each session fully independent,
+      not parent/child. The web dashboard streams live terminal output from every session via
+      Server-Sent Events. The iOS app gives you remote monitoring and control from anywhere.
+      A built-in kanban board lets agents atomically claim tasks so no two sessions ever duplicate
+      work. The self-healing watchdog handles context exhaustion, crashes, and stuck prompts
+      automatically, enabling true overnight unattended operation. Install via
+      <code>brew install mixpeek/amux/amux</code> or <code>pipx install amux</code>.
+      Single Python file, zero external dependencies —
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.
+    </p>
+
+    <h2>The core difference: sub-task fan-out vs long-lived fleet</h2>
+
+    <p>
+      Claude Code Agent Teams solves a specific decomposition problem: you have one big task
+      and you want Claude to break it into parallel work streams. The parent session owns the
+      problem, divides it, spawns children into git worktrees, waits for results, and synthesizes
+      them. This is a tightly-coupled model — the entire operation lives inside a single Claude
+      Code session tree. If the parent crashes, children may be orphaned. If the parent's context
+      window overflows, the whole coordination layer stalls. There is no shared task queue,
+      no persistent board, and no way to hand off work to a different runtime like Codex CLI
+      or Gemini CLI. The scope is intentionally narrow: fan out within one task, collect results,
+      move on.
+    </p>
+
+    <p>
+      amux is built for a different scope: a persistent fleet of independent agents running
+      different tasks across different projects, potentially overnight, potentially from multiple
+      AI runtimes. Sessions are not parent/child — each one is an autonomous worker that claims
+      the next available task from a shared SQLite kanban board using an atomic compare-and-swap
+      operation. No two agents can claim the same task. Sessions survive independently: if one
+      crashes, the watchdog restarts it; if its context fills, it is auto-compacted and resumed.
+      The fleet runs whether or not you are at your desk. You monitor from your phone. When all
+      tasks are done, the board is empty and every session is idle — no parent to coordinate,
+      no hierarchy to maintain.
+    </p>
+
+    <p>
+      These are not competing tools — they operate at different scopes. Agent Teams is a
+      sub-task fan-out primitive inside Claude Code. amux is fleet infrastructure for running
+      many independent Claude Code (and other) sessions at scale with full observability.
+      The two can coexist: an amux-managed Claude Code session can use Agent Teams internally
+      for a decomposition step while amux provides the outer lifecycle, dashboard, and recovery.
+    </p>
+
+    <h2>How Claude Code Agent Teams works</h2>
+
+    <p>
+      Agent Teams is built on Claude Code's existing sub-agent infrastructure. When you set
+      <code>CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1</code> and run Claude Code v2.1.32+, the parent
+      session gains the ability to spawn child agents as first-class Claude Code processes.
+      Each child is given an isolated git worktree — a lightweight copy of the repository at a
+      specific branch or commit — so child agents can make changes without conflicting with each
+      other at the filesystem level. The parent orchestrates the fan-out: it decides how to
+      decompose the work, which child gets which subtask, and when to collect and merge results.
+    </p>
+
+    <p>
+      The coordination protocol is handled entirely within the Claude Code process tree. The
+      parent sends task instructions to each child, receives completion signals and outputs,
+      and synthesizes the combined result. This is analogous to a map-reduce step within a single
+      Claude Code invocation. Children report back to the parent — there is no external message
+      queue, no shared database, and no persistence layer outside the Claude Code session itself.
+      The entire coordination state lives in the parent's context window and process memory.
+    </p>
+
+    <p>
+      This design makes Agent Teams easy to adopt — no extra infrastructure, no new tooling,
+      just an env var and a sufficiently recent version of Claude Code. The trade-off is that
+      everything is coupled to the parent session's lifecycle. If the parent is interrupted,
+      the children have no coordination layer to reconnect to. There is no web dashboard,
+      no mobile interface, no persistent task log, and no way to add non-Claude-Code runtimes
+      to the mix. It is purpose-built for tightly-bounded fan-out within one coding task,
+      not for operating a fleet of independent agents across many projects over many hours.
+    </p>
+
+    <h2>Feature comparison</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th>amux</th>
+          <th>Claude Code Agent Teams</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Session model</td>
+          <td>Independent top-level sessions — each owns its full context and lifecycle</td>
+          <td>Hierarchical parent/child — children are subordinate to the parent session</td>
+        </tr>
+        <tr>
+          <td>Requires experimental flag</td>
+          <td>No — stable, default-enabled out of the box</td>
+          <td>Yes — <code>CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1</code> + Claude Code v2.1.32+</td>
+        </tr>
+        <tr>
+          <td>Max concurrent agents</td>
+          <td>Unlimited independent sessions (10–50+ typical overnight fleet)</td>
+          <td>Limited by parent session context and Anthropic concurrency limits</td>
+        </tr>
+        <tr>
+          <td>Self-healing</td>
+          <td>Auto-compact on context overflow, crash restart, message replay, stuck-prompt detection</td>
+          <td>None — if the parent crashes, children are orphaned; no automated recovery</td>
+        </tr>
+        <tr>
+          <td>Web dashboard</td>
+          <td>Full dashboard: live terminal peek, board, CRM, email, scheduler, calendar</td>
+          <td>CLI only — no external monitoring UI</td>
+        </tr>
+        <tr>
+          <td>Mobile access</td>
+          <td>Native iOS app + installable PWA — monitor, steer, approve from phone</td>
+          <td>No mobile access</td>
+        </tr>
+        <tr>
+          <td>Shared kanban board</td>
+          <td>SQLite kanban with atomic CAS claiming — no two agents ever duplicate a task</td>
+          <td>No shared board — parent delegates tasks imperatively to children</td>
+        </tr>
+        <tr>
+          <td>Task coordination model</td>
+          <td>Board-driven pull: agents claim the next available todo atomically</td>
+          <td>Hierarchy push: parent explicitly assigns subtasks to each child</td>
+        </tr>
+        <tr>
+          <td>Multi-runtime support</td>
+          <td>Claude Code · Codex CLI · Gemini CLI (any mix in the same fleet)</td>
+          <td>Claude Code only</td>
+        </tr>
+        <tr>
+          <td>Git isolation strategy</td>
+          <td>Separate tmux sessions; conflict detection and branch helpers per session</td>
+          <td>Git worktree per child agent — native branch isolation within one repo</td>
+        </tr>
+        <tr>
+          <td>Session persistence</td>
+          <td>Survives restarts — UUID-tracked sessions resume after crash or reboot</td>
+          <td>Tied to parent session lifecycle — parent crash = coordination lost</td>
+        </tr>
+        <tr>
+          <td>Token / spend tracking</td>
+          <td>Per-session daily spend dashboards visible in the web UI</td>
+          <td>Aggregated in parent context; no dedicated spend tracking UI</td>
+        </tr>
+        <tr>
+          <td>Overnight unattended operation</td>
+          <td>Core use case — watchdog keeps the fleet alive and productive while you sleep</td>
+          <td>Not designed for unattended use — no recovery if session exits overnight</td>
+        </tr>
+        <tr>
+          <td>CRM, email, browser automation</td>
+          <td>Built in — Gmail API, CRM contacts, scheduler, browser automation, notes</td>
+          <td>Not included — Agent Teams is a coding-task fan-out feature only</td>
+        </tr>
+        <tr>
+          <td>Quality gates</td>
+          <td>Board-level gate system — human or automated approval before agents proceed</td>
+          <td>No gate system — children run until completion or parent cancels</td>
+        </tr>
+        <tr>
+          <td>Open source / self-hosted</td>
+          <td>Yes — MIT license, single Python file, zero external dependencies</td>
+          <td>Agent Teams is built into the proprietary Claude Code CLI (Anthropic)</td>
+        </tr>
+        <tr>
+          <td>Setup complexity</td>
+          <td><code>brew install mixpeek/amux/amux</code> then <code>amux serve</code></td>
+          <td>Set <code>CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1</code> — no install beyond Claude Code</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- EXP-007 GitHub CTA block -->
+    <div class="exp007-cta" style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">Try amux — 304 stars on GitHub</div>
+        <div style="color:var(--fg-dim);font-size:.9rem">Open source, self-hosted, single Python file. No cloud account needed.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp007_compare_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
+    </div>
+
+    <h2>When to use Agent Teams</h2>
+
+    <ul>
+      <li>
+        <strong>Tightly-coupled parallel subtask decomposition.</strong>
+        You have a single large coding task — implement a feature, refactor a module, run a
+        cross-file analysis — and want Claude to break it into parallel work streams, execute
+        them in isolated git worktrees, and synthesize the result. Agent Teams is designed
+        exactly for this: one parent, N children, one goal.
+      </li>
+      <li>
+        <strong>You are already running Claude Code and want parallelism with zero additional tooling.</strong>
+        No extra install, no server, no dashboard. Set one env var, upgrade Claude Code, and
+        your existing session gains sub-agent fan-out capability. If your use case is a single
+        tightly-bounded task and you are present to monitor it, Agent Teams is the lowest-friction
+        path to parallelism.
+      </li>
+      <li>
+        <strong>Short-lived, supervised fan-out where context coupling matters.</strong>
+        Agent Teams preserves the parent's full context across all children. If the subtasks
+        share substantial context — the same codebase understanding, the same requirements doc,
+        the same session history — Agent Teams passes that context through the parent naturally.
+        This is more efficient than spinning up N independent sessions that must each read the
+        same context from scratch.
+      </li>
+    </ul>
+
+    <h2>When to use amux</h2>
+
+    <ul>
+      <li>
+        <strong>Running 10–50 parallel agents overnight while you sleep.</strong>
+        Queue work before bed, agents claim tasks from the shared board, work in parallel through
+        the night, and you review completed branches in the morning from your phone. Agent Teams
+        has no fleet model — if the parent session dies overnight, the whole coordination layer
+        is lost. amux's watchdog keeps the fleet alive and productive without any human at the
+        keyboard. See <a href="/guides/running-10-plus-agents/">how to run 10+ agents in parallel</a>.
+      </li>
+      <li>
+        <strong>Long-lived sessions that must survive context overflow and crashes.</strong>
+        The self-healing watchdog detects context overflow and automatically compacts and resumes
+        the session. If an agent crashes, it is restarted and its pending message is replayed.
+        Stuck prompts are unstuck. None of this is available with Agent Teams — if the parent
+        session hits its context limit or crashes, the fan-out is over.
+      </li>
+      <li>
+        <strong>Fleet observability: watching all agents simultaneously from a web dashboard.</strong>
+        The amux dashboard streams live terminal output from every session via Server-Sent Events.
+        You can peek at any agent's output, send it a steering message, or check the board —
+        all from a browser or the iOS app. Agent Teams offers no monitoring UI beyond the
+        Claude Code CLI itself.
+      </li>
+      <li>
+        <strong>Multi-runtime fleets mixing Claude Code, Codex CLI, and Gemini CLI.</strong>
+        amux treats any CLI-driven AI runtime as a session. You can run Claude Code sessions
+        alongside Codex CLI sessions and Gemini CLI sessions in the same fleet, with shared
+        board and messaging. Agent Teams is Claude Code only.
+      </li>
+      <li>
+        <strong>Remote monitoring and steering from your phone.</strong>
+        The <a href="/features/mobile-pwa/">iOS app and installable PWA</a> let you inspect live
+        terminal output, see which tasks are claimed on the board, send messages to any agent,
+        approve quality gates, and manage the fleet from your iPhone. Agent Teams has no mobile story.
+      </li>
+      <li>
+        <strong>Business operations alongside coding agents.</strong>
+        amux includes Gmail API email, CRM contacts, a scheduler, notes, and browser automation
+        in the same control plane as your coding sessions. Teams use it for customer support
+        agents, market research, automated reporting, and CI orchestration alongside parallel
+        coding work. This goes well beyond what Agent Teams is designed to handle.
+      </li>
+    </ul>
+
+    <h2>Why not both? Agent Teams inside an amux-managed session</h2>
+
+    <p>
+      Agent Teams and amux target different scopes — and they compose naturally. Agent Teams
+      handles sub-task fan-out <em>within</em> a single Claude Code session. amux handles
+      fleet-level operation <em>across</em> many independent sessions. These layers do not conflict.
+    </p>
+
+    <p>
+      Consider a typical overnight batch run. You load 20 tasks onto the amux board. Ten independent
+      Claude Code sessions claim tasks and start working. For a particularly complex task — say,
+      a large refactor that spans three subsystems — the Claude Code session that claimed it can
+      use Agent Teams internally to spin up child agents on isolated worktrees, collect their
+      results, and produce the final merged output. amux sees this as one session working on one
+      task. When the session finishes and marks the board item done, the next session claims the
+      next task. The two layers are orthogonal: Agent Teams for the fan-out within a task, amux
+      for the lifecycle, observability, and fleet coordination across tasks.
+    </p>
+
+    <p>
+      The practical answer is: start with Agent Teams if your problem is "this one task is too big
+      for one context window." Start with amux if your problem is "I have 20 tasks across 5 repos
+      and I want a fleet of agents working on them all night while I sleep." Once both problems
+      exist, you likely need both layers.
+    </p>
+
+    <h2>Use case decision guide</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>If you want…</th>
+          <th>Use…</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Fan out one big task into parallel subtasks</td>
+          <td>Agent Teams — parent/child fan-out, no extra tooling required</td>
+        </tr>
+        <tr>
+          <td>Run agents overnight while you sleep</td>
+          <td>amux — self-healing fleet, iOS monitoring, no desktop required</td>
+        </tr>
+        <tr>
+          <td>Zero-infrastructure parallelism within Claude Code</td>
+          <td>Agent Teams — env var only, no server, no install beyond Claude Code</td>
+        </tr>
+        <tr>
+          <td>Manage agents from your phone</td>
+          <td>amux — native iOS app and installable PWA</td>
+        </tr>
+        <tr>
+          <td>Self-healing sessions that survive context overflow</td>
+          <td>amux — auto-compact, crash restart, stuck-prompt detection</td>
+        </tr>
+        <tr>
+          <td>Run Codex CLI or Gemini CLI alongside Claude Code</td>
+          <td>amux — multi-runtime fleet support</td>
+        </tr>
+        <tr>
+          <td>Subtask coordination with shared parent context</td>
+          <td>Agent Teams — children inherit parent context natively</td>
+        </tr>
+        <tr>
+          <td>Monitor all sessions in a web dashboard simultaneously</td>
+          <td>amux — live terminal peek via SSE, board, spend tracking</td>
+        </tr>
+        <tr>
+          <td>Atomic task claiming so no two agents duplicate work</td>
+          <td>amux — SQLite CAS kanban board</td>
+        </tr>
+        <tr>
+          <td>Quality gates before agents proceed or merge</td>
+          <td>amux — board-level gate system with human or automated approval</td>
+        </tr>
+        <tr>
+          <td>Git worktree isolation per sub-agent</td>
+          <td>Agent Teams — native worktree isolation for each child agent</td>
+        </tr>
+        <tr>
+          <td>Large-scale parallel task batch across multiple repos</td>
+          <td>amux — fleet of independent sessions, each with its own repo scope</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Frequently Asked Questions</h2>
+
+    <dl style="display:grid;gap:1.5rem">
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">What is Claude Code Agent Teams?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Claude Code Agent Teams is an experimental Anthropic feature (enabled via the environment
+          variable <code>CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1</code>, requires Claude Code v2.1.32+)
+          that lets a parent Claude Code session spawn and coordinate child sub-agents using git
+          worktrees for branch isolation. Each child agent works on its own worktree and reports
+          results back to the parent. As of July 2026 it is not default-enabled and is still
+          marked experimental.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Can I use Claude Code Agent Teams and amux together?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Yes — they operate at different scopes. Agent Teams handles sub-task fan-out within a
+          single Claude Code session, while amux manages the fleet of independent top-level sessions
+          and provides the dashboard, self-healing, mobile access, kanban, and scheduling layer on
+          top. You can use Agent Teams for tightly-coupled decomposition inside an amux-managed
+          session and still benefit from amux's observability and self-healing across the whole fleet.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Does amux replace Claude Code Agent Teams?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          No. amux and Agent Teams solve different problems at different scopes. Agent Teams is a
+          sub-agent fan-out mechanism built into Claude Code for tightly-coupled parallel work
+          within a single parent session. amux is a fleet-level control plane for long-running,
+          independent sessions across many projects, with a web dashboard, self-healing watchdog,
+          mobile app, and support for Claude Code, Codex CLI, and Gemini CLI side by side.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">How does amux handle agent coordination compared to Agent Teams?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Agent Teams coordinates via a parent Claude Code session: the parent spawns children,
+          delegates tasks, and collects results — all within one Claude Code process tree. amux
+          coordinates via a shared SQLite kanban board with atomic compare-and-swap claiming: any
+          independent session can claim the next todo item without the risk of two agents duplicating
+          the same task. amux also supports inter-session messaging via a REST API, scheduled tasks,
+          and board-level quality gates.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Is Claude Code Agent Teams free?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          The Agent Teams feature itself is free and ships with Claude Code (v2.1.32+), but you
+          still pay Anthropic API token costs for every sub-agent spawned. Each child agent consumes
+          tokens independently, so a fan-out of 5 sub-agents may multiply your token spend
+          significantly depending on context sizes. amux similarly has no separate fee beyond the
+          underlying API provider costs, and its open-source self-hosted tier is free.
+        </dd>
+      </div>
+    </dl>
+
+    <h2>Quick start with amux</h2>
+
+    <pre><code># Install via Homebrew (recommended on macOS)
+brew install mixpeek/amux/amux
+
+# Or via PyPI
+pipx install amux
+
+# Or zero-install trial (no install needed)
+uvx amux serve
+
+# Register a project and launch the dashboard
+amux register myproject --dir ~/Dev/myproject
+amux serve  # → https://localhost:8822</code></pre>
+
+    <p>
+      See the <a href="/guides/getting-started/">getting started guide</a> for a full walkthrough,
+      <a href="/guides/running-10-plus-agents/">how to run 10+ agents in parallel</a> for fleet
+      operations, and the <a href="/guides/ai-agent-quality-gates/">quality gates guide</a> for
+      human-in-the-loop checkpoints at fleet scale. If you are already experimenting with
+      Agent Teams for sub-task fan-out, amux adds the outer fleet lifecycle layer — dashboard,
+      self-healing, mobile access, multi-runtime support — without conflicting with what
+      Agent Teams does inside a single session.
+    </p>
+
+    <h2>See also</h2>
+    <ul>
+      <li><a href="/compare/">All amux comparisons</a></li>
+      <li><a href="/compare/amux-vs-claude-managed-agents/">amux vs Claude Managed Agents</a></li>
+      <li><a href="/compare/amux-vs-cursor/">amux vs Cursor</a></li>
+      <li><a href="/compare/amux-vs-cline/">amux vs Cline (Roo Code)</a></li>
+      <li><a href="/compare/amux-vs-codex/">amux vs OpenAI Codex CLI</a></li>
+      <li><a href="/guides/best-ai-agent-multiplexers-2026/">Best AI agent multiplexers in 2026</a></li>
+      <li><a href="/guides/getting-started/">Getting started with amux</a></li>
+      <li><a href="/guides/running-10-plus-agents/">Running 10+ agents in parallel</a></li>
+      <li><a href="/guides/ai-agent-quality-gates/">AI agent quality gates</a></li>
+      <li><a href="/features/mobile-pwa/">Mobile PWA and iOS app</a></li>
+    </ul>
+
+    <div class="cta-box">
+      <h3>Get started with amux</h3>
+      <p>Run your first parallel agent fleet tonight. Install in 30 seconds.</p>
+      <pre><code>brew install mixpeek/amux/amux
+amux register myproject --dir ~/Dev/myproject
+amux serve  # → https://localhost:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ View on GitHub</a>
+      <a class="btn"
+         href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435"
+         target="_blank"
+         rel="noopener"
+         style="margin-left:0.5rem">Download iOS App</a>
+    </div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -104,6 +674,6 @@ amux serve  # → https://localhost:8822</code></pre><a class="btn btn-primary" 
     </div>
   </footer>
 
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>
