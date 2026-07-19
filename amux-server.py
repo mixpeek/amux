@@ -156,8 +156,8 @@ _EB_IMG_MIME = {
     ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
     ".bmp": "image/bmp",
 }
-EBOOK_RENDERABLE = {".epub", ".fb2", ".cbz"}
-EBOOK_DOWNLOAD_ONLY = {".mobi", ".azw", ".azw3", ".azw4", ".kfx", ".cbr", ".djvu", ".lit", ".pdb"}
+EBOOK_RENDERABLE = {".epub", ".fb2", ".cbz", ".mobi", ".azw"}
+EBOOK_DOWNLOAD_ONLY = {".azw3", ".azw4", ".kfx", ".cbr", ".djvu", ".lit", ".pdb"}
 EBOOK_EXTS = EBOOK_RENDERABLE | EBOOK_DOWNLOAD_ONLY
 _EB_INLINE_BUDGET = 30 * 1024 * 1024  # stop inlining images past this (protect memory/IDB)
 _EB_READER_CSS = (
@@ -358,6 +358,134 @@ def _eb_cbz(raw: bytes):
     return _eb_wrap("".join(parts), None), None
 
 
+# ---------------- MOBI / AZW (MOBI6, PalmDOC) ----------------
+_EB_IMG_MAGIC = [
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"GIF87a", "image/gif"), (b"GIF89a", "image/gif"),
+    (b"BM", "image/bmp"),
+]
+
+
+def _eb_img_mime(b):
+    for magic, mime in _EB_IMG_MAGIC:
+        if b.startswith(magic):
+            return mime
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _eb_palmdoc(data):
+    out = bytearray()
+    i, n = 0, len(data)
+    while i < n:
+        c = data[i]; i += 1
+        if c == 0:
+            out.append(0)
+        elif c <= 8:                      # 1..8: literal copy of next c bytes
+            out += data[i:i + c]; i += c
+        elif c <= 0x7f:                    # 9..0x7f: literal byte
+            out.append(c)
+        elif c <= 0xbf:                    # 0x80..0xbf: LZ77 length/distance pair
+            if i >= n:
+                break
+            c = (c << 8) | data[i]; i += 1
+            dist = (c >> 3) & 0x7ff
+            length = (c & 7) + 3
+            if dist == 0:
+                break
+            for _ in range(length):
+                out.append(out[-dist])
+        else:                             # 0xc0..0xff: space + (c ^ 0x80)
+            out.append(0x20); out.append(c ^ 0x80)
+    return bytes(out)
+
+
+def _eb_trailing_size(data):
+    num = 0
+    for v in bytearray(data[-4:]):
+        if v & 0x80:
+            num = 0
+        num = (num << 7) | (v & 0x7f)
+    return num
+
+
+def _eb_trim_trailing(data, extra_flags):
+    flags = extra_flags >> 1
+    while flags:
+        if flags & 1:
+            n = _eb_trailing_size(data)
+            if 0 < n <= len(data):
+                data = data[:-n]
+        flags >>= 1
+    if extra_flags & 1 and data:          # multibyte-char overlap
+        n = (bytearray(data[-1:])[0] & 3) + 1
+        if 0 < n <= len(data):
+            data = data[:-n]
+    return data
+
+
+def _eb_mobi(raw: bytes):
+    import struct
+    if raw[60:68] not in (b"BOOKMOBI", b"TEXtREAd"):
+        raise ValueError("not a MOBI/PalmDOC container")
+    nrec = struct.unpack(">H", raw[76:78])[0]
+    offsets = [struct.unpack(">I", raw[78 + i * 8: 82 + i * 8])[0] for i in range(nrec)]
+    offsets.append(len(raw))
+    records = [raw[offsets[i]:offsets[i + 1]] for i in range(nrec)]
+    rec0 = records[0]
+    comp, _, tlen, rcount, rsize, enc = struct.unpack(">HHIHHH", rec0[0:14])
+    if enc != 0:
+        raise ValueError("MOBI is DRM-encrypted")
+    if comp not in (1, 2):
+        raise ValueError("unsupported MOBI compression %d (HUFF/CDIC)" % comp)
+    encoding, first_img, title, extra_flags = "utf-8", 0, None, 0
+    if rec0[16:20] == b"MOBI":
+        mhlen = struct.unpack(">I", rec0[20:24])[0]
+        enc_code = struct.unpack(">I", rec0[28:32])[0]
+        encoding = "utf-8" if enc_code == 65001 else "cp1252"
+        first_img = struct.unpack(">I", rec0[108:112])[0]
+        fn_off = struct.unpack(">I", rec0[84:88])[0]
+        fn_len = struct.unpack(">I", rec0[88:92])[0]
+        if fn_off and fn_len and fn_off + fn_len <= len(rec0):
+            try:
+                title = rec0[fn_off:fn_off + fn_len].decode(encoding, "replace").strip()
+            except Exception:
+                pass
+        if mhlen >= 228 and len(rec0) >= 244:
+            extra_flags = struct.unpack(">H", rec0[242:244])[0]
+    parts = []
+    for i in range(1, rcount + 1):
+        if i >= len(records):
+            break
+        d = _eb_trim_trailing(records[i], extra_flags)
+        parts.append(_eb_palmdoc(d) if comp == 2 else d)
+    html = b"".join(parts).decode(encoding, "replace")
+
+    def img_repl(m):
+        try:
+            idx = int(m.group(1))
+        except ValueError:
+            return m.group(0)
+        rn = (first_img - 1) + idx if first_img else -1
+        if rn < 0 or rn >= len(records):
+            return m.group(0)
+        b = records[rn]
+        mime = _eb_img_mime(b)
+        if not mime:
+            return m.group(0)
+        return '<img src="data:%s;base64,%s">' % (mime, base64.b64encode(b).decode())
+    html = re.sub(r'<img[^>]*\brecindex=["\']?0*(\d+)["\']?[^>]*>', img_repl, html, flags=re.I)
+    html = re.sub(r"<\s*/?\s*mbp:[^>]*>", "", html, flags=re.I)
+    html = re.sub(r"<script\b.*?</script>", "", html, flags=re.S | re.I)
+    mb = re.search(r"<body[^>]*>(.*)</body>", html, re.S | re.I)
+    inner = mb.group(1) if mb else html
+    if not inner.strip():
+        raise ValueError("MOBI: no extractable text")
+    return _eb_wrap(inner, title), title
+
+
 def ebook_to_html(raw: bytes, ext: str):
     """Dispatch by extension → (html, title). Raises on any failure."""
     ext = ext.lower()
@@ -367,6 +495,8 @@ def ebook_to_html(raw: bytes, ext: str):
         return _eb_fb2(raw)
     if ext == ".cbz":
         return _eb_cbz(raw)
+    if ext in (".mobi", ".azw"):
+        return _eb_mobi(raw)
     raise ValueError("unsupported ebook: " + ext)
 
 
@@ -25085,7 +25215,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.151';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.152';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -43118,7 +43248,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.151';
+const CACHE = 'amux-v0.9.152';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
