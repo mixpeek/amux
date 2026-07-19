@@ -1,5 +1,50 @@
 [
   {
+    "hash": "e24d42bf7c1b403af65bfaf478b94c1d8452d955",
+    "short": "e24d42b",
+    "title": "Guided setup walkthrough — 8 surfaces, real flows, never clips on small screens",
+    "date": "2026-07-18",
+    "type": "feat",
+    "tags": ["walkthrough", "onboarding", "ux", "mobile"],
+    "description": "The setup walkthrough now takes you through all 8 core amux surfaces in a single linear tour: sessions, steering, schedules, board, calendar, messages, browser, and skills. Each step actually un-hides its tab and opens the real create flow (add a session, open the scheduler modal, create a board card, add a calendar event) — so the walkthrough bootstraps your command center instead of pointing at closed doors. The tooltip is now fit-and-clamped to the true visible viewport including pinch-zoom and safe-area offsets, so Skip/Back/Next never clip off screen on iPhone or small windows."
+  },
+  {
+    "hash": "4ed859696d1422c7175bfaf9dae87d69b689be3b",
+    "short": "4ed8596",
+    "title": "@ mentions now list every session with fuzzy autocomplete and match highlighting",
+    "date": "2026-07-18",
+    "type": "feat",
+    "tags": ["mentions", "messaging", "ux", "coordination"],
+    "description": "Typing a bare @ in the Send/Steer bar now drops a list of all running sessions (running ones first, scrollable) so you never have to remember session names. Matching switched from prefix-only to fuzzy subsequence ranking with contiguity, word-boundary, and prefix bonuses — 'mg' matches mixpeek-general, 'gen' matches ...general. Matching characters are bolded in the accent color so you can see exactly why a session was suggested. Works in both the session send bar and the steering bar."
+  },
+  {
+    "hash": "83be246758afa01c423f4ef534be35f5beead62a",
+    "short": "83be246",
+    "title": "amux send CLI — inter-session messages now carry a verified server-side origin",
+    "date": "2026-07-18",
+    "type": "feat",
+    "tags": ["cli", "send", "coordination", "security"],
+    "description": "Use `amux send OTHER_SESSION \"your message\"` from any terminal to send a message to another session with a server-stamped, unforgeable origin. The origin is set server-side from the X-Amux-Session header so the receiving session always knows which session the message truly came from — eliminating a class of mis-attribution bugs where a relay could appear to come from the wrong session. The raw `curl` fallback also works by passing `X-Amux-Session: $AMUX_SESSION` manually."
+  },
+  {
+    "hash": "07306df593ef171ec45d59473342d96cca0a645c",
+    "short": "07306df",
+    "title": "Git branch badge in the peek panel — see which branch your agent is on at a glance",
+    "date": "2026-07-18",
+    "type": "feat",
+    "tags": ["peek", "git", "visibility", "dashboard"],
+    "description": "The directory row in the peek panel now shows a colored git branch badge (⎇ name) pushed to the right: yellow for main, green for a feature branch, red if a conflict is detected. The badge is clickable (opens the branch popover) and updates when you open a session or on the next background poll — so you always know whether your agent drifted onto the wrong branch or forgot to create one."
+  },
+  {
+    "hash": "955b23a8e32bd6be9ad750f455a9d29d6cddd1fb",
+    "short": "955b23a",
+    "title": "File explorer keeps all columns on mobile — horizontal scroll instead of hiding Size/Date",
+    "date": "2026-07-18",
+    "type": "feat",
+    "tags": ["files", "mobile", "ux"],
+    "description": "The file explorer previously hid the Size and Modified columns on small screens, leaving you with name-only rows on phone. Now the table header and rows share a single horizontal-scroll container with a 460px minimum width — you swipe sideways to see all columns, and sortable column headers still work. This matches standard mobile data-table UX and makes the file explorer fully usable on iPhone."
+  },
+  {
     "hash": "2444b9d0000000000000000000000000000000000",
     "short": "2444b9d",
     "title": "Drive your real Chrome with AI \u2014 live-browser backend with observation budgets",
