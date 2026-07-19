@@ -37849,7 +37849,10 @@ async function pullFromRemote(btn) {
     { revealTab: 'skills', action: function() { switchView('skills'); }, wait: 460,
       target: '#skills-view', targetFallback: '#tab-skills', pos: 'bottom',
       title: '8 — Skills: reusable workflows',
-      body: 'Package a workflow once and any agent can run it — deploy steps, review checklists, research harnesses. That’s your command center, set up. You’re ready.' }
+      body: 'Package a workflow once and any agent can run it — deploy steps, review checklists, research harnesses. That’s your command center, set up.' },
+    { menu: true,
+      title: 'That’s the core. Go deeper?',
+      body: 'Four short chapters — pick what matters to you. Each is under a minute.' }
   ];
   var _WT_CHAPTERS = {
     fleet: { label: '\u26A1 Run a fleet, not a chatbot', steps: [
