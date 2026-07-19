@@ -14953,6 +14953,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .wt-footer {
     display: flex; align-items: center; justify-content: space-between; margin-top: 14px; gap: 8px;
+    flex-wrap: wrap;   /* narrow/zoomed screens: dots + buttons wrap instead of clipping */
   }
   .wt-dots { display: flex; gap: 5px; }
   .wt-dot {
@@ -14961,7 +14962,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .wt-dot.active { background: var(--accent, #0a0a0a); }
   .wt-dot.done { background: var(--dim, #999); }
-  .wt-btns { display: flex; gap: 6px; }
+  .wt-btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
   .wt-btn {
     padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border, #e2e2e5);
     background: none; color: var(--text, #0a0a0a); font-size: 0.82rem; font-weight: 600;
@@ -24860,7 +24861,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.147';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.148';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -37809,18 +37810,46 @@ async function pullFromRemote(btn) {
   // Chapters go deep on what actually makes amux powerful; nobody is forced
   // through 15 steps, and the menu tracks which chapters you've seen.
   var _WT_CORE = [
-    { target: '.cards', pos: 'top', padX: 20, padY: 10,
+    // A single linear, hands-on tour across the eight core surfaces. Each step
+    // un-hides its tab (revealTab) and opens the REAL create flow so empty tabs
+    // get bootstrapped as the user goes — this is a setup wizard, not a slideshow.
+    { action: function() { try { _wtCloseAll(); } catch(e) {} switchView('sessions'); }, wait: 220,
+      target: '.cards', pos: 'top', padX: 20, padY: 10,
       title: 'Your AI workforce',
-      body: 'Every card is a Claude Code agent running in its own terminal — live status (working / needs you / idle), current task, and token spend. amux is the operations layer around a whole fleet of them.' },
-    { target: '#add-btn', pos: 'bottom',
-      title: 'Spin up an agent',
-      body: 'Create a session: point it at a repo or folder, pick a model, optionally YOLO mode. Seconds later it\u2019s a working agent on a card.' },
-    { target: function() { var el = document.querySelector('.send-row') || document.querySelector('.chips'); return el || document.querySelector('.cards'); }, pos: 'top',
-      title: 'Steer without breaking focus',
-      body: 'Type to any agent right from its card. Messages QUEUE and deliver when the agent reaches a safe stopping point — you never interrupt work in flight, and delivery is verified so nothing silently vanishes.' },
-    { menu: true,
-      title: 'That\u2019s the core. Go deeper?',
-      body: 'Three short chapters — pick what matters to you. Each is under a minute.' }
+      body: 'Every card is a Claude Code agent in its own terminal — live status, current task, token spend. amux is the operations layer around a whole fleet. Let’s set yours up in under a minute.' },
+    { action: function() { try { _wtCloseAll(); } catch(e) {} switchView('sessions'); openCreate(); }, wait: 380,
+      target: '#create-dir', targetFallback: '#create-overlay', pos: 'bottom',
+      title: '1 — Spin up an agent',
+      body: 'The real create dialog — point an agent at a repo or folder, pick a model, optionally YOLO. Fill it in to launch one now, or hit Next to keep touring.' },
+    { action: function() { try { closeCreate(); } catch(e) {} switchView('sessions'); }, wait: 320,
+      target: function() { var el = document.querySelector('.send-row') || document.querySelector('.chips'); return el || document.querySelector('.cards'); },
+      targetFallback: '.cards', pos: 'top',
+      title: '2 — Steer any agent',
+      body: 'Type to any agent right from its card. Messages QUEUE and deliver at a safe stopping point — you never interrupt work in flight, and delivery is verified so nothing silently vanishes.' },
+    { revealTab: 'scheduler', action: function() { try { _wtCloseAll(); } catch(e) {} switchView('scheduler'); setTimeout(function() { if (!(typeof schedules !== 'undefined' && schedules && schedules.length)) { try { openSchedModal(null); } catch(e) {} } }, 240); }, wait: 560,
+      target: '#sched-title', targetFallback: '#tab-scheduler', pos: 'bottom',
+      title: '3 — Schedule a routine',
+      body: 'An automation is just a prompt on a timer — “every weekday 8am: triage my inbox and email me a digest.” No schedules yet? This form starts your first.' },
+    { revealTab: 'board', action: function() { try { closeSchedModal(); } catch(e) {} switchView('board'); setTimeout(function() { if (!(typeof boardItems !== 'undefined' && boardItems && boardItems.length)) { try { openBoardAdd('backlog'); } catch(e) {} } }, 240); }, wait: 560,
+      target: '#be-title', targetFallback: '#tab-board', pos: 'bottom',
+      title: '4 — The board is your command center',
+      body: 'Tasks live on a shared kanban and agents CLAIM work atomically. Empty board? Add your first task here — it’s the backlog your whole fleet pulls from.' },
+    { revealTab: 'calendar', action: function() { try { closeBoardEdit(); } catch(e) {} switchView('calendar'); setTimeout(function() { if (!(typeof calEvents !== 'undefined' && calEvents && calEvents.length)) { try { openEventModal(null); } catch(e) {} } }, 260); }, wait: 640,
+      target: '#ev-title', targetFallback: '#fc-container', pos: 'bottom',
+      title: '5 — A real calendar',
+      body: 'Agents create events that sync to a private ICS feed you subscribe to from Google or Apple Calendar. No events yet? Create your first right here.' },
+    { revealTab: 'messages', action: function() { try { closeEventModal(); } catch(e) {} switchView('messages'); }, wait: 460,
+      target: '#messages-view', targetFallback: '#tab-messages', pos: 'bottom',
+      title: '6 — Every message, recorded',
+      body: 'Every message to every agent is saved server-side — browse and search the full history from any device, so nothing you told an agent is ever lost.' },
+    { revealTab: 'browser', action: function() { switchView('browser'); }, wait: 460,
+      target: '#browser-view', targetFallback: '#tab-browser', pos: 'bottom',
+      title: '7 — A browser with your logins',
+      body: 'Agents drive a real browser using SAVED auth profiles — log into a site once and they reuse it: pull invoices, publish posts, work dashboards that have no API.' },
+    { revealTab: 'skills', action: function() { switchView('skills'); }, wait: 460,
+      target: '#skills-view', targetFallback: '#tab-skills', pos: 'bottom',
+      title: '8 — Skills: reusable workflows',
+      body: 'Package a workflow once and any agent can run it — deploy steps, review checklists, research harnesses. That’s your command center, set up. You’re ready.' }
   ];
   var _WT_CHAPTERS = {
     fleet: { label: '\u26A1 Run a fleet, not a chatbot', steps: [
@@ -37955,20 +37984,33 @@ async function pullFromRemote(btn) {
     }
     tooltip.innerHTML = html;
 
+    // Fit + position within the VISIBLE (visual) viewport so the tooltip is
+    // never clipped — pinch-zoom / small screens pushed the Next button off the
+    // right/bottom (2026-07-18). visualViewport gives the true visible box (and
+    // pan offset under zoom); cap width/height to it so all text + buttons show.
+    var vv = window.visualViewport;
+    var vw = vv ? vv.width : window.innerWidth;
+    var vh = vv ? vv.height : window.innerHeight;
+    var ox = vv ? vv.offsetLeft : 0;
+    var oy = vv ? vv.offsetTop : 0;
+    tooltip.style.maxWidth = Math.min(340, vw - 24) + 'px';
+    tooltip.style.maxHeight = (vh - 24) + 'px';
+    tooltip.style.overflowY = 'auto';
     var tw = tooltip.offsetWidth, th = tooltip.offsetHeight, gap = 14, top, left;
     if (s.menu || !el) {
-      top = window.innerHeight / 2 - th / 2;
-      left = window.innerWidth / 2 - tw / 2;
+      top = oy + vh / 2 - th / 2;
+      left = ox + vw / 2 - tw / 2;
     } else {
       var r2 = _cssRect(el);
       var padY2 = s.padY || 8;
       if (s.pos === 'bottom') { top = r2.bottom + padY2 + gap; left = r2.left + r2.width / 2 - tw / 2; }
       else { top = r2.top - padY2 - gap - th; left = r2.left + r2.width / 2 - tw / 2; }
     }
-    if (left < 12) left = 12;
-    if (left + tw > window.innerWidth - 12) left = window.innerWidth - 12 - tw;
-    if (top < 12) top = 12;
-    if (top + th > window.innerHeight - 12) top = window.innerHeight - 12 - th;
+    var minX = ox + 12, maxX = ox + vw - 12, minY = oy + 12, maxY = oy + vh - 12;
+    if (left + tw > maxX) left = maxX - tw;
+    if (left < minX) left = minX;
+    if (top + th > maxY) top = maxY - th;
+    if (top < minY) top = minY;
     tooltip.style.top = top + 'px';
     tooltip.style.left = left + 'px';
   }
@@ -37978,7 +38020,16 @@ async function pullFromRemote(btn) {
     _wtPosition();
   }
 
+  // Close every create/edit modal the tour may have opened, so advancing to
+  // the next surface (or dismissing) never leaves a stacked dialog behind.
+  function _wtCloseAll() {
+    try { closeCreate(); } catch(e) {}
+    try { closeSchedModal(); } catch(e) {}
+    try { closeBoardEdit(); } catch(e) {}
+    try { closeEventModal(); } catch(e) {}
+  }
   function _wtCleanup() {
+    _wtCloseAll();
     var ch = _wtChapterKey && _WT_CHAPTERS[_wtChapterKey];
     if (ch && ch.cleanup) { try { ch.cleanup(); } catch(e) {} }
   }
@@ -42738,7 +42789,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.147';
+const CACHE = 'amux-v0.9.148';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
