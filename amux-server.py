@@ -18371,9 +18371,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
   <!-- Quick-access bookmarks -->
   <div id="files-bookmarks" style="padding:4px 10px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--card);display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;align-items:center;">
-    <span style="font-size:0.7rem;color:var(--dim);white-space:nowrap;flex-shrink:0;">Quick:</span>
+    <span id="files-bm-label" style="font-size:0.7rem;color:var(--dim);white-space:nowrap;flex-shrink:0;">Quick:</span>
     <div id="files-bookmarks-list" style="display:flex;gap:5px;flex-wrap:nowrap;"></div>
-    <button onclick="_filesAddBookmark()" style="background:none;border:1px dashed var(--border);border-radius:4px;color:var(--dim);font-size:0.7rem;padding:2px 6px;cursor:pointer;white-space:nowrap;flex-shrink:0;" title="Bookmark current folder">+</button>
+    <button id="files-bm-add" onclick="_filesAddBookmark()" style="background:none;border:1px dashed var(--border);border-radius:4px;color:var(--dim);font-size:0.7rem;padding:2px 6px;cursor:pointer;white-space:nowrap;flex-shrink:0;" title="Bookmark current folder">+</button>
   </div>
   <!-- Search -->
   <div style="padding:5px 10px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--card);">
@@ -25085,7 +25085,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.150';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.151';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -29490,49 +29490,81 @@ const _FILES_DEFAULT_BOOKMARKS = [
   { label: 'Downloads', path: _FILES_HOME + '/Downloads' },
 ];
 
+// Scope shortcuts by context: global (Files tab) vs a specific session's file
+// view (_exploreSession, set by openExplore → "Browse files"). Both persist to
+// /api/prefs so they sync across devices; session scope is namespaced by name.
+function _filesBmScope() { return _exploreSession ? ('::' + _exploreSession) : ''; }
+function _filesBmLocalKey() { return 'amux_files_bookmarks' + _filesBmScope(); }
+function _filesBmServerKey() { return 'files_bookmarks' + _filesBmScope(); }
+
 function _filesGetBookmarks() {
   try {
-    const raw = localStorage.getItem('amux_files_bookmarks');
+    const raw = localStorage.getItem(_filesBmLocalKey());
     if (raw) return JSON.parse(raw);
   } catch(e) {}
-  return _FILES_DEFAULT_BOOKMARKS.map(b => ({...b}));
+  // Session scope starts empty; the global bar seeds a few useful defaults.
+  return _exploreSession ? [] : _FILES_DEFAULT_BOOKMARKS.map(b => ({...b}));
 }
 
 function _filesSaveBookmarks(bm) {
   const json = JSON.stringify(bm);
-  localStorage.setItem('amux_files_bookmarks', json);   // fast local mirror (also offline)
+  try { localStorage.setItem(_filesBmLocalKey(), json); } catch(e) {}   // fast local mirror (also offline)
   // Persist server-side too so shortcuts follow you across every device (like files_cwd).
   fetch(API + '/api/prefs', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({key:'files_bookmarks', value: json})}).catch(()=>{});
+    body: JSON.stringify({key: _filesBmServerKey(), value: json})}).catch(()=>{});
+}
+
+// Pull the current scope's shortcuts from the server (cross-device), then render.
+async function _filesLoadBookmarks() {
+  try {
+    const r = await fetch(API + '/api/prefs?key=' + encodeURIComponent(_filesBmServerKey()));
+    const d = await r.json();
+    if (d && d.value) { try { localStorage.setItem(_filesBmLocalKey(), d.value); } catch(e) {} }
+  } catch(e) {}
+  _filesRenderBookmarks();
+}
+
+// Open a shortcut: folders navigate, files open in the previewer.
+function _filesBookmarkOpen(path, type) {
+  if (type === 'file') openFilePreview(path);
+  else loadFiles(path);
 }
 
 function _filesRenderBookmarks() {
+  const lbl = document.getElementById('files-bm-label');
+  if (lbl) lbl.textContent = _exploreSession ? (_exploreSession + ':') : 'Quick:';
+  const addBtn = document.getElementById('files-bm-add');
+  if (addBtn) addBtn.title = _exploreSession ? ('Add current folder to ' + _exploreSession + ' shortcuts') : 'Bookmark current folder';
   const container = document.getElementById('files-bookmarks-list');
   if (!container) return;
   const bm = _filesGetBookmarks();
-  // Chip = tappable label (navigate) + a × button (remove). The × works on
-  // touch too — right-click can't (mobile-first). Right-click still removes.
-  container.innerHTML = bm.map((b, i) =>
-    '<span class="files-bm-chip" oncontextmenu="event.preventDefault();_filesRemoveBookmark(' + i + ')" '
-    + 'style="display:inline-flex;align-items:center;gap:2px;background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:2px 3px 2px 9px;font-size:0.73rem;color:var(--text);white-space:nowrap;flex-shrink:0;" '
-    + 'title="' + esc(b.path) + '">'
-    + '<span style="cursor:pointer;" onclick="loadFiles(\'' + esc(b.path) + '\')">' + esc(b.label) + '</span>'
-    + '<button onclick="event.stopPropagation();_filesRemoveBookmark(' + i + ')" title="Remove shortcut" aria-label="Remove ' + esc(b.label) + '" '
-    + 'style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:0.95rem;line-height:1;padding:2px 4px;min-width:24px;min-height:24px;border-radius:4px;">×</button>'
-    + '</span>'
-  ).join('');
+  // Chip = tappable label (navigate / open) + a × button (remove). The × works
+  // on touch too — right-click can't (mobile-first). Right-click still removes.
+  container.innerHTML = bm.map((b, i) => {
+    const t = b.type === 'file' ? 'file' : 'dir';
+    const ic = t === 'file' ? '\u{1F4C4} ' : '';
+    return '<span class="files-bm-chip" oncontextmenu="event.preventDefault();_filesRemoveBookmark(' + i + ')" '
+      + 'style="display:inline-flex;align-items:center;gap:2px;background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:2px 3px 2px 9px;font-size:0.73rem;color:var(--text);white-space:nowrap;flex-shrink:0;" '
+      + 'title="' + esc(b.path) + '">'
+      + '<span style="cursor:pointer;" onclick="_filesBookmarkOpen(\'' + esc(b.path) + '\',\'' + t + '\')">' + ic + esc(b.label) + '</span>'
+      + '<button onclick="event.stopPropagation();_filesRemoveBookmark(' + i + ')" title="Remove shortcut" aria-label="Remove ' + esc(b.label) + '" '
+      + 'style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:0.95rem;line-height:1;padding:2px 4px;min-width:24px;min-height:24px;border-radius:4px;">×</button>'
+      + '</span>';
+  }).join('');
 }
 
-function _filesAddBookmark() {
-  const path = _filesPath || '/';
-  const label = path.split('/').filter(Boolean).pop() || '/';
+// Add a specific file/folder (from the ⋯ menu) as a shortcut in the CURRENT scope.
+function _filesAddBookmarkPath(path, type) {
+  const label = path.split('/').filter(Boolean).pop() || path;
   const bm = _filesGetBookmarks();
-  if (bm.find(b => b.path === path)) { showToast('Already bookmarked'); return; }
-  bm.push({ label, path });
+  if (bm.find(b => b.path === path)) { showToast('Already a shortcut'); return; }
+  bm.push({ label, path, type: (type === 'dir' || type === 'directory') ? 'dir' : 'file' });
   _filesSaveBookmarks(bm);
   _filesRenderBookmarks();
-  showToast('Bookmarked ' + label);
+  showToast(_exploreSession ? ('Shortcut added to ' + _exploreSession) : ('Shortcut added: ' + label));
 }
+
+function _filesAddBookmark() { _filesAddBookmarkPath(_filesPath || '/', 'dir'); }
 
 function _filesRemoveBookmark(idx) {
   const bm = _filesGetBookmarks();
@@ -29943,6 +29975,7 @@ function openExplore(startPath, session) {
   closePeek();
   switchView('files');
   _updateFilesSessionBtn();
+  _filesLoadBookmarks();   // load THIS session's shortcuts (or global if none)
 }
 function _updateFilesSessionBtn() {
   const btn = document.getElementById('files-set-session-btn');
@@ -30106,6 +30139,13 @@ function _showFilesMenu(path, btn, type) {
   linkItem.textContent = 'Copy link';
   linkItem.onclick = () => { popup.remove(); _copyFileDeeplink(path); };
   popup.appendChild(linkItem);
+  // Add shortcut — scoped to the session (if browsing a session's files) or the
+  // Files-tab quick bar otherwise. Works for both files and folders.
+  const bmItem = document.createElement('button');
+  bmItem.className = 'explore-menu-item';
+  bmItem.textContent = _exploreSession ? ('Add shortcut · ' + _exploreSession) : 'Add shortcut';
+  bmItem.onclick = () => { popup.remove(); _filesAddBookmarkPath(path, type); };
+  popup.appendChild(bmItem);
   // Rename
   const renItem = document.createElement('button');
   renItem.className = 'explore-menu-item';
@@ -31924,7 +31964,7 @@ function switchView(view) {
   if (view === 'skills') _skillsTabLoad();
   if (view === 'sql') _sqlInit();
   if (view === 'messages') _messagesLoad(true, (typeof peekSession !== 'undefined' && peekSession) || _lastPeekedSession);
-  if (view === 'files') loadFiles(_filesPath);
+  if (view === 'files') { loadFiles(_filesPath); _filesRenderBookmarks(); }
   if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
   if (view !== 'files') {
     try { if (location.hash.startsWith('#path=')) history.replaceState({}, '', location.pathname); } catch(e) {}
@@ -43078,7 +43118,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.150';
+const CACHE = 'amux-v0.9.151';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
