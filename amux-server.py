@@ -12384,7 +12384,16 @@ def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy:
                         ["tmux", "capture-pane", "-t", tmux_target(name), "-p"],
                         capture_output=True, text=True, timeout=5
                     )
-                    for line in reversed(cap.stdout.splitlines()):
+                    pane = cap.stdout
+                    # NOT at an interactive selection picker: there the "❯" marks
+                    # the HIGHLIGHTED OPTION, not a composer suggestion — typing
+                    # its label ("2. Hand off…") corrupts the selection. Bail so
+                    # the caller presses a raw Enter and selects it instead.
+                    _low = pane.lower()
+                    if ("to navigate" in _low or "esc to cancel" in _low
+                            or "↑/↓" in pane or "enter to select" in _low):
+                        return True, "no suggestion found"
+                    for line in reversed(pane.splitlines()):
                         line = line.strip()
                         if line.startswith("❯") or line.startswith(">"):
                             suggested = line.lstrip("❯>\xa0 ").strip()
@@ -25423,7 +25432,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.156';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.157';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -27196,13 +27205,19 @@ async function sendPeekCmd() {
     _submitSuggestion(peekSession, true);
     return;
   }
-  // Queue mode: ALWAYS enqueue to the steering queue — no status check. The
-  // client's status is a snapshot, and racing it was exactly how queued
-  // messages fell through to direct sends. The server delivers at the next
-  // turn boundary; an idle session picks it up within seconds via the fast
-  // steering tick. (File attachments still send directly — steering carries
-  // text only.)
-  if (_sendMode === 'queue' && files.length === 0) {
+  // Queue mode: enqueue to the steering queue — no status check. The client's
+  // status is a snapshot, and racing it was exactly how queued messages fell
+  // through to direct sends. The server delivers at the next turn boundary; an
+  // idle session picks it up within seconds via the fast steering tick. (File
+  // attachments still send directly — steering carries text only.)
+  //
+  // EXCEPTION: when the session is at a selector (status 'waiting' = NEEDS
+  // INPUT), it is explicitly parked ON your answer. The steering queue only
+  // delivers at an IDLE boundary, never at a picker — so a queued reply would
+  // sit undelivered forever (you "keep sending commands and they don't go
+  // through"). Send those DIRECT so they land immediately.
+  const _atSelector = (sessions.find(s => s.name === peekSession) || {}).status === 'waiting';
+  if (_sendMode === 'queue' && files.length === 0 && !_atSelector) {
     cmdHistoryAdd(text, {type:'steering'});
     inp.value = '';
     inp.style.height = 'auto';
@@ -43716,7 +43731,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.156';
+const CACHE = 'amux-v0.9.157';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
