@@ -3012,6 +3012,18 @@ _LAUNCH_MARKERS = re.compile(
 _BARE_PROMPT_RE = re.compile(r'^[A-Za-z0-9._-]{1,24}\$$')
 
 
+def _strip_scroll_pill(text: str) -> str:
+    """Claude Code's TUI draws a "Jump to bottom (click) ↓" scroll pill over its
+    own transcript when the view is scrolled up. tmux composites that pill into
+    the MIDDLE of whatever line it overlaps, so the peek shows a garbled line
+    (reported on mixpeek-funnel: "…plan nudge Jump to bottom (click) ↓ these
+    three…"). Strip the pill so the surrounding text reads cleanly. Conservative:
+    only acts when the exact pill marker is present."""
+    if not text or "Jump to bottom" not in text:
+        return text
+    return re.sub(r"\s*Jump to bottom \(click\)\s*[↓]?\s*", " ", text)
+
+
 def _strip_launch_noise(text: str) -> str:
     """Remove amux's session-launch scaffolding from a captured frame (the
     `unset …; cd …; claude --model … --name <s>` relaunch command, the macOS zsh
@@ -44740,7 +44752,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 cached = _peek_cache.get(session_name)
                 if cached and cached[1] >= lines and (now - cached[0]) < _PEEK_CACHE_TTL:
                     return self._json_etag(cached[2])
-                output = tmux_capture(session_name, lines)
+                output = _strip_scroll_pill(tmux_capture(session_name, lines))
                 tmux_lines = len(output.splitlines()) if output else 0
                 if not output or (tmux_lines < 30 and tmux_lines < lines // 4):
                     log_out = load_session_log(session_name, tail_bytes=65_536)
@@ -50598,7 +50610,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 cached = _peek_cache.get(name)
                 if not live_only and cached and cached[1] >= lines and (now - cached[0]) < _PEEK_CACHE_TTL:
                     return self._json_etag(cached[2])
-                output = tmux_capture(name, lines)
+                output = _strip_scroll_pill(tmux_capture(name, lines))
                 if live_only:
                     _live = _strip_launch_noise(output.strip()) if output else ""
                     # Trim against the SAME transcript the client is currently showing
