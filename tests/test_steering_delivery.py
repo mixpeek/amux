@@ -63,6 +63,11 @@ ns = {
     "slog": lambda *a, **k: None,
     "os": os,
 }
+# The delivery-timing assertions below (t=4 → hold, t=8 → deliver) are written for
+# a 6s settle. Pin it so the test is independent of the code's env-tunable default
+# (changed 6→2s for snappier delivery, 2026-07-20); the settle LOGIC under test is
+# unchanged. Set before the assignment node is exec'd (it reads this env var).
+os.environ["AMUX_STEER_SETTLE_SECS"] = "6"
 tree = ast.parse(open(SERVER, encoding="utf-8").read())
 _want_assign = {"_STEER_SETTLE_SECS", "_STRIP_ANSI"}
 _want_func = {"_steer_try_deliver", "_has_running_subagent"}
