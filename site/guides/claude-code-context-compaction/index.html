@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Claude Code Context Compaction: What Happens at the Context Limit (2026) &mdash; amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Claude Code auto-compacts (summarizes) the conversation when the context window fills. Learn what compaction does, why it breaks overnight runs, how to detect it, and how amux handles it automatically.">
+  <meta name="keywords" content="Claude Code context compaction, claude code context window full, claude code context cleared, AI agent context limit, claude code overnight run context, claude code auto compact, AI agent context loss, claude code context drift, claude code resume dialog, claude code unattended run">
+  <link rel="canonical" href="https://amux.io/guides/claude-code-context-compaction/">
+  <meta property="og:title" content="Claude Code Context Compaction: What Happens at the Context Limit (2026) &mdash; amux">
+  <meta property="og:description" content="What Claude Code context compaction is, why it breaks overnight agent runs, and how amux's self-healing watchdog keeps your agents alive through it.">
+  <meta property="og:url" content="https://amux.io/guides/claude-code-context-compaction/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Claude Code Context Compaction","item":"https://amux.io/guides/claude-code-context-compaction/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Claude Code Context Compaction: What Happens at the Context Limit (2026)","description":"Claude Code auto-compacts (summarizes) the conversation when the context window fills. Learn what compaction does, why it breaks overnight runs, how to detect it, and how amux handles it automatically.","url":"https://amux.io/guides/claude-code-context-compaction/","datePublished":"2026-07-20","dateModified":"2026-07-20","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is Claude Code context compaction?","acceptedAnswer":{"@type":"Answer","text":"Context compaction is Claude Code's automatic response to a full context window. When the running conversation (tool calls, file reads, code edits, and messages) approaches the model's token limit, Claude Code automatically summarizes the entire conversation into a compact representation and replaces the full history with that summary. The agent then continues from the summary rather than the raw history. This happens automatically — there is no flag to disable it and no user prompt before it occurs."}},{"@type":"Question","name":"Does context compaction lose data?","acceptedAnswer":{"@type":"Answer","text":"Compaction is a lossy summarization. The summary captures the high-level narrative — what tasks were done, what the current goal is — but discards the raw detail: exact file content that was read, precise error messages from tool calls, inline diffs, and intermediate reasoning steps. If the agent was mid-task and relied on an exact value from a prior tool call (a function signature, an error code, a file line number), that value may not survive compaction verbatim. For simple sequential tasks the summary is usually sufficient; for complex multi-file refactors the loss of detail is where context drift starts."}},{"@type":"Question","name":"Why does context compaction break overnight runs?","acceptedAnswer":{"@type":"Answer","text":"Three reasons. First, the resume dialog: after compaction (or a restart), Claude Code sometimes presents an interactive prompt asking whether to resume the previous session. An unattended agent cannot click this — it blocks silently with no timeout. Second, task state loss: complex tasks that depended on exact tool-call results accumulated earlier in the session may go off-track once those details are summarized away. Third, context drift: the compacted summary describes what happened, but the agent's next action is generated from that summary, not the original instructions — it can subtly shift priority or forget constraints stated early in the session."}},{"@type":"Question","name":"How can I tell when context compaction happened?","acceptedAnswer":{"@type":"Answer","text":"In the terminal output you will see a line that reads something like: 'Context window is getting long. Compacting context...' followed by a spinner, then 'Compacted X tokens → Y tokens'. In amux, compaction events are logged in the session timeline with a timestamp so you can see exactly when they occurred and how much was compressed. If the agent's behavior suddenly changes tone or seems to forget an earlier constraint, check the timeline for a compaction event near that point."}},{"@type":"Question","name":"How does amux handle the resume dialog after compaction?","acceptedAnswer":{"@type":"Answer","text":"amux's watchdog continuously scans each session's terminal output for the resume dialog pattern. When it detects the dialog, it automatically sends the appropriate keypress to confirm continuation — the session never stalls. This NEEDS INPUT detection is built into the core watchdog loop and applies to all sessions, not just ones that have compacted. The watchdog fires within seconds of the dialog appearing, so overnight runs continue uninterrupted."}}]}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Claude Code Context Compaction</span></div>
+    <h1>Claude Code Context Compaction</h1>
+    <p class="subtitle">What happens when the context window fills, why it breaks overnight agent runs, and how to keep your agents alive through it automatically. <em>Updated July 2026.</em></p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#answer" style="color:var(--dim);text-decoration:none;">Direct Answer: What Is Context Compaction?</a></li>
+        <li><a href="#what-happens" style="color:var(--dim);text-decoration:none;">What Happens During Compaction</a></li>
+        <li><a href="#why-breaks" style="color:var(--dim);text-decoration:none;">Why It Breaks Overnight Runs</a></li>
+        <li><a href="#detect" style="color:var(--dim);text-decoration:none;">How to Detect It</a></li>
+        <li><a href="#amux" style="color:var(--dim);text-decoration:none;">How amux Handles It Automatically</a></li>
+        <li><a href="#best-practices" style="color:var(--dim);text-decoration:none;">Best Practices</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ─────────────────────────── ANSWER BOX ─────────────────────────── -->
+    <div id="answer" style="background:var(--surface);border-left:4px solid #6366f1;border-radius:0 8px 8px 0;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.06em;color:#6366f1;">Direct Answer</strong>
+      <p style="margin:0.5rem 0 0;font-size:1.05rem;line-height:1.65;"><strong>Claude Code context compaction</strong> is the automatic process by which Claude Code summarizes and replaces the full conversation history when the context window approaches its token limit &mdash; allowing the agent to continue without crashing. The compaction is automatic and not configurable; it discards raw detail in favor of a high-level summary, which can cause an unattended agent to lose task state, miss the resume dialog that follows, and go off-track without any human noticing.</p>
+    </div>
+
+    <!-- ─────────────────────────── WHAT HAPPENS ─────────────────────────── -->
+    <h2 id="what-happens">What Happens During Compaction</h2>
+
+    <p>Every Claude Code session runs inside a context window &mdash; a fixed-size buffer that holds the entire conversation: your initial prompt, every tool call, every file read, every code diff, and every response. For Claude Sonnet 4 and Opus 4, this window is 200,000 tokens. That sounds large, but a real engineering session fills it fast.</p>
+
+    <p>A typical context-heavy session might include:</p>
+    <ul>
+      <li>The initial task description and CLAUDE.md instructions (~2&thinsp;000&ndash;5&thinsp;000 tokens)</li>
+      <li>10&ndash;20 file reads of 200&ndash;500 lines each (~20&thinsp;000&ndash;60&thinsp;000 tokens)</li>
+      <li>50&ndash;100 tool call results (bash output, grep results, git log) (~15&thinsp;000&ndash;40&thinsp;000 tokens)</li>
+      <li>Claude&rsquo;s reasoning and responses, including inline diffs (~30&thinsp;000&ndash;80&thinsp;000 tokens)</li>
+    </ul>
+
+    <p>An aggressive overnight run that opens many files and executes many shell commands can hit 200k tokens in 2&ndash;4 hours. When the usage crosses a threshold (typically around 90&ndash;95% of the window), Claude Code triggers compaction automatically.</p>
+
+    <p>What compaction actually does:</p>
+    <ol>
+      <li><strong>Summarization:</strong> Claude generates a condensed narrative of the entire conversation &mdash; the goals, the decisions made, the files touched, the current state of the task.</li>
+      <li><strong>Replacement:</strong> The full conversation history is discarded and replaced with the summary as a single synthetic &ldquo;human&rdquo; turn at the start of a fresh context.</li>
+      <li><strong>Continuation:</strong> The agent resumes from the summary, as if that summary were its entire prior history.</li>
+    </ol>
+
+    <p>The net effect: the context window goes from 90%+ full to nearly empty. The agent can keep running. But the raw history is gone.</p>
+
+    <pre><code><span class="comment"># What you see in the terminal during compaction</span>
+Context window is getting long. Compacting context...
+<span class="dim">⠸ Compacting 187,432 tokens → 12,840 tokens...</span>
+<span class="ok">✓ Context compacted. Continuing task.</span></code></pre>
+
+    <p>Compaction is not a configurable feature. There is no flag to disable it, increase the threshold, or change the summary strategy. It is a built-in survival mechanism, not an opt-in tool.</p>
+
+    <!-- ─────────────────────────── WHY IT BREAKS ─────────────────────────── -->
+    <h2 id="why-breaks">Why It Breaks Overnight Runs</h2>
+
+    <p>For interactive sessions, compaction is largely invisible &mdash; you&rsquo;re watching the terminal and can course-correct if the agent seems confused. For unattended overnight runs, compaction introduces three distinct failure modes.</p>
+
+    <h3>1. The Resume Dialog</h3>
+
+    <p>After compaction &mdash; and especially after a restart or crash &mdash; Claude Code sometimes presents an interactive resume prompt:</p>
+
+    <pre><code>Would you like to resume this session?
+  1. Yes (continue from last state)
+  2. No (start fresh)
+&gt; _</code></pre>
+
+    <p>An unattended agent cannot answer this prompt. It simply blocks. There is no timeout, no error message, no process exit. The session appears to be &ldquo;running&rdquo; from the outside (the process is alive, the tmux pane shows content) but it is doing nothing. If you queue tasks before bed and check in the morning, you find the agent frozen exactly where it was when the dialog appeared &mdash; which could be 30 minutes into an 8-hour window.</p>
+
+    <h3>2. Lost Task State</h3>
+
+    <p>Compaction is a lossy summarization. The narrative captures:</p>
+    <ul>
+      <li>What the overall goal is</li>
+      <li>Which files were edited</li>
+      <li>The broad sequence of actions taken</li>
+    </ul>
+
+    <p>But it typically discards:</p>
+    <ul>
+      <li><strong>Exact file content</strong> that was read but not yet acted on</li>
+      <li><strong>Precise error messages</strong> from tool calls (stack traces, line numbers)</li>
+      <li><strong>Intermediate values</strong> accumulated mid-task (a function signature, a test ID, a port number from a prior bash output)</li>
+      <li><strong>Worktree and branch context</strong> if the agent was managing multiple git branches</li>
+      <li><strong>The exact wording of constraints</strong> stated early in the session (&ldquo;do not modify any file in /legacy/&rdquo;)</li>
+    </ul>
+
+    <p>After compaction, the agent continues &mdash; but with a compressed map, not the territory. If it was halfway through a multi-step refactor that depended on a precise error message seen 50,000 tokens ago, it may regenerate a different fix, or skip the step entirely because the summary said &ldquo;error was addressed&rdquo; when it was only identified.</p>
+
+    <h3>3. Context Drift</h3>
+
+    <p>Even when the summary is accurate, the agent&rsquo;s behavior can shift subtly. The summary is generated by a model interpreting what was &ldquo;important&rdquo; &mdash; which may not match what your task required. A constraint like &ldquo;keep all changes backwards-compatible&rdquo; stated at session start may be compressed into a single bullet that does not carry the same weight in the agent&rsquo;s next action as it did when it was a fresh explicit instruction.</p>
+
+    <p>Context drift is insidious because the agent is still running, still producing output, and still looks healthy. The deviation from intent is gradual and only visible when you review the output.</p>
+
+    <!-- ─────────────────────────── DETECT ─────────────────────────── -->
+    <h2 id="detect">How to Detect It</h2>
+
+    <p>There are several signals that context compaction has occurred in a running session.</p>
+
+    <h3>Terminal Output</h3>
+
+    <p>The most direct signal is the compaction log line itself. Claude Code prints a visible message when compaction fires:</p>
+
+    <pre><code>Context window is getting long. Compacting context...
+✓ Context compacted. Continuing task.</code></pre>
+
+    <p>In a tmux session you can scan for this by reviewing the scrollback buffer. If you&rsquo;re logging session output to a file, <code>grep -i compact</code> will surface all compaction events with their timestamps.</p>
+
+    <h3>Behavioral Signals</h3>
+
+    <p>If you don&rsquo;t have the terminal log, behavioral clues include:</p>
+    <ul>
+      <li><strong>Sudden change in task approach</strong> &mdash; the agent re-reads files it already opened, or starts a sub-task it appeared to have completed earlier.</li>
+      <li><strong>Loss of constraint awareness</strong> &mdash; the agent touches a file or directory it was told to avoid.</li>
+      <li><strong>Repetition</strong> &mdash; the agent re-runs the same shell command it ran 10 steps earlier.</li>
+      <li><strong>The resume dialog stall</strong> &mdash; the session output stops updating but the process is still alive.</li>
+    </ul>
+
+    <h3>Token Count</h3>
+
+    <p>If you have structured (JSON) output enabled, each Claude Code message includes a <code>usage</code> field with input token counts. A sudden drop from 180k tokens to 12k tokens between consecutive turns is a compaction event.</p>
+
+    <pre><code><span class="comment"># Before compaction</span>
+{"usage":{"input_tokens":183244,"output_tokens":412,...}}
+
+<span class="comment"># After compaction (same session, next turn)</span>
+{"usage":{"input_tokens":13108,"output_tokens":388,...}}</code></pre>
+
+    <!-- ─────────────────────────── AMUX ─────────────────────────── -->
+    <h2 id="amux">How amux Handles It Automatically</h2>
+
+    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is an open-source multi-agent orchestration layer that wraps Claude Code (and Codex CLI, Gemini CLI) sessions in a self-healing watchdog. It was built specifically to make overnight, unattended runs reliable &mdash; and context compaction is one of the core failure modes it addresses.</p>
+
+    <h3>Resume Dialog Detection (NEEDS INPUT State)</h3>
+
+    <p>The amux watchdog continuously scans each session&rsquo;s terminal output for the resume dialog pattern. When it detects the prompt, it classifies the session as <code>NEEDS INPUT</code> and immediately sends the confirmation keypress to continue. The session never stalls.</p>
+
+    <p>This detection loop runs every few seconds per session and handles multiple dialog patterns &mdash; not just the post-compaction resume prompt, but any interactive confirmation that Claude Code may surface during an unattended run.</p>
+
+    <pre><code><span class="comment"># amux session states visible in the dashboard</span>
+running     → agent is actively working
+needs_input → watchdog detected a blocking prompt, auto-answering
+idle        → agent completed its task, waiting
+crashed     → process exited unexpectedly, watchdog will restart</code></pre>
+
+    <h3>Compaction Event Logging</h3>
+
+    <p>When amux detects a compaction event in the session output, it logs it in the session timeline with a timestamp and the before/after token counts. This gives you a precise audit trail: you can see exactly when compaction happened, how much context was lost, and correlate that with any behavioral changes in the session output immediately after.</p>
+
+    <p>The timeline is visible in the amux dashboard and queryable via the REST API, so you can build monitoring alerts on top of it &mdash; for example, a push notification to your phone if compaction occurs more than twice in one session (a sign that the task scope is too large for the context window).</p>
+
+    <h3>The Hibernate Fix: Preserving Solo Overnight Runs</h3>
+
+    <p>An earlier version of amux had an auto-stop behavior: idle sessions would be stopped to save resources. This was correct for multi-agent fleet scenarios but broke solo overnight runs &mdash; an agent that had just compacted and was briefly idle between tool calls could be incorrectly classified as &ldquo;done&rdquo; and stopped.</p>
+
+    <p>The hibernate fix (shipped in commit <code>f727de6</code>) changed this logic: amux now only auto-stops idle sessions when multiple sessions are running concurrently. A solo overnight run &mdash; one agent, one task &mdash; is never auto-stopped regardless of idle time. The agent can pause mid-task, sit briefly idle after compaction, and resume without interference.</p>
+
+    <h3>amux Steering: Injecting Context Reminders Mid-Run</h3>
+
+    <p>Because compaction can cause context drift, amux supports &ldquo;steering&rdquo; &mdash; injecting a message into a running session mid-task. If you notice (via the phone alert or dashboard) that an agent has drifted after compaction, you can send a correction without stopping the session:</p>
+
+    <pre><code><span class="comment"># Send a steering message to a running session</span>
+amux send my-session "Reminder: do not modify files under /legacy/. \
+  Current priority is finishing the auth migration in src/auth/."</code></pre>
+
+    <p>The message is injected into the agent&rsquo;s input, re-grounding it without losing the post-compaction progress already made.</p>
+
+    <!-- ─────────────────────────── BEST PRACTICES ─────────────────────────── -->
+    <h2 id="best-practices">Best Practices</h2>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Practice</th>
+            <th>Why It Helps</th>
+            <th>How</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Commit early and often</strong></td>
+            <td>Compaction loses in-memory task state, but git history is permanent. If the agent commits after every logical step, you can always see what was actually done &mdash; independent of what the summary thinks was done.</td>
+            <td>Instruct the agent in your initial prompt or CLAUDE.md: <em>&ldquo;Commit after completing each subtask.&rdquo;</em></td>
+          </tr>
+          <tr>
+            <td><strong>Write constraints to CLAUDE.md</strong></td>
+            <td>CLAUDE.md is read at session start and injected at the beginning of the context on every new turn. Constraints in CLAUDE.md survive compaction because they are re-injected, not summarized.</td>
+            <td>Move your &ldquo;do not touch X&rdquo; and &ldquo;always use Y pattern&rdquo; instructions from the initial prompt into the project&rsquo;s <code>CLAUDE.md</code> file.</td>
+          </tr>
+          <tr>
+            <td><strong>Break large tasks into sessions</strong></td>
+            <td>A task that fits in one context window (roughly &lt;150k tokens of history) will never compact. Decompose large multi-day tasks into smaller sessions, each with a clear handoff artifact (a git branch, a written spec, a commit message).</td>
+            <td>Use amux to queue multiple sessions, each scoped to a single subtask, rather than one mega-session.</td>
+          </tr>
+          <tr>
+            <td><strong>Use amux steering for post-compaction correction</strong></td>
+            <td>If you&rsquo;re monitoring via the amux phone alert and notice a compaction event, a quick steering message re-grounds the agent before it drifts far.</td>
+            <td><code>amux send &lt;session&gt; "After compaction reminder: ..."</code></td>
+          </tr>
+          <tr>
+            <td><strong>Log session output to a file</strong></td>
+            <td>The terminal scrollback buffer is finite. Writing session output to a log file lets you grep for compaction events after the fact and reconstruct exactly what the agent did before and after.</td>
+            <td>Configure tmux <code>pipe-pane</code> or redirect stdout: <code>claude ... 2&gt;&amp;1 | tee session.log</code></td>
+          </tr>
+          <tr>
+            <td><strong>Scope file reads aggressively</strong></td>
+            <td>The fastest way to fill the context window is reading entire large files when only a few functions are relevant. The longer the context, the sooner compaction fires.</td>
+            <td>Instruct the agent: <em>&ldquo;Read only the specific functions you need, not entire files. Use grep to locate the relevant section first.&rdquo;</em></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ─────────────────────────── GITHUB CTA ─────────────────────────── -->
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux handles context compaction automatically (304&#9733; GitHub)</div>
+        <div style="color:var(--muted);font-size:.9rem">Self-healing watchdog catches the resume dialog, logs compaction events, and keeps your overnight run alive. Open source, single Python file.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub &#9733;</a>
+    </div>
+
+    <!-- ─────────────────────────── FAQ ─────────────────────────── -->
+    <h2 id="faq">FAQ</h2>
+
+    <div class="faq-list">
+      <details class="faq-item">
+        <summary>What is Claude Code context compaction?</summary>
+        <p>Context compaction is Claude Code&rsquo;s automatic response to a full context window. When the running conversation &mdash; tool calls, file reads, code edits, and messages &mdash; approaches the model&rsquo;s token limit, Claude Code automatically summarizes the entire conversation into a compact representation and replaces the full history with that summary. The agent then continues from the summary rather than the raw history. This happens automatically &mdash; there is no flag to disable it and no user prompt before it occurs.</p>
+      </details>
+
+      <details class="faq-item">
+        <summary>Does context compaction lose data?</summary>
+        <p>Compaction is a lossy summarization. The summary captures the high-level narrative &mdash; what tasks were done, what the current goal is &mdash; but discards the raw detail: exact file content that was read, precise error messages from tool calls, inline diffs, and intermediate reasoning steps. If the agent was mid-task and relied on an exact value from a prior tool call (a function signature, an error code, a file line number), that value may not survive compaction verbatim. For simple sequential tasks the summary is usually sufficient; for complex multi-file refactors the loss of detail is where context drift starts.</p>
+      </details>
+
+      <details class="faq-item">
+        <summary>Why does context compaction break overnight runs?</summary>
+        <p>Three reasons. First, the resume dialog: after compaction (or a restart), Claude Code sometimes presents an interactive prompt asking whether to resume the previous session. An unattended agent cannot click this &mdash; it blocks silently with no timeout. Second, task state loss: complex tasks that depended on exact tool-call results accumulated earlier in the session may go off-track once those details are summarized away. Third, context drift: the compacted summary describes what happened, but the agent&rsquo;s next action is generated from that summary, not the original instructions &mdash; it can subtly shift priority or forget constraints stated early in the session.</p>
+      </details>
+
+      <details class="faq-item">
+        <summary>How can I tell when context compaction happened?</summary>
+        <p>In the terminal output you will see a line that reads something like: &ldquo;Context window is getting long. Compacting context&hellip;&rdquo; followed by a spinner, then &ldquo;Compacted X tokens &rarr; Y tokens&rdquo;. In amux, compaction events are logged in the session timeline with a timestamp so you can see exactly when they occurred and how much was compressed. If the agent&rsquo;s behavior suddenly changes tone or seems to forget an earlier constraint, check the timeline for a compaction event near that point.</p>
+      </details>
+
+      <details class="faq-item">
+        <summary>How does amux handle the resume dialog after compaction?</summary>
+        <p>amux&rsquo;s watchdog continuously scans each session&rsquo;s terminal output for the resume dialog pattern. When it detects the dialog, it automatically sends the appropriate keypress to confirm continuation &mdash; the session never stalls. This <code>NEEDS INPUT</code> detection is built into the core watchdog loop and applies to all sessions, not just ones that have compacted. The watchdog fires within seconds of the dialog appearing, so overnight runs continue uninterrupted.</p>
+      </details>
+    </div>
+
+    <div class="related-guides" style="margin-top:3rem;padding:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Related Guides</strong>
+      <ul style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="/guides/claude-code-headless/" style="color:var(--dim);">Claude Code Headless Mode</a></li>
+        <li><a href="/guides/claude-code-resume-dialog/" style="color:var(--dim);">Claude Code Resume Dialog: Complete Fix</a></li>
+        <li><a href="/guides/self-healing-configuration/" style="color:var(--dim);">Self-Healing Configuration</a></li>
+        <li><a href="/guides/session-memory-and-context/" style="color:var(--dim);">Session Memory and Context</a></li>
+        <li><a href="/guides/ai-coding-agents-overnight/" style="color:var(--dim);">Running AI Coding Agents Overnight</a></li>
+        <li><a href="/guides/context-engineering/" style="color:var(--dim);">Context Engineering for AI Agents</a></li>
+      </ul>
+    </div>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source control plane for AI agents. Runtime, observability, orchestration, and cost control &mdash; in one file.</p>
+        </div>
+        <div class="footer-link-cols">
+          <div class="footer-col">
+            <strong>Product</strong>
+            <a href="/guides/getting-started/">Getting Started</a>
+            <a href="/guides/rest-api-reference/">API Reference</a>
+            <a href="https://cloud.amux.io">Cloud</a>
+            <a href="/pricing/">Pricing</a>
+            <a href="/changelog/">Changelog</a>
+          </div>
+          <div class="footer-col">
+            <strong>Resources</strong>
+            <a href="/guides/">Guides</a>
+            <a href="/blog/">Blog</a>
+            <a href="/faq/">FAQ</a>
+            <a href="/glossary/">Glossary</a>
+            <a href="/demos/">Demos</a>
+          </div>
+          <div class="footer-col">
+            <strong>Compare</strong>
+            <a href="/compare/amux-vs-claude-managed-agents/">vs Managed Agents</a>
+            <a href="/compare/amux-vs-cursor/">vs Cursor</a>
+            <a href="/compare/amux-vs-devin/">vs Devin</a>
+            <a href="/compare/">All comparisons</a>
+          </div>
+          <div class="footer-col">
+            <strong>More</strong>
+            <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+            <a href="/llms.txt">llms.txt</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

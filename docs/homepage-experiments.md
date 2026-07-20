@@ -85,11 +85,12 @@
 - **Hypothesis:** PostHog shows /guides/best-ai-model-for-coding-2026/ gets 84 pageviews (2nd highest after homepage) but zero KPI clicks. Adding a compact GitHub CTA box at the top of that guide (and other high-traffic guides with no CTA) increases GitHub stars from guide traffic.
 - **Page:** /guides/best-ai-model-for-coding-2026/ (first target; then /guides/claude-code-headless/, /guides/ai-coding-finops/)
 - **KPI:** GitHub stars
-- **Status:** `running`
+- **Status:** `inconclusive — bot traffic`
 - **Started:** 2026-07-12
 - **Implementation:** Added "Run multiple AI models in parallel from one dashboard → ⭐ Star amux on GitHub" pill CTA below intro paragraph, above Decision Framework table. PostHog event: `exp013_guide_github_cta_click`. Applied to best-ai-model-for-coding-2026/index.html.
 - **Effort:** XS per page
 - **Measure after:** 2026-07-19 (7 days minimum)
+- **Score (2026-07-20):** 8 days in. Page has 162 PVs (14-day window) but 0 GitHub KPI clicks. Pattern matches bot/crawler traffic: two large spikes (68 PVs one day, 44 another) with no click behavior. CTA present but no human visitors to convert. Not scaling EXP-013 to additional pages. Superseded by EXP-014 which targets guides with mixed human+bot traffic.
 
 ### EXP-006 — GitHub README → iOS CTA
 - **Status:** `running`
@@ -99,7 +100,7 @@
 - **KPI:** iOS downloads (App Store link clicks)
 - **Measure after:** 2026-07-20 (7 days minimum)
 
-**Upcoming score windows:** EXP-004 → 2026-07-24 (extended) · EXP-005 → 2026-07-18 · EXP-006 → 2026-07-20 · EXP-007 → 2026-07-21 · EXP-008 → 2026-07-22 · EXP-009 → 2026-07-23 · EXP-010 → 2026-07-24 · EXP-013 → 2026-07-19.
+**Upcoming score windows:** EXP-004 → 2026-07-24 (extended) · EXP-005 → 2026-07-25 (extended) · EXP-006 → 2026-07-20 (due today) · EXP-007 → 2026-07-21 · EXP-008 → 2026-07-22 · EXP-009 → 2026-07-23 · EXP-010 → 2026-07-24 · EXP-013 → scored inconclusive 2026-07-20 · EXP-014 → 2026-07-27.
 
 ### EXP-006 — GitHub README → iOS CTA
 - **Hypothesis:** Adding an official App Store badge to the README increases iOS installs from GitHub traffic
@@ -160,13 +161,15 @@
 - **Effort:** XS
 - **Measure after:** 2026-07-25 (7 days minimum)
 
-### EXP-014 — Replicate high-conversion guide pattern on other guides
-- **Hypothesis:** /guides/best-ai-agent-multiplexers-2026/ drove 16 GitHub KPI clicks in 7 days — the highest non-homepage conversion rate. PostHog shows this page has unusually high intent. Hypothesis: "best-of" / list-style guide titles convert better than how-to guides because visitors are in evaluation mode. Replicating the page structure (answer-box at top, feature matrix, CTA after matrix) on 3-5 other guides should increase their GitHub click rate from near-zero to 3–8 clicks/week each.
-- **Page:** /guides/best-claude-code-session-managers-2026/ (already enriched 2026-07-15), then /guides/best-ai-model-for-coding-2026/, then /guides/running-10-plus-agents/
-- **KPI:** GitHub stars
-- **Status:** `queued`
-- **Implementation:** Audit top-PV guides for missing answer-box + feature matrix. Add EXP-007-style GitHub CTA block to any guide with >20 pageviews/week and <2 KPI clicks/week.
+### EXP-014 — Add GitHub CTA to high-PV guide pages missing it
+- **Hypothesis:** Guides with >20 PVs/14d and 0-1 GitHub KPI clicks are missing a visible CTA. Adding a prominent inline GitHub CTA block (same format as EXP-007 compare pages) will convert at 2-5 clicks/week per page.
+- **Page:** /guides/harness-engineering/ (28 PVs, 0 clicks, no CTA), /guides/measuring-ai-coding-agent-roi/ (28 PVs, 0 clicks, no CTA), /guides/claude-code-context-compaction/ (new page)
+- **KPI:** GitHub stars (tracked via `exp014_guide_github_cta_click` PostHog event + autocapture)
+- **Status:** `running`
+- **Started:** 2026-07-20
+- **Implementation:** Added inline GitHub CTA div block (indigo border, flex row, "View on GitHub ★" button, PostHog `exp014_guide_github_cta_click` event) to harness-engineering and measuring-ai-coding-agent-roi. Updated dateModified to 2026-07-20 on both. New page claude-code-context-compaction created with same CTA baked in.
 - **Effort:** S (3 files)
+- **Measure after:** 2026-07-27 (7 days minimum)
 
 ### EXP-012 — Freelancer CTA on compare pages
 - **Hypothesis:** Compare pages attract high-intent "is this the right tool?" visitors. Adding a "Freelancer? Scale to 5x clients →" contextual CTA on compare pages targets a specific high-converting audience segment identified from the /for/freelancers/ page creation today.
@@ -203,6 +206,7 @@ _Updated by SCHED-149 Job 9 after each run with PostHog data and experiment resu
 | 2026-07-16 | PostHog 14-day data: homepage 95 KPI clicks (396 PVs, 24% CVR); best-ai-agent-multiplexers-2026: 18 KPI clicks (124 PVs, 14.5% CVR — best guide); best-ai-model-for-coding-2026: 150 PVs but only 1 KPI click (0.7% CVR — biggest conversion gap, EXP-013 installed 2026-07-12, too early to evaluate); /pricing/: 32 PVs / 6 KPI clicks (18.75% CVR — high intent). EXP-003 (social proof line): reached 7-day minimum but cannot score — no pre-experiment baseline exists (PostHog only live since 2026-07-09, EXP-003 started same day). Extending to 2026-07-23. | EXP-009 shipped: added "Indie hackers, solo builders, and engineering teams" to .lede paragraph in index.html. Job 2 AEO: refreshed best-ai-agent-multiplexers-2026 with July 2026 date + multi-runtime + Homebrew install (commit 6ecb272). Rebuilt amux-vs-cursor and amux-vs-windsurf compare pages from stubs to full 600+ line compare pages. Created /for/open-source-maintainers/. GitHub stars: 299. |
 | 2026-07-17 | PostHog 14-day data: homepage 432 PVs / 66 KPI clicks (15.3% CVR); claude-code-headless: 105 PVs / 2 KPI clicks (1.9% CVR — priority freshness target); best-ai-model-for-coding-2026: 150 PVs / 0 KPI clicks (EXP-013 at day 5, not yet at 7-day window). EXP-004 (concierge urgency): 7 days in, 0 concierge CTA clicks — inconclusive, extending to 2026-07-24. GitHub stars: 300. | EXP-010 shipped: moved phone/iOS row to top of homepage PS grid (commit pending). Refreshed claude-code-headless with auto-resume dialog pitfall + Homebrew + multi-runtime + 300 stars (commit d9e16b3). Created /guides/claude-code-resume-dialog/ (commit b4f03d4). Refreshed amux-vs-cmux with EXP-007 CTA + July 2026 + 300 stars (commit 37958b6). Created /for/enterprise/. Changelog 4 new entries (ad13e14, 02cc251, 8f75275, 3af5f86). |
 | 2026-07-18 | PostHog 14-day data (first run): homepage 510 PVs / 98 GitHub clicks (19.2% CVR — best all-time); best-ai-agent-multiplexers-2026: 189 PVs / 27 GitHub clicks (14.3% CVR — best guide, confirms "best X" list format works); claude-code-headless: 139 PVs / 2 GitHub clicks (1.4% CVR — biggest human-traffic gap, fixed today with EXP-007 CTA); best-ai-model-for-coding-2026: 161 PVs / 0 GitHub clicks (bot-traffic pattern: spikes of 68 PVs then 44 PVs = crawl waves, not humans; EXP-013 CTA present but zero events confirm this is crawler traffic). iOS/concierge: homepage → 35 clicks, concierge page → 18 clicks (very high-intent at 51% CVR). EXP-007 named events: 0 — all compare page GitHub clicks captured by autocapture instead (compare pages get 12-13 PVs each, low volume). Key insight: "best X" list pages convert at 14% vs compare pages at ~10-16% for the top 2, but most compare pages get barely 10-15 PVs vs 180+ for best-of lists — invest more in list format. | Added EXP-007 GitHub CTA to claude-code-headless (highest human-traffic gap page). Created /guides/ai-agent-live-browser-automation/ (new page). Rebuilt amux-vs-claude-code-agent-teams from 108→628 lines. Changelog: 9 new entries today across 2 runs. EXP-011 shipped. EXP-005 scored inconclusive. 304 stars. New hypothesis: EXP-014 — add "best-of" callout panel to high-PV guide pages pointing to best-ai-agent-multiplexers-2026 (proven 14% CVR format). |
+| 2026-07-20 | PostHog 14-day data: homepage 534 PVs / 220 total GitHub clicks (CVR ~19%); best-ai-agent-multiplexers-2026 202 PVs / 28 clicks (13.9% CVR — still best guide); getting-started 38 PVs / 13 clicks (34.2% CVR — HIGHEST of any page, very high intent); pricing 38 PVs / 9 clicks (23.7%). Biggest gaps: harness-engineering (28 PVs, 0 clicks, no CTA), measuring-ai-coding-agent-roi (28 PVs, 0 clicks, no CTA), ai-coding-finops (32 PVs, 0 clicks). EXP-013 scored inconclusive — best-ai-model-for-coding-2026 confirmed bot traffic (162 PVs, 0 clicks pattern). Key new insight: /guides/getting-started/ has 34.2% CVR — highest-intent page, bottom-of-funnel. Drive more traffic there from guides. | EXP-013 marked inconclusive (bot traffic). EXP-014 shipped to harness-engineering + measuring-ai-coding-agent-roi. dateModified freshened on both. New page: /guides/claude-code-context-compaction/ targeting "Claude Code context compaction" overnight-run pain point. Changelog: 6 new entries (Messages tab, hibernate fix, Send now fix, Sent history accordion, click-to-copy, Enter sends). |
 
 ---
 
