@@ -6798,8 +6798,107 @@ If yes, send.
 _Ships with amux. Adapted from [ayghri/i-have-adhd](https://github.com/ayghri/i-have-adhd) (MIT)._
 '''
 
-_BUILTIN_SKILLS = {"adhd": _ADHD_SKILL_MD}
-_BUILTIN_SKILLS_SEED_KEY = "builtin_skills_seeded_v1"
+# /amux — teach any session to drive the amux system it lives in.
+_AMUX_SKILL_MD = '''---
+description: Interact with amux — the shared board, other sessions, messages, and schedules. Use when the user says "add to the board", "ask another session", "what are my sessions doing", or wants to schedule recurring work.
+allowed-tools: Bash, Read
+argument-hint: [board|sessions|send|schedules|help] [args...]
+---
+
+# /amux — drive the amux system
+
+You are running inside an amux-managed session. Base URL: `$AMUX_URL` (default `https://localhost:8822`, self-signed TLS — always `curl -sk`). Your session name is `$AMUX_SESSION`.
+
+## Board (shared kanban)
+
+```bash
+curl -sk $AMUX_URL/api/board | python3 -m json.tool            # list
+curl -sk -X POST -H 'Content-Type: application/json' \\
+  -d '{"title":"...","status":"todo","session":"'$AMUX_SESSION'"}' $AMUX_URL/api/board   # add
+amux board doing ITEM-ID   # or: done / todo / backlog (CLI shorthand)
+```
+Keep exactly one item in `doing` while you work; mark it `done` with a result note when finished.
+
+## Sessions (the rest of the fleet)
+
+```bash
+curl -sk $AMUX_URL/api/sessions | python3 -c "import json,sys; [print(s['name'], s.get('status','')) for s in json.load(sys.stdin)]"
+curl -sk "$AMUX_URL/api/sessions/OTHER/peek?lines=100"          # see what another session is doing
+amux send OTHER "message"                                        # message it (origin-stamped — prefer over raw curl)
+```
+
+## Schedules (recurring prompts)
+
+```bash
+curl -sk -X POST -H 'Content-Type: application/json' \\
+  -d '{"title":"...","session":"'$AMUX_SESSION'","command":"the prompt","schedule_expr":"daily at 9am"}' \\
+  $AMUX_URL/api/schedules
+```
+Expressions: `daily at HH:MM`, `every 15m`, `every weekday at HH:MM`, or 5-field cron.
+
+Run whatever the arguments ask for. No arguments → show the board and the session list.
+'''
+
+# /handoff — package this session's state and hand it to another session.
+_HANDOFF_SKILL_MD = '''---
+description: Hand the current work off to another amux session — package what you were doing, where things stand, and what is next, then send it. Use when the user says "hand this off", "give this to X", or a task belongs in a different session.
+allowed-tools: Bash, Read
+argument-hint: <target-session> [optional note]
+---
+
+# /handoff — transfer work to another session
+
+Target session: the first argument. Remaining arguments are an optional note from the user.
+
+1. Write a handoff brief (keep it under ~25 lines):
+   - **Goal** — what the work is trying to achieve, in one line.
+   - **State** — what is DONE (with file paths / commit SHAs / URLs), what is IN FLIGHT, what is NOT started.
+   - **Next step** — the single next action the receiving session should take.
+   - **Gotchas** — anything non-obvious that cost you time (env quirks, failing tests, decisions already made and why).
+   - The user's note, if any.
+2. If there is a board item for this work, reassign it:
+   `curl -sk -X PATCH -H 'Content-Type: application/json' -d '{"session":"TARGET"}' $AMUX_URL/api/board/ITEM-ID`
+3. Send the brief: `amux send TARGET "<the brief>"` (origin-stamped; never impersonate).
+4. Confirm to the user: what was sent, to whom, and the board item moved (if any).
+
+Do NOT hand off uncommitted work silently — if the tree is dirty, say so and offer to commit first.
+'''
+
+# /standup — cross-fleet roundup: what happened, what's stuck, what's next.
+_STANDUP_SKILL_MD = '''---
+description: Fleet standup — summarize what every amux session did recently, what is in progress, what is blocked, and what needs the user. Use when the user says "standup", "what's going on", "catch me up", or "what did the fleet do today".
+allowed-tools: Bash, Read
+argument-hint: [hours-back, default 24]
+---
+
+# /standup — fleet roundup
+
+Window: the first argument in hours (default 24).
+
+1. Pull the data (all read-only):
+   - Sessions + status: `curl -sk $AMUX_URL/api/sessions`
+   - Board: `curl -sk $AMUX_URL/api/board`
+   - For each session that looks active/recently active, peek its tail:
+     `curl -sk "$AMUX_URL/api/sessions/NAME/peek?lines=60"`
+2. Report, in this order (skip empty sections):
+   - **Needs you** — sessions waiting on input, and the exact question each is stuck on.
+   - **Done** — board items moved to done/verified in the window, one line each.
+   - **In progress** — each `doing` item: session, what it is, and observable progress from the peek.
+   - **Stalled** — `doing` items with no visible movement; say what they appear stuck on.
+   - **Queue** — top `todo` items by session.
+3. Keep each line short: `session — thing — state`. Lead with **Needs you**. End with the single most useful next action for the user.
+'''
+
+_BUILTIN_SKILLS = {
+    "adhd": _ADHD_SKILL_MD,
+    "amux": _AMUX_SKILL_MD,
+    "handoff": _HANDOFF_SKILL_MD,
+    "standup": _STANDUP_SKILL_MD,
+}
+# v2: curated the shipped set (adhd + amux + handoff + standup). Bumping the key
+# re-runs the seed on existing installs; INSERT-if-absent means user-edited or
+# user-authored skills of the same name are never overwritten.
+_BUILTIN_SKILLS_SEED_KEY = "builtin_skills_seeded_v2"
 
 
 def _seed_builtin_skills():
@@ -26087,7 +26186,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.167';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.168';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -28349,10 +28448,15 @@ function _atInsert(inp, el) {
 
 // ── Slash command autocomplete ──
 let SLASH_COMMANDS = [];
+let SKILLS_LIST = [];   // amux skills (DB) — get their own section in the chip picker
 (async function _loadSlashCommands() {
   try {
     const r = await fetch(API + '/api/slash-commands');
     if (r.ok) SLASH_COMMANDS = await r.json();
+  } catch(e) {}
+  try {
+    const r2 = await fetch(API + '/api/skills');
+    if (r2.ok) SKILLS_LIST = await r2.json();
   } catch(e) {}
 })();
 
@@ -28367,10 +28471,19 @@ const DEFAULT_CHIPS = [
   { id: 'space', label: 'Space', action: 'keys', value: 'Space' },
   { id: 'ctrlc', label: 'Ctrl C', action: 'keys', value: 'C-c', danger: true },
   { id: 'esc', label: 'Esc', action: 'keys', value: 'Escape' },
+  // Skills shipped with every amux install \u2014 the row scrolls horizontally, and a
+  // slash chip just prefills "/name " so the user types args and sends.
+  { id: 'sk-amux', label: '/amux', action: 'slash', value: '/amux' },
+  { id: 'sk-standup', label: '/standup', action: 'slash', value: '/standup' },
+  { id: 'sk-handoff', label: '/handoff', action: 'slash', value: '/handoff' },
+  { id: 'sk-adhd', label: '/adhd', action: 'slash', value: '/adhd' },
 ];
-// Ids of the previous built-in default set \u2014 used to migrate users who never
-// customized their chips to the streamlined set above (see _getChips).
-const _OLD_DEFAULT_CHIP_IDS = 'continue,enter,up,down,push,status,model,mcp,ctrlc,ctrlo,clear,compact,esc';
+// Prior built-in default sets \u2014 users still on one of these (never customized)
+// are migrated to the current DEFAULT_CHIPS; genuine customizations are untouched.
+const _OLD_DEFAULT_CHIP_SETS = [
+  'continue,enter,up,down,push,status,model,mcp,ctrlc,ctrlo,clear,compact,esc',
+  'continue,enter,up,down,space,ctrlc,esc',
+];
 
 // All possible chips the user can add
 const _ACTION_CHIPS = [
@@ -28391,9 +28504,16 @@ const _ACTION_CHIPS = [
     { id: 'transcripts', label: '\uD83D\uDCBE Transcripts', action: 'special', value: 'showTranscripts', desc: 'Conversation transcripts' },
 ];
 function _getAllChips() {
+  // Skills get their own section (they're the amux-native commands users add
+  // most); de-dupe them out of Slash Commands so each appears exactly once.
+  const skillNames = new Set((SKILLS_LIST || []).map(s => s.name));
   return [
     { section: 'Actions', items: _ACTION_CHIPS },
-    { section: 'Slash Commands', items: SLASH_COMMANDS.map(c => ({
+    { section: 'Skills', items: (SKILLS_LIST || []).map(s => ({
+      id: 'sk-' + s.name, label: '/' + s.name, action: 'slash', value: '/' + s.name,
+      desc: (s.description || '').slice(0, 90)
+    })) },
+    { section: 'Slash Commands', items: SLASH_COMMANDS.filter(c => !skillNames.has(c.cmd.slice(1))).map(c => ({
       id: c.cmd.slice(1), label: c.cmd, action: 'slash', value: c.cmd, desc: c.desc
     })) },
   ];
@@ -28415,9 +28535,9 @@ function _saveChips(chips) {
 function _getChips() {
   const saved = _loadChips();
   if (saved) {
-    // One-time migration: users still on the previous built-in default get the
-    // new streamlined set; genuine customizations are left untouched.
-    if (saved.map(c => c.id).join(',') === _OLD_DEFAULT_CHIP_IDS) {
+    // One-time migration: users still on a previous built-in default get the
+    // current set; genuine customizations are left untouched.
+    if (_OLD_DEFAULT_CHIP_SETS.includes(saved.map(c => c.id).join(','))) {
       const nd = DEFAULT_CHIPS.map(c => ({...c}));
       _saveChips(nd);
       return nd;
@@ -44525,7 +44645,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.167';
+const CACHE = 'amux-v0.9.168';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
