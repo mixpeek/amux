@@ -48029,31 +48029,49 @@ class CCHandler(BaseHTTPRequestHandler):
                                     (bid, tag),
                                 )
                     db.commit()
-                    _board_changed()
-                    updated_item = _item_by_id(bid)
-                    if body.get("status") and prior and updated_item:
-                        # Observability: track when this task was actively 'doing' by
-                        # its session, so ledger turns in that window bill to it.
-                        # `prior` is a raw sqlite3.Row (no .get()) — index it.
-                        _record_task_window(bid, updated_item.get("title", ""),
-                                            updated_item.get("session") or "",
-                                            updated_item.get("status", ""), prior["status"])
-                    if body.get("status"):
-                        _emit_event(updated_item.get("session") or "",
-                                    "task.completed" if body["status"] in ("done", "verified") else "task.status_changed",
-                                    {"issue": bid, "status": body["status"]}, source="api-board")
-                    _gcal_sync_bg(bid, title=updated_item.get("title", ""),
-                                  due=updated_item.get("due", "") or "",
-                                  due_time=updated_item.get("due_time", "") or "",
-                                  desc=updated_item.get("desc", ""),
-                                  status=updated_item.get("status", ""))
-                    # Auto-notify the (possibly new) assignee if the card is now an
-                    # agent task waiting for pickup. Idempotent via the notified flag.
-                    new_session = updated_item.get("session") or ""
-                    if (new_session
-                            and updated_item.get("owner_type") == "agent"
-                            and updated_item.get("status") in ("todo", "backlog")):
-                        _notify_session_of_task(new_session, bid, updated_item.get("title", ""))
+                    # ── POST-COMMIT: best-effort side effects only ──────────────
+                    # The write has LANDED. Nothing below may turn a committed PATCH
+                    # into a 500: that's a FALSE FAILURE (write succeeded, response
+                    # threw), and a blind retry could double-apply a non-idempotent
+                    # PATCH. (orch, 2026-07-20: an observability hook that indexed a
+                    # raw sqlite3.Row between commit and response caused exactly this.)
+                    # Every side effect is isolated; the item is always returned.
+                    try:
+                        _board_changed()
+                    except Exception:
+                        pass
+                    try:
+                        updated_item = _item_by_id(bid)
+                    except Exception:
+                        updated_item = None
+                    if not updated_item:
+                        updated_item = {"id": bid, "status": body.get("status", "")}
+                    try:
+                        if body.get("status") and prior:
+                            # Observability: track when this task was actively 'doing'
+                            # by its session, so ledger turns in that window bill to it.
+                            _record_task_window(bid, updated_item.get("title", ""),
+                                                updated_item.get("session") or "",
+                                                updated_item.get("status", ""), prior["status"])
+                        if body.get("status"):
+                            _emit_event(updated_item.get("session") or "",
+                                        "task.completed" if body["status"] in ("done", "verified") else "task.status_changed",
+                                        {"issue": bid, "status": body["status"]}, source="api-board")
+                        _gcal_sync_bg(bid, title=updated_item.get("title", ""),
+                                      due=updated_item.get("due", "") or "",
+                                      due_time=updated_item.get("due_time", "") or "",
+                                      desc=updated_item.get("desc", ""),
+                                      status=updated_item.get("status", ""))
+                        # Auto-notify the (possibly new) assignee if the card is now an
+                        # agent task waiting for pickup. Idempotent via the notified flag.
+                        new_session = updated_item.get("session") or ""
+                        if (new_session
+                                and updated_item.get("owner_type") == "agent"
+                                and updated_item.get("status") in ("todo", "backlog")):
+                            _notify_session_of_task(new_session, bid, updated_item.get("title", ""))
+                    except Exception as _e:
+                        slog(f"[board-patch] post-commit side effect failed for {bid} "
+                             f"(write already committed): {_e}")
                     return self._json(updated_item)
 
                 if method == "DELETE":
