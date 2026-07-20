@@ -2784,6 +2784,8 @@ _LOG_SAVE_INTERVAL = 30  # seconds between saves per session
 
 _peek_cache: dict[str, tuple[float, int, dict]] = {}  # session -> (monotonic_time, lines, response_dict)
 _PEEK_CACHE_TTL = 2.5  # seconds — long enough that multiple clients share one cached result
+_peek_live_cache: dict[str, tuple[float, dict]] = {}  # session -> (monotonic_time, response_dict)
+_PEEK_LIVE_CACHE_TTL = 0.35  # seconds — matches the fastest adaptive poll cadence
 # session -> the transcript string the last FULL peek response's history was built
 # from. A live=1 poll trims its frame against this exact text, so the seam stays
 # duplicate-free against the history the client is actually displaying — without
@@ -5192,7 +5194,7 @@ def _steer_record_history(name: str, text: str, queued_at=None, msg_id: str = ""
 # *continuously* for this settle window; any active/unknown frame in between
 # resets the timer. This trades a few seconds of latency for not interrupting a
 # session that only looked done for one frame. Tunable via env.
-_STEER_SETTLE_SECS = float(os.environ.get("AMUX_STEER_SETTLE_SECS", "6"))
+_STEER_SETTLE_SECS = float(os.environ.get("AMUX_STEER_SETTLE_SECS", "9"))
 _steer_settle_since: dict = {}   # name -> monotonic ts of first deliverable observation
 
 
@@ -5223,17 +5225,13 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
     deliverable = status == "idle"
     if deliverable and raw and _has_running_subagent(raw):
         deliverable = False  # main loop idle but a subagent is still running
-    # HARD HOLD on the definitive "still generating" signal. _detect_claude_status
-    # falls back to 'idle' whenever a status bar is present but no spinner is in
-    # the captured frame — so a torn or mid-task frame (tool just finished, Claude
-    # about to continue) can momentarily read idle while the turn is NOT done, and
-    # 6s of such frames would deliver a queued message before the task completes.
-    # "esc to interrupt" is present in EVERY generating/thinking frame and never at
-    # idle (verified 54/54 idle, 3/3 active sessions), so treat it as an
-    # authoritative "not finished" and hold until the turn truly ends. This makes
-    # a queued message deliver only once the session is completely done.
-    if deliverable and raw and "esc to interrupt" in _STRIP_ANSI.sub("", raw).lower():
-        deliverable = False
+    # NOTE: do NOT gate on "esc to interrupt" here. On the current Claude Code the
+    # NORMAL idle status bar contains it ("⏵⏵ bypass permissions on … · esc to
+    # interrupt · ← N agents"), so holding on that string stalls steering forever
+    # for genuinely-idle sessions (regression 2026-07-20). The reliable "still
+    # generating" signal is the SPINNER, which _detect_claude_status already
+    # detects → status != 'idle' while the turn runs. The 6s continuous settle
+    # below is what guards against a torn/between-task frame.
     # Re-validate commit-guard nudges at DELIVERY: a nudge enqueued when a session
     # went idle-dirty is HELD while the session's next turn commits, then would
     # deliver against a now-clean tree — a stale warning (AMUX-1737, fired 4/4
@@ -9642,6 +9640,14 @@ def _detect_claude_status(raw_output: str) -> str:
         if ls.endswith("\u276f") or ls == "\u276f":
             return "idle"
         if "$ " in ls and not ls.startswith("❯"):
+            return "idle"
+    # Empty-composer idle hint. When Claude rests at an EMPTY input it shows the
+    # "? for shortcuts" hint bar and a placeholder prompt (❯ Try "…"), which the
+    # ❯-endswith check above misses — so a genuinely idle session read '' (unknown)
+    # and its steering queue never delivered (gainz, 2026-07-20). Active turns show
+    # the spinner (handled above), never this hint, so it's an unambiguous idle signal.
+    for l in lines[-4:]:
+        if "? for shortcuts" in l.lower():
             return "idle"
     return ""
 
