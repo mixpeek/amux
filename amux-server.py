@@ -5318,8 +5318,19 @@ def _snapshot_all_sessions_inner():
             running_sessions = set(r.stdout.splitlines())
     except Exception:
         return
-    _HIBERNATE_IDLE_SECS = 1800  # 30 minutes
+    _HIBERNATE_IDLE_SECS = int(os.environ.get("AMUX_HIBERNATE_IDLE_SECS", "1800") or "1800")  # 0 disables
     _HIBERNATE_STARTUP_GRACE = 600  # 10 min grace after server restart
+    # Auto-hibernate exists to prevent OOM when MANY Claude processes (400-750MB
+    # each) run at once. With only a handful of sessions the memory saved isn't
+    # worth the risk: waking a hibernated session goes through --resume, which can
+    # fail (large conversation / resume-picker) and fall back to a FRESH start,
+    # losing the whole conversation ("leave a session too long → auto clear").
+    # So only hibernate once enough sessions are running to actually threaten
+    # memory. Tunable: AMUX_HIBERNATE_MIN_SESSIONS, AMUX_HIBERNATE_IDLE_SECS=0 off.
+    _hib_min = int(os.environ.get("AMUX_HIBERNATE_MIN_SESSIONS", "8") or "8")
+    _running_amux = sum(1 for _e in CC_SESSIONS.glob("*.env")
+                        if tmux_name(_e.stem) in running_sessions)
+    _hibernate_enabled = _HIBERNATE_IDLE_SECS > 0 and _running_amux >= _hib_min
     for f in CC_SESSIONS.glob("*.env"):
         name = f.stem
         if _is_session_blocked(name):
@@ -5633,7 +5644,7 @@ def _snapshot_all_sessions_inner():
             # Auto-continue sessions are hibernated too — auto-restart already
             # checks `not actions.get("hibernated")` so they won't bounce back.
             # They wake on next send_text (which calls start_session).
-            if status == "idle" and not actions.get("restarting"):
+            if _hibernate_enabled and status == "idle" and not actions.get("restarting"):
                 cfg_hib = parse_env_file(f)
                 _skip_hibernate = (
                     # Grace period after server restart: actions dict is wiped
