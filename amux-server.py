@@ -18323,6 +18323,26 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     #map-view.sidebar-collapsed .map-geocoder-wrap { display: none; }
   }
 
+  /* ── Cost / observability view ─────────────────────────────────────────────── */
+  .cost-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .cost-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .cost-card-v { font-size: 1.4rem; font-weight: 700; color: var(--text); line-height: 1.1; }
+  .cost-card-l { font-size: 0.68rem; color: var(--dim); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .cost-section { margin-bottom: 20px; }
+  .cost-section-h { font-size: 0.82rem; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+  .cost-row { padding: 6px 0; }
+  .cost-row[onclick]:hover .cost-row-label { color: var(--accent); }
+  .cost-row-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .cost-row-label { font-size: 0.83rem; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cost-row-cost { font-size: 0.83rem; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .cost-bar-track { height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; margin: 4px 0 2px; }
+  .cost-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--green)); border-radius: 3px; }
+  .cost-row-sub { font-size: 0.68rem; color: var(--dim); }
+  .cost-days-chart { display: flex; align-items: flex-end; gap: 2px; height: 70px; }
+  .cost-day { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+  .cost-day-fill { width: 100%; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 3px; opacity: 0.8; }
+  .cost-day-labels { display: flex; justify-content: space-between; font-size: 0.62rem; color: var(--dim); margin-top: 3px; }
+
   /* ── Metrics view ──────────────────────────────────────────────────────────── */
   #metrics-view { height: calc(100dvh - 110px); display: flex; flex-direction: row; overflow: hidden; position: relative; }
   .metrics-sidebar { width: 220px; min-width: 180px; border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; background: var(--card); transition: transform 0.2s ease, opacity 0.2s ease; }
@@ -18891,6 +18911,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-sql" onclick="switchView('sql')">Database</button>
   <button id="tab-map" onclick="switchView('map')">Map</button>
   <button id="tab-metrics" onclick="switchView('metrics')">Metrics</button>
+  <button id="tab-cost" onclick="switchView('cost')">Cost</button>
   <button id="tab-torrents" onclick="switchView('torrents')">Torrents</button>
   <button id="tab-terminal" onclick="switchView('terminal')">Terminal</button>
   <button id="tab-browser" onclick="switchView('browser')">Browser</button>
@@ -19426,6 +19447,21 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="btn primary" onclick="_crmSubmitLog()">Save</button>
     </div>
   </div>
+</div>
+
+<!-- Cost / observability view -->
+<div id="cost-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;padding:14px 16px 60px;">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+    <span style="font-size:1.05rem;font-weight:700;">Cost &amp; tokens</span>
+    <select id="cost-days" onchange="_costLoad()" class="lib-facet">
+      <option value="1">Today</option>
+      <option value="7" selected>7 days</option>
+      <option value="30">30 days</option>
+      <option value="90">90 days</option>
+    </select>
+    <span id="cost-updated" style="font-size:0.7rem;color:var(--dim);"></span>
+  </div>
+  <div id="cost-body"><div style="color:var(--dim);padding:24px;">Loading…</div></div>
 </div>
 
 <!-- Metrics view -->
@@ -20297,6 +20333,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="peek-tab" id="peek-tab-steering" onclick="setPeekTab('steering')">Steering<span class="peek-tab-count" id="peek-tab-steering-count"></span></button>
     <button class="peek-tab" id="peek-tab-schedules" onclick="setPeekTab('schedules')">Schedules<span class="peek-tab-count" id="peek-tab-schedules-count"></span></button>
     <button class="peek-tab" id="peek-tab-messages" onclick="setPeekTab('messages')" title="Every message sent to this session">Messages<span class="peek-tab-count" id="peek-tab-messages-count"></span></button>
+    <button class="peek-tab" id="peek-tab-cost" onclick="setPeekTab('cost')" title="Token usage &amp; cost for this session, by task">Cost</button>
     <button class="peek-tab" id="peek-tab-issues" onclick="setPeekTab('issues')">Board<span class="peek-tab-count" id="peek-tab-issues-count"></span></button>
     <button class="peek-tab" id="peek-tab-transcript" onclick="setPeekTab('transcript')" title="Clean conversation transcript (from Claude Code's JSONL — gap-free, never torn)">Transcript</button>
     <button class="peek-tab" id="peek-tab-git" onclick="setPeekTab('git')">Worktree</button>
@@ -20452,6 +20489,18 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <span id="peek-messages-count" style="font-size:0.72rem;color:var(--dim);align-self:center;white-space:nowrap;"></span>
     </div>
     <div id="peek-messages-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:10px;"></div>
+  </div>
+  <div id="peek-cost-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
+    <div class="peek-tasks-add" style="gap:8px;padding:8px 10px;">
+      <select id="peek-cost-days" onchange="_peekCostLoad()" class="lib-facet">
+        <option value="1">Today</option>
+        <option value="7" selected>7 days</option>
+        <option value="30">30 days</option>
+        <option value="90">90 days</option>
+      </select>
+      <span style="font-size:0.72rem;color:var(--dim);align-self:center;">this session's token cost, by task</span>
+    </div>
+    <div id="peek-cost-body" style="flex:1;overflow-y:auto;padding:12px;"></div>
   </div>
   <!-- Memory editor panel -->
   <div id="peek-memory-panel" class="peek-memory-editor">
@@ -23364,6 +23413,7 @@ const ALL_TABS = [
   { id: 'sql',           label: 'Database' },
   { id: 'map',           label: 'Map' },
   { id: 'metrics',       label: 'Metrics' },
+  { id: 'cost',          label: 'Cost' },
   { id: 'torrents',      label: 'Torrents' },
   { id: 'terminal',      label: 'Terminal' },
 ];
@@ -23613,7 +23663,7 @@ function _embedFitZoom() {
 const _EMBED_VIEW_EL = {
   sessions:'session-view', board:'board-view', calendar:'calendar-view',
   scheduler:'scheduler-view', files:'files-view', logs:'logs-view',
-  notes:'notes-view', crm:'crm-view', map:'map-view', metrics:'metrics-view',
+  notes:'notes-view', crm:'crm-view', map:'map-view', metrics:'metrics-view', cost:'cost-view',
   torrents:'torrents-view', terminal:'terminal-view', browser:'browser-view',
   graph:'graph-view', journal:'journal-view', habits:'habits-view', skills:'skills-view'
 };
@@ -24538,6 +24588,7 @@ function setPeekTab(tab) {
   document.getElementById('peek-tab-transcript').classList.toggle('active', tab === 'transcript');
   document.getElementById('peek-tab-steering').classList.toggle('active', tab === 'steering');
   document.getElementById('peek-tab-messages').classList.toggle('active', tab === 'messages');
+  document.getElementById('peek-tab-cost').classList.toggle('active', tab === 'cost');
   document.getElementById('peek-tab-issues').classList.toggle('active', tab === 'issues');
   document.getElementById('peek-tab-git').classList.toggle('active', tab === 'git');
   document.getElementById('peek-tab-commits').classList.toggle('active', tab === 'commits');
@@ -24557,6 +24608,9 @@ function setPeekTab(tab) {
   const messages = document.getElementById('peek-messages-panel');
   if (tab === 'messages') { messages.classList.add('active'); _peekMessagesLoad(); }
   else { messages.classList.remove('active'); }
+  const costPanel = document.getElementById('peek-cost-panel');
+  if (tab === 'cost') { costPanel.classList.add('active'); _peekCostLoad(); }
+  else { costPanel.classList.remove('active'); }
   const issues = document.getElementById('peek-issues-panel');
   if (tab === 'issues') { issues.classList.add('active'); renderPeekIssues(); }
   else { issues.classList.remove('active'); }
@@ -25877,7 +25931,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.166';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.167';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -25920,6 +25974,7 @@ function openPeek(name, opts) {
   document.getElementById('peek-commits-panel').classList.remove('active');
   document.getElementById('peek-schedules-panel').classList.remove('active');
   document.getElementById('peek-messages-panel').classList.remove('active');
+  document.getElementById('peek-cost-panel').classList.remove('active');
   _peekMessagesBadge();
   // Update dir bar
   document.getElementById('peek-dir-text').textContent = peekSessionDir || '(unknown)';
@@ -29303,6 +29358,24 @@ async function _peekMessagesLoad() {
   _peekMessagesRender();                       // paint from local cache instantly
   try { await _loadCmdHistoryFromServer(); } catch(e) {}   // refresh (cross-device)
   _peekMessagesRender();
+}
+
+// Peek Cost tab: this session's token/cost breakdown by task (reuses _costRender)
+function _peekCostLoad() {
+  if (!peekSession) return;
+  const body = document.getElementById('peek-cost-body');
+  const days = document.getElementById('peek-cost-days')?.value || '7';
+  body.innerHTML = '<div style="color:var(--dim);padding:16px;">Loading…</div>';
+  const sess = peekSession;
+  fetch(API + '/api/observability?days=' + encodeURIComponent(days) + '&session=' + encodeURIComponent(sess))
+    .then(r => r.json())
+    .then(d => {
+      if (peekSession !== sess) return;   // switched away
+      if (d.error) { body.innerHTML = '<div style="color:var(--red);padding:16px;">' + esc(d.error) + '</div>'; return; }
+      if (!d.total_turns) { body.innerHTML = '<div style="color:var(--dim);padding:16px;">No token usage recorded for this session in this window.</div>'; return; }
+      body.innerHTML = _costRender(d, { perSession: true });
+    })
+    .catch(() => { body.innerHTML = '<div style="color:var(--dim);padding:16px;">Failed to load.</div>'; });
 }
 
 function _pickCmdHistory(text) {
@@ -33047,8 +33120,8 @@ function _chromeSave() {
 function switchView(view) {
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
   activeView = view;
-  const _svIds = ['session','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','torrents','terminal','browser','graph'];
-  const _svNames = ['sessions','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','torrents','terminal','browser','graph'];
+  const _svIds = ['session','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','cost','torrents','terminal','browser','graph'];
+  const _svNames = ['sessions','board','calendar','scheduler','files','proxies','logs','notes','messages','skills','crm','sql','map','metrics','cost','torrents','terminal','browser','graph'];
   const _svDisplay = ['','','flex','','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','flex','','flex'];
   for (let i = 0; i < _svIds.length; i++) {
     const ve = document.getElementById(_svIds[i] + '-view');
@@ -33063,6 +33136,7 @@ function switchView(view) {
   if (view === 'crm') { _crmDirty = false; _crmLoad(); _crmApplySidebarState(); } // always refresh on tab switch
   if (view === 'map') { _mapLoad(); _mapInit(); }
   if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); } // always refresh on tab switch
+  if (view === 'cost') _costLoad();
   if (view === 'browser') _bwInit(); else if (typeof _bwStopLive === 'function') _bwStopLive();
   if (view === 'journal') _journalInit();
   if (view === 'habits') _habitsLoad();
@@ -39575,6 +39649,78 @@ function _metricsApplySidebarState() {
   view.classList.toggle('sidebar-collapsed', !_metricsSidebarOpen);
 }
 
+// \u2500\u2500 Cost / observability \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+function _fmtUsd(v) {
+  v = +v || 0;
+  if (v >= 1000) return '$' + (v/1000).toFixed(1) + 'k';
+  if (v >= 1) return '$' + v.toFixed(2);
+  return '$' + v.toFixed(3);
+}
+function _fmtTok(n) {
+  n = +n || 0;
+  if (n >= 1e9) return (n/1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'k';
+  return String(n);
+}
+function _costBars(rows, labelKey, opts) {
+  opts = opts || {};
+  if (!rows || !rows.length) return '<div style="color:var(--dim);font-size:0.82rem;padding:8px 0;">No data.</div>';
+  const max = Math.max(...rows.map(r => r.cost || 0), 0.0001);
+  return rows.slice(0, opts.limit || 30).map(r => {
+    const label = esc(String(r[labelKey] != null && r[labelKey] !== '' ? r[labelKey] : (opts.emptyLabel || '\u2014')));
+    const pct = Math.max(2, Math.round(100 * (r.cost || 0) / max));
+    const sub = (r.tokens != null ? _fmtTok(r.tokens) + ' tok' : '') + (r.turns != null ? ' \u00B7 ' + r.turns + ' turns' : '');
+    const click = opts.onSession ? ` onclick="_costOpenSession('${escJs(r[labelKey]||'')}')" style="cursor:pointer;"` : '';
+    return `<div class="cost-row"${click}>
+      <div class="cost-row-top"><span class="cost-row-label">${label}</span><span class="cost-row-cost">${_fmtUsd(r.cost)}</span></div>
+      <div class="cost-bar-track"><div class="cost-bar-fill" style="width:${pct}%;"></div></div>
+      <div class="cost-row-sub">${sub}</div>
+    </div>`;
+  }).join('');
+}
+function _costRender(d, opts) {
+  opts = opts || {};
+  const cards = `<div class="cost-cards">
+    <div class="cost-card"><div class="cost-card-v">${_fmtUsd(d.total_cost)}</div><div class="cost-card-l">est. cost${opts.perSession?'':' \u00B7 on Max'}</div></div>
+    <div class="cost-card"><div class="cost-card-v">${_fmtTok(d.total_tokens)}</div><div class="cost-card-l">tokens</div></div>
+    <div class="cost-card"><div class="cost-card-v">${(d.total_turns||0).toLocaleString()}</div><div class="cost-card-l">turns</div></div>
+    <div class="cost-card"><div class="cost-card-v">${d.cache_hit_pct||0}%</div><div class="cost-card-l">cache hit</div></div>
+  </div>`;
+  const sec = (title, body) => `<div class="cost-section"><div class="cost-section-h">${title}</div>${body}</div>`;
+  let html = cards;
+  html += sec('By task', _costBars(d.by_task, 'title', { limit: 20, emptyLabel: 'Ambient (untasked)' }));
+  if (!opts.perSession) html += sec('By session', _costBars(d.by_session, 'session', { limit: 20, onSession: true, emptyLabel: '(ad-hoc)' }));
+  html += sec('By model', _costBars(d.by_model, 'model', { limit: 8 }));
+  // by-day sparkline bars
+  const days = d.by_day || [];
+  const dmax = Math.max(...days.map(x => x.cost || 0), 0.0001);
+  const dayBars = days.length ? '<div class="cost-days-chart">' + days.map(x =>
+    `<div class="cost-day" title="${x.day}: ${_fmtUsd(x.cost)}"><div class="cost-day-fill" style="height:${Math.max(3,Math.round(100*(x.cost||0)/dmax))}%;"></div></div>`
+  ).join('') + '</div>' + `<div class="cost-day-labels"><span>${days[0]?.day||''}</span><span>${days[days.length-1]?.day||''}</span></div>` : '<div style="color:var(--dim);font-size:0.82rem;">No data.</div>';
+  html += sec('By day', dayBars);
+  html += `<div style="font-size:0.68rem;color:var(--dim);margin-top:14px;line-height:1.5;">Cost is the equivalent per-token API price (from ~/.amux/prices.json) applied to every turn amux read from the transcripts \u2014 mostly cache reads of large contexts. Attributed to a task while its board card was <b>In&nbsp;Progress</b> for that session; the rest is \u201CAmbient\u201D. No model was asked anything to compute this.</div>`;
+  return html;
+}
+function _costLoad() {
+  const days = document.getElementById('cost-days')?.value || '7';
+  const body = document.getElementById('cost-body');
+  fetch(API + '/api/observability?days=' + encodeURIComponent(days))
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { body.innerHTML = '<div style="color:var(--red);padding:20px;">' + esc(d.error) + '</div>'; return; }
+      body.innerHTML = _costRender(d, {});
+      const up = document.getElementById('cost-updated');
+      if (up) up.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    })
+    .catch(() => { body.innerHTML = '<div style="color:var(--dim);padding:20px;">Failed to load cost data.</div>'; });
+}
+function _costOpenSession(name) {
+  if (!name) return;
+  switchView('sessions');
+  setTimeout(() => { try { openPeek(name); setTimeout(() => setPeekTab('cost'), 400); } catch(e) {} }, 100);
+}
+
 function _metricsLoad() {
   const btn = document.getElementById('metrics-refresh-btn');
   if (btn) { btn.disabled = true; btn.textContent = '\u21BB Loading\u2026'; }
@@ -44223,7 +44369,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.166';
+const CACHE = 'amux-v0.9.167';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
