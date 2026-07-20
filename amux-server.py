@@ -20702,16 +20702,29 @@ let _peekEtag = null;    // ETag of last FULL peek response — enables conditio
 let _peekLiveEtag = null; // ETag of last live=1 response — keeps idle polls a cheap 304
 // Adaptive peek polling: fast while the session generates, back off when idle
 // (each idle poll is a cheap 304 anyway), and pause entirely when the tab is hidden.
+let _peekLastChangeMs = 0;   // performance.now() of the last time the live frame ACTUALLY changed
 function _peekPollInterval() {
   const s = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(x => x.name === peekSession) : null;
   const st = s && s.status;
-  // Cadence sized to what a tick actually costs NOW: a live=1 poll is ~650B (the
-  // trimmed frame) or a 304 when unchanged — not the 138KB that justified the old
-  // 1800/7000ms. Measured 2026-07-16: active peeks updated every ~2s; a live
-  // terminal viewer should be ≤1s (ttyd/wetty-class streamers are sub-second).
-  if (st === 'active') return 900;
+  // CHANGE-DRIVEN cadence. A live=1 poll is ~650B (trimmed frame) / ~33ms server
+  // / a 304 when unchanged, so polling fast is cheap. While the terminal is
+  // actively producing output we poll near-instant; as it goes quiet we relax.
+  // This is deliberately independent of the SSE-fed status — that status lags
+  // ~2s behind a turn starting, so keying the cadence off *observed output
+  // change* makes streaming feel real-time without waiting for the status flip.
+  const sinceChange = performance.now() - _peekLastChangeMs;
+  if (sinceChange < 2500) return 350;    // actively streaming → near-instant updates
+  if (sinceChange < 6000) return 650;    // just settled → still brisk
+  if (st === 'active') return 900;       // model working, no visible output yet
   if (st === 'waiting') return 1500;
   return 3000;   // idle ticks are 304s — near-free
+}
+// After a send/keystroke, treat the session as "just changed" and re-arm the poll
+// loop immediately so the streaming RESPONSE is picked up at the fast cadence —
+// without waiting for the ~2s-stale SSE status to flip to 'active'.
+function _peekKickFast() {
+  _peekLastChangeMs = performance.now();
+  if (peekSession && !document.hidden) _schedulePeekPoll();
 }
 function _stopPeekPoll() { if (peekTimer) { clearTimeout(peekTimer); peekTimer = null; } }
 let _peekLastFullMs = 0;    // when the FULL payload (history) was last fetched
@@ -25464,7 +25477,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.161';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.162';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -25592,6 +25605,7 @@ function openPeek(name, opts) {
   // full payload (~138KB, mostly transcript history) to fill in scrollback. Clicking
   // a session now shows the latest immediately instead of waiting on ~120KB of
   // history — and 4 ansiToHtml passes over it — before anything appears.
+  _peekLastChangeMs = performance.now();   // snappy first couple seconds after opening a peek
   refreshPeek(true).finally(() => refreshPeek());
   _schedulePeekPoll();
   setTimeout(_peekFitPane, 350);   // fit the pane to this viewer's width
@@ -26671,6 +26685,7 @@ async function refreshPeek(liveOnly) {
       return;
     }
     _lastPeekRaw = output;
+    _peekLastChangeMs = performance.now();   // real content change → drives fast adaptive polling
     let histChanged = false;
     if (histRaw !== null && histRaw !== _peekHistoryRaw) {   // full fetch → (re)render history once
       _peekHistoryRaw = histRaw;
@@ -27304,6 +27319,7 @@ function _refreshPeekSoon() {
   clearTimeout(_peekSoonA); clearTimeout(_peekSoonB);
   _peekSoonA = setTimeout(() => refreshPeek(), 90);
   _peekSoonB = setTimeout(() => refreshPeek(), 320);
+  _peekKickFast();   // run the poll loop fast so the streaming response is picked up promptly
 }
 async function peekQuickSend(text) {
   if (!peekSession) return;
@@ -43781,7 +43797,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.161';
+const CACHE = 'amux-v0.9.162';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
