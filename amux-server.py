@@ -12412,9 +12412,18 @@ def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy:
                     # the HIGHLIGHTED OPTION, not a composer suggestion — typing
                     # its label ("2. Hand off…") corrupts the selection. Bail so
                     # the caller presses a raw Enter and selects it instead.
-                    _low = pane.lower()
-                    if ("to navigate" in _low or "esc to cancel" in _low
-                            or "↑/↓" in pane or "enter to select" in _low):
+                    # Detect the picker by its FOOTER hint ("↑/↓ to navigate" /
+                    # "Enter to select"), which is unique to a live selector — a
+                    # composer's status bar never has it. Scan only the last few
+                    # NON-"❯" lines: scanning the whole pane false-fired whenever
+                    # the transcript merely quoted those phrases, which made Enter
+                    # refuse to submit a real composer suggestion ("pressing enter
+                    # does nothing"). Excluding the "❯" line lets a suggestion that
+                    # happens to contain "to navigate" still submit.
+                    _nonblank = [_l for _l in pane.splitlines() if _l.strip()]
+                    _footer = [_l for _l in _nonblank[-4:] if not _l.lstrip().startswith("❯")]
+                    if any(("to navigate" in _l.lower() or "enter to select" in _l.lower())
+                           for _l in _footer):
                         return True, "no suggestion found"
                     for line in reversed(pane.splitlines()):
                         line = line.strip()
