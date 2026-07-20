@@ -4654,18 +4654,50 @@ def _send_sms(phone: str, text: str):
 _urgent_alert_last = {}  # message-hash → ts, for a light flood guard
 
 
-def _send_urgent_alert(message: str, session: str = "", reason: str = ""):
+def _record_owner_alert(origin: str, claimed: str, message: str, reason: str,
+                        channels: dict, deduped: bool) -> None:
+    """Append an owner-alert to the durable, provenance-stamped ledger (AMUX-1795),
+    so a safety-critical action is first-hand verifiable — who ACTUALLY fired it
+    (server-verified origin), not who a conversation believed did. Best-effort:
+    never let a ledger-write failure block the alarm itself."""
+    try:
+        db = get_db()
+        db.execute(
+            "INSERT INTO owner_alerts (ts, origin, claimed, message, reason, channels, deduped) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (int(time.time()), origin or "", claimed or "", message or "", reason or "",
+             json.dumps(channels or {}), 1 if deduped else 0))
+        db.commit()
+    except Exception as e:
+        slog(f"[urgent-alert] LEDGER WRITE FAILED: {e}")
+
+
+def _send_urgent_alert(message: str, session: str = "", reason: str = "", origin: str = ""):
     """Owner URGENT alert — fan out to enabled channels (in-app push + SMS).
-    Meant to be used *sparingly*; a soft 60s dedupe blocks accidental repeats."""
+    Meant to be used *sparingly*; a soft 60s dedupe blocks accidental repeats.
+
+    `session` is the CLAIMED origin (self-reported by the caller/body). `origin` is
+    the SERVER-VERIFIED sender (X-Amux-Session, from the tmux identity). Every
+    attempt is recorded to the owner_alerts ledger with BOTH, so this
+    safety-critical action is first-hand verifiable and a claimed≠verified mismatch
+    (the AMUX-1730 entanglement signature) is caught rather than believed."""
     msg = (message or "").strip()
     if not msg:
         return {"ok": False, "error": "empty message"}
     if reason:
         msg = f"{msg}\n({reason})"
+    # Provenance red flag: the caller claims a DIFFERENT session than the one the
+    # server actually verified. Surface it loudly (this is the exact shape of the
+    # AMUX-1730 near-miss: a belief that some other session did the critical thing).
+    _mismatch = bool(origin and session and origin != session)
+    if _mismatch:
+        slog(f"[urgent-alert] PROVENANCE MISMATCH: verified origin={origin!r} but claimed session={session!r} — recording both")
     key = _hashlib.sha256((session + "|" + msg).encode()).hexdigest()[:16]
     now = time.time()
     if now - _urgent_alert_last.get(key, 0) < 60:
-        return {"ok": True, "deduped": True, "channels": {}, "message": msg}
+        _record_owner_alert(origin, session, msg, reason, {}, deduped=True)
+        return {"ok": True, "deduped": True, "channels": {}, "message": msg,
+                "origin": origin, "claimed": session, "provenance_mismatch": _mismatch}
     _urgent_alert_last[key] = now
     channels = {}
     if os.environ.get("AMUX_URGENT_PUSH", "1") != "0":
@@ -4682,8 +4714,10 @@ def _send_urgent_alert(message: str, session: str = "", reason: str = ""):
         _sms_prefix = f"amux URGENT [{session}]: " if session else "amux URGENT: "
         ok, detail = _send_sms(phone, _sms_prefix + msg.replace("\n", " — "))
         channels["sms"] = detail if ok else ("failed: " + detail)
-    slog(f"[urgent-alert] session={session!r} reason={reason!r} channels={channels} msg={message[:120]!r}")
-    return {"ok": True, "channels": channels, "message": msg}
+    _record_owner_alert(origin, session, msg, reason, channels, deduped=False)
+    slog(f"[urgent-alert] origin={origin!r} claimed={session!r} reason={reason!r} channels={channels} msg={message[:120]!r}")
+    return {"ok": True, "channels": channels, "message": msg,
+            "origin": origin, "claimed": session, "provenance_mismatch": _mismatch}
 _VAPID_CACHE = None
 _VAPID_PATH = CC_HOME / "vapid_private.pem"
 _PUSH_SUBS_PRESENT = None  # None=unknown, False=confirmed empty (skip), True=have subs
@@ -6374,6 +6408,25 @@ CREATE TABLE IF NOT EXISTS steering_history (
     delivered_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_steering_hist_session ON steering_history(session, delivered_at DESC);
+-- Durable, provenance-stamped ledger of owner URGENT alerts (a safety-critical
+-- action). AMUX-1795 (an AMUX-1730 cost case): a "rotate a LIVE secret" alert was
+-- BELIEVED sent because it was ATTRIBUTED to a session that had no first-hand
+-- record of doing it. `origin` is the SERVER-VERIFIED sender (X-Amux-Session,
+-- from the tmux identity — immune to conversation-name collisions); `claimed` is
+-- the self-reported body field. Any session can query this table (GET
+-- /api/alert/owner) to FIRST-HAND verify a safety-critical action actually
+-- happened and by whom, instead of trusting entangled conversation memory.
+CREATE TABLE IF NOT EXISTS owner_alerts (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts       INTEGER NOT NULL,
+    origin   TEXT NOT NULL DEFAULT '',   -- server-verified X-Amux-Session (authoritative)
+    claimed  TEXT NOT NULL DEFAULT '',   -- self-reported body 'session' (mismatch = provenance red flag)
+    message  TEXT NOT NULL,
+    reason   TEXT NOT NULL DEFAULT '',
+    channels TEXT NOT NULL DEFAULT '',   -- JSON of the delivery result (push/sms)
+    deduped  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_owner_alerts_ts ON owner_alerts(ts DESC);
 """
 
 
@@ -44637,8 +44690,46 @@ class CCHandler(BaseHTTPRequestHandler):
         # ── Urgent owner alert (use sparingly) + its config ──
         if path == "/api/alert/owner" and method == "POST":
             body = self._read_body()
+            # origin = the SERVER-VERIFIED sender (tmux identity via X-Amux-Session);
+            # body 'session' is only the CLAIMED origin. The ledger records both so a
+            # safety-critical alert's provenance is first-hand verifiable (AMUX-1795).
+            _origin = (self.headers.get("X-Amux-Session", "") or "").strip()[:64]
             return self._json(_send_urgent_alert(
-                body.get("message", ""), body.get("session", ""), body.get("reason", "")))
+                body.get("message", ""), body.get("session", ""), body.get("reason", ""),
+                origin=_origin))
+        # GET /api/alert/owner — the FIRST-HAND ledger of owner alerts. Query this to
+        # verify a safety-critical action actually happened and by WHOM (server-
+        # verified origin), instead of trusting entangled conversation memory
+        # (AMUX-1795 / AMUX-1730). Optional ?q=<substring> filters message/reason;
+        # ?limit=N (default 50). Rows flag origin≠claimed provenance mismatches.
+        if path == "/api/alert/owner" and method == "GET":
+            q = (qs.get("q", [""])[0] or "").strip().lower()
+            try:
+                limit = max(1, min(500, int(qs.get("limit", ["50"])[0])))
+            except Exception:
+                limit = 50
+            db = get_db()
+            rows = db.execute(
+                "SELECT id, ts, origin, claimed, message, reason, channels, deduped "
+                "FROM owner_alerts ORDER BY ts DESC LIMIT ?", (limit * 4 if q else limit,)
+            ).fetchall()
+            out = []
+            for r in rows:
+                if q and q not in (r["message"] or "").lower() and q not in (r["reason"] or "").lower():
+                    continue
+                try:
+                    ch = json.loads(r["channels"] or "{}")
+                except Exception:
+                    ch = {}
+                out.append({
+                    "id": r["id"], "ts": r["ts"], "origin": r["origin"], "claimed": r["claimed"],
+                    "message": r["message"], "reason": r["reason"], "channels": ch,
+                    "deduped": bool(r["deduped"]),
+                    "provenance_mismatch": bool(r["origin"] and r["claimed"] and r["origin"] != r["claimed"]),
+                })
+                if len(out) >= limit:
+                    break
+            return self._json({"alerts": out, "count": len(out), "query": q or None})
         if path == "/api/alert/config":
             if method == "GET":
                 return self._json({

@@ -1191,7 +1191,11 @@ This is a FIRE ALARM — only for things that need the owner immediately
 (prod down, data at risk, a go/no-go only they can make). Not for status updates."
   local reason="${2:-}"
   local sess="${AMUX_SESSION:-cli}"
+  # Pass X-Amux-Session so the server stamps the TRUE origin (from the tmux
+  # identity) into the owner_alerts ledger — the body 'session' is only a CLAIM.
+  # This is what makes a safety-critical alert first-hand verifiable (AMUX-1795).
   curl -sk -X POST -H 'Content-Type: application/json' \
+    -H "X-Amux-Session: ${AMUX_SESSION:-}" \
     -d "$(python3 -c 'import json,sys; print(json.dumps({"message":sys.argv[1],"reason":sys.argv[2],"session":sys.argv[3]}))' "$msg" "$reason" "$sess")" \
     "$AMUX_API/api/alert/owner" | python3 -c "
 import sys, json
