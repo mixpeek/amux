@@ -5189,12 +5189,16 @@ def _steer_record_history(name: str, text: str, queued_at=None, msg_id: str = ""
 
 
 # A single tmux frame that momentarily reads idle is not proof a session
-# finished its task — captures tear, and a session pauses briefly between steps.
-# Before delivering steering we require the session to read idle/waiting
-# *continuously* for this settle window; any active/unknown frame in between
-# resets the timer. This trades a few seconds of latency for not interrupting a
-# session that only looked done for one frame. Tunable via env.
-_STEER_SETTLE_SECS = float(os.environ.get("AMUX_STEER_SETTLE_SECS", "9"))
+# finished — captures tear. Before delivering steering we require the session to
+# read idle *continuously* for this settle window; any active/unknown frame in
+# between resets the timer. The PRIMARY "still working" gate is the animated
+# spinner (_detect_claude_status → 'active' throughout a turn), so this window
+# only needs to bridge the rare torn frame: with the 4s fast tick it means ~2
+# consecutive idle ticks. Kept short (4s) so a queued message lands promptly once
+# the session is actually done — a 9s value read as "idle but not picking up"
+# (2026-07-20). With the 2s fast tick this is ~2 consecutive idle ticks (~2-4s to
+# deliver). Tunable via env (raise it for a more conservative hold).
+_STEER_SETTLE_SECS = float(os.environ.get("AMUX_STEER_SETTLE_SECS", "2"))
 _steer_settle_since: dict = {}   # name -> monotonic ts of first deliverable observation
 
 
@@ -53222,7 +53226,7 @@ def main():
     schedule_job(_yolo_loop,             interval=3,                    name="yolo",        initial_delay=3)
     schedule_job(_rate_limit_loop,       interval=15,                   name="rate_limit",  initial_delay=4)
     schedule_job(_snapshot_loop,         interval=60,                   name="snapshot",    initial_delay=0)
-    schedule_job(_steering_fast_tick,    interval=4,                    name="steering_fast", initial_delay=8)
+    schedule_job(_steering_fast_tick,    interval=2,                    name="steering_fast", initial_delay=8)
     schedule_job(_tmux_size_watchdog,    interval=60,                   name="tmux_size",   initial_delay=45)
     schedule_job(_reap_stale_browsers,  interval=120,                  name="browser_reap", initial_delay=60)
     schedule_job(_kill_stale_ray,        interval=600,                  name="ray_reap",     initial_delay=120)
