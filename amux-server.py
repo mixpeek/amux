@@ -5223,6 +5223,17 @@ def _steer_try_deliver(name: str, status: str, raw: str = "") -> None:
     deliverable = status == "idle"
     if deliverable and raw and _has_running_subagent(raw):
         deliverable = False  # main loop idle but a subagent is still running
+    # HARD HOLD on the definitive "still generating" signal. _detect_claude_status
+    # falls back to 'idle' whenever a status bar is present but no spinner is in
+    # the captured frame — so a torn or mid-task frame (tool just finished, Claude
+    # about to continue) can momentarily read idle while the turn is NOT done, and
+    # 6s of such frames would deliver a queued message before the task completes.
+    # "esc to interrupt" is present in EVERY generating/thinking frame and never at
+    # idle (verified 54/54 idle, 3/3 active sessions), so treat it as an
+    # authoritative "not finished" and hold until the turn truly ends. This makes
+    # a queued message deliver only once the session is completely done.
+    if deliverable and raw and "esc to interrupt" in _STRIP_ANSI.sub("", raw).lower():
+        deliverable = False
     # Re-validate commit-guard nudges at DELIVERY: a nudge enqueued when a session
     # went idle-dirty is HELD while the session's next turn commits, then would
     # deliver against a now-clean tree — a stale warning (AMUX-1737, fired 4/4
