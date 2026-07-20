@@ -25617,7 +25617,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.165';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.166';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -29795,7 +29795,15 @@ function _renderFileBody(data, mode) {
   } else if (data.is_html) {
     body.className = 'file-overlay-body file-html-preview';
     const iframe = document.createElement('iframe');
-    iframe.sandbox = 'allow-same-origin';
+    // allow-scripts (NOT allow-same-origin) → the page's own JS runs so it's
+    // interactive (arrow/keydown nav, carousels, buttons), but the frame stays a
+    // unique opaque origin and CANNOT reach the amux dashboard (can't read the
+    // auth token or touch parent DOM). allow-popups/allow-forms so "open link" /
+    // form buttons work. Deliberately NOT allow-same-origin: pairing it with
+    // allow-scripts would let a previewed page escape the sandbox. Consequence:
+    // the parent can't read iframe.contentDocument, so the anchor-scroll binding
+    // below no-ops — native in-page #anchors still work inside the frame.
+    iframe.sandbox = 'allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox';
     // Fill the preview box and let the iframe scroll its own content (see CSS note).
     iframe.setAttribute('scrolling', 'yes');
     iframe.style.cssText = 'width:100%;flex:1;min-height:0;border:none;background:#fff;';
@@ -29804,7 +29812,9 @@ function _renderFileBody(data, mode) {
     _bindReadPosFrame(iframe, data.path);   // resume reading position
     iframe.srcdoc = data.content;
     iframe.onload = function() {
-      // Bind anchor links inside iframe to scroll within it
+      // Bind anchor links to scroll within the iframe. Cross-origin under the
+      // sandbox above → contentDocument access throws; the try/catch makes this a
+      // graceful no-op (the page's own scripts handle its interactivity).
       try {
         iframe.contentDocument.addEventListener('click', function(e) {
           const a = e.target.closest('a');
@@ -43953,7 +43963,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.165';
+const CACHE = 'amux-v0.9.166';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
