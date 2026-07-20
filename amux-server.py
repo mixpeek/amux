@@ -25477,7 +25477,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.162';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.164';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -25591,22 +25591,34 @@ function openPeek(name, opts) {
   _syncPeekOverlayToVisualViewport();
   _vvKick();   // keyboard may already be up or mid-animation when peek opens
   setTimeout(_peekGeoBeacon, 1500);   // mobile geometry self-report (once per load)
-  // Load cached peek instantly while fetching fresh data
+  // The cached frame is a FALLBACK for slow/offline opens — NOT something to
+  // flash before the live frame. IndexedDB resolves (~10-30ms) before the live
+  // fetch (~33ms wifi, more on cellular), so painting it eagerly showed a stale
+  // "Cached Xm ago" view for a beat on every open. Give the live fetch a short
+  // head start: only paint cached if the live frame hasn't landed within ~150ms
+  // (slow network / offline). On a normal connection live wins and you open
+  // straight onto the LATEST. (lastPeekHTML is '' until a real frame paints.)
   _idb.get('peek_' + name).then(cached => {
-    if (peekSession !== name) return;  // session changed before cache resolved
-    if (!lastPeekHTML || lastPeekHTML.includes('Loading...')) {
-      if (_paintCachedPeek(cached)) {
-        const body = document.getElementById('peek-body');
-        body.scrollTop = body.scrollHeight;
+    if (peekSession !== name || !cached) return;
+    setTimeout(() => {
+      if (peekSession !== name) return;
+      if (!lastPeekHTML || lastPeekHTML.includes('Loading...')) {   // live still hasn't painted
+        if (_paintCachedPeek(cached)) {
+          const body = document.getElementById('peek-body');
+          body.scrollTop = body.scrollHeight;
+        }
       }
-    }
+    }, 150);
   });
   // Paint the CURRENT terminal instantly from the few-KB live frame, THEN pull the
   // full payload (~138KB, mostly transcript history) to fill in scrollback. Clicking
   // a session now shows the latest immediately instead of waiting on ~120KB of
   // history — and 4 ansiToHtml passes over it — before anything appears.
   _peekLastChangeMs = performance.now();   // snappy first couple seconds after opening a peek
-  refreshPeek(true).finally(() => refreshPeek());
+  // First fetch: live frame with notrim → paints the current terminal (the
+  // LATEST) instantly, without waiting on the ~120KB full-history render. The
+  // full payload follows and fills in scrollback above.
+  refreshPeek(true, true).finally(() => refreshPeek());
   _schedulePeekPoll();
   setTimeout(_peekFitPane, 350);   // fit the pane to this viewer's width
   _updateSendSplit();   // sync the Send/Queue button label to the current mode
@@ -26644,7 +26656,7 @@ function _fitRules(html) {
   }).join('\n');
 }
 
-async function refreshPeek(liveOnly) {
+async function refreshPeek(liveOnly, bypassTrim) {
   const name = peekSession;
   if (!name) return;
   // Refresh the Plan strip (throttled — task files change slowly).
@@ -26660,7 +26672,7 @@ async function refreshPeek(liveOnly) {
     // transcript history) follows and fills in scrollback. Only the full response
     // carries the ETag the poll conditions on.
     const _et = liveOnly ? _peekLiveEtag : _peekEtag;
-    const r = await fetch(API + '/api/sessions/' + name + '/peek?lines=300' + (liveOnly ? '&live=1' : ''),
+    const r = await fetch(API + '/api/sessions/' + name + '/peek?lines=300' + (liveOnly ? '&live=1' : '') + (bypassTrim ? '&notrim=1' : ''),
       _et ? { headers: { 'If-None-Match': _et } } : undefined);
     if (peekSession !== name) return;
     if (!liveOnly) _peekLastFullMs = performance.now();   // history is fresh (200 or 304)
@@ -43797,7 +43809,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.162';
+const CACHE = 'amux-v0.9.164';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -50631,6 +50643,13 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 # payload (transcript history + live) right after. The full response
                 # is ~138KB, ~120KB of which is history you don't need to see "now".
                 live_only = (qs.get("live", ["0"])[0] or "") in ("1", "true", "yes")
+                # notrim=1: the FIRST live fetch right after opening a peek, when no
+                # history is shown yet. Trimming the live frame against the (possibly
+                # STALE) server-side transcript cache could shrink it to empty — so the
+                # instant paint was lost and the client had to wait for the heavy full
+                # render. With no history on screen there's nothing to duplicate, so
+                # return the full current frame → open paints the LATEST immediately.
+                no_trim = (qs.get("notrim", ["0"])[0] or "") in ("1", "true", "yes")
                 now = time.monotonic()
                 cached = _peek_cache.get(name)
                 if not live_only and cached and cached[1] >= lines and (now - cached[0]) < _PEEK_CACHE_TTL:
@@ -50642,7 +50661,7 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     # as history (cached by the last full fetch) — that keeps the seam
                     # duplicate-free without re-rendering the 120KB transcript here.
                     _tr = _peek_transcript_cache.get(name, "")
-                    if _tr and _live:
+                    if _tr and _live and not no_trim:
                         _live = _trim_live_overlap(_tr, _live)
                     return self._json_etag({"name": name, "live_only": True,
                                             "live": _collapse_blank_runs(_live) if _live else "(no output)"})
