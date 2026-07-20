@@ -6440,6 +6440,46 @@ CREATE TABLE IF NOT EXISTS owner_alerts (
     deduped  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_owner_alerts_ts ON owner_alerts(ts DESC);
+-- ── Observability: durable per-turn token/cost ledger ───────────────────────
+-- One row per Claude API turn (from the JSONL usage records amux already reads),
+-- with a real $ cost and the task it belongs to. Persistent time-series so cost
+-- can be rolled up by task / session / model / day — the accounting reads JSONL +
+-- board, never the model itself. Parsed incrementally (ledger_cursor tracks the
+-- byte offset already consumed per conversation).
+CREATE TABLE IF NOT EXISTS token_ledger (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           INTEGER NOT NULL,               -- unix seconds of the turn
+    session      TEXT NOT NULL DEFAULT '',        -- owning amux session (customTitle)
+    conversation TEXT NOT NULL,                   -- JSONL stem (Claude session uuid)
+    model        TEXT NOT NULL DEFAULT '',
+    input        INTEGER NOT NULL DEFAULT 0,       -- fresh input tokens
+    cache_read   INTEGER NOT NULL DEFAULT 0,
+    cache_write  INTEGER NOT NULL DEFAULT 0,       -- cache_creation
+    output       INTEGER NOT NULL DEFAULT 0,
+    cost_usd     REAL NOT NULL DEFAULT 0,
+    task         TEXT NOT NULL DEFAULT ''          -- attributed board task id ('' = ambient)
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_ts ON token_ledger(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_ledger_session ON token_ledger(session, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_ledger_task ON token_ledger(task, ts DESC);
+CREATE TABLE IF NOT EXISTS ledger_cursor (
+    conversation TEXT PRIMARY KEY,
+    offset       INTEGER NOT NULL DEFAULT 0,       -- bytes of the JSONL already ledgered
+    mtime        INTEGER NOT NULL DEFAULT 0
+);
+-- Task time-windows: when a board task was actively held (status 'doing') by a
+-- session. A ledger turn at time T for session S is billed to the task whose
+-- [entered_doing, left_doing] window for S contains T. Derived from board status
+-- transitions the user/agent already make — no model tagging.
+CREATE TABLE IF NOT EXISTS task_windows (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    task          TEXT NOT NULL,
+    title         TEXT NOT NULL DEFAULT '',
+    session       TEXT NOT NULL DEFAULT '',
+    entered_doing INTEGER NOT NULL,
+    left_doing    INTEGER                          -- NULL = still open (currently doing)
+);
+CREATE INDEX IF NOT EXISTS idx_task_windows_session ON task_windows(session, entered_doing);
 """
 
 
@@ -9239,6 +9279,226 @@ def get_daily_token_stats() -> dict:
 
 _metrics_cache: dict = {}
 _metrics_cache_lock = threading.Lock()
+# ── Observability: pricing + token/cost ledger + task attribution ────────────
+# Per-MTok USD prices: (fresh input, cache read, cache write, output). Matched by
+# a substring of the model name. Overridable via ~/.amux/prices.json (same shape).
+# Defaults track Anthropic's published tiers; adjust as prices change — the ledger
+# recomputes cost from these, the model never sees them.
+_MODEL_PRICES_DEFAULT = {
+    "opus":   (15.0, 1.50, 18.75, 75.0),
+    "sonnet": (3.0,  0.30, 3.75,  15.0),
+    "haiku":  (0.80, 0.08, 1.00,  4.0),
+    "fable":  (3.0,  0.30, 3.75,  15.0),
+    "_default": (3.0, 0.30, 3.75, 15.0),
+}
+_PRICES_PATH = _amux_home / "prices.json"
+_prices_cache = {"data": None, "mtime": 0.0}
+
+
+def _model_prices() -> dict:
+    """Prices table, merging ~/.amux/prices.json over the defaults (cached by mtime)."""
+    try:
+        mt = _PRICES_PATH.stat().st_mtime if _PRICES_PATH.exists() else 0.0
+    except Exception:
+        mt = 0.0
+    if _prices_cache["data"] is not None and mt == _prices_cache["mtime"]:
+        return _prices_cache["data"]
+    table = dict(_MODEL_PRICES_DEFAULT)
+    if mt:
+        try:
+            user = json.loads(_PRICES_PATH.read_text())
+            for k, v in user.items():
+                if isinstance(v, (list, tuple)) and len(v) == 4:
+                    table[k.lower()] = tuple(float(x) for x in v)
+        except Exception:
+            pass
+    _prices_cache["data"] = table
+    _prices_cache["mtime"] = mt
+    return table
+
+
+def _price_for_model(model: str) -> tuple:
+    m = (model or "").lower()
+    table = _model_prices()
+    for key, rates in table.items():
+        if key != "_default" and key in m:
+            return rates
+    return table["_default"]
+
+
+def _turn_cost_usd(model: str, inp: int, cache_read: int, cache_write: int, out: int) -> float:
+    pi, pcr, pcw, po = _price_for_model(model)
+    return (inp * pi + cache_read * pcr + cache_write * pcw + out * po) / 1_000_000.0
+
+
+_ledger_lock = threading.Lock()
+_LEDGER_MODELS_SKIP = {"<synthetic>", ""}
+
+
+def _index_token_ledger() -> int:
+    """Incrementally parse every conversation JSONL into the token_ledger. Reads
+    only bytes past each conversation's saved cursor, dedups Claude Code's
+    repeated thinking/tool_use usage lines, prices each turn, and stamps the owning
+    session. Returns rows inserted. Safe to call often — a fully-indexed tree is a
+    cheap stat + no-op."""
+    projects_dir = CLAUDE_HOME / "projects"
+    if not projects_dir.is_dir():
+        return 0
+    inserted = 0
+    with _ledger_lock:
+        db = get_db()
+        cursors = {r["conversation"]: (r["offset"], r["mtime"])
+                   for r in db.execute("SELECT conversation, offset, mtime FROM ledger_cursor")}
+        for proj_dir in projects_dir.iterdir():
+            if not proj_dir.is_dir():
+                continue
+            for jf in proj_dir.glob("*.jsonl"):
+                conv = jf.stem
+                try:
+                    st = jf.stat()
+                except Exception:
+                    continue
+                off, cmt = cursors.get(conv, (0, 0))
+                if off >= st.st_size and cmt == int(st.st_mtime):
+                    continue  # nothing new
+                owner = _jsonl_owner_title(jf) or ""
+                rows = []
+                new_off = off
+                prev_sig = None
+                try:
+                    with jf.open("rb") as fh:
+                        if off > 0:
+                            fh.seek(off)
+                        for raw in fh:
+                            new_off += len(raw)
+                            try:
+                                e = json.loads(raw)
+                            except Exception:
+                                continue
+                            msg = e.get("message", {}) or {}
+                            u = msg.get("usage")
+                            if not u:
+                                prev_sig = None
+                                continue
+                            model = msg.get("model", "") or ""
+                            if model in _LEDGER_MODELS_SKIP:
+                                continue
+                            inp = int(u.get("input_tokens", 0) or 0)
+                            cr = int(u.get("cache_read_input_tokens", 0) or 0)
+                            cw = int(u.get("cache_creation_input_tokens", 0) or 0)
+                            out = int(u.get("output_tokens", 0) or 0)
+                            sig = (inp, cr, out)
+                            if sig == prev_sig:
+                                continue  # dedup thinking+tool_use repeat
+                            prev_sig = sig
+                            if inp + cr + cw + out == 0:
+                                continue
+                            ts_str = e.get("timestamp", "")
+                            try:
+                                ts = int(datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp())
+                            except Exception:
+                                ts = int(st.st_mtime)
+                            cost = _turn_cost_usd(model, inp, cr, cw, out)
+                            rows.append((ts, owner, conv, model, inp, cr, cw, out, cost))
+                except Exception:
+                    continue
+                if rows:
+                    db.executemany(
+                        "INSERT INTO token_ledger (ts,session,conversation,model,input,cache_read,cache_write,output,cost_usd) "
+                        "VALUES (?,?,?,?,?,?,?,?,?)", rows)
+                    inserted += len(rows)
+                db.execute("INSERT INTO ledger_cursor (conversation,offset,mtime) VALUES (?,?,?) "
+                           "ON CONFLICT(conversation) DO UPDATE SET offset=?, mtime=?",
+                           (conv, new_off, int(st.st_mtime), new_off, int(st.st_mtime)))
+        db.commit()
+    if inserted:
+        _attribute_ledger_tasks()
+    return inserted
+
+
+def _record_task_window(task: str, title: str, session: str, status: str, prev_status: str) -> None:
+    """Maintain task_windows from board status changes: opening a window when a
+    task enters 'doing', closing it when it leaves. Called from the board PATCH."""
+    if not task:
+        return
+    try:
+        db = get_db()
+        now = int(time.time())
+        if status == "doing" and prev_status != "doing":
+            # close any dangling open window for this task first, then open one
+            db.execute("UPDATE task_windows SET left_doing=? WHERE task=? AND left_doing IS NULL", (now, task))
+            db.execute("INSERT INTO task_windows (task,title,session,entered_doing,left_doing) VALUES (?,?,?,?,NULL)",
+                       (task, title or "", session or "", now))
+        elif prev_status == "doing" and status != "doing":
+            db.execute("UPDATE task_windows SET left_doing=? WHERE task=? AND left_doing IS NULL", (now, task))
+        db.commit()
+    except Exception:
+        pass
+
+
+def _attribute_ledger_tasks() -> None:
+    """Fill token_ledger.task for rows whose turn falls inside a task's doing-window
+    for the same session. Only touches unattributed rows. Cheap: windows are few."""
+    try:
+        db = get_db()
+        wins = db.execute("SELECT task, session, entered_doing, COALESCE(left_doing, ?) AS lo "
+                          "FROM task_windows ORDER BY entered_doing", (int(time.time()),)).fetchall()
+        if not wins:
+            return
+        for w in wins:
+            db.execute(
+                "UPDATE token_ledger SET task=? "
+                "WHERE task='' AND session=? AND ts>=? AND ts<=?",
+                (w["task"], w["session"], w["entered_doing"], w["lo"]))
+        db.commit()
+    except Exception:
+        pass
+
+
+def observability_rollup(days: int = 7, session: str = "") -> dict:
+    """Roll the ledger up into cost/token breakdowns by session, task, model, and
+    day. `session` scopes to one session (for the peek tab). Reads only the ledger."""
+    _index_token_ledger()  # make sure recent turns are captured
+    since = int(time.time()) - days * 86400
+    db = get_db()
+    where = "ts >= ?"
+    args: list = [since]
+    if session:
+        where += " AND session = ?"
+        args.append(session)
+
+    def rows(sql, extra=()):
+        return [dict(r) for r in db.execute(sql, tuple(args) + tuple(extra)).fetchall()]
+
+    tot = db.execute(f"SELECT COALESCE(SUM(cost_usd),0) c, COALESCE(SUM(input+cache_read+cache_write+output),0) t, "
+                     f"COALESCE(SUM(cache_read),0) cr, COALESCE(SUM(cache_read+cache_write),0) cache_all, "
+                     f"COUNT(*) turns FROM token_ledger WHERE {where}", tuple(args)).fetchone()
+    by_session = rows(f"SELECT session, COALESCE(SUM(cost_usd),0) cost, "
+                      f"SUM(input+cache_read+cache_write+output) tokens, COUNT(*) turns "
+                      f"FROM token_ledger WHERE {where} GROUP BY session ORDER BY cost DESC")
+    by_task = rows(f"SELECT l.task, COALESCE(SUM(l.cost_usd),0) cost, "
+                   f"SUM(l.input+l.cache_read+l.cache_write+l.output) tokens, COUNT(*) turns "
+                   f"FROM token_ledger l WHERE {where} GROUP BY l.task ORDER BY cost DESC")
+    by_model = rows(f"SELECT model, COALESCE(SUM(cost_usd),0) cost, COUNT(*) turns "
+                    f"FROM token_ledger WHERE {where} GROUP BY model ORDER BY cost DESC")
+    by_day = rows(f"SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') day, "
+                  f"COALESCE(SUM(cost_usd),0) cost, SUM(input+cache_read+cache_write+output) tokens "
+                  f"FROM token_ledger WHERE {where} GROUP BY day ORDER BY day")
+    # resolve task titles
+    titles = {r["task"]: r["title"] for r in db.execute("SELECT DISTINCT task, title FROM task_windows")}
+    for t in by_task:
+        t["title"] = ("Ambient (untasked)" if not t["task"] else titles.get(t["task"], t["task"]))
+    cache_all = tot["cache_all"] or 0
+    total_in_all = db.execute(f"SELECT COALESCE(SUM(input+cache_read+cache_write),0) x FROM token_ledger WHERE {where}",
+                              tuple(args)).fetchone()["x"] or 1
+    return {
+        "days": days, "session": session or None,
+        "total_cost": round(tot["c"], 4), "total_tokens": tot["t"], "total_turns": tot["turns"],
+        "cache_hit_pct": round(100.0 * (tot["cr"] or 0) / total_in_all, 1),
+        "by_session": by_session, "by_task": by_task, "by_model": by_model, "by_day": by_day,
+    }
+
+
 _metrics_cache_ts: float = 0.0
 _metrics_refreshing = False
 _METRICS_TTL = 8.0  # seconds
@@ -46354,6 +46614,20 @@ class CCHandler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/api/metrics":
             return self._json(get_system_metrics())
 
+        # GET /api/observability?days=7&session=X — cost/token rollup by task,
+        # session, model, and day (dollar cost from the pricing table). The whole
+        # thing is derived from JSONL + board — no model calls.
+        if method == "GET" and path == "/api/observability":
+            try:
+                days = max(1, min(365, int(qs.get("days", ["7"])[0])))
+            except Exception:
+                days = 7
+            sess = (qs.get("session", [""])[0] or "").strip()
+            try:
+                return self._json(observability_rollup(days=days, session=sess))
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
+
         # GET /api/speedtest/download?bytes=N — stream N bytes for download speed test
         if method == "GET" and path == "/api/speedtest/download":
             try:
@@ -47611,6 +47885,12 @@ class CCHandler(BaseHTTPRequestHandler):
                     db.commit()
                     _board_changed()
                     updated_item = _item_by_id(bid)
+                    if body.get("status") and prior and updated_item:
+                        # Observability: track when this task was actively 'doing' by
+                        # its session, so ledger turns in that window bill to it.
+                        _record_task_window(bid, updated_item.get("title", ""),
+                                            updated_item.get("session") or "",
+                                            updated_item.get("status", ""), prior.get("status", ""))
                     if body.get("status"):
                         _emit_event(updated_item.get("session") or "",
                                     "task.completed" if body["status"] in ("done", "verified") else "task.status_changed",
@@ -53237,6 +53517,7 @@ def main():
     schedule_job(_rate_limit_loop,       interval=15,                   name="rate_limit",  initial_delay=4)
     schedule_job(_snapshot_loop,         interval=60,                   name="snapshot",    initial_delay=0)
     schedule_job(_steering_fast_tick,    interval=2,                    name="steering_fast", initial_delay=8)
+    schedule_job(_index_token_ledger,    interval=60,                   name="token_ledger",  initial_delay=12)
     schedule_job(_tmux_size_watchdog,    interval=60,                   name="tmux_size",   initial_delay=45)
     schedule_job(_reap_stale_browsers,  interval=120,                  name="browser_reap", initial_delay=60)
     schedule_job(_kill_stale_ray,        interval=600,                  name="ray_reap",     initial_delay=120)
