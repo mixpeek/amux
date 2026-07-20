@@ -16215,6 +16215,30 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     pointer-events: none;
   }
   @keyframes send-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+  /* "Loading latest…" cue on peek open — same top-pill spot as the send cue */
+  .peek-loading-pill {
+    position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+    background: var(--accent); color: #fff; font-size: 0.7rem; font-weight: 600;
+    padding: 3px 12px 3px 9px; border-radius: 12px; z-index: 11;
+    display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+    pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  }
+  .peek-spin {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff;
+    animation: peek-spin 0.7s linear infinite;
+  }
+  @keyframes peek-spin { to { transform: rotate(360deg); } }
+  /* Centered loader shown in the empty peek body before the first frame paints */
+  .peek-loading {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px; padding: 44px 20px; color: var(--dim); font-size: 0.85rem;
+  }
+  .peek-loading .peek-spin-lg {
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 2.5px solid var(--border); border-top-color: var(--accent);
+    animation: peek-spin 0.7s linear infinite;
+  }
 
   /* Habits */
   .habit-card {
@@ -24007,6 +24031,28 @@ function clearSendingIndicator() {
   if (ind) ind.style.display = 'none';
 }
 
+// "Loading latest…" cue while a freshly-opened peek is fetching the current
+// terminal — so a delay (esp. on cellular) reads as "working", not "stuck".
+// Shown on open; hidden the moment refreshPeek gets a response (200 painted, or
+// 304 = already latest). Lives in the same top-pill spot as the send cue.
+function showPeekLoading(text) {
+  const peekWrap = document.querySelector('#peek-body')?.parentElement;
+  if (!peekWrap || !document.getElementById('peek-overlay')?.classList.contains('active')) return;
+  let ind = document.getElementById('peek-loading-ind');
+  if (!ind) {
+    ind = document.createElement('div');
+    ind.id = 'peek-loading-ind';
+    ind.className = 'peek-loading-pill';
+    peekWrap.appendChild(ind);
+  }
+  ind.innerHTML = '<span class="peek-spin"></span>' + (text || 'Loading latest…');
+  ind.style.display = '';
+}
+function hidePeekLoading() {
+  const ind = document.getElementById('peek-loading-ind');
+  if (ind) ind.style.display = 'none';
+}
+
 async function doSend(name, text) {
   showSendingIndicator();
   // Slash commands (e.g. /clear, /compact) must be sent verbatim — no timestamp prefix
@@ -25497,7 +25543,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.164';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.165';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -25582,7 +25628,7 @@ function openPeek(name, opts) {
   peekTaskRow.style.display = _peekTask ? 'flex' : 'none';
   if (_peekTask) document.getElementById('peek-task-label').textContent = _peekTask;
   updatePeekStatus();
-  document.getElementById('peek-body').innerHTML = '<span style="color:var(--dim)">Loading...</span>';
+  document.getElementById('peek-body').innerHTML = '<div class="peek-loading"><div class="peek-spin-lg"></div><span>Loading latest…</span></div>';
   // Reset tab badges; will be repopulated by _peekUpdateTabCounts
   ['peek-tab-steering-count','peek-tab-issues-count','peek-tab-schedules-count','peek-tab-notes-count'].forEach(id => {
     const el = document.getElementById(id);
@@ -25593,6 +25639,7 @@ function openPeek(name, opts) {
   updateConnectionStatus();
   const peekOv = document.getElementById('peek-overlay');
   peekOv.classList.add('active');
+  showPeekLoading('Loading latest…');   // now the overlay is active — the "loading latest" cue can attach
   // Freeze the page behind the overlay: otherwise iOS scrolls the session list
   // to reveal the focused input, sliding content around under the fixed overlay
   // and feeding bogus offsets into the viewport math.
@@ -25729,6 +25776,7 @@ function closePeek() {
   peekSession = null;
   peekSearchQuery = '';
   lastPeekHTML = '';
+  hidePeekLoading();   // don't leak the "Loading latest…" cue into the next open
   clearPeekFiles();
   // Close split pane if open
   const splitWrap = document.getElementById('peek-split-wrap');
@@ -26695,6 +26743,7 @@ async function refreshPeek(liveOnly, bypassTrim) {
     const r = await fetch(API + '/api/sessions/' + name + '/peek?lines=300' + (liveOnly ? '&live=1' : '') + (bypassTrim ? '&notrim=1' : ''),
       _et ? { headers: { 'If-None-Match': _et } } : undefined);
     if (peekSession !== name) return;
+    hidePeekLoading();   // a response arrived (200 painted below, or 304 = already latest) → drop the "Loading latest…" cue
     if (!liveOnly) _peekLastFullMs = performance.now();   // history is fresh (200 or 304)
     if (r.status === 304) {   // unchanged — nothing transferred, skip parse + render entirely
       if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
@@ -26787,6 +26836,7 @@ async function refreshPeek(liveOnly, bypassTrim) {
     if (_peekHistoryRaw || _lastPeekRaw) _idb.set('peek_' + peekSession, { output: _lastPeekRaw, history: _peekHistoryRaw, time: Date.now() });
   } catch(e) {
     console.error('peek:', e);
+    hidePeekLoading();   // fetch failed — stop the "Loading latest…" cue (we fall back to cache / retry below)
     // Offline: load cached peek
     if (!lastPeekHTML || lastPeekHTML.includes('Loading...')) {
       const cached = await _idb.get('peek_' + peekSession);
@@ -43829,7 +43879,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.164';
+const CACHE = 'amux-v0.9.165';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
