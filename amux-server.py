@@ -48034,9 +48034,10 @@ class CCHandler(BaseHTTPRequestHandler):
                     if body.get("status") and prior and updated_item:
                         # Observability: track when this task was actively 'doing' by
                         # its session, so ledger turns in that window bill to it.
+                        # `prior` is a raw sqlite3.Row (no .get()) — index it.
                         _record_task_window(bid, updated_item.get("title", ""),
                                             updated_item.get("session") or "",
-                                            updated_item.get("status", ""), prior.get("status", ""))
+                                            updated_item.get("status", ""), prior["status"])
                     if body.get("status"):
                         _emit_event(updated_item.get("session") or "",
                                     "task.completed" if body["status"] in ("done", "verified") else "task.status_changed",
