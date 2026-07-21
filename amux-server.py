@@ -21374,6 +21374,7 @@ let _lastPeekedSession = '';
 let peekTimer = null;
 let peekSessionDir = '';
 let peekSearchQuery = '';
+let _peekPendingFindScroll = false;   // one-shot scroll-to-match after a ⌖ Locate open
 let peekSearchIndex = 0;
 let _peekMatches = [];
 let lastPeekHTML = '';
@@ -26195,7 +26196,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.169';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.173';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -26248,6 +26249,11 @@ function openPeek(name, opts) {
   if (peekSessionDir && !(gitInfo[peekSession] || {}).branch) { _gitBranchesLast = 0; _fetchGitBranches(sessions); }
   const prefillQuery = opts && opts.query ? opts.query : '';
   peekSearchQuery = prefillQuery;
+  // Locate flow: the match usually lives in HISTORY, which arrives after the
+  // instant live-frame paint — and search-active refreshes suppress scrolling
+  // (to preserve reading position on live ticks). Arm a ONE-SHOT jump so the
+  // first render that actually finds matches scrolls to them.
+  _peekPendingFindScroll = !!prefillQuery;
   peekSearchIndex = 0;
   _peekMatches = [];
   _peekMsgIndex = -1;
@@ -27465,6 +27471,13 @@ async function refreshPeek(liveOnly, bypassTrim) {
       const savedTop = body.scrollTop;
       applyPeekSearch(true, false);
       body.scrollTop = savedTop;
+      // …EXCEPT the one-shot locate jump: a peek opened via ⌖ Locate arms this
+      // flag, and the first render whose DOM actually contains the match scrolls
+      // to it (the match is in history, which lands after the instant live paint).
+      if (_peekPendingFindScroll && _peekMatches.length) {
+        _peekPendingFindScroll = false;
+        _peekScrollTo(peekSearchIndex, true, true);
+      }
     } else if (!_peekScrollLocked) {
       const _liveEl = document.getElementById('pk-live');
       if (!histChanged && _liveEl) _liveEl.innerHTML = _lastLiveHTML;   // live tick → swap the small region only
@@ -27539,10 +27552,12 @@ function applyPeekSearch(keepIndex, doScroll) {
   _peekScrollTo(peekSearchIndex, doScroll);
   if (countEl) countEl.textContent = _peekMatches.length > 0 ? (peekSearchIndex + 1) + '/' + _peekMatches.length : 'no matches';
 }
-function _peekScrollTo(i, doScroll) {
+function _peekScrollTo(i, doScroll, instant) {
   _peekMatches.forEach((m, j) => m.classList.toggle('current', j === i));
   const cur = _peekMatches[i];
-  if (cur && doScroll !== false) cur.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  // instant: the one-shot Locate jump — a smooth animation would be frozen
+  // mid-flight by the next poll tick's savedTop restore.
+  if (cur && doScroll !== false) cur.scrollIntoView({ block: 'center', behavior: instant ? 'auto' : 'smooth' });
   const countEl = document.getElementById('peek-search-count');
   if (countEl && _peekMatches.length) countEl.textContent = (i + 1) + '/' + _peekMatches.length;
 }
@@ -29554,7 +29569,7 @@ function _renderCmdHistoryList() {
     const session = typeof e === 'string' ? '' : (e.session || '');
     const ts = typeof e === 'string' ? '' : (e.time ? new Date(e.time).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '');
     const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-    const enc = encodeURIComponent(text);
+    const enc = encodeURIComponent(text).replace(/'/g, '%27');   // ' survives encodeURIComponent and breaks inline onclick
     const tagColor = type === 'steering' ? 'var(--purple,#8957e5)' : 'var(--dim)';
     const tagBg = type === 'steering' ? 'rgba(137,87,229,0.15)' : 'rgba(128,128,128,0.1)';
     const tagLabel = type === 'steering' ? 'queued' : 'direct';
@@ -29562,6 +29577,9 @@ function _renderCmdHistoryList() {
       + (session ? '<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">' + session.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>' : '')
       + (ts ? '<span style="color:var(--dim);font-size:0.7rem;">' + ts + '</span>' : '');
     const locSess = (session || peekSession || '').replace(/\u0027/g, '');
+    const copyBtn = '<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" '
+      + 'title="Copy message text" '
+      + 'onclick="event.stopPropagation();_msgCopyBtn(this,\u0027' + enc + '\u0027)">&#x1F4CB;</button>';
     const locate = locSess
       ? '<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" '
         + 'title="Open the peek and scroll to where this was sent" '
@@ -29575,7 +29593,7 @@ function _renderCmdHistoryList() {
       + 'onmouseleave="this.style.borderColor=\u0027var(--border)\u0027">'
       + '<div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">'
       + (meta ? '<div style="margin-bottom:4px;">' + meta + '</div>' : '')
-      + safe + '</div>' + locate + '</div>';
+      + safe + '</div>' + copyBtn + locate + '</div>';
   }).join('');
 }
 // ── Peek Messages tab: the message history, scoped to the open session ──
@@ -29587,33 +29605,16 @@ function _cmdHistItemHTML(e) {
   const session = typeof e === 'string' ? '' : (e.session || '');
   const ts = typeof e === 'string' ? '' : (e.time ? new Date(e.time).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '');
   const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  const enc = encodeURIComponent(text);
+  const enc = encodeURIComponent(text).replace(/'/g, '%27');   // ' survives encodeURIComponent and breaks inline onclick
   const isSteer = type === 'steering';
   const tag = type ? `<span style="display:inline-block;font-size:0.7rem;padding:1px 6px;border-radius:3px;background:${isSteer?'rgba(137,87,229,0.15)':'rgba(128,128,128,0.1)'};color:${isSteer?'var(--purple,#8957e5)':'var(--dim)'};margin-right:6px;">${isSteer?'queued':'direct'}</span>` : '';
   const sessTag = session ? `<span style="color:var(--dim);font-size:0.7rem;margin-right:6px;">${session.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>` : '';
   const tsTag = ts ? `<span style="color:var(--dim);font-size:0.7rem;">${ts}</span>` : '';
   const meta = tag + sessTag + tsTag;
   const locSess = (session || peekSession || '').replace(/'/g,'');
+  const copyBtn = `<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" title="Copy message text" onclick="event.stopPropagation();_msgCopyBtn(this,'${enc}')">&#x1F4CB;</button>`;
   const locate = locSess ? `<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" title="Open the peek and scroll to where this was sent" onclick="event.stopPropagation();_msgLocate('${locSess}','${enc}')">&#x2316;</button>` : '';
-  return `<div onclick="_msgCopy(this,'${enc}')" title="Click to copy" style="cursor:pointer;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:10px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="this.style.borderColor='var(--border)'"><div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${safe}</div>${locate}</div>`;
-}
-// Click a message → copy its text + flash a "Copied" badge on the card.
-function _msgCopy(el, enc) {
-  const text = decodeURIComponent(enc);
-  const flash = () => {
-    showToast('Copied');
-    if (el && !el.querySelector('.msg-copied-badge')) {
-      const badge = document.createElement('div');
-      badge.className = 'msg-copied-badge';
-      badge.textContent = '✓ Copied';
-      badge.style.cssText = 'position:absolute;top:6px;right:8px;background:var(--green);color:#fff;font-size:0.66rem;font-weight:600;padding:1px 7px;border-radius:4px;pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,0.2);';
-      el.appendChild(badge);
-      setTimeout(() => badge.remove(), 1100);
-    }
-  };
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(flash, () => { _copyExplorePathFallback(text); flash(); });
-  } else { _copyExplorePathFallback(text); flash(); }
+  return `<div onclick="_pickCmdHistory(decodeURIComponent('${enc}'))" title="Click to insert into the composer" style="cursor:pointer;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="this.style.borderColor='var(--border)'"><div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${safe}</div>${copyBtn}${locate}</div>`;
 }
 function _peekMessagesFor() {
   if (!peekSession) return [];
@@ -29712,15 +29713,43 @@ function _peekCostLoad() {
     .catch(() => { body.innerHTML = '<div style="color:var(--dim);padding:16px;">Failed to load.</div>'; });
 }
 
+// Sent messages are stored with the "[H:MM PM email] " payload prefix doSend
+// adds. Strip it when INSERTING back into a composer — resending would
+// otherwise stack a second timestamp onto the old one.
+function _msgStripPrefix(text) {
+  return String(text || '').replace(/^\[\d{1,2}:\d{2}\s?[AP]M[^\]]*\]\s*/i, '');
+}
 function _pickCmdHistory(text) {
   const inp = document.getElementById('peek-cmd-input');
   if (inp) {
-    inp.value = text;
+    inp.value = _msgStripPrefix(text);
     autoGrow(inp);
     inp.focus({ preventScroll: true });
     requestAnimationFrame(() => { inp.selectionStart = inp.selectionEnd = inp.value.length; });
   }
   closeCmdHistoryModal();
+}
+// Copy button on message rows: clipboard + a ✓ flash on the button itself.
+function _msgCopyBtn(btn, encText) {
+  const text = decodeURIComponent(encText);
+  const done = () => {
+    showToast('Copied');
+    if (btn) { const prev = btn.innerHTML; btn.innerHTML = '&#x2713;'; setTimeout(() => { btn.innerHTML = prev; }, 900); }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, () => { _copyExplorePathFallback(text); done(); });
+  } else { _copyExplorePathFallback(text); done(); }
+}
+// Global Messages view: clicking a row opens that session's peek AND inserts the
+// message into its composer (prefix-stripped), ready to edit/resend.
+function _msgOpenInsert(sess, encText) {
+  if (!sess) { showToast('No session recorded for this message'); return; }
+  const text = _msgStripPrefix(decodeURIComponent(encText));
+  openPeek(sess);
+  setTimeout(() => {
+    const inp = document.getElementById('peek-cmd-input');
+    if (inp) { inp.value = text; autoGrow(inp); inp.focus({ preventScroll: true }); }
+  }, 500);
 }
 
 function cmdHistoryUp(inp) {
@@ -41107,10 +41136,10 @@ function _messagesRender() {
     return;
   }
   list.innerHTML = rows.map(m => {
-    const enc = encodeURIComponent(m.text || '');
+    const enc = encodeURIComponent(m.text || '').replace(/'/g, '%27');
     const sess = m.session || '';
     const tag = m.type === 'steering' ? '<span class="msg-tag steering">queued</span>' : '';
-    return '<div class="msg-row" onclick="openPeek(\'' + escJs(sess) + '\')" title="Open ' + esc(sess) + '">' +
+    return '<div class="msg-row" onclick="_msgOpenInsert(\'' + escJs(sess) + '\',\'' + enc + '\')" title="Open ' + esc(sess) + ' with this message in the composer">' +
       '<div class="msg-main">' +
         '<div class="msg-meta">' +
           (sess ? '<span class="msg-sess">' + esc(sess) + '</span>' : '<span class="msg-sess" style="color:var(--dim);">(unknown)</span>') +
@@ -41118,6 +41147,7 @@ function _messagesRender() {
         '</div>' +
         '<div class="msg-text">' + esc(m.text || '') + '</div>' +
       '</div>' +
+      '<button class="btn msg-copy" onclick="event.stopPropagation();_msgCopyBtn(this,\'' + enc + '\')" title="Copy message text">&#x1F4CB;</button>' +
       '<button class="btn msg-locate" onclick="event.stopPropagation();_msgLocate(\'' + escJs(sess) + '\',\'' + enc + '\')" title="Open the peek and scroll to where this was sent">&#x2316; Locate</button>' +
     '</div>';
   }).join('');
@@ -44703,7 +44733,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.169';
+const CACHE = 'amux-v0.9.173';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
