@@ -51585,8 +51585,9 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     _tr = _peek_transcript_cache.get(name, "")
                     if _tr and _live and not no_trim:
                         _live = _trim_live_overlap(_tr, _live)
-                    resp_live = {"name": name, "live_only": True,
-                                 "live": _collapse_blank_runs(_live) if _live else "(no output)"}
+                    _lv = _collapse_blank_runs(_live) if _live else "(no output)"
+                    # `output` mirrored for API consumers (see AMUX-1807 note below).
+                    resp_live = {"name": name, "live_only": True, "live": _lv, "output": _lv}
                     _peek_live_cache[name] = (now, resp_live)
                     return self._json_etag(resp_live)
                 output = _strip_scroll_pill(tmux_capture(name, lines))
@@ -51613,10 +51614,23 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                     # history + live returned SEPARATELY: the poll re-fetches only the
                     # ~7KB live frame and swaps that DOM region, instead of re-sending
                     # and re-parsing the whole ~138KB payload every tick.
+                    _live_out = (_collapse_blank_runs(live) if live else
+                                 ("" if transcript else "(no output)"))
+                    # API COMPAT (AMUX-1807): the live-split dropped `output` from the
+                    # alt-screen response, silently blinding every NON-dashboard
+                    # consumer of the documented `peek → output` contract (the
+                    # autopilot's stall sensor greps it; the session-memory docs teach
+                    # it). Mirror the CURRENT terminal frame into `output` — the right
+                    # signal for "is this session moving" sensors, at ~1-7KB. When the
+                    # live frame trimmed to empty against history, fall back to the
+                    # raw capture so `output` is never empty for a running session.
+                    _out_compat = _live_out
+                    if not _out_compat and output:
+                        _out_compat = _collapse_blank_runs(_strip_launch_noise(output.strip()))
                     resp = {"name": name,
                             "history": _collapse_blank_runs(transcript) if transcript else "",
-                            "live": (_collapse_blank_runs(live) if live else
-                                     ("" if transcript else "(no output)"))}
+                            "live": _live_out,
+                            "output": _out_compat}
                     _peek_cache[name] = (now, lines, resp)
                     return self._json_etag(resp)
                 # Normal screen: show capture directly, save log in background.
