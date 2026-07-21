@@ -16471,6 +16471,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .peek-tab-count.has-count { display: inline-block; }
   /* Schedules badge: green when the session has ≥1 active schedule, grey when all inactive. */
   .peek-tab-count.sched-on { background: rgba(63,185,80,0.16); color: #3fb950; border-color: rgba(63,185,80,0.34); }
+  .peek-tab-count.has-pending { background: rgba(210,153,34,0.16); color: #d29922; border-color: rgba(210,153,34,0.34); }
   .peek-tab-count.sched-off { background: rgba(139,148,158,0.14); color: var(--dim); border-color: rgba(139,148,158,0.28); }
   /* Saved-messages modal: scope tabs (this session / all) + per-session badge. */
   .sm-scope-tab { flex: 1; padding: 6px 10px; font-size: 0.8rem; background: var(--card); border: 1px solid var(--border); border-radius: 6px; color: var(--dim); cursor: pointer; font-family: inherit; min-height: 36px; }
@@ -20629,6 +20630,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="peek-status" class="overlay-status" onclick="_peekGeoDebug()" title="Tap for layout debug"></div>
     <div class="peek-cmd-bar">
       <button class="peek-cmd-toggle" id="peek-cmd-toggle" onclick="togglePeekCmd()">&#x25BC; Send command</button>
+      <button id="peek-pending-pill" onclick="setPeekTab('messages')" style="display:none;margin:0 auto 4px;background:rgba(210,153,34,0.14);border:1px solid rgba(210,153,34,0.4);color:#d29922;font-size:0.72rem;font-weight:600;padding:3px 12px;border-radius:12px;cursor:pointer;" title="Messages queued locally — will send when the server is reachable. Tap to view.">&#x23F3; queued</button>
       <div class="peek-cmd-row open" id="peek-cmd-row" style="flex-wrap:wrap;">
         <div class="voice-status" id="voice-status"><span id="voice-status-text"></span></div>
         <div class="chips" style="width:100%;margin:0;" id="peek-chips"></div>
@@ -21492,6 +21494,9 @@ let offlineQueue = JSON.parse(localStorage.getItem('amux_offline_queue') || '[]'
 function saveQueue() {
   localStorage.setItem('amux_offline_queue', JSON.stringify(offlineQueue));
   if (typeof _idb !== 'undefined') _idb.set('offline_queue', offlineQueue);
+  // Keep pending-message visibility live (Messages tab badge + composer pill)
+  try { if (typeof _peekMessagesBadge === 'function') _peekMessagesBadge(); } catch(e) {}
+  try { if (typeof _peekTab !== 'undefined' && _peekTab === 'messages') _peekMessagesRender(); } catch(e) {}
 }
 
 // ═══════ CONNECTION HISTORY ═══════
@@ -22384,6 +22389,10 @@ async function runSyncBanner() {
   updateConnectionStatus();
   fetchSessions();
   fetchBoard();
+  // Pending messages just flushed — clear the amber pending UI and re-pull the
+  // server-side history so the Messages tab flips ⏳pending → delivered.
+  try { _loadCmdHistoryFromServer().then(() => { _peekMessagesBadge(); if (typeof _peekTab !== 'undefined' && _peekTab === 'messages') _peekMessagesRender(); }); } catch(e) {}
+  if (doneCount) showToast(doneCount + ' queued operation' + (doneCount===1?'':'s') + ' delivered');
   // Auto-dismiss after 4s if all succeeded
   if (!failCount) setTimeout(() => banner.classList.remove('active'), 4000);
 }
@@ -26186,7 +26195,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.168';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.169';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -29610,12 +29619,47 @@ function _peekMessagesFor() {
   if (!peekSession) return [];
   return _cmdHistory.slice().reverse().filter(e => (typeof e === 'string' ? '' : (e.session || '')) === peekSession);
 }
+// Offline-queued sends/steers for a session that have NOT reached the server yet.
+// Parsed straight from offlineQueue so the Messages tab can show them as pending
+// instead of silently pretending they were delivered.
+function _pendingSendsFor(session) {
+  if (!session) return [];
+  const out = [];
+  (offlineQueue || []).forEach((op, idx) => {
+    const m = (op.url || '').match(/\/api\/sessions\/([^/]+)\/(send|steer)$/);
+    if (!m || decodeURIComponent(m[1]) !== session) return;
+    let text = '';
+    try { text = (JSON.parse(op.options?.body || '{}').text) || ''; } catch(e) {}
+    if (text) out.push({ text, ts: op.timestamp, kind: m[2], idx });
+  });
+  return out;
+}
+function _pendingCancel(idx) {
+  if (idx < 0 || idx >= offlineQueue.length) return;
+  offlineQueue.splice(idx, 1);
+  saveQueue();
+  updateConnectionStatus();
+  _peekMessagesRender();
+  showToast('Removed from queue');
+}
+// Amber "⏳ N queued" pill above the composer — visible whenever this session has
+// unsent messages, so pending work is obvious without opening the Messages tab.
+function _updatePendingPill() {
+  const pill = document.getElementById('peek-pending-pill');
+  if (!pill) return;
+  const n = peekSession ? _pendingSendsFor(peekSession).length : 0;
+  pill.style.display = n ? '' : 'none';
+  if (n) pill.innerHTML = '&#x23F3; ' + n + ' queued ' + (online ? '(sending soon)' : '&middot; offline') + ' &mdash; tap to view';
+}
 function _peekMessagesBadge() {
   const badge = document.getElementById('peek-tab-messages-count');
   if (!badge) return;
   const n = _peekMessagesFor().length;
-  badge.textContent = n ? n : '';
-  badge.classList.toggle('has-count', n > 0);
+  const p = peekSession ? _pendingSendsFor(peekSession).length : 0;
+  badge.textContent = p ? (n + '+' + p) : (n ? n : '');
+  badge.classList.toggle('has-count', (n + p) > 0);
+  badge.classList.toggle('has-pending', p > 0);
+  _updatePendingPill();
 }
 function _peekMessagesRender() {
   const list = document.getElementById('peek-messages-list');
@@ -29623,11 +29667,25 @@ function _peekMessagesRender() {
   const q = (document.getElementById('peek-messages-search')?.value || '').trim().toLowerCase();
   let items = _peekMessagesFor();
   if (q) items = items.filter(e => (typeof e === 'string' ? e : e.text).toLowerCase().includes(q));
+  // Pending (offline-queued, NOT yet on the server) shown FIRST — clearly marked,
+  // cancellable, so the local client never hides unsent messages.
+  let pending = _pendingSendsFor(peekSession);
+  if (q) pending = pending.filter(p => p.text.toLowerCase().includes(q));
+  const pendingHTML = pending.map(p => {
+    const ts = p.ts ? new Date(p.ts).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '';
+    const safe = p.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return `<div style="padding:8px 12px;background:rgba(210,153,34,0.07);border:1px solid rgba(210,153,34,0.45);border-radius:6px;font-size:0.85rem;color:var(--text);display:flex;gap:10px;align-items:flex-start;">
+      <div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">
+        <div style="margin-bottom:4px;"><span style="display:inline-block;font-size:0.7rem;padding:1px 6px;border-radius:3px;background:rgba(210,153,34,0.16);color:#d29922;margin-right:6px;">&#x23F3; pending${p.kind==='steer'?' &middot; queue':''}</span><span style="color:var(--dim);font-size:0.7rem;">${ts} &mdash; not yet delivered${online?', sending soon':', waiting for connection'}</span></div>
+        ${safe}</div>
+      <button onclick="event.stopPropagation();_pendingCancel(${p.idx})" title="Remove from the offline queue (will NOT be sent)" style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:0.95rem;padding:2px 6px;min-width:24px;min-height:24px;">&#215;</button>
+    </div>`;
+  }).join('');
   const cnt = document.getElementById('peek-messages-count');
-  if (cnt) cnt.textContent = items.length + (items.length === 1 ? ' message' : ' messages');
-  list.innerHTML = items.length
-    ? items.map(_cmdHistItemHTML).join('')
-    : `<div style="color:var(--dim);font-size:0.85rem;padding:20px;text-align:center;">${q ? 'No matches.' : 'No messages sent to this session yet.'}</div>`;
+  if (cnt) cnt.textContent = (pending.length ? pending.length + ' pending · ' : '') + items.length + (items.length === 1 ? ' message' : ' messages');
+  const histHTML = items.length ? items.map(_cmdHistItemHTML).join('') : '';
+  list.innerHTML = (pendingHTML + histHTML)
+    || `<div style="color:var(--dim);font-size:0.85rem;padding:20px;text-align:center;">${q ? 'No matches.' : 'No messages sent to this session yet.'}</div>`;
   _peekMessagesBadge();
 }
 async function _peekMessagesLoad() {
@@ -44645,7 +44703,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.168';
+const CACHE = 'amux-v0.9.169';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
