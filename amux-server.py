@@ -51576,17 +51576,20 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                 cached = _peek_cache.get(name)
                 if not live_only and cached and cached[1] >= lines and (now - cached[0]) < _PEEK_CACHE_TTL:
                     return self._json_etag(cached[2])
-                output = _strip_scroll_pill(tmux_capture(name, lines))
                 if live_only:
+                    lc = _peek_live_cache.get(name)
+                    if lc and (now - lc[0]) < _PEEK_LIVE_CACHE_TTL:
+                        return self._json_etag(lc[1])
+                    output = _strip_scroll_pill(tmux_capture(name, lines))
                     _live = _strip_launch_noise(output.strip()) if output else ""
-                    # Trim against the SAME transcript the client is currently showing
-                    # as history (cached by the last full fetch) — that keeps the seam
-                    # duplicate-free without re-rendering the 120KB transcript here.
                     _tr = _peek_transcript_cache.get(name, "")
                     if _tr and _live and not no_trim:
                         _live = _trim_live_overlap(_tr, _live)
-                    return self._json_etag({"name": name, "live_only": True,
-                                            "live": _collapse_blank_runs(_live) if _live else "(no output)"})
+                    resp_live = {"name": name, "live_only": True,
+                                 "live": _collapse_blank_runs(_live) if _live else "(no output)"}
+                    _peek_live_cache[name] = (now, resp_live)
+                    return self._json_etag(resp_live)
+                output = _strip_scroll_pill(tmux_capture(name, lines))
                 tmux_lines = len(output.splitlines()) if output else 0
                 is_alt = _tmux_alt_screen(name)
                 # Alt-screen (Claude Code TUI): transcript for history,
