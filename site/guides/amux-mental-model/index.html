@@ -42,7 +42,7 @@
     "description": "Every amux surface explained through knowledge-work analogies: sessions are employees, the board is the task tracker, steering is a note on someone's desk, skills are playbooks, the Cost tab is payroll.",
     "url": "https://amux.io/guides/amux-mental-model/",
     "datePublished": "2026-07-20",
-    "dateModified": "2026-07-20",
+    "dateModified": "2026-07-21",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
     "image": "https://amux.io/og-image.png",
@@ -68,7 +68,9 @@
       {"@type": "DefinedTerm", "name": "Cost", "description": "Per-turn token and dollar accounting rolled up by task, session, model, and day. The analog of payroll and the project budget report."},
       {"@type": "DefinedTerm", "name": "Memory", "description": "Persistent per-project facts injected into every session. The analog of institutional knowledge."},
       {"@type": "DefinedTerm", "name": "Notes", "description": "Server-side markdown documents. The analog of the team wiki."},
-      {"@type": "DefinedTerm", "name": "Files", "description": "A remote file explorer with previews for every format. The analog of the shared drive."}
+      {"@type": "DefinedTerm", "name": "Files", "description": "A remote file explorer with previews for every format. The analog of the shared drive."},
+      {"@type": "DefinedTerm", "name": "Commits", "description": "Each session's git commit history, stamped with the session that authored it. The analog of a signed deliverables log."},
+      {"@type": "DefinedTerm", "name": "Proxies", "description": "Named public tunnels that expose one local service at a public URL. The analog of a guest pass to a single room."}
     ]
   }
   </script>
@@ -146,7 +148,9 @@
         <tr><td>Messages</td><td>Chat history</td><td>Searchable archive of everything you told each agent.</td></tr>
         <tr><td>Notes</td><td>The team wiki</td><td>Server-side markdown docs, editable anywhere.</td></tr>
         <tr><td>Files</td><td>The shared drive</td><td>Remote explorer with previews — code, PDFs, even ebooks.</td></tr>
+        <tr><td>Commits</td><td>The signed deliverables log</td><td>Each session's shipped git work, stamped with who did it.</td></tr>
         <tr><td>Browser</td><td>Assistant with the passwords</td><td>Shared automated browser with saved logins agents can drive.</td></tr>
+        <tr><td>Proxies</td><td>Guest passes</td><td>Public links into one internal service — a controlled front door.</td></tr>
         <tr><td>Cost</td><td>Payroll + budget report</td><td>Dollar cost per task, per agent, per model, per day.</td></tr>
         <tr><td>Memory</td><td>Institutional knowledge</td><td>Per-project facts every session starts already knowing.</td></tr>
         <tr><td>People</td><td>The rolodex</td><td>CRM of contacts and interactions your agents can use.</td></tr>
@@ -476,6 +480,67 @@
         <text x="24" y="250" fill="#8b949e" font-family="Inter,system-ui" font-size="9.5">Cost attributed to a task while its board card was In Progress — no model tagging, just the board you already use.</text>
       </svg>
       <figcaption>The Cost tab: dollars by task, session, model, and day — the budget report your agent team never used to have.</figcaption>
+    </figure>
+
+    <h2 id="commits">What is the Commits tab? — the signed deliverables log</h2>
+    <p><strong>Definition:</strong> each session's peek has a Commits tab: the git commits that session shipped in its worktree. amux stamps every commit with the authoring session (a durable git trailer), so work stays attributed even when several agents share one repo.</p>
+    <div class="mm-analogy"><strong>Analogy:</strong> the deliverables log, signed. Tasks on the board say what someone is <em>doing</em>; commits are what they actually <em>shipped</em> — with their name on each item. When three people work the same project, the signature is how you know who built what.</div>
+    <figure class="mm-fig">
+      <svg viewBox="0 0 720 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mock of the amux commits tab: a session's shipped commits stamped with its name">
+        <rect width="720" height="240" fill="#0d1117"/>
+        <text x="24" y="34" fill="#e6edf3" font-family="Inter,system-ui" font-size="15" font-weight="700">Commits — backend</text>
+        <text x="696" y="34" fill="#8b949e" font-family="Inter,system-ui" font-size="11" text-anchor="end">= the signed deliverables log</text>
+        <g>
+          <rect x="24" y="52" width="672" height="46" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="40" y="72" fill="#e6edf3" font-family="Inter,system-ui" font-size="11">fix(auth): stop token refresh racing the retry loop</text>
+          <text x="40" y="89" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="9">a41c2f0 · 22m ago</text>
+          <rect x="560" y="62" width="120" height="20" rx="10" fill="#0d2440"/>
+          <text x="620" y="76" fill="#58a6ff" font-family="JetBrains Mono,monospace" font-size="9" text-anchor="middle">✍ session: backend</text>
+        </g>
+        <g>
+          <rect x="24" y="106" width="672" height="46" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="40" y="126" fill="#e6edf3" font-family="Inter,system-ui" font-size="11">test(auth): regression test for the refresh race</text>
+          <text x="40" y="143" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="9">b7d90e1 · 9m ago</text>
+          <rect x="560" y="116" width="120" height="20" rx="10" fill="#0d2440"/>
+          <text x="620" y="130" fill="#58a6ff" font-family="JetBrains Mono,monospace" font-size="9" text-anchor="middle">✍ session: backend</text>
+        </g>
+        <g>
+          <rect x="24" y="160" width="672" height="46" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="40" y="180" fill="#e6edf3" font-family="Inter,system-ui" font-size="11">chore(deps): bump jsonwebtoken to 9.2</text>
+          <text x="40" y="197" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="9">c9921f4 · 2m ago</text>
+          <rect x="560" y="170" width="120" height="20" rx="10" fill="#0d2440"/>
+          <text x="620" y="184" fill="#58a6ff" font-family="JetBrains Mono,monospace" font-size="9" text-anchor="middle">✍ session: backend</text>
+        </g>
+        <text x="24" y="228" fill="#8b949e" font-family="Inter,system-ui" font-size="10">Every commit carries the session trailer — attribution survives shared repos, rebases, and time.</text>
+      </svg>
+      <figcaption>The Commits tab: what this agent actually shipped, each item signed with the session that authored it.</figcaption>
+    </figure>
+
+    <h2 id="proxies">What are proxies? — guest passes to one room</h2>
+    <p><strong>Definition:</strong> a proxy is a named public tunnel: one local service (a dev server on a port) exposed at a stable public URL. Visitors reach that one service — nothing else on your machine.</p>
+    <div class="mm-analogy"><strong>Analogy:</strong> a guest pass. You don't hand a client keys to the building — you badge them into the one demo room. "Here's the staging link" becomes safe: the pass opens exactly one door, and you can revoke it any time.</div>
+    <figure class="mm-fig">
+      <svg viewBox="0 0 720 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mock of the amux proxies tab: local ports exposed at public URLs">
+        <rect width="720" height="210" fill="#0d1117"/>
+        <text x="24" y="34" fill="#e6edf3" font-family="Inter,system-ui" font-size="15" font-weight="700">Public proxies</text>
+        <text x="696" y="34" fill="#8b949e" font-family="Inter,system-ui" font-size="11" text-anchor="end">= guest passes, one door each</text>
+        <g>
+          <rect x="24" y="52" width="672" height="48" rx="8" fill="#161b22" stroke="#30363d"/>
+          <circle cx="46" cy="76" r="5" fill="#3fb950"/>
+          <text x="62" y="71" fill="#e6edf3" font-family="Inter,system-ui" font-size="11.5" font-weight="600">staging-demo</text>
+          <text x="62" y="89" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="9.5">localhost:3000 → https://staging.yourco.dev</text>
+          <text x="640" y="80" fill="#3fb950" font-family="Inter,system-ui" font-size="10" text-anchor="end">live</text>
+        </g>
+        <g>
+          <rect x="24" y="108" width="672" height="48" rx="8" fill="#161b22" stroke="#30363d"/>
+          <circle cx="46" cy="132" r="5" fill="#8b949e"/>
+          <text x="62" y="127" fill="#e6edf3" font-family="Inter,system-ui" font-size="11.5" font-weight="600">client-preview</text>
+          <text x="62" y="145" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="9.5">localhost:8080 → https://preview.yourco.dev</text>
+          <text x="640" y="136" fill="#8b949e" font-family="Inter,system-ui" font-size="10" text-anchor="end">revoked</text>
+        </g>
+        <text x="24" y="192" fill="#8b949e" font-family="Inter,system-ui" font-size="10">Each pass opens exactly one internal service — hand out the link, revoke it when the visit is over.</text>
+      </svg>
+      <figcaption>Proxies: one local service, one public door, revocable — visitors never see the rest of the building.</figcaption>
     </figure>
 
     <h2 id="standup">What are /standup and /handoff? — team rituals</h2>
