@@ -182,7 +182,7 @@
 
     <p>You can run 10, 20, even 50 parallel Claude Code, Codex, or Gemini CLI agents from a single amux dashboard — and manage the whole fleet from your phone. The practical output: tasks that would take one agent a week ship in a day, overnight, while you sleep. This guide covers everything from machine requirements to fleet organization, atomic task distribution, git conflict prevention, and self-healing overnight operation.</p>
 
-    <div style="background:var(--surface2,#252b3b);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
+    <div style="background:var(--surface-2);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
       <strong>Quick answer:</strong> amux runs each agent as an isolated tmux session. The dashboard aggregates all sessions into one view. Agents pull tasks from a shared kanban board using atomic claims — no duplicated work. The self-healing watchdog auto-restarts crashed sessions and auto-compacts context-overflowed ones. Result: a fleet that runs unattended overnight.
     </div>
 

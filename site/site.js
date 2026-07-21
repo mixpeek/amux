@@ -16,7 +16,17 @@
     if (meta) meta.setAttribute('content', t === 'light' ? '#f5f4ed' : '#1e2330');
     localStorage.setItem('amux-theme', t);
     var btn = document.getElementById('theme-toggle-btn');
-    if (btn) btn.textContent = t === 'light' ? '☾' : '☀';
+    if (btn) {
+      // Icon + label of the mode you'd switch TO — bigger and self-explaining
+      // (was a lone dim 13px glyph). role=switch + aria-checked for AT.
+      btn.innerHTML = t === 'light'
+        ? '<span class="tt-ic" aria-hidden="true">☾</span><span class="tt-label">Dark</span>'
+        : '<span class="tt-ic" aria-hidden="true">☀</span><span class="tt-label">Light</span>';
+      btn.setAttribute('aria-label', t === 'light' ? 'Switch to dark mode' : 'Switch to light mode');
+      btn.setAttribute('title', t === 'light' ? 'Switch to dark mode' : 'Switch to light mode');
+      btn.setAttribute('role', 'switch');
+      btn.setAttribute('aria-checked', t === 'dark' ? 'true' : 'false');
+    }
   }
 
   applyTheme(theme);
@@ -40,7 +50,6 @@
     btn.className = 'theme-toggle';
     btn.setAttribute('aria-label', 'Toggle light/dark mode');
     btn.setAttribute('title', 'Toggle light/dark mode');
-    btn.textContent = theme === 'light' ? '☾' : '☀';
     btn.onclick = function () {
       var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
       theme = next;
@@ -54,6 +63,7 @@
     } else {
       nav.appendChild(btn);
     }
+    applyTheme(theme);   // paint the icon+label onto the freshly inserted button
 
     // EXP-002: sticky mobile iOS CTA bar — only on small screens
     // Inject CSS + DOM element so the App Store button is always reachable on mobile

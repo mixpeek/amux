@@ -175,7 +175,7 @@
 
     <p>amux runs business automations as AI-driven browser tasks: pull a daily Stripe payout report, reconcile two dashboards, check insurance eligibility statuses, monitor competitor pricing. The critical difference from traditional RPA (robotic process automation): amux automations describe <em>what to accomplish</em>, not <em>which pixels to click</em>. Each run, the agent reads the current page state and decides actions fresh — it survives UI redesigns, A/B tests, and dynamic content that would break a coordinate-replay script. And because automations run inside the same platform as your coding agents, results hand off directly: a scraper finds bugs, a Claude Code session files PRs.</p>
 
-    <div style="background:var(--surface2,#252b3b);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
+    <div style="background:var(--surface-2);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
       <strong>Key distinction:</strong> Traditional RPA tools record mouse coordinates and replay them — one layout change and they break. AI agent automations describe the intent. The agent reads the DOM and accessibility tree every run and re-resolves the path to the goal. It adapts; RPA doesn't.
     </div>
 
@@ -184,7 +184,7 @@
 
     <p>AI agent automation flips the model. Instead of recording a path, you describe the goal:</p>
 
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>## Goal
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>## Goal
 Grab yesterday's payout total from the Stripe dashboard.
 
 ## Steps
@@ -304,7 +304,7 @@ An issue exists on the board with yesterday's payout amount.</code></pre>
     <h3>Step 2: Write the automation as a plain-English SOP</h3>
     <p>The SOP is the automation's source of truth. Write it like you'd explain the task to a capable assistant who can see the screen:</p>
 
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>## Goal
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>## Goal
 Check for new denied insurance claims in the payer portal and log each one to the amux board.
 
 ## Steps
@@ -324,7 +324,7 @@ A 2FA prompt, CAPTCHA, or login page appears — surface it and halt.</code></pr
     <h3>Step 3: Run it via the browser agent API</h3>
     <p>Send the SOP to amux's browser agent endpoint:</p>
 
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>curl -sk -X POST -H 'Content-Type: application/json' \
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"task":"[paste SOP here]","profile":"payer-portal"}' \
   $AMUX_URL/api/browser/agent
 
@@ -334,7 +334,7 @@ curl -sk $AMUX_URL/api/browser/agent/status</code></pre>
     <h3>Step 4: Schedule it with the amux scheduler</h3>
     <p>Register the automation to run on your cadence:</p>
 
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>curl -sk -X POST -H 'Content-Type: application/json' \
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{
     "title": "Daily denied claims check",
     "session": "automations",

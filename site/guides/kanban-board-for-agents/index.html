@@ -170,7 +170,7 @@
 
     <p>When you run 10 or 20 parallel AI coding agents, the hardest coordination problem isn't launching them — it's ensuring no two agents pick up the same task. amux solves this with a SQLite-backed kanban board and a single atomic endpoint: <code>POST /api/board/:id/claim</code>. You post tasks; agents claim them atomically; the board shows who has what in real time, on your phone or browser. This is the coordination layer that turns a fleet of independent agents into a functioning AI engineering team.</p>
 
-    <div style="background:var(--surface2,#252b3b);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
+    <div style="background:var(--surface-2);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
       <strong>Core mechanism:</strong> The claim endpoint is an atomic SQLite compare-and-swap. Even with 20 agents racing for the same queue, each task is assigned exactly once. If a task is already claimed, the call returns 409 and the agent moves to the next available task. No Redis, no external coordination service.
     </div>
 
@@ -220,7 +220,7 @@
     <h2>Atomic task claiming — how it works</h2>
     <p>The claim operation is a single SQLite transaction:</p>
 
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code># Claim a task atomically
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code># Claim a task atomically
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"session":"my-agent-session"}' \
   $AMUX_URL/api/board/TASK-ID/claim
@@ -233,7 +233,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
     <h2>Wiring the board into your agents' CLAUDE.md</h2>
     <p>Add this workflow to the CLAUDE.md for each agent (or a shared project CLAUDE.md):</p>
 
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>## Task workflow (MANDATORY — do not skip)
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>## Task workflow (MANDATORY — do not skip)
 
 ### Before starting any task
 1. Check the board for available work:
@@ -262,13 +262,13 @@ curl -sk -X POST -H 'Content-Type: application/json' \
     <h2>Adding tasks to the board</h2>
 
     <h3>Via CLI (quickest)</h3>
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>amux board add "Implement OAuth refresh flow"
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>amux board add "Implement OAuth refresh flow"
 amux board add "Add Stripe webhook handler"
 amux board add "Write integration tests for payments module"
 # Each is auto-tagged to the current $AMUX_SESSION and set to todo</code></pre>
 
     <h3>Via REST API (for scripts and orchestrators)</h3>
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code># Add a single task
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code># Add a single task
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"title":"Implement OAuth refresh flow","status":"todo","desc":"See spec in docs/auth.md"}' \
   $AMUX_URL/api/board
@@ -291,7 +291,7 @@ done</code></pre>
     <h3>Pattern 2: Role-filtered queues (pipeline)</h3>
     <p>Add a <code>role</code> field to each task (or prefix the title). Implementer agents look for <code>[implement]</code> tasks; reviewer agents look for <code>[review]</code> tasks. This creates a natural pipeline: implementers finish, retitle their task <code>[review] ...</code>, and reviewer agents pick it up.</p>
 
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code># Implementer agent's task query
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code># Implementer agent's task query
 tasks=$(curl -sk $AMUX_URL/api/board | python3 -c "
 import json,sys
 [print(t['id'], t['title']) for t in json.load(sys.stdin)
@@ -306,7 +306,7 @@ curl -sk -X PATCH -H 'Content-Type: application/json' \
     <h3>Pattern 3: Session-tagged tasks (dedicated assignments)</h3>
     <p>Pre-assign tasks to specific sessions by setting the <code>session</code> field at creation time. Agents check for tasks tagged to their own <code>$AMUX_SESSION</code>. Use this when different agents have different specializations or access rights.</p>
 
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code># Create a task for a specific session
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code># Create a task for a specific session
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"title":"Audit payments module for PCI issues","session":"security-agent","status":"todo"}' \
   $AMUX_URL/api/board
@@ -334,7 +334,7 @@ s = os.getenv('AMUX_SESSION','')
     <h2>iCal integration for due dates</h2>
     <p>Board items support a <code>due</code> field (ISO date). Items with due dates are exported as an iCal feed:</p>
 
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code># Add a task with a due date
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code># Add a task with a due date
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"title":"Ship v2 API","status":"todo","due":"2026-07-15"}' \
   $AMUX_URL/api/board
@@ -395,7 +395,7 @@ curl -sk -X POST -H 'Content-Type: application/json' \
     </table>
 
     <h2>CLI shorthands</h2>
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>amux board add "Task title"      # create as todo, tag current session
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>amux board add "Task title"      # create as todo, tag current session
 amux board doing TASK-ID         # mark in progress
 amux board done TASK-ID          # mark complete
 amux board todo TASK-ID          # move back to todo</code></pre>

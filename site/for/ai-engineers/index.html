@@ -131,7 +131,7 @@
 
     <p>AI engineers don't just use agent tools — they build, orchestrate, and operate them. amux is the infrastructure layer: it runs your agent fleet as isolated processes with real supervision, exposes a clean REST API any agent or external system can call, tracks token spend from JSONL transcripts, integrates MCP servers fleet-wide, and self-heals sessions overnight without babysitting. Open source, single Python file, zero external dependencies — you can read the entire source, modify it, and deploy it on any Linux or macOS machine in under five minutes.</p>
 
-    <div style="background:var(--surface2,#252b3b);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
+    <div style="background:var(--surface-2);border-left:3px solid var(--accent,#c75b2e);padding:1rem 1.25rem;border-radius:0 6px 6px 0;margin:1.5rem 0">
       <strong>For AI engineers specifically:</strong> amux is not a Python orchestration SDK. Each agent is an independent OS process with its own PID, JSONL transcript, tmux window, and resource envelope. The control plane is a REST API. This gives you real isolation, real process supervision, and real observability — not async tasks inside a shared Python event loop.
     </div>
 
@@ -188,7 +188,7 @@
     <h3>Context engineering</h3>
     <p>Context management is the highest-leverage skill in AI engineering. The wrong context makes capable agents wrong; efficient context makes cheap models smart.</p>
 
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code># CLAUDE.md — context engineering patterns
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code># CLAUDE.md — context engineering patterns
 
 ## Context budget
 - Read only files relevant to the current task
@@ -244,7 +244,7 @@
     <p>Claude Code writes every conversation turn to a JSONL transcript. amux reads these to power the token tracking dashboard — but you can also parse them directly for custom observability.</p>
 
     <h3>Parsing JSONL transcripts</h3>
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>import json, glob, os
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>import json, glob, os
 
 # Find all transcripts for a project
 project_hash = "<your-project-hash>"  # from claude project dir
@@ -269,7 +269,7 @@ for path in glob.glob(pattern):
                   f"{usage.get('output_tokens',0)} out")</code></pre>
 
     <h3>Live token tracking via REST API</h3>
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code># Get current token spend across all sessions
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code># Get current token spend across all sessions
 curl -sk $AMUX_URL/api/sessions | python3 -c "
 import json,sys
 sessions = json.load(sys.stdin)
@@ -279,7 +279,7 @@ for s in sessions:
     <h2>MCP server integration across the fleet</h2>
     <p>amux includes a centralized <code>mcp.json</code> that is shared across all Claude Code sessions registered in amux. Configure a tool once; all agents have access.</p>
 
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>// mcp.json — centralized MCP configuration
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>// mcp.json — centralized MCP configuration
 {
   "mcpServers": {
     "filesystem": {
@@ -312,7 +312,7 @@ for s in sessions:
       <li><strong>Monitor agent pattern:</strong> dedicate one session as a monitor agent. Its job: scan the board every 30 minutes for tasks stuck in <code>doing</code> for more than 2 hours, report them, and optionally reset stale claims.</li>
     </ol>
 
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code># Monitor agent CLAUDE.md pattern
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code># Monitor agent CLAUDE.md pattern
 ## Your role: health monitor
 
 Every 30 minutes:
@@ -334,12 +334,12 @@ Every 30 minutes:
     <p>amux exposes two primitives for agent-to-agent communication:</p>
 
     <p><strong>1. Direct messaging</strong> — send a text message to any named session. Delivered at that agent's next turn boundary (steering queue), not mid-turn:</p>
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>curl -sk -X POST -H 'Content-Type: application/json' \
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"text":"The payments module PR is ready for your review — PR #247"}' \
   $AMUX_URL/api/sessions/reviewer-agent/send</code></pre>
 
     <p><strong>2. Peek / transcript read</strong> — read another session's output without interrupting it:</p>
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code>curl -sk "$AMUX_URL/api/sessions/payments-agent/peek?lines=50" | \
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code>curl -sk "$AMUX_URL/api/sessions/payments-agent/peek?lines=50" | \
   python3 -c "import json,sys; print(json.load(sys.stdin).get('output',''))"</code></pre>
 
     <p><strong>3. Session fork</strong> — clone a session's conversation history to a new agent on a new branch. Useful for spawning exploration branches from a common starting point.</p>
@@ -357,7 +357,7 @@ Every 30 minutes:
     <h2>CI/CD integration patterns</h2>
     <p>amux works well as the always-on agent runtime that CI triggers into:</p>
 
-    <pre style="background:var(--surface2,#252b3b);padding:1rem;border-radius:6px;overflow-x:auto"><code># GitHub Actions workflow — trigger agent work on PR open
+    <pre style="background:var(--surface-2);padding:1rem;border-radius:6px;overflow-x:auto"><code># GitHub Actions workflow — trigger agent work on PR open
 name: Agent review
 on:
   pull_request:
