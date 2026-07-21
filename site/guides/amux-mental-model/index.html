@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>The amux Mental Model — Every Surface Mapped to How You Already Work (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="What is an amux session, board, steering queue, skill, or schedule? Every amux surface explained through knowledge-work analogies: sessions are employees, the board is the task tracker, steering is a note on someone's desk, skills are playbooks, the Cost tab is payroll. The complete mental model for running an AI agent team.">
+  <meta name="keywords" content="amux mental model, what is an amux session, amux concepts explained, amux board vs steering, AI agent team analogy, amux guide for beginners, how amux works, AI agents as employees, agent fleet mental model, amux surfaces explained">
+  <link rel="canonical" href="https://amux.io/guides/amux-mental-model/">
+  <meta property="og:title" content="The amux Mental Model — Every Surface Mapped to How You Already Work">
+  <meta property="og:description" content="Sessions are employees. The board is the task tracker. Steering is a note on someone's desk. Skills are playbooks. Every amux surface explained through the knowledge work you already do.">
+  <meta property="og:url" content="https://amux.io/guides/amux-mental-model/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/"},
+      {"@type": "ListItem", "position": 3, "name": "The amux Mental Model", "item": "https://amux.io/guides/amux-mental-model/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "The amux Mental Model — Every Surface Mapped to How You Already Work",
+    "description": "Every amux surface explained through knowledge-work analogies: sessions are employees, the board is the task tracker, steering is a note on someone's desk, skills are playbooks, the Cost tab is payroll.",
+    "url": "https://amux.io/guides/amux-mental-model/",
+    "datePublished": "2026-07-20",
+    "dateModified": "2026-07-20",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["amux mental model", "what is an amux session", "amux concepts", "AI agents as employees", "amux board", "amux steering", "amux skills", "agent fleet mental model"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "DefinedTermSet",
+    "name": "amux Surfaces",
+    "url": "https://amux.io/guides/amux-mental-model/",
+    "hasDefinedTerm": [
+      {"@type": "DefinedTerm", "name": "Session", "description": "One AI agent running in its own terminal with a working directory, model, and live status. The knowledge-work analog of an employee with a job."},
+      {"@type": "DefinedTerm", "name": "Peek", "description": "The detail view of one session — its live terminal, transcript, git worktree, messages, and cost. The analog of walking over to someone's desk."},
+      {"@type": "DefinedTerm", "name": "Steering", "description": "A queue of messages delivered to an agent only when it finishes its current task. The analog of a note left on someone's desk instead of interrupting them."},
+      {"@type": "DefinedTerm", "name": "Board", "description": "A shared kanban (backlog, todo, doing, done, verified) that all sessions read and update, with atomic task claiming. The analog of the team task tracker."},
+      {"@type": "DefinedTerm", "name": "Scheduler", "description": "Prompts that run on a cron-style schedule against a session. The analog of recurring duties and standing meetings."},
+      {"@type": "DefinedTerm", "name": "Skill", "description": "A reusable markdown playbook any agent can run as a /command. The analog of a standard operating procedure."},
+      {"@type": "DefinedTerm", "name": "Messages", "description": "The server-side archive of everything ever sent to each session. The analog of the searchable chat history."},
+      {"@type": "DefinedTerm", "name": "Browser", "description": "A shared automated browser with saved logins that agents can drive. The analog of an assistant who already has the passwords."},
+      {"@type": "DefinedTerm", "name": "Cost", "description": "Per-turn token and dollar accounting rolled up by task, session, model, and day. The analog of payroll and the project budget report."},
+      {"@type": "DefinedTerm", "name": "Memory", "description": "Persistent per-project facts injected into every session. The analog of institutional knowledge."},
+      {"@type": "DefinedTerm", "name": "Notes", "description": "Server-side markdown documents. The analog of the team wiki."},
+      {"@type": "DefinedTerm", "name": "Files", "description": "A remote file explorer with previews for every format. The analog of the shared drive."}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {"@type": "Question", "name": "What is an amux session?", "acceptedAnswer": {"@type": "Answer", "text": "An amux session is one AI agent (Claude Code, Codex, or Gemini CLI) running in its own terminal, pointed at a working directory, with a model, live status, and token spend. Think of it as an employee with a job: the working directory is their desk, the status dot tells you whether they are working, waiting for you, or idle, and the task label is what they are currently doing."}},
+      {"@type": "Question", "name": "What is the difference between the amux board and steering?", "acceptedAnswer": {"@type": "Answer", "text": "The board is the team task tracker — durable work items in backlog, todo, doing, and done that any session can claim and update. Steering is a per-agent message queue — a note left on one agent's desk that is delivered only when it finishes what it is currently doing. Use the board for work that should be tracked; use steering to redirect one agent without interrupting it mid-task."}},
+      {"@type": "Question", "name": "Why doesn't my steering message deliver immediately?", "acceptedAnswer": {"@type": "Answer", "text": "By design. Steering waits for a genuine turn boundary — the agent must be truly finished with its current task (no spinner, no running subagent, a settled idle prompt) before the message lands. That is the point of the analogy: you are leaving a note on the desk, not barging into the office. If you need to interrupt right now, use direct Send instead of Queue."}},
+      {"@type": "Question", "name": "What are amux skills?", "acceptedAnswer": {"@type": "Answer", "text": "Skills are reusable markdown playbooks — standard operating procedures any agent can run as a /command. Write the procedure once (deploy steps, a review checklist, a standup format) and every session in the fleet can execute it identically. amux ships four by default: /amux, /standup, /handoff, and /adhd, and they work across Claude Code, Codex, and Gemini sessions."}},
+      {"@type": "Question", "name": "What does the amux Cost tab show?", "acceptedAnswer": {"@type": "Answer", "text": "The Cost tab is payroll plus the project budget report for your agent team: real dollar-equivalent cost per turn (priced from a per-model table), rolled up by task, by session, by model, and by day, with cache-hit rate as an efficiency signal. It is derived entirely from transcripts and the board — no model calls — so it stays accurate as models improve."}},
+      {"@type": "Question", "name": "What is the amux scheduler for?", "acceptedAnswer": {"@type": "Answer", "text": "The scheduler gives an agent recurring duties — a prompt on a timer, like 'every weekday at 8am: triage my inbox and email me a digest.' It is the standing-meeting calendar of your agent team. Anything you would put in a human's recurring calendar block can become a schedule."}},
+      {"@type": "Question", "name": "How is the amux Messages tab different from the terminal?", "acceptedAnswer": {"@type": "Answer", "text": "The terminal shows the agent's live screen right now. The Messages tab is the searchable archive of every instruction you ever sent that agent — like your chat history with a colleague. It is stored server-side, so it is identical from your desktop and your phone."}},
+      {"@type": "Question", "name": "What is the amux browser and why does it have my logins?", "acceptedAnswer": {"@type": "Answer", "text": "amux runs a shared automated browser with saved authentication profiles. Log into a site once, and any agent can drive that site as you — pulling invoices, publishing posts, or working dashboards that have no API. The analogy: an assistant who already has the passwords, so you never re-onboard them."}},
+      {"@type": "Question", "name": "What is amux memory?", "acceptedAnswer": {"@type": "Answer", "text": "Memory is per-project institutional knowledge: durable facts, preferences, and conventions injected into every session that works in that project. New sessions start already knowing how your team works — the same way a good onboarding doc means a new hire doesn't ask questions the wiki already answers."}},
+      {"@type": "Question", "name": "Do I need to learn all amux surfaces to start?", "acceptedAnswer": {"@type": "Answer", "text": "No. Start with three: Sessions (hire your first agent), the Board (give it tracked work), and Steering (redirect it without interrupting). Everything else — schedules, skills, cost, browser, memory — layers on when the corresponding knowledge-work need appears."}}
+    ]
+  }
+  </script>
+
+  <style>
+    .mm-table { width:100%; border-collapse: collapse; margin: 1.25rem 0 2rem; font-size:.92rem; }
+    .mm-table th, .mm-table td { text-align:left; padding:.5rem .65rem; border-bottom:1px solid var(--line, #2a3040); vertical-align:top; }
+    .mm-table th { color: var(--accent, #c75b2e); font-weight:600; white-space:nowrap; }
+    .mm-table td:first-child { white-space:nowrap; font-weight:600; }
+    .mm-table td:nth-child(2) { white-space:nowrap; }
+    figure.mm-fig { margin: 1.25rem 0 .5rem; }
+    figure.mm-fig svg { width:100%; height:auto; border-radius:10px; border:1px solid var(--line,#2a3040); display:block; }
+    figure.mm-fig figcaption { font-size:.8rem; color:var(--muted,#8b94a7); margin-top:.5rem; }
+    .mm-analogy { background: var(--surface2,#252b3b); border-left:3px solid var(--accent,#c75b2e); padding:.85rem 1.1rem; border-radius:0 6px 6px 0; margin:1rem 0; }
+    @media (max-width:640px){ .mm-table { font-size:.8rem; } .mm-table td:nth-child(2){ white-space:normal; } }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>The amux Mental Model</span></div>
+
+    <h1>The amux Mental Model — Every Surface Mapped to How You Already Work</h1>
+    <p class="subtitle">Updated July 2026 — definitions, analogies, and a mock of every surface</p>
+
+    <div class="mm-analogy">
+      <strong>Quick answer:</strong> amux makes sense the moment you stop thinking "terminal multiplexer" and start thinking "team you manage." A <strong>session is an employee</strong>. The <strong>board is the task tracker</strong>. <strong>Steering is a note on someone's desk</strong>. <strong>Skills are playbooks</strong>. The <strong>Cost tab is payroll</strong>. Every amux surface is a tool you already use to run knowledge work — applied to AI agents.
+    </div>
+
+    <p>AI agents are knowledge workers. They take tasks, hold context, produce work, get stuck, and cost money. amux is the management layer around them — and every one of its surfaces maps to something you already do when you work with people. This guide walks the whole map: a definition of each surface, the workplace analogy that makes it click, and a mock of what it looks like.</p>
+
+    <h2>The whole map at a glance</h2>
+
+    <table class="mm-table">
+      <thead><tr><th>amux surface</th><th>Knowledge-work analog</th><th>One-line definition</th></tr></thead>
+      <tbody>
+        <tr><td>Sessions</td><td>Your team roster</td><td>Each session is one agent with a job, a desk (working directory), and a live status.</td></tr>
+        <tr><td>Peek</td><td>Walking to someone's desk</td><td>The detail view of one agent: live screen, history, git state, messages, cost.</td></tr>
+        <tr><td>Steering</td><td>A note on their desk</td><td>Messages queued for delivery when the agent finishes its current task.</td></tr>
+        <tr><td>Board</td><td>The task tracker</td><td>Shared kanban all agents read and update, with atomic claiming.</td></tr>
+        <tr><td>Scheduler</td><td>Recurring duties</td><td>Prompts on a cron — standing meetings for agents.</td></tr>
+        <tr><td>Calendar</td><td>The team calendar</td><td>Real events, synced to Google/Apple via a private feed.</td></tr>
+        <tr><td>Skills</td><td>Playbooks / SOPs</td><td>Reusable procedures any agent runs as a /command.</td></tr>
+        <tr><td>Messages</td><td>Chat history</td><td>Searchable archive of everything you told each agent.</td></tr>
+        <tr><td>Notes</td><td>The team wiki</td><td>Server-side markdown docs, editable anywhere.</td></tr>
+        <tr><td>Files</td><td>The shared drive</td><td>Remote explorer with previews — code, PDFs, even ebooks.</td></tr>
+        <tr><td>Browser</td><td>Assistant with the passwords</td><td>Shared automated browser with saved logins agents can drive.</td></tr>
+        <tr><td>Cost</td><td>Payroll + budget report</td><td>Dollar cost per task, per agent, per model, per day.</td></tr>
+        <tr><td>Memory</td><td>Institutional knowledge</td><td>Per-project facts every session starts already knowing.</td></tr>
+        <tr><td>People</td><td>The rolodex</td><td>CRM of contacts and interactions your agents can use.</td></tr>
+        <tr><td>Workspace</td><td>The open-plan office</td><td>Grid of live terminals — every desk visible at once.</td></tr>
+        <tr><td>Metrics</td><td>Facilities dashboard</td><td>CPU, memory, and per-session resource health.</td></tr>
+        <tr><td>Alerts</td><td>The fire alarm</td><td>Urgent owner notifications — push and iMessage, used sparingly.</td></tr>
+        <tr><td>/standup</td><td>The morning standup</td><td>One command: what every agent did, what's stuck, what needs you.</td></tr>
+        <tr><td>/handoff</td><td>Shift change</td><td>Package state and pass work from one agent to another.</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="sessions">What is a session? — your team roster</h2>
+    <p><strong>Definition:</strong> a session is one AI agent running in its own terminal: a working directory, a model, a live status (working / needs you / idle), a task label, and a running token count.</p>
+    <div class="mm-analogy"><strong>Analogy:</strong> an employee with a job. The directory is their desk. The status dot is whether they're heads-down, standing at your door with a question, or between tasks. The token counter is their hours. Hiring is one click: point a new session at a repo and it starts working.</div>
+    <figure class="mm-fig">
+      <svg viewBox="0 0 720 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mock of the amux sessions view: three session cards shown as employee badges with status dots">
+        <rect width="720" height="300" fill="#0d1117"/>
+        <text x="24" y="34" fill="#e6edf3" font-family="Inter,system-ui" font-size="15" font-weight="700">Sessions</text>
+        <text x="696" y="34" fill="#8b949e" font-family="Inter,system-ui" font-size="11" text-anchor="end">= your team roster</text>
+        <g>
+          <rect x="24" y="52" width="212" height="196" rx="10" fill="#161b22" stroke="#30363d"/>
+          <circle cx="44" cy="76" r="5" fill="#3fb950"/>
+          <text x="56" y="80" fill="#e6edf3" font-family="JetBrains Mono,monospace" font-size="12" font-weight="600">backend</text>
+          <text x="40" y="102" fill="#8b949e" font-family="Inter,system-ui" font-size="10">working · claude-fable-5</text>
+          <rect x="40" y="114" width="180" height="34" rx="6" fill="#0d1117" stroke="#30363d"/>
+          <text x="48" y="135" fill="#c9d1d9" font-family="Inter,system-ui" font-size="10">Fix flaky auth e2e tests</text>
+          <text x="40" y="170" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="10">↓ 2.3M tokens today</text>
+          <text x="40" y="190" fill="#58a6ff" font-family="Inter,system-ui" font-size="10">~/Dev/api</text>
+          <text x="40" y="232" fill="#3fb950" font-family="Inter,system-ui" font-size="10">● at their desk, heads-down</text>
+        </g>
+        <g>
+          <rect x="254" y="52" width="212" height="196" rx="10" fill="#161b22" stroke="#d29922"/>
+          <circle cx="274" cy="76" r="5" fill="#d29922"/>
+          <text x="286" y="80" fill="#e6edf3" font-family="JetBrains Mono,monospace" font-size="12" font-weight="600">homepage</text>
+          <text x="270" y="102" fill="#8b949e" font-family="Inter,system-ui" font-size="10">needs you · codex</text>
+          <rect x="270" y="114" width="180" height="34" rx="6" fill="#0d1117" stroke="#30363d"/>
+          <text x="278" y="135" fill="#c9d1d9" font-family="Inter,system-ui" font-size="10">Ship pricing page A/B</text>
+          <text x="270" y="170" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="10">↓ 640k tokens today</text>
+          <text x="270" y="190" fill="#58a6ff" font-family="Inter,system-ui" font-size="10">~/Dev/site</text>
+          <text x="270" y="232" fill="#d29922" font-family="Inter,system-ui" font-size="10">● waiting at your door</text>
+        </g>
+        <g>
+          <rect x="484" y="52" width="212" height="196" rx="10" fill="#161b22" stroke="#30363d"/>
+          <circle cx="504" cy="76" r="5" fill="#8b949e"/>
+          <text x="516" y="80" fill="#e6edf3" font-family="JetBrains Mono,monospace" font-size="12" font-weight="600">research</text>
+          <text x="500" y="102" fill="#8b949e" font-family="Inter,system-ui" font-size="10">idle · gemini</text>
+          <rect x="500" y="114" width="180" height="34" rx="6" fill="#0d1117" stroke="#30363d"/>
+          <text x="508" y="135" fill="#c9d1d9" font-family="Inter,system-ui" font-size="10">Competitor pricing scan</text>
+          <text x="500" y="170" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="10">↓ 88k tokens today</text>
+          <text x="500" y="190" fill="#58a6ff" font-family="Inter,system-ui" font-size="10">~/Dev/research</text>
+          <text x="500" y="232" fill="#8b949e" font-family="Inter,system-ui" font-size="10">● between tasks</text>
+        </g>
+        <text x="24" y="280" fill="#8b949e" font-family="Inter,system-ui" font-size="10">Green = working · Amber = has a question for you · Gray = free for the next task</text>
+      </svg>
+      <figcaption>The sessions view: three agents, three desks, three statuses — a roster you can read in one glance.</figcaption>
+    </figure>
+
+    <h2 id="peek">What is the peek? — walking over to someone's desk</h2>
+    <p><strong>Definition:</strong> the peek is one session's detail view: its live terminal, full transcript history, steering queue, git worktree and commits, message archive, schedules, notes, and cost — in tabs.</p>
+    <div class="mm-analogy"><strong>Analogy:</strong> walking to a colleague's desk. The Terminal tab is looking over their shoulder at their screen; Transcript is their day's paper trail; Worktree is the state of their desk; Cost is what this person's work costs. You can do it from your phone — checking on an employee from the beach.</div>
+    <figure class="mm-fig">
+      <svg viewBox="0 0 720 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mock of the amux peek view with tabs and a live terminal">
+        <rect width="720" height="300" fill="#0d1117"/>
+        <text x="360" y="30" fill="#e6edf3" font-family="JetBrains Mono,monospace" font-size="13" font-weight="700" text-anchor="middle">backend</text>
+        <rect x="404" y="18" width="58" height="16" rx="8" fill="#1a3d2a"/>
+        <text x="433" y="30" fill="#3fb950" font-family="Inter,system-ui" font-size="9" text-anchor="middle">WORKING</text>
+        <g font-family="Inter,system-ui" font-size="11">
+          <text x="30" y="58" fill="#e6edf3" font-weight="600">Terminal</text>
+          <rect x="24" y="64" width="62" height="2" fill="#58a6ff"/>
+          <text x="104" y="58" fill="#8b949e">Steering</text>
+          <text x="172" y="58" fill="#8b949e">Schedules</text>
+          <text x="248" y="58" fill="#8b949e">Messages</text>
+          <text x="320" y="58" fill="#8b949e">Cost</text>
+          <text x="362" y="58" fill="#8b949e">Board</text>
+          <text x="412" y="58" fill="#8b949e">Transcript</text>
+          <text x="486" y="58" fill="#8b949e">Worktree</text>
+          <text x="552" y="58" fill="#8b949e">Commits</text>
+        </g>
+        <rect x="24" y="76" width="672" height="184" rx="8" fill="#010409" stroke="#30363d"/>
+        <g font-family="JetBrains Mono,monospace" font-size="10.5">
+          <text x="38" y="100" fill="#8b949e">⏺ Running tests… 42 passed, 1 failed</text>
+          <text x="38" y="120" fill="#e6edf3">⏺ Found it — the token refresh races the retry.</text>
+          <text x="38" y="140" fill="#e6edf3">  Fixing auth/refresh.ts:88, then re-running.</text>
+          <text x="38" y="164" fill="#3fb950">✻ Working… (2m 14s · ↓ 12.4k tokens)</text>
+          <text x="38" y="196" fill="#8b949e">❯</text>
+          <text x="38" y="228" fill="#484f58">⏵⏵ bypass permissions on · esc to interrupt</text>
+        </g>
+        <text x="696" y="285" fill="#8b949e" font-family="Inter,system-ui" font-size="11" text-anchor="end">= looking over their shoulder, from anywhere</text>
+      </svg>
+      <figcaption>The peek: one agent's screen, history, and paperwork in one place — desk-visit distance from every device.</figcaption>
+    </figure>
+
+    <h2 id="steering">What is steering? — a note on their desk</h2>
+    <p><strong>Definition:</strong> steering is a per-agent message queue. Queued messages deliver one at a time, only when the agent is genuinely finished with its current task — no spinner, no running subagent, a settled idle prompt. Delivery is verified, so nothing silently vanishes.</p>
+    <div class="mm-analogy"><strong>Analogy:</strong> instead of barging into a focused colleague's office, you leave a note on their desk. They finish what they're doing, then read it. A stack of notes gets worked top-down, one per sitting. That's why a queued message doesn't land instantly on a busy agent — that's the feature.</div>
+    <figure class="mm-fig">
+      <svg viewBox="0 0 720 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mock of the amux steering queue: messages waiting for the agent to finish">
+        <rect width="720" height="280" fill="#0d1117"/>
+        <text x="24" y="34" fill="#e6edf3" font-family="Inter,system-ui" font-size="15" font-weight="700">Steering — backend</text>
+        <text x="696" y="34" fill="#8b949e" font-family="Inter,system-ui" font-size="11" text-anchor="end">= notes on their desk</text>
+        <rect x="24" y="52" width="672" height="42" rx="8" fill="#161b22" stroke="#d29922"/>
+        <circle cx="44" cy="73" r="4" fill="#d29922"/>
+        <text x="58" y="70" fill="#e6edf3" font-family="Inter,system-ui" font-size="11">Agent is mid-task — queue holds until the current work is done</text>
+        <text x="58" y="85" fill="#8b949e" font-family="Inter,system-ui" font-size="9.5">delivers at the next real turn boundary · verified · one per boundary</text>
+        <g>
+          <rect x="24" y="108" width="672" height="44" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="40" y="128" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="10">1</text>
+          <text x="58" y="128" fill="#e6edf3" font-family="Inter,system-ui" font-size="11">after the auth fix, bump the retry budget to 3</text>
+          <text x="58" y="144" fill="#8b949e" font-family="Inter,system-ui" font-size="9.5">queued 4m ago</text>
+          <rect x="592" y="118" width="88" height="24" rx="6" fill="#1f6feb"/>
+          <text x="636" y="134" fill="#fff" font-family="Inter,system-ui" font-size="10" text-anchor="middle" font-weight="600">Send now</text>
+        </g>
+        <g>
+          <rect x="24" y="160" width="672" height="44" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="40" y="180" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="10">2</text>
+          <text x="58" y="180" fill="#e6edf3" font-family="Inter,system-ui" font-size="11">then write a regression test for the race</text>
+          <text x="58" y="196" fill="#8b949e" font-family="Inter,system-ui" font-size="9.5">queued 2m ago</text>
+        </g>
+        <text x="24" y="240" fill="#8b949e" font-family="Inter,system-ui" font-size="10">Notes are read top-down, one per sitting — the colleague is never interrupted mid-thought.</text>
+        <text x="24" y="258" fill="#3fb950" font-family="Inter,system-ui" font-size="10">Sent history lives below, collapsed — the notes they already read.</text>
+      </svg>
+      <figcaption>The steering queue: two notes waiting, delivery held until the agent's current task is truly done.</figcaption>
+    </figure>
+
+    <h2 id="board">What is the board? — the team task tracker</h2>
+    <p><strong>Definition:</strong> a shared kanban — backlog, todo, doing, done, verified — that every session reads and updates over a REST API. Tasks are claimed atomically (two agents can't grab the same ticket), carry an owning session, and gate transitions (a code task can't be closed without acknowledging it merged).</p>
+    <div class="mm-analogy"><strong>Analogy:</strong> Jira/Linear for your agent team, with one upgrade: the workers update it themselves, honestly. "Doing" means an agent is on it right now; "done" means implemented; "verified" means confirmed working in production — the same discipline you wish your human tracker had.</div>
+    <figure class="mm-fig">
+      <svg viewBox="0 0 720 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mock of the amux kanban board with todo, doing, and done columns">
+        <rect width="720" height="300" fill="#0d1117"/>
+        <text x="24" y="34" fill="#e6edf3" font-family="Inter,system-ui" font-size="15" font-weight="700">Board</text>
+        <text x="696" y="34" fill="#8b949e" font-family="Inter,system-ui" font-size="11" text-anchor="end">= the task tracker your team actually updates</text>
+        <g>
+          <text x="36" y="66" fill="#8b949e" font-family="Inter,system-ui" font-size="11" font-weight="600">TO DO · 3</text>
+          <rect x="24" y="76" width="212" height="52" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="36" y="96" fill="#e6edf3" font-family="Inter,system-ui" font-size="10.5">Add rate-limit backoff to sync</text>
+          <text x="36" y="114" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="9">AMUX-201 · unclaimed</text>
+          <rect x="24" y="136" width="212" height="52" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="36" y="156" fill="#e6edf3" font-family="Inter,system-ui" font-size="10.5">Migrate emails to new template</text>
+          <text x="36" y="174" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="9">AMUX-202 · unclaimed</text>
+        </g>
+        <g>
+          <text x="266" y="66" fill="#d29922" font-family="Inter,system-ui" font-size="11" font-weight="600">IN PROGRESS · 1</text>
+          <rect x="254" y="76" width="212" height="66" rx="8" fill="#161b22" stroke="#d29922"/>
+          <text x="266" y="96" fill="#e6edf3" font-family="Inter,system-ui" font-size="10.5">Fix flaky auth e2e tests</text>
+          <text x="266" y="114" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="9">AMUX-198 · claimed by backend</text>
+          <text x="266" y="131" fill="#3fb950" font-family="Inter,system-ui" font-size="9">⚡ claimed atomically — no double-grab</text>
+        </g>
+        <g>
+          <text x="496" y="66" fill="#3fb950" font-family="Inter,system-ui" font-size="11" font-weight="600">DONE · 2</text>
+          <rect x="484" y="76" width="212" height="52" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="496" y="96" fill="#e6edf3" font-family="Inter,system-ui" font-size="10.5">Ship pricing page A/B</text>
+          <text x="496" y="114" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="9">AMUX-190 · homepage · gated ✓</text>
+          <rect x="484" y="136" width="212" height="52" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="496" y="156" fill="#e6edf3" font-family="Inter,system-ui" font-size="10.5">Rotate webhook secrets</text>
+          <text x="496" y="174" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="9">AMUX-188 · verified in prod</text>
+        </g>
+        <text x="24" y="240" fill="#8b949e" font-family="Inter,system-ui" font-size="10">Agents claim tickets, keep exactly one in "doing", and can't close a code task without acknowledging the merge gate.</text>
+        <text x="24" y="260" fill="#8b949e" font-family="Inter,system-ui" font-size="10">You read the board the way a manager reads standup: who's on what, what shipped, what's queued.</text>
+      </svg>
+      <figcaption>The board: work as durable tickets, claimed and moved by the agents themselves.</figcaption>
+    </figure>
+
+    <h2 id="scheduler">What is the scheduler? — recurring duties</h2>
+    <p><strong>Definition:</strong> the scheduler runs a prompt against a session on a schedule — <code>daily at 9am</code>, <code>every 15m</code>, <code>every weekday at 8:30</code>, or full cron. Runs are logged with results.</p>
+    <div class="mm-analogy"><strong>Analogy:</strong> standing meetings and recurring duties. "Every morning, triage the inbox." "Every hour, check the deploy." An automation is just a prompt on a timer — anything you'd put in a human's recurring calendar block becomes an agent's job.</div>
+    <figure class="mm-fig">
+      <svg viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mock of the amux scheduler with recurring prompts">
+        <rect width="720" height="250" fill="#0d1117"/>
+        <text x="24" y="34" fill="#e6edf3" font-family="Inter,system-ui" font-size="15" font-weight="700">Scheduler</text>
+        <text x="696" y="34" fill="#8b949e" font-family="Inter,system-ui" font-size="11" text-anchor="end">= standing meetings for agents</text>
+        <g>
+          <rect x="24" y="52" width="672" height="50" rx="8" fill="#161b22" stroke="#30363d"/>
+          <circle cx="46" cy="77" r="5" fill="#3fb950"/>
+          <text x="62" y="72" fill="#e6edf3" font-family="Inter,system-ui" font-size="11.5" font-weight="600">Morning inbox triage</text>
+          <text x="62" y="90" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="9.5">every weekday at 8:30 → session: assistant</text>
+          <text x="600" y="80" fill="#3fb950" font-family="Inter,system-ui" font-size="10">last run ✓ 8:30</text>
+        </g>
+        <g>
+          <rect x="24" y="110" width="672" height="50" rx="8" fill="#161b22" stroke="#30363d"/>
+          <circle cx="46" cy="135" r="5" fill="#3fb950"/>
+          <text x="62" y="130" fill="#e6edf3" font-family="Inter,system-ui" font-size="11.5" font-weight="600">Deploy health check</text>
+          <text x="62" y="148" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="9.5">every 15m → session: ops</text>
+          <text x="600" y="138" fill="#3fb950" font-family="Inter,system-ui" font-size="10">last run ✓ :45</text>
+        </g>
+        <g>
+          <rect x="24" y="168" width="672" height="50" rx="8" fill="#161b22" stroke="#30363d"/>
+          <circle cx="46" cy="193" r="5" fill="#8b949e"/>
+          <text x="62" y="188" fill="#e6edf3" font-family="Inter,system-ui" font-size="11.5" font-weight="600">Weekly changelog draft</text>
+          <text x="62" y="206" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="9.5">weekly on Friday at 16:00 → session: docs</text>
+          <text x="586" y="196" fill="#8b949e" font-family="Inter,system-ui" font-size="10">next: Fri 16:00</text>
+        </g>
+      </svg>
+      <figcaption>The scheduler: recurring prompts with run history — duties, not one-off asks.</figcaption>
+    </figure>
+
+    <h2 id="skills">What are skills? — playbooks and SOPs</h2>
+    <p><strong>Definition:</strong> a skill is a markdown playbook stored once and runnable by any agent as a <code>/command</code> — across Claude Code, Codex, and Gemini sessions. amux ships four by default: <code>/amux</code> (drive the system), <code>/standup</code> (fleet roundup), <code>/handoff</code> (pass work between agents), <code>/adhd</code> (action-first output shaping).</p>
+    <div class="mm-analogy"><strong>Analogy:</strong> the standard operating procedures binder. Write "how we deploy" once; every employee executes it the same way. When you improve the playbook, everyone improves at once.</div>
+    <figure class="mm-fig">
+      <svg viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mock of the amux skills catalog with shipped skills">
+        <rect width="720" height="250" fill="#0d1117"/>
+        <text x="24" y="34" fill="#e6edf3" font-family="Inter,system-ui" font-size="15" font-weight="700">Skills</text>
+        <text x="696" y="34" fill="#8b949e" font-family="Inter,system-ui" font-size="11" text-anchor="end">= the SOP binder every agent can run</text>
+        <g>
+          <rect x="24" y="52" width="330" height="82" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="40" y="76" fill="#58a6ff" font-family="JetBrains Mono,monospace" font-size="12" font-weight="700">/standup</text>
+          <text x="40" y="96" fill="#c9d1d9" font-family="Inter,system-ui" font-size="10">What every agent did, what's stuck,</text>
+          <text x="40" y="112" fill="#c9d1d9" font-family="Inter,system-ui" font-size="10">what needs you — one command.</text>
+        </g>
+        <g>
+          <rect x="366" y="52" width="330" height="82" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="382" y="76" fill="#58a6ff" font-family="JetBrains Mono,monospace" font-size="12" font-weight="700">/handoff</text>
+          <text x="382" y="96" fill="#c9d1d9" font-family="Inter,system-ui" font-size="10">Package goal, state, next step, gotchas —</text>
+          <text x="382" y="112" fill="#c9d1d9" font-family="Inter,system-ui" font-size="10">and pass the work to another agent.</text>
+        </g>
+        <g>
+          <rect x="24" y="146" width="330" height="82" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="40" y="170" fill="#58a6ff" font-family="JetBrains Mono,monospace" font-size="12" font-weight="700">/amux</text>
+          <text x="40" y="190" fill="#c9d1d9" font-family="Inter,system-ui" font-size="10">Teach any session to drive the board,</text>
+          <text x="40" y="206" fill="#c9d1d9" font-family="Inter,system-ui" font-size="10">peek other sessions, and schedule work.</text>
+        </g>
+        <g>
+          <rect x="366" y="146" width="330" height="82" rx="8" fill="#161b22" stroke="#30363d"/>
+          <text x="382" y="170" fill="#58a6ff" font-family="JetBrains Mono,monospace" font-size="12" font-weight="700">/adhd</text>
+          <text x="382" y="190" fill="#c9d1d9" font-family="Inter,system-ui" font-size="10">Action-first answers: next step first,</text>
+          <text x="382" y="206" fill="#c9d1d9" font-family="Inter,system-ui" font-size="10">numbered steps, no preamble.</text>
+        </g>
+      </svg>
+      <figcaption>Skills: the four playbooks every amux ships with — edit them, add your own, all agents inherit.</figcaption>
+    </figure>
+
+    <h2 id="messages">What is the Messages tab? — your chat history with each colleague</h2>
+    <p><strong>Definition:</strong> a server-side, searchable archive of every message ever sent to each session — direct sends and queued steering alike — identical from every device.</p>
+    <div class="mm-analogy"><strong>Analogy:</strong> your DM history with a coworker. "What exactly did I ask them last Tuesday?" is one search away, and clicking any past message copies it to reuse.</div>
+    <figure class="mm-fig">
+      <svg viewBox="0 0 720 230" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mock of the amux messages archive">
+        <rect width="720" height="230" fill="#0d1117"/>
+        <text x="24" y="34" fill="#e6edf3" font-family="Inter,system-ui" font-size="15" font-weight="700">Messages — backend <tspan fill="#58a6ff">· 65</tspan></text>
+        <text x="696" y="34" fill="#8b949e" font-family="Inter,system-ui" font-size="11" text-anchor="end">= the searchable chat log</text>
+        <rect x="24" y="48" width="672" height="30" rx="7" fill="#161b22" stroke="#30363d"/>
+        <text x="38" y="67" fill="#8b949e" font-family="Inter,system-ui" font-size="10.5">Search messages sent to this session…</text>
+        <g>
+          <rect x="24" y="88" width="672" height="40" rx="8" fill="#161b22" stroke="#30363d"/>
+          <rect x="36" y="97" width="38" height="15" rx="3" fill="#2d1b4e"/>
+          <text x="55" y="108" fill="#a78bfa" font-family="Inter,system-ui" font-size="8.5" text-anchor="middle">queued</text>
+          <text x="84" y="108" fill="#8b949e" font-family="Inter,system-ui" font-size="9">Jul 20, 2:14 PM</text>
+          <text x="36" y="122" fill="#e6edf3" font-family="Inter,system-ui" font-size="10.5">after the auth fix, bump the retry budget to 3</text>
+        </g>
+        <g>
+          <rect x="24" y="136" width="672" height="40" rx="8" fill="#161b22" stroke="#30363d"/>
+          <rect x="36" y="145" width="38" height="15" rx="3" fill="#21262d"/>
+          <text x="55" y="156" fill="#8b949e" font-family="Inter,system-ui" font-size="8.5" text-anchor="middle">direct</text>
+          <text x="84" y="156" fill="#8b949e" font-family="Inter,system-ui" font-size="9">Jul 20, 11:02 AM</text>
+          <text x="36" y="170" fill="#e6edf3" font-family="Inter,system-ui" font-size="10.5">why is the token refresh racing the retry loop?</text>
+        </g>
+        <text x="24" y="205" fill="#8b949e" font-family="Inter,system-ui" font-size="10">Click any message to copy it. Stored server-side — phone and desktop see the same history.</text>
+      </svg>
+      <figcaption>Messages: everything you ever told this agent, searchable, from any device.</figcaption>
+    </figure>
+
+    <h2 id="browser">What is the browser? — an assistant who already has the passwords</h2>
+    <p><strong>Definition:</strong> a shared automated browser (Playwright) with saved authentication profiles. Agents navigate, click, type, screenshot, and run whole tasks against real sites using logins you saved once.</p>
+    <div class="mm-analogy"><strong>Analogy:</strong> handing web chores to an assistant who's already on every account — pull the invoices, publish the post, check the ad dashboard. No API? Doesn't matter; they use the website like you would.</div>
+    <figure class="mm-fig">
+      <svg viewBox="0 0 720 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mock of the amux browser automation with saved auth profiles">
+        <rect width="720" height="240" fill="#0d1117"/>
+        <text x="24" y="34" fill="#e6edf3" font-family="Inter,system-ui" font-size="15" font-weight="700">Browser</text>
+        <text x="696" y="34" fill="#8b949e" font-family="Inter,system-ui" font-size="11" text-anchor="end">= the assistant with the passwords</text>
+        <rect x="24" y="50" width="440" height="168" rx="10" fill="#161b22" stroke="#30363d"/>
+        <rect x="24" y="50" width="440" height="30" rx="10" fill="#21262d"/>
+        <circle cx="42" cy="65" r="4" fill="#f85149"/><circle cx="56" cy="65" r="4" fill="#d29922"/><circle cx="70" cy="65" r="4" fill="#3fb950"/>
+        <rect x="86" y="57" width="240" height="16" rx="4" fill="#0d1117"/>
+        <text x="94" y="69" fill="#8b949e" font-family="JetBrains Mono,monospace" font-size="9">billing.vendor.com/invoices</text>
+        <text x="44" y="108" fill="#e6edf3" font-family="Inter,system-ui" font-size="11" font-weight="600">Invoices</text>
+        <rect x="44" y="118" width="400" height="22" rx="4" fill="#0d1117"/>
+        <text x="52" y="133" fill="#c9d1d9" font-family="Inter,system-ui" font-size="9.5">INV-2041 · June · $1,240.00 · ⬇ downloaded ✓</text>
+        <rect x="44" y="146" width="400" height="22" rx="4" fill="#0d1117"/>
+        <text x="52" y="161" fill="#c9d1d9" font-family="Inter,system-ui" font-size="9.5">INV-2058 · July · $1,310.00 · ⬇ downloading…</text>
+        <text x="44" y="198" fill="#3fb950" font-family="Inter,system-ui" font-size="9.5">agent driving — you're not touching this</text>
+        <g>
+          <rect x="484" y="50" width="212" height="168" rx="10" fill="#161b22" stroke="#30363d"/>
+          <text x="500" y="74" fill="#e6edf3" font-family="Inter,system-ui" font-size="11" font-weight="600">Saved profiles</text>
+          <text x="500" y="100" fill="#c9d1d9" font-family="Inter,system-ui" font-size="10">🔐 default — logged in ✓</text>
+          <text x="500" y="122" fill="#c9d1d9" font-family="Inter,system-ui" font-size="10">🔐 google — logged in ✓</text>
+          <text x="500" y="144" fill="#c9d1d9" font-family="Inter,system-ui" font-size="10">🔐 vendor-billing — ✓</text>
+          <text x="500" y="176" fill="#8b949e" font-family="Inter,system-ui" font-size="9">log in once, every agent reuses it</text>
+        </g>
+      </svg>
+      <figcaption>The browser: agents run real web workflows with the logins you saved once.</figcaption>
+    </figure>
+
+    <h2 id="cost">What is the Cost tab? — payroll and the budget report</h2>
+    <p><strong>Definition:</strong> a durable per-turn token ledger, priced per model into real dollars, rolled up by <em>task</em>, session, model, and day — with cache-hit rate as the efficiency signal. Derived entirely from transcripts and the board; no model calls.</p>
+    <div class="mm-analogy"><strong>Analogy:</strong> payroll plus the project budget report. Who cost what this week, which <em>project</em> cost what (task attribution via the board), which contractor tier (model) you used, and the trend by day. "This feature cost $4.20 across 37 turns" — finally answerable.</div>
+    <figure class="mm-fig">
+      <svg viewBox="0 0 720 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mock of the amux cost dashboard with cost by task bars">
+        <rect width="720" height="260" fill="#0d1117"/>
+        <text x="24" y="34" fill="#e6edf3" font-family="Inter,system-ui" font-size="15" font-weight="700">Cost &amp; tokens <tspan fill="#8b949e" font-size="11">· 7 days</tspan></text>
+        <text x="696" y="34" fill="#8b949e" font-family="Inter,system-ui" font-size="11" text-anchor="end">= payroll for the agent team</text>
+        <g>
+          <rect x="24" y="48" width="156" height="54" rx="9" fill="#161b22" stroke="#30363d"/>
+          <text x="38" y="74" fill="#e6edf3" font-family="Inter,system-ui" font-size="17" font-weight="700">$86.70</text>
+          <text x="38" y="92" fill="#8b949e" font-family="Inter,system-ui" font-size="8.5">EST. COST</text>
+          <rect x="196" y="48" width="156" height="54" rx="9" fill="#161b22" stroke="#30363d"/>
+          <text x="210" y="74" fill="#e6edf3" font-family="Inter,system-ui" font-size="17" font-weight="700">61.4M</text>
+          <text x="210" y="92" fill="#8b949e" font-family="Inter,system-ui" font-size="8.5">TOKENS</text>
+          <rect x="368" y="48" width="156" height="54" rx="9" fill="#161b22" stroke="#30363d"/>
+          <text x="382" y="74" fill="#e6edf3" font-family="Inter,system-ui" font-size="17" font-weight="700">1,706</text>
+          <text x="382" y="92" fill="#8b949e" font-family="Inter,system-ui" font-size="8.5">TURNS</text>
+          <rect x="540" y="48" width="156" height="54" rx="9" fill="#161b22" stroke="#30363d"/>
+          <text x="554" y="74" fill="#3fb950" font-family="Inter,system-ui" font-size="17" font-weight="700">97.6%</text>
+          <text x="554" y="92" fill="#8b949e" font-family="Inter,system-ui" font-size="8.5">CACHE HIT</text>
+        </g>
+        <text x="24" y="132" fill="#e6edf3" font-family="Inter,system-ui" font-size="11.5" font-weight="700">By task</text>
+        <g font-family="Inter,system-ui" font-size="10">
+          <text x="24" y="152" fill="#c9d1d9">Fix flaky auth e2e tests</text>
+          <text x="696" y="152" fill="#e6edf3" text-anchor="end" font-weight="700">$31.20</text>
+          <rect x="24" y="158" width="672" height="6" rx="3" fill="#161b22"/><rect x="24" y="158" width="560" height="6" rx="3" fill="#58a6ff"/>
+          <text x="24" y="184" fill="#c9d1d9">Ship pricing page A/B</text>
+          <text x="696" y="184" fill="#e6edf3" text-anchor="end" font-weight="700">$18.90</text>
+          <rect x="24" y="190" width="672" height="6" rx="3" fill="#161b22"/><rect x="24" y="190" width="340" height="6" rx="3" fill="#58a6ff"/>
+          <text x="24" y="216" fill="#c9d1d9">Ambient (untasked)</text>
+          <text x="696" y="216" fill="#e6edf3" text-anchor="end" font-weight="700">$12.40</text>
+          <rect x="24" y="222" width="672" height="6" rx="3" fill="#161b22"/><rect x="24" y="222" width="224" height="6" rx="3" fill="#8b949e"/>
+        </g>
+        <text x="24" y="250" fill="#8b949e" font-family="Inter,system-ui" font-size="9.5">Cost attributed to a task while its board card was In Progress — no model tagging, just the board you already use.</text>
+      </svg>
+      <figcaption>The Cost tab: dollars by task, session, model, and day — the budget report your agent team never used to have.</figcaption>
+    </figure>
+
+    <h2 id="standup">What are /standup and /handoff? — team rituals</h2>
+    <p><strong>Definition:</strong> two shipped skills that encode the two most useful team rituals. <code>/standup</code> compiles what every session did, what's in progress, what's stalled, and what needs you. <code>/handoff</code> packages one agent's goal, state, next step, and gotchas, then transfers the work (and the board item) to another agent.</p>
+    <div class="mm-analogy"><strong>Analogy:</strong> the morning standup and the shift change. You don't visit nine desks — the standup comes to you, leading with what needs your decision. And when work moves between agents, it moves like a good shift handoff: state on paper, nothing lost in someone's head.</div>
+    <figure class="mm-fig">
+      <svg viewBox="0 0 720 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mock of an amux standup report">
+        <rect width="720" height="240" fill="#0d1117"/>
+        <text x="24" y="34" fill="#e6edf3" font-family="JetBrains Mono,monospace" font-size="13" font-weight="700">❯ /standup</text>
+        <text x="696" y="34" fill="#8b949e" font-family="Inter,system-ui" font-size="11" text-anchor="end">= the standup comes to you</text>
+        <rect x="24" y="48" width="672" height="172" rx="8" fill="#010409" stroke="#30363d"/>
+        <g font-family="JetBrains Mono,monospace" font-size="10.5">
+          <text x="40" y="74" fill="#f85149" font-weight="700">NEEDS YOU</text>
+          <text x="40" y="92" fill="#e6edf3">  homepage — pricing A/B — which variant ships? (waiting 22m)</text>
+          <text x="40" y="118" fill="#3fb950" font-weight="700">DONE</text>
+          <text x="40" y="136" fill="#e6edf3">  ops — rotated webhook secrets — verified in prod</text>
+          <text x="40" y="162" fill="#d29922" font-weight="700">IN PROGRESS</text>
+          <text x="40" y="180" fill="#e6edf3">  backend — flaky auth e2e — root cause found, fixing refresh.ts</text>
+          <text x="40" y="206" fill="#8b949e">Next best action: answer homepage's variant question.</text>
+        </g>
+      </svg>
+      <figcaption>/standup: nine desks, one report — leading with the single thing that needs your decision.</figcaption>
+    </figure>
+
+    <h2>The rest of the map, briefly</h2>
+    <ul>
+      <li><strong>Calendar = the team calendar.</strong> Real events agents can create; a private ICS feed your Google/Apple calendar subscribes to.</li>
+      <li><strong>Notes = the wiki.</strong> Server-side markdown docs — meeting notes, runbooks, drafts — editable from any device.</li>
+      <li><strong>Files = the shared drive.</strong> Browse any directory, preview anything (code, CSVs, PDFs, even EPUB/MOBI ebooks), with per-session scoped shortcuts.</li>
+      <li><strong>Memory = institutional knowledge.</strong> Per-project facts injected into every session — new hires start onboarded.</li>
+      <li><strong>People = the rolodex.</strong> A CRM of contacts and interactions that agents can read and update.</li>
+      <li><strong>Workspace = the open-plan office.</strong> A grid of live terminals — every desk on one screen.</li>
+      <li><strong>Metrics = the facilities dashboard.</strong> CPU, memory, and per-session resource health of the machine everyone works in.</li>
+      <li><strong>Alerts = the fire alarm.</strong> Urgent owner notifications (push + iMessage) — provenance-stamped, deduped, and deliberately rare.</li>
+    </ul>
+
+    <h2>Where to start</h2>
+    <p>Don't learn the whole map. Hire one agent (Sessions), give it one tracked task (Board), and redirect it once without interrupting (Steering). The rest of the surfaces will make themselves necessary the way office tools do — the first time you repeat an instruction, you'll want a Skill; the first time you wonder what the week cost, you'll open Cost.</p>
+
+    <p><a class="btn" href="/guides/getting-started/">Getting started guide →</a> <a class="btn" href="/">amux home →</a></p>
+
+    <h2>FAQ</h2>
+    <h3>What is an amux session?</h3>
+    <p>One AI agent in its own terminal with a working directory, model, live status, and token spend — the employee of the mental model. See <a href="#sessions">sessions</a>.</p>
+    <h3>What's the difference between the board and steering?</h3>
+    <p>The board is durable, tracked work (tickets). Steering is a transient note to one agent, delivered when it finishes its current task. Track projects on the board; nudge individuals with steering.</p>
+    <h3>Why doesn't my queued message deliver immediately?</h3>
+    <p>Because the agent isn't done — steering waits for a genuine turn boundary (no spinner, no running subagent, settled idle). Use direct Send to interrupt on purpose.</p>
+    <h3>Do agents update the board themselves?</h3>
+    <p>Yes — over the REST API, with atomic claiming and status gates (a code task can't be closed without acknowledging it merged).</p>
+    <h3>Is the Cost tab an estimate?</h3>
+    <p>It prices every real turn from your transcripts against a per-model price table — API-equivalent dollars. On a subscription plan it reads as "value consumed"; either way the by-task/by-session comparisons are exact.</p>
+    <h3>Which agents does amux support?</h3>
+    <p>Claude Code first-class, plus Codex and Gemini CLI sessions — skills and the dashboard work across all of them.</p>
+  </main>
+
+  <footer>
+    <div class="footer-top">
+      <div class="footer-col">
+        <div class="footer-col-label">Product</div>
+        <a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a>
+      </div>
+      <div class="footer-col">
+        <div class="footer-col-label">Resources</div>
+        <a href="/blog/">Blog</a><a href="/faq/">FAQ</a><a href="/glossary/">Glossary</a><a href="/compare/">Compare</a>
+      </div>
+      <div class="footer-col">
+        <div class="footer-col-label">Project</div>
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="/press/">Press</a><a href="/privacy/">Privacy</a>
+      </div>
+    </div>
+    <div class="sub-footer">amux — open-source control plane for AI agents · MIT</div>
+  </footer>
+</body>
+</html>
