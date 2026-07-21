@@ -26196,7 +26196,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.173';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.175';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -29719,13 +29719,25 @@ function _peekCostLoad() {
 function _msgStripPrefix(text) {
   return String(text || '').replace(/^\[\d{1,2}:\d{2}\s?[AP]M[^\]]*\]\s*/i, '');
 }
+// After inserting, GO TO the input: expand the send bar if collapsed, scroll the
+// composer into view, focus with the caret at the end — ready to edit/send.
+function _focusPeekComposer() {
+  const inp = document.getElementById('peek-cmd-input');
+  if (!inp) return;
+  // The composer lives in the terminal panel — on other peek tabs it's
+  // display:none and focus() lands nowhere. Go back to Terminal first.
+  try { if (typeof _peekTab !== 'undefined' && _peekTab !== 'terminal') setPeekTab('terminal'); } catch(e) {}
+  try { if (typeof peekCmdOpen !== 'undefined' && !peekCmdOpen) setPeekCmd(true); } catch(e) {}
+  inp.scrollIntoView({ block: 'nearest' });
+  inp.focus();
+  requestAnimationFrame(() => { inp.selectionStart = inp.selectionEnd = inp.value.length; });
+}
 function _pickCmdHistory(text) {
   const inp = document.getElementById('peek-cmd-input');
   if (inp) {
     inp.value = _msgStripPrefix(text);
     autoGrow(inp);
-    inp.focus({ preventScroll: true });
-    requestAnimationFrame(() => { inp.selectionStart = inp.selectionEnd = inp.value.length; });
+    _focusPeekComposer();
   }
   closeCmdHistoryModal();
 }
@@ -29748,7 +29760,7 @@ function _msgOpenInsert(sess, encText) {
   openPeek(sess);
   setTimeout(() => {
     const inp = document.getElementById('peek-cmd-input');
-    if (inp) { inp.value = text; autoGrow(inp); inp.focus({ preventScroll: true }); }
+    if (inp) { inp.value = text; autoGrow(inp); _focusPeekComposer(); }
   }, 500);
 }
 
@@ -44733,7 +44745,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.173';
+const CACHE = 'amux-v0.9.175';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
