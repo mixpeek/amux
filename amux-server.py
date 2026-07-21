@@ -45032,6 +45032,15 @@ class CCHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _json_raw(self, json_str, status=200):
+        body = json_str.encode() if isinstance(json_str, str) else json_str
+        self.send_response(status)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _json_etag(self, data):
         """_json + a content-hash ETag with If-None-Match → 304 support, so a
         client can skip re-transferring an unchanged peek. For an idle session the
@@ -45890,7 +45899,7 @@ class CCHandler(BaseHTTPRequestHandler):
                                         _sse_cache_lock.release()
                                 threading.Thread(target=_bg_refresh, daemon=True).start()
                                 released_to_bg = True
-                                return self._json(sc["data"])
+                                return self._json_raw(sc["json"])
                             # Cold cache — must block.
                             data = list_sessions()
                             sc["data"] = data
@@ -45902,13 +45911,13 @@ class CCHandler(BaseHTTPRequestHandler):
                 else:
                     # Another thread is refreshing. Return stale data immediately
                     # if we have any, otherwise wait briefly for the refresher.
-                    if sc["data"] is not None:
-                        return self._json(sc["data"])
+                    if sc["json"]:
+                        return self._json_raw(sc["json"])
                     for _ in range(100):  # up to 10s for cold start
                         time.sleep(0.1)
-                        if sc["data"] is not None:
+                        if sc["json"]:
                             break
-            return self._json(sc["data"] if sc["data"] is not None else [])
+            return self._json_raw(sc["json"]) if sc["json"] else self._json([])
 
         # GET /api/sessions-git — bulk git info for all sessions (avoids 80+ individual requests)
         if method == "GET" and path == "/api/sessions-git":
@@ -47883,7 +47892,7 @@ class CCHandler(BaseHTTPRequestHandler):
                                             _sse_cache_lock.release()
                                     threading.Thread(target=_bg_board, daemon=True).start()
                                     released_to_bg = True
-                                    return self._json(bc["data"])
+                                    return self._json_raw(bc["json"])
                                 data = _load_board()
                                 bc["data"] = data
                                 bc["json"] = json.dumps(data, sort_keys=True)
@@ -47892,13 +47901,13 @@ class CCHandler(BaseHTTPRequestHandler):
                             if not released_to_bg:
                                 _sse_cache_lock.release()
                     else:
-                        if bc["data"] is not None:
-                            return self._json(bc["data"])
+                        if bc["json"]:
+                            return self._json_raw(bc["json"])
                         for _ in range(100):
                             time.sleep(0.1)
-                            if bc["data"] is not None:
+                            if bc["json"]:
                                 break
-                return self._json(bc["data"] if bc["data"] is not None else [])
+                return self._json_raw(bc["json"]) if bc["json"] else self._json([])
 
             # POST /api/board — create issue
             if method == "POST" and path == "/api/board":
