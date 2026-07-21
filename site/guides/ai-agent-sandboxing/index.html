@@ -39,7 +39,7 @@
     "author":{"@type":"Organization","name":"amux","url":"https://amux.io"},
     "publisher":{"@type":"Organization","name":"amux","url":"https://amux.io","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}},
     "datePublished":"2026-05-13",
-    "dateModified":"2026-07-18",
+    "dateModified":"2026-07-21",
     "mainEntityOfPage":"https://amux.io/guides/ai-agent-sandboxing/"
   }</script>
   <script type="application/ld+json">{
@@ -722,6 +722,15 @@ uvx amux serve  # open https://localhost:8822</code></pre>
         <h3>Does amux run agents in a sandbox?</h3>
         <p>By default, <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> runs agents in tmux panes on the host machine &mdash; there is no sandbox layer built in. amux is an orchestration and control plane, not an isolation layer. Sandboxing is layered on top: (1) run each tmux session inside a <a href="https://www.docker.com/" target="_blank" rel="noopener">Docker</a> container with <code>--network=none --cap-drop=ALL</code>; (2) use amux&rsquo;s built-in git worktree isolation so agents can&rsquo;t step on each other&rsquo;s code; (3) for untrusted code execution, connect <a href="https://e2b.dev/" target="_blank" rel="noopener">E2B</a> sandboxes via the amux REST API. amux&rsquo;s self-healing (auto-compact, crash-restart, last-message replay) works with all these configurations.</p>
       </div>
+    </div>
+
+
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — orchestrate and monitor your sandboxed AI agent fleet (307★ GitHub)</div>
+        <div style="color:var(--muted);font-size:.9rem">Run dozens of parallel Claude Code, Codex, or Gemini CLI sessions with built-in git worktree isolation, self-healing watchdog, and cost monitoring. Open source, single Python file.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
     </div>
 
   </main>

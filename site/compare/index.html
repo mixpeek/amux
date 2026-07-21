@@ -37,7 +37,21 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <span>Comparisons</span></div>
-    <h1>Comparisons</h1><p class="subtitle">See how amux compares to other AI coding tools and frameworks.</p><ul style="list-style:none;margin-left:0"><li style="margin-bottom:1rem"><a href="/compare/amux-vs-hermes-agent/" style="font-weight:500;color:var(--green);">NEW: amux vs Hermes Agent</a><br><span style="color:var(--muted);font-size:0.85rem">NousResearch's self-improving personal AI daemon vs amux's parallel coding fleet. One agent with deep memory vs 10-50 agents coordinated by a shared kanban board.</span></li>
+    <h1>Comparisons</h1><p class="subtitle">See how amux compares to other AI coding tools and frameworks.</p>
+
+    <!-- EXP-012: Freelancer CTA on compare index -->
+    <div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.25);border-radius:8px;padding:16px 20px;margin:20px 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:180px">
+        <div style="font-weight:600;font-size:.95rem;margin-bottom:3px">Freelancer? Run 5× the client work with parallel AI agents.</div>
+        <div style="color:var(--muted);font-size:.85rem">amux lets you run separate Claude Code sessions per client — isolated worktrees, no context bleed, one dashboard.</div>
+      </div>
+      <div style="display:flex;gap:10px;flex-shrink:0;flex-wrap:wrap">
+        <a href="/for/freelancers/" onclick="posthog&&posthog.capture('exp012_freelancer_cta_click',{destination:'for-freelancers',page:window.location.pathname})" style="background:rgba(99,102,241,.15);color:var(--text);border:1px solid rgba(99,102,241,.4);padding:8px 16px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.9rem;white-space:nowrap">How it works</a>
+        <a href="/concierge/" onclick="posthog&&posthog.capture('exp012_freelancer_cta_click',{destination:'concierge',page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:8px 16px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.9rem;white-space:nowrap">Get set up →</a>
+      </div>
+    </div>
+
+    <ul style="list-style:none;margin-left:0"><li style="margin-bottom:1rem"><a href="/compare/amux-vs-hermes-agent/" style="font-weight:500;color:var(--green);">NEW: amux vs Hermes Agent</a><br><span style="color:var(--muted);font-size:0.85rem">NousResearch's self-improving personal AI daemon vs amux's parallel coding fleet. One agent with deep memory vs 10-50 agents coordinated by a shared kanban board.</span></li>
 <li style="margin-bottom:1rem"><a href="/compare/amux-vs-cowork/" style="font-weight:500;color:var(--green);">NEW: amux vs Cowork</a><br><span style="color:var(--muted);font-size:0.85rem">Claude Cowork (single computer-use agent, Anthropic) vs amux (parallel coding fleet, open source). Different scale, different model, different price.</span></li>
 <li style="margin-bottom:1rem"><a href="/compare/amux-vs-openclaw/" style="font-weight:500;color:var(--green);">NEW: amux vs OpenClaw</a><br><span style="color:var(--muted);font-size:0.85rem">OpenClaw (messaging-native personal assistant, 347k GitHub stars) vs amux (developer fleet dashboard). Different audiences, different interfaces, complementary tools.</span></li>
 <li style="margin-bottom:1rem"><a href="/compare/amux-vs-symphony/" style="font-weight:500">amux vs OpenAI Symphony</a><br><span style="color:var(--muted);font-size:0.85rem">OpenAI open-sourced Symphony — a ticket-driven Codex orchestrator. Developer-driven dashboard vs autonomous pipeline. Claude Code vs Codex. Built-in kanban vs Linear dependency.</span></li>

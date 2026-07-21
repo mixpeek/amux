@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agent Cost Monitoring: Track Claude Code Token Costs (2026) &mdash; amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Claude Code agents can cost $5&ndash;$50/day per session depending on model, task size, and parallel sessions. Learn how to track token costs, understand what drives spend, and use amux's built-in Cost tab to monitor your entire fleet.">
+  <meta name="keywords" content="Claude Code token costs, how much does Claude Code cost per day, AI agent cost monitoring, Claude Code API cost tracking, token cost per AI agent session, Claude Code API pricing, AI coding agent budget, token spend tracking, Claude Sonnet cost, AI agent cost optimization">
+  <link rel="canonical" href="https://amux.io/guides/ai-agent-cost-monitoring/">
+  <meta property="og:title" content="AI Agent Cost Monitoring: Track Claude Code Token Costs (2026) &mdash; amux">
+  <meta property="og:description" content="What Claude Code agents typically cost per day, what drives token spend, and how amux's built-in Cost tab tracks spend per session and per task in real time.">
+  <meta property="og:url" content="https://amux.io/guides/ai-agent-cost-monitoring/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Agent Cost Monitoring","item":"https://amux.io/guides/ai-agent-cost-monitoring/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Cost Monitoring: Track Claude Code Token Costs (2026)","description":"Claude Code agents can cost $5–$50/day per session depending on model, task size, and parallel sessions. Learn how to track token costs, understand what drives spend, and use amux's built-in Cost tab to monitor your entire fleet.","url":"https://amux.io/guides/ai-agent-cost-monitoring/","datePublished":"2026-07-21","dateModified":"2026-07-21","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How much do Claude Code agents cost per day?","acceptedAnswer":{"@type":"Answer","text":"A single Claude Code session running Claude Sonnet 4.5 typically costs $5–$25 per day for a focused coding task. A heavy session with many file reads, tool calls, and long context windows can reach $40–$60 per day. Running 5–10 parallel agents on Sonnet 4.5 can easily cost $50–$200 per day. Switching to Claude Haiku 3.5 for lower-priority tasks reduces cost by roughly 75%. Costs depend on model choice, task complexity, context size, and number of parallel sessions."}},{"@type":"Question","name":"How do I track Claude Code API costs?","acceptedAnswer":{"@type":"Answer","text":"The Anthropic Console (console.anthropic.com) shows aggregate API usage by day, but does not break costs down by agent session or task. For per-session and per-task attribution, use amux — its token/cost ledger records every token event with task-window attribution, and the built-in Cost tab in the dashboard shows spend per session in real time. The /api/observability endpoint returns machine-readable breakdowns you can feed into your own monitoring."}},{"@type":"Question","name":"Why do AI agent costs spike overnight?","acceptedAnswer":{"@type":"Answer","text":"Three common causes: (1) Context accumulation — as a session runs longer, each API call includes more input tokens from the growing conversation history. A 12-hour overnight run can have 10x the average input tokens of a fresh session. (2) Parallel session sprawl — agents started for a task but never stopped keep consuming tokens even when idle. (3) Tool-call loops — an agent stuck in a retry loop (e.g., failing tests, network errors) can spin up thousands of API calls per hour. amux's fleet view and cost monitoring surface these spikes in real time."}},{"@type":"Question","name":"How does amux track token costs across sessions?","acceptedAnswer":{"@type":"Answer","text":"amux ships a server-side token/cost ledger (introduced in commit 418a6eb, 2026-07-20) that records every token event emitted by any agent session. Each event is attributed to the session and the active task window, so you can see not just total spend but which task in which session consumed the most tokens. The dashboard's Cost tab shows this per-session breakdown. The /api/observability endpoint returns the same data as JSON for programmatic access."}},{"@type":"Question","name":"What is the cheapest way to run multiple AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"The most effective cost levers are: (1) Use Claude Haiku 3.5 ($0.80/$4 per MTok) for exploratory or low-stakes tasks and reserve Sonnet 4.5 ($3/$15 per MTok) for production code generation. (2) Enable context compaction — Claude Code does this automatically, but keeping tasks scoped reduces how often you approach the limit. (3) Set token budgets on each session and get alerts before they are exceeded. (4) Use session hibernation to stop idle agents rather than leaving them running. amux provides all of these controls from a single dashboard."}}]}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>AI Agent Cost Monitoring</span></div>
+    <h1>AI Agent Cost Monitoring: Track Claude Code Token Costs</h1>
+    <p class="subtitle">What Claude Code agents typically cost per day, what drives token spend, and how to monitor costs across your entire agent fleet. <em>Updated July 2026.</em></p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#answer" style="color:var(--dim);text-decoration:none;">Direct Answer: What Do Claude Code Agents Cost?</a></li>
+        <li><a href="#pricing" style="color:var(--dim);text-decoration:none;">Typical Token Costs by Model</a></li>
+        <li><a href="#drivers" style="color:var(--dim);text-decoration:none;">What Drives Agent Costs</a></li>
+        <li><a href="#amux" style="color:var(--dim);text-decoration:none;">How to Track Costs with amux</a></li>
+        <li><a href="#best-practices" style="color:var(--dim);text-decoration:none;">Best Practices to Reduce Costs</a></li>
+        <li><a href="#comparison" style="color:var(--dim);text-decoration:none;">Manual Tracking vs. amux Cost Monitoring</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ─────────────────────────── ANSWER BOX ─────────────────────────── -->
+    <div id="answer" style="background:var(--surface);border-left:4px solid #6366f1;border-radius:0 8px 8px 0;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.06em;color:#6366f1;">Direct Answer</strong>
+      <p style="margin:0.5rem 0 0;font-size:1.05rem;line-height:1.65;">A single <strong>Claude Code agent running Claude Sonnet 4.5 costs roughly $5&ndash;$25 per day</strong> for a focused coding task; heavy sessions with large context and many tool calls can reach $40&ndash;$60. Running five to ten parallel agents on Sonnet 4.5 can easily hit $50&ndash;$200/day. The Anthropic Console shows aggregate spend but provides no per-session or per-task breakdown &mdash; you need a tool like <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> to attribute costs to specific agents and tasks before a surprise invoice arrives.</p>
+    </div>
+
+    <!-- ─────────────────────────── PRICING ─────────────────────────── -->
+    <h2 id="pricing">Typical Token Costs by Model</h2>
+
+    <p>Anthropic prices Claude API access per million tokens (MTok) of input and output separately. As of mid-2026, the primary models used with Claude Code are:</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Input (per MTok)</th>
+            <th>Output (per MTok)</th>
+            <th>Typical daily cost (1 agent)</th>
+            <th>Best for</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Claude Sonnet 4.5</strong></td>
+            <td>$3.00</td>
+            <td>$15.00</td>
+            <td>$5&ndash;$25</td>
+            <td>Production code generation, complex refactors</td>
+          </tr>
+          <tr>
+            <td><strong>Claude Opus 4</strong></td>
+            <td>$15.00</td>
+            <td>$75.00</td>
+            <td>$25&ndash;$120</td>
+            <td>Architecture decisions, hard bugs requiring deep reasoning</td>
+          </tr>
+          <tr>
+            <td><strong>Claude Haiku 3.5</strong></td>
+            <td>$0.80</td>
+            <td>$4.00</td>
+            <td>$1&ndash;$6</td>
+            <td>Exploratory tasks, linting, documentation, low-stakes automation</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Output tokens cost 5&times; more than input tokens on Sonnet 4.5. An agent that generates long code responses or detailed reasoning chains will skew toward the output rate. In practice, the input-to-output ratio for Claude Code sessions is typically 8:1 to 15:1 &mdash; most tokens are context, not generation &mdash; which keeps average costs closer to the input rate. But the ratio shifts on tasks requiring long file rewrites or verbose explanations.</p>
+
+    <p>A rough daily cost estimate:</p>
+
+    <pre><code><span class="comment"># Back-of-envelope for one Sonnet 4.5 agent, moderate task</span>
+Input:  ~2M tokens/day × $3.00/MTok  = $6.00
+Output: ~200k tokens/day × $15.00/MTok = $3.00
+Total: ~$9.00/day
+
+<span class="comment"># 10 parallel agents, same rate</span>
+Total: ~$90.00/day</code></pre>
+
+    <p>These estimates assume normal task pacing. A runaway agent (stuck in a retry loop, or processing large files repeatedly) can spike 5&ndash;10x above baseline. Without per-session tracking, these spikes are invisible until the monthly bill.</p>
+
+    <!-- ─────────────────────────── DRIVERS ─────────────────────────── -->
+    <h2 id="drivers">What Drives Agent Costs</h2>
+
+    <p>Token costs in AI agent sessions are dominated by a few specific patterns. Understanding them is the first step to controlling spend.</p>
+
+    <h3>1. Context Size (the Biggest Driver)</h3>
+
+    <p>Every API call sends the <em>entire</em> conversation history as input tokens &mdash; your initial prompt, every tool call and its output, every file read, and every prior response. As a session runs longer, the input token count of each subsequent call grows linearly. An agent that runs for 6 hours accumulates far more input tokens per call than one that runs for 30 minutes.</p>
+
+    <p>Common context-bloating patterns:</p>
+    <ul>
+      <li><strong>Reading whole files instead of targeted sections</strong> &mdash; a 1,000-line file read in full adds ~15,000 input tokens per subsequent call that file stays in context.</li>
+      <li><strong>Verbose bash output</strong> &mdash; long test runner output, large JSON API responses, or recursive directory listings left in context accumulate fast.</li>
+      <li><strong>Repeated reads of the same file</strong> &mdash; if the agent re-reads a file on each loop iteration, those tokens multiply.</li>
+    </ul>
+
+    <h3>2. Tool Calls</h3>
+
+    <p>Each tool call (bash execution, file read, file write, web fetch) adds input tokens for the tool result on top of the existing context. A session that makes 200 tool calls is not just paying for 200 results &mdash; it is paying for each result <em>plus</em> the growing history every step of the way. Tool-call-heavy sessions grow super-linearly in token cost.</p>
+
+    <h3>3. Number of Parallel Sessions</h3>
+
+    <p>Each parallel agent is an independent API consumer. Ten agents running on Sonnet 4.5 cost ten times as much as one, all else equal. The risk compounds because idle sessions that were never stopped still consume tokens if they receive any stimulus &mdash; even a watchdog ping can trigger a response.</p>
+
+    <h3>4. Model Choice per Task</h3>
+
+    <p>Running every task on Opus 4 when Haiku 3.5 would suffice is a common over-spend pattern. Opus 4 costs roughly 19&times; more per input token than Haiku 3.5. For tasks that do not require deep reasoning &mdash; formatting, documentation, simple refactors, search-and-replace &mdash; Haiku 3.5 produces equivalent output at a fraction of the cost.</p>
+
+    <h3>5. Overnight Cost Spikes</h3>
+
+    <p>Overnight runs that encounter errors often enter retry loops the developer cannot see. A session trying to fix a failing test can make hundreds of API calls per hour without making progress &mdash; each call incurring full context cost. Without real-time cost monitoring, these loops run unchecked until morning.</p>
+
+    <!-- ─────────────────────────── AMUX ─────────────────────────── -->
+    <h2 id="amux">How to Track Costs with amux</h2>
+
+    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is an open-source control plane for AI agent teams that ships a built-in token/cost ledger &mdash; no third-party billing tool required. The ledger was introduced in <code>418a6eb</code> (2026-07-20) with the Cost tab UI added in <code>e592079</code> the same day.</p>
+
+    <h3>The Token/Cost Ledger</h3>
+
+    <p>Every token event from every agent session is recorded server-side with attribution to the originating session and the active task window. This means you can answer questions like:</p>
+    <ul>
+      <li>Which session spent the most tokens last night?</li>
+      <li>Which task within a session was the most expensive?</li>
+      <li>When did a cost spike start, and which tool call triggered it?</li>
+    </ul>
+
+    <p>The ledger is queryable via the <code>/api/observability</code> endpoint:</p>
+
+    <pre><code><span class="comment"># Per-session cost breakdown</span>
+curl -sk $AMUX_URL/api/observability | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for s in data.get('sessions', []):
+    print(s['name'], '|', s.get('total_cost_usd', 0), 'USD', '|', s.get('total_tokens', 0), 'tokens')
+"
+
+<span class="comment"># Per-task breakdown within a session</span>
+curl -sk "$AMUX_URL/api/observability?session=my-session" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for t in data.get('tasks', []):
+    print(t['task'], '|', t.get('cost_usd', 0), 'USD')
+"</code></pre>
+
+    <h3>The Cost Tab in the Dashboard</h3>
+
+    <p>The amux dashboard has a global <strong>Cost</strong> tab that shows a fleet-level overview: total spend today, spend by session, and a time-series chart of token consumption. Each session row is expandable to show task-level attribution.</p>
+
+    <p>The per-session peek panel also has a Cost sub-tab, so you can inspect the spend for a specific agent without leaving the session view. This is the fastest way to identify which session is responsible for a cost spike.</p>
+
+    <h3>Real-Time Spend Visibility</h3>
+
+    <p>The dashboard updates via SSE (server-sent events), so the Cost tab reflects spend in near-real time as sessions run. You do not need to wait for a billing cycle or poll an external API &mdash; the cost counter updates as each token event lands. For overnight monitoring, this means you can open the dashboard on your phone and see current spend at a glance.</p>
+
+    <pre><code><span class="comment"># Observability endpoint response shape (simplified)</span>
+{
+  "fleet_total_usd": 12.47,
+  "sessions": [
+    {
+      "name": "auth-refactor",
+      "model": "claude-sonnet-4-5",
+      "input_tokens": 3820000,
+      "output_tokens": 284000,
+      "total_cost_usd": 8.21,
+      "tasks": [
+        {"task": "Refactor auth middleware", "cost_usd": 5.14},
+        {"task": "Write tests for auth flow", "cost_usd": 3.07}
+      ]
+    },
+    {
+      "name": "docs-update",
+      "model": "claude-haiku-3-5",
+      "input_tokens": 9100000,
+      "output_tokens": 610000,
+      "total_cost_usd": 4.26
+    }
+  ]
+}</code></pre>
+
+    <!-- ─────────────────────────── BEST PRACTICES ─────────────────────────── -->
+    <h2 id="best-practices">Best Practices to Reduce Costs</h2>
+
+    <h3>1. Context Compaction</h3>
+
+    <p>Claude Code automatically compacts (summarizes) the conversation when the context window fills &mdash; this resets input tokens per call back to a low baseline and prevents runaway context growth. You cannot disable compaction, but you can reduce <em>how often</em> it fires by keeping sessions scoped to smaller tasks. See <a href="/guides/claude-code-context-compaction/" style="color:var(--dim);">Claude Code Context Compaction</a> for a full breakdown.</p>
+
+    <h3>2. Targeted File Reads</h3>
+
+    <p>Instruct agents to read specific functions or sections rather than entire files. Using <code>grep</code> to locate relevant lines before reading reduces the token footprint of each file read by 80&ndash;95% for large files. Add this to your CLAUDE.md:</p>
+
+    <pre><code><span class="comment"># In CLAUDE.md — reduces context bloat</span>
+Read only the specific functions you need, not entire files.
+Use grep to locate the relevant section first, then read
+that section only. Never cat files longer than 200 lines
+without narrowing to the relevant range.</code></pre>
+
+    <h3>3. Token Budgets per Session</h3>
+
+    <p>Claude Code supports a <code>--max-tokens</code> flag and a token budget setting. Setting a per-session budget caps worst-case spend. When the budget is approached, you can receive an alert (via amux's notification system) rather than discovering the overage after the fact.</p>
+
+    <h3>4. Model Selection by Task Type</h3>
+
+    <p>Route tasks to the cheapest capable model:</p>
+    <ul>
+      <li><strong>Haiku 3.5</strong> &mdash; documentation, search, formatting, simple refactors, file moves</li>
+      <li><strong>Sonnet 4.5</strong> &mdash; feature development, bug fixes, code review, test generation</li>
+      <li><strong>Opus 4</strong> &mdash; architecture, hard debugging requiring deep chain-of-thought, security analysis</li>
+    </ul>
+
+    <h3>5. Session Hibernation</h3>
+
+    <p>Stop idle sessions rather than leaving them parked. An agent with an open context window that receives any input &mdash; even a watchdog health-check &mdash; will generate a response and incur tokens. amux's hibernation feature stops idle sessions automatically and restores them on demand, eliminating parasitic spend from sessions that finished their task hours ago but were never explicitly stopped.</p>
+
+    <h3>6. Structured Output over Verbose Prose</h3>
+
+    <p>Agents asked to &ldquo;explain your reasoning&rdquo; at each step generate significantly more output tokens than agents instructed to &ldquo;act, then commit, then move to the next task.&rdquo; Verbose reasoning output is helpful when debugging agent behavior, but for production overnight runs it adds cost without adding value. Keep the output format terse in your task prompts.</p>
+
+    <!-- ─────────────────────────── COMPARISON ─────────────────────────── -->
+    <h2 id="comparison">Manual Tracking vs. amux Cost Monitoring</h2>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th>Manual / Anthropic Console</th>
+            <th>amux Cost Monitoring</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Aggregate daily spend</strong></td>
+            <td>Yes &mdash; via console.anthropic.com</td>
+            <td>Yes &mdash; dashboard Cost tab</td>
+          </tr>
+          <tr>
+            <td><strong>Per-session attribution</strong></td>
+            <td>No &mdash; all sessions aggregate to one API key</td>
+            <td>Yes &mdash; per-session cost breakdown</td>
+          </tr>
+          <tr>
+            <td><strong>Per-task attribution</strong></td>
+            <td>No</td>
+            <td>Yes &mdash; task-window cost tracking</td>
+          </tr>
+          <tr>
+            <td><strong>Real-time visibility</strong></td>
+            <td>No &mdash; Anthropic Console updates with delay</td>
+            <td>Yes &mdash; SSE-driven live updates</td>
+          </tr>
+          <tr>
+            <td><strong>Spike detection</strong></td>
+            <td>Manual &mdash; check console periodically</td>
+            <td>Automatic &mdash; visible in fleet overview</td>
+          </tr>
+          <tr>
+            <td><strong>Historical task cost audit</strong></td>
+            <td>No per-task history</td>
+            <td>Yes &mdash; <code>/api/observability</code> ledger</td>
+          </tr>
+          <tr>
+            <td><strong>Mobile access</strong></td>
+            <td>Console is mobile-accessible but read-only</td>
+            <td>Dashboard PWA + iOS app</td>
+          </tr>
+          <tr>
+            <td><strong>Programmatic access</strong></td>
+            <td>Usage API (aggregate only)</td>
+            <td><code>/api/observability</code> (per-session, per-task)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ─────────────────────────── CTA ─────────────────────────── -->
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux &mdash; track AI agent costs across your entire fleet (307&#9733; GitHub)</div>
+        <div style="color:var(--muted);font-size:.9rem">Token/cost ledger with per-session and per-task attribution. Built-in Cost tab shows spend in real time. Open source, single Python file.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub &#9733;</a>
+    </div>
+
+    <!-- ─────────────────────────── FAQ ─────────────────────────── -->
+    <h2 id="faq">FAQ</h2>
+
+    <div class="faq-list">
+      <details class="faq-item">
+        <summary>How much do Claude Code agents cost per day?</summary>
+        <p>A single Claude Code session running Claude Sonnet 4.5 typically costs $5&ndash;$25 per day for a focused coding task. A heavy session with many file reads, tool calls, and long context windows can reach $40&ndash;$60 per day. Running five to ten parallel agents on Sonnet 4.5 can easily cost $50&ndash;$200 per day. Switching to Claude Haiku 3.5 for lower-priority tasks reduces cost by roughly 75%. Costs depend on model choice, task complexity, context size, and number of parallel sessions.</p>
+      </details>
+
+      <details class="faq-item">
+        <summary>How do I track Claude Code API costs?</summary>
+        <p>The Anthropic Console (console.anthropic.com) shows aggregate API usage by day, but does not break costs down by agent session or task. For per-session and per-task attribution, use amux &mdash; its token/cost ledger records every token event with task-window attribution, and the built-in Cost tab in the dashboard shows spend per session in real time. The <code>/api/observability</code> endpoint returns machine-readable breakdowns you can feed into your own monitoring.</p>
+      </details>
+
+      <details class="faq-item">
+        <summary>Why do AI agent costs spike overnight?</summary>
+        <p>Three common causes: (1) Context accumulation &mdash; as a session runs longer, each API call includes more input tokens from the growing conversation history. A 12-hour overnight run can have 10&times; the average input tokens of a fresh session. (2) Parallel session sprawl &mdash; agents started for a task but never stopped keep consuming tokens even when idle. (3) Tool-call loops &mdash; an agent stuck in a retry loop (failing tests, network errors) can spin up thousands of API calls per hour. amux&rsquo;s fleet view and cost monitoring surface these spikes in real time.</p>
+      </details>
+
+      <details class="faq-item">
+        <summary>How does amux track token costs across sessions?</summary>
+        <p>amux ships a server-side token/cost ledger (introduced in commit <code>418a6eb</code>, 2026-07-20) that records every token event emitted by any agent session. Each event is attributed to the session and the active task window, so you can see not just total spend but which task in which session consumed the most tokens. The dashboard&rsquo;s Cost tab shows this per-session breakdown. The <code>/api/observability</code> endpoint returns the same data as JSON for programmatic access.</p>
+      </details>
+
+      <details class="faq-item">
+        <summary>What is the cheapest way to run multiple AI coding agents?</summary>
+        <p>The most effective cost levers are: (1) Use Claude Haiku 3.5 ($0.80/$4 per MTok) for exploratory or low-stakes tasks and reserve Sonnet 4.5 ($3/$15 per MTok) for production code generation. (2) Enable context compaction &mdash; Claude Code does this automatically, but keeping tasks scoped reduces how often you approach the limit. (3) Set token budgets on each session and get alerts before they are exceeded. (4) Use session hibernation to stop idle agents rather than leaving them running. amux provides all of these controls from a single dashboard.</p>
+      </details>
+    </div>
+
+    <div class="related-guides" style="margin-top:3rem;padding:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Related Guides</strong>
+      <ul style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="/guides/claude-code-context-compaction/" style="color:var(--dim);">Claude Code Context Compaction</a></li>
+        <li><a href="/guides/ai-coding-finops/" style="color:var(--dim);">AI Coding FinOps</a></li>
+        <li><a href="/guides/cost-optimization/" style="color:var(--dim);">Cost Optimization for AI Agents</a></li>
+        <li><a href="/guides/token-spend-tracking/" style="color:var(--dim);">Token Spend Tracking</a></li>
+        <li><a href="/guides/ai-coding-agents-overnight/" style="color:var(--dim);">Running AI Coding Agents Overnight</a></li>
+        <li><a href="/guides/running-10-plus-agents/" style="color:var(--dim);">Running 10+ Parallel Agents</a></li>
+      </ul>
+    </div>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source control plane for AI agents. Runtime, observability, orchestration, and cost control &mdash; in one file.</p>
+        </div>
+        <div class="footer-link-cols">
+          <div class="footer-col">
+            <strong>Product</strong>
+            <a href="/guides/getting-started/">Getting Started</a>
+            <a href="/guides/rest-api-reference/">API Reference</a>
+            <a href="https://cloud.amux.io">Cloud</a>
+            <a href="/pricing/">Pricing</a>
+            <a href="/changelog/">Changelog</a>
+          </div>
+          <div class="footer-col">
+            <strong>Resources</strong>
+            <a href="/guides/">Guides</a>
+            <a href="/blog/">Blog</a>
+            <a href="/faq/">FAQ</a>
+            <a href="/glossary/">Glossary</a>
+            <a href="/demos/">Demos</a>
+          </div>
+          <div class="footer-col">
+            <strong>Compare</strong>
+            <a href="/compare/amux-vs-claude-managed-agents/">vs Managed Agents</a>
+            <a href="/compare/amux-vs-cursor/">vs Cursor</a>
+            <a href="/compare/amux-vs-devin/">vs Devin</a>
+            <a href="/compare/">All comparisons</a>
+          </div>
+          <div class="footer-col">
+            <strong>More</strong>
+            <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+            <a href="/llms.txt">llms.txt</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
