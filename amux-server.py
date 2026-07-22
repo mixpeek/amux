@@ -4587,7 +4587,7 @@ _ALERT_TYPE_LABELS = {
     "scheduler": "schedule", "auto_restart": "auto-restart", "auto_continue": "auto-continue",
     "auto_compact": "compact", "rate_limit_manual": "rate limit", "task_pickup": "task",
     "steering_delivered": "steering", "uncommitted": "uncommitted", "thinking_reset": "thinking reset",
-    "urgent": "URGENT",
+    "urgent": "URGENT", "git_orphan": "git rebase orphaned",
 }
 
 
@@ -10367,6 +10367,179 @@ def _checkout_busy_cotenant(name: str, work_dir: str) -> str:
     return ""
 
 
+# ── Shared-checkout staged-state guard (AMUX-1730 family) ────────────────────
+# Two sessions sharing one checkout also share ONE git index: `git add -A` in
+# session B stages files session A is mid-edit on, and B's next commit sweeps
+# A's WIP into an unrelated change (three real collisions in ~/Dev/mixpeek on
+# 2026-07-20). Per-session GIT_INDEX_FILE does NOT fix this — the working tree
+# itself is shared, so add -A in any index still picks up everyone's edits, and
+# the user's own terminal would see divergent staged state. True isolation is a
+# worktree session; for shared checkouts the durable fix is attribution: each
+# session's OWN JSONL transcript records exactly which files it edited
+# (first-hand provenance, same principle as AMUX-1795), so a pre-commit hook
+# can ask the server "which of my staged paths belong to a co-tenant?" and
+# block the sweep before it lands.
+
+_EDIT_TOOL_NAMES = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+_edit_paths_cache: dict[str, tuple[float, float, dict]] = {}  # name -> (cached_at, window, {abspath: ts})
+
+
+def _staged_guard_window() -> float:
+    try:
+        return max(600.0, float(os.environ.get("AMUX_STAGED_GUARD_WINDOW_SECS", "21600")))
+    except Exception:
+        return 21600.0
+
+
+def _session_recent_edit_paths(name: str, since_secs: float) -> dict:
+    """{abs realpath: epoch ts} of files this session edited (Edit/Write/
+    MultiEdit/NotebookEdit tool_use) within the window, parsed from its own
+    JSONL transcript. First-hand evidence — no reliance on git state, which is
+    exactly what's ambiguous in a shared checkout. Cached 30s per session."""
+    from datetime import datetime
+    now = time.time()
+    cached = _edit_paths_cache.get(name)
+    if cached and now - cached[0] < 30 and cached[1] == since_secs:
+        return cached[2]
+    out: dict[str, float] = {}
+    try:
+        jf = _session_jsonl_path(name)
+        if jf:
+            cutoff = now - since_secs
+            for e in _iter_jsonl_tail(jf, max_bytes=4_000_000):
+                try:
+                    ts_raw = e.get("timestamp") or ""
+                    if not ts_raw:
+                        continue
+                    ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp()
+                    if ts < cutoff:
+                        continue
+                    content = (e.get("message") or {}).get("content")
+                    if not isinstance(content, list):
+                        continue
+                    for blk in content:
+                        if not (isinstance(blk, dict) and blk.get("type") == "tool_use"):
+                            continue
+                        if blk.get("name") not in _EDIT_TOOL_NAMES:
+                            continue
+                        inp = blk.get("input") or {}
+                        fp = inp.get("file_path") or inp.get("notebook_path") or ""
+                        if isinstance(fp, str) and fp:
+                            out[os.path.realpath(fp)] = ts
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    _edit_paths_cache[name] = (now, since_secs, out)
+    return out
+
+
+def _staged_guard_check(session: str, work_dir: str, rel_paths: list) -> dict:
+    """Which of `rel_paths` (staged, repo-relative) were recently edited by a
+    DIFFERENT session sharing this checkout? A path the requesting session
+    ALSO edited is not foreign — both touched it, the committer has a
+    legitimate claim, and blocking would deadlock genuinely shared files."""
+    if os.environ.get("AMUX_STAGED_GUARD", "1").strip().lower() in ("0", "false", "off", "no"):
+        return {"ok": True, "enabled": False, "foreign": [], "cotenants": []}
+    try:
+        wd = str(Path(work_dir).expanduser().resolve())
+    except Exception:
+        return {"ok": True, "foreign": [], "cotenants": []}
+    cotenants = []
+    for f in CC_SESSIONS.glob("*.env"):
+        other = f.stem
+        if other == session:
+            continue
+        try:
+            od = parse_env_file(f).get("CC_DIR")
+            od = str(Path(od).expanduser().resolve()) if od else None
+        except Exception:
+            od = None
+        if od == wd:
+            cotenants.append(other)
+    if not cotenants or not rel_paths:
+        return {"ok": True, "foreign": [], "cotenants": cotenants}
+    window = _staged_guard_window()
+    now = time.time()
+    mine = _session_recent_edit_paths(session, window) if session else {}
+    theirs: dict[str, tuple[str, float]] = {}  # abspath -> (owner, newest ts)
+    for other in cotenants:
+        for p, ts in _session_recent_edit_paths(other, window).items():
+            cur = theirs.get(p)
+            if not cur or ts > cur[1]:
+                theirs[p] = (other, ts)
+    foreign = []
+    for rel in rel_paths[:2000]:
+        if not isinstance(rel, str) or not rel.strip():
+            continue
+        ap = os.path.realpath(os.path.join(wd, rel))
+        if ap in mine:
+            continue
+        hit = theirs.get(ap)
+        if hit:
+            foreign.append({"path": rel, "owner": hit[0],
+                            "age_secs": int(max(0, now - hit[1]))})
+    return {"ok": True, "foreign": foreign, "cotenants": cotenants,
+            "window_secs": int(window)}
+
+
+_orphan_git_alerted: dict[str, float] = {}  # checkout dir -> last alert ts
+
+
+def _check_orphaned_git_state():
+    """Detect ORPHANED rebase state in any session checkout: .git/rebase-merge
+    (or rebase-apply) untouched for >15 min. An interrupted `pull --rebase
+    --autostash` leaves everyone's WIP trapped in the autostash while git
+    reports 'you are currently rebasing' forever (AMUX-1730 incident 2).
+    Alert-only — never auto-fix: the remedy touches other sessions' work, and
+    a partial `stash apply` silently drops paths."""
+    dirs = set()
+    for f in CC_SESSIONS.glob("*.env"):
+        try:
+            d = parse_env_file(f).get("CC_DIR")
+            if d:
+                dirs.add(str(Path(d).expanduser().resolve()))
+        except Exception:
+            continue
+    now = time.time()
+    for wd in dirs:
+        try:
+            gr = subprocess.run(["git", "-C", wd, "rev-parse", "--git-dir"],
+                                capture_output=True, text=True, timeout=5)
+            if gr.returncode != 0:
+                continue
+            git_dir = gr.stdout.strip()
+            if not os.path.isabs(git_dir):
+                git_dir = os.path.join(wd, git_dir)
+            state = None
+            for sub in ("rebase-merge", "rebase-apply"):
+                p = os.path.join(git_dir, sub)
+                if os.path.isdir(p):
+                    state = (sub, os.stat(p).st_mtime)
+                    break
+            if not state:
+                _orphan_git_alerted.pop(wd, None)
+                continue
+            sub, mtime = state
+            if now - mtime < 900:  # <15 min old — plausibly a live rebase
+                continue
+            if now - _orphan_git_alerted.get(wd, 0) < 6 * 3600:
+                continue
+            _orphan_git_alerted[wd] = now
+            mins = int((now - mtime) / 60)
+            has_autostash = os.path.exists(os.path.join(git_dir, sub, "autostash"))
+            msg = (f"{wd}: orphaned {sub} state ({mins}m old) — git thinks a rebase "
+                   "is still running. "
+                   + ("An AUTOSTASH is trapped inside (uncommitted WIP!). " if has_autostash else "")
+                   + "Recover: `git rebase --quit`, then `git stash list` and verify EVERY "
+                     "file re-applied (a partial stash apply silently drops paths — recover "
+                     "stragglers with `git checkout stash@{0} -- <path>`).")
+            slog(f"[git-orphan] {msg}")
+            _push_alert("git_orphan", "", msg)
+        except Exception:
+            continue
+
+
 def _commit_guard_enabled() -> bool:
     """Global on/off for the idle commit-guard (configurable in the UI settings →
     persisted as AMUX_COMMIT_GUARD in ~/.amux/server.env). Default ON."""
@@ -11877,10 +12050,125 @@ exit 0
 """
 
 
+_AMUX_GUARD_MARKER = "# amux-staged-guard"
+_AMUX_GUARD_BODY = '''#!/usr/bin/env python3
+# amux-staged-guard — blocks a commit whose staged set contains files that a
+# DIFFERENT amux session edited in this shared checkout (staged-state sweep,
+# AMUX-1730: two sessions share one git index, so `git add -A` in one sweeps
+# the other's in-flight WIP into an unrelated commit). Fail-open by design:
+# any error, missing server, or timeout lets the commit proceed. Outside amux
+# ($AMUX_SESSION unset) it is a no-op — the human is always allowed.
+# Intentional cross-session commit: AMUX_ALLOW_FOREIGN=1 git commit ...
+import json, os, ssl, subprocess, sys, urllib.request
+
+
+def main():
+    sess = os.environ.get("AMUX_SESSION", "")
+    if not sess or os.environ.get("AMUX_ALLOW_FOREIGN"):
+        return 0
+    try:
+        staged = subprocess.run(["git", "diff", "--cached", "--name-only", "-z"],
+                                capture_output=True, text=True, timeout=10)
+        paths = [p for p in staged.stdout.split("\\0") if p.strip()]
+        if not paths:
+            return 0
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True,
+                             timeout=10).stdout.strip() or os.getcwd()
+        url = os.environ.get("AMUX_URL", "https://localhost:8822").rstrip("/") \\
+            + "/api/git/staged-guard"
+        body = json.dumps({"session": sess, "dir": top, "paths": paths}).encode()
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(url, data=body, method="POST", headers={
+            "Content-Type": "application/json", "X-Amux-Session": sess})
+        with urllib.request.urlopen(req, timeout=5, context=ctx) as r:
+            d = json.loads(r.read().decode())
+    except Exception:
+        return 0  # fail open — the guard must never brick commits
+    foreign = d.get("foreign") or []
+    if not foreign:
+        return 0
+    w = sys.stderr.write
+    w("\\namux staged-guard: COMMIT BLOCKED — staged files were edited by "
+      "OTHER amux sessions sharing this checkout:\\n\\n")
+    for f in foreign:
+        mins = int((f.get("age_secs") or 0) / 60)
+        w("  %s   (edited by session '%s' %dm ago)\\n"
+          % (f.get("path"), f.get("owner"), mins))
+    w("\\nUnstage them:   git restore --staged "
+      + " ".join(f.get("path", "") for f in foreign) + "\\n")
+    w("If this cross-session commit is intentional: "
+      "AMUX_ALLOW_FOREIGN=1 git commit ...\\n\\n")
+    return 1
+
+
+sys.exit(main())
+'''
+# Tiny sh shim: lives in (or is appended to) pre-commit and execs the guard.
+_AMUX_GUARD_SNIPPET = (
+    "\n" + _AMUX_GUARD_MARKER + "\n"
+    'g="$(dirname -- "$0")/amux-staged-guard"\n'
+    '[ -x "$g" ] && { "$g" || exit 1; }\n'
+)
+
+
+def _install_amux_precommit_guard(work_dir: str) -> None:
+    """Install the shared-checkout staged-state guard: hooks/amux-staged-guard
+    (the logic, a standalone python3 script) plus a pre-commit shim that runs
+    it. Chain-safe — appends to a foreign pre-commit instead of clobbering it.
+    Idempotent; updates our guard file in place when the body changes; never
+    overwrites a foreign file. Best-effort — failures are swallowed."""
+    try:
+        gr = subprocess.run(["git", "-C", work_dir, "rev-parse", "--git-dir"],
+                            capture_output=True, text=True, timeout=5)
+        if gr.returncode != 0:
+            return
+        git_dir = gr.stdout.strip()
+        if not os.path.isabs(git_dir):
+            git_dir = os.path.join(work_dir, git_dir)
+        hooks_dir = os.path.join(git_dir, "hooks")
+        os.makedirs(hooks_dir, exist_ok=True)
+        guard_path = os.path.join(hooks_dir, "amux-staged-guard")
+        cur = ""
+        if os.path.exists(guard_path):
+            try:
+                cur = open(guard_path).read()
+            except Exception:
+                cur = ""
+        if cur != _AMUX_GUARD_BODY:
+            if cur and _AMUX_GUARD_MARKER not in cur:
+                return  # foreign file squatting on our name — leave it alone
+            with open(guard_path, "w") as fh:
+                fh.write(_AMUX_GUARD_BODY)
+            os.chmod(guard_path, 0o755)
+        hook_path = os.path.join(hooks_dir, "pre-commit")
+        if os.path.exists(hook_path):
+            try:
+                existing = open(hook_path).read()
+            except Exception:
+                return
+            if _AMUX_GUARD_MARKER in existing:
+                return  # already wired
+            with open(hook_path, "a") as fh:
+                fh.write(_AMUX_GUARD_SNIPPET)
+        else:
+            with open(hook_path, "w") as fh:
+                fh.write("#!/bin/sh" + _AMUX_GUARD_SNIPPET + "exit 0\n")
+            os.chmod(hook_path, 0o755)
+    except Exception:
+        pass
+
+
 def _install_amux_commit_hook(work_dir: str) -> None:
     """Install a non-destructive prepare-commit-msg hook that stamps commits
     with $AMUX_SESSION. Idempotent; never clobbers a foreign hook (chains onto
     it instead). Best-effort — failures are swallowed."""
+    # The staged-state guard rides along with every stamp-hook install site,
+    # so both hooks reach every session repo through the same three paths
+    # (start_session, _install_hooks_all_sessions, the git peek action).
+    _install_amux_precommit_guard(work_dir)
     try:
         gr = subprocess.run(["git", "-C", work_dir, "rev-parse", "--git-dir"],
                             capture_output=True, text=True, timeout=5)
@@ -49012,6 +49300,26 @@ class CCHandler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "name": cc_name, "message": f"connected {tmux_session} as {cc_name}"})
 
         # POST /api/sessions (create new session)
+        # POST /api/git/staged-guard — the pre-commit staged-state guard asks:
+        # "which of my staged paths did a DIFFERENT session of this checkout
+        # edit recently?" Attribution comes from each session's own JSONL
+        # transcript (first-hand provenance, AMUX-1795), not from git state —
+        # git state is exactly what's ambiguous in a shared checkout (AMUX-1730).
+        if path == "/api/git/staged-guard" and method == "POST":
+            body = self._read_body()
+            # Server-verified origin wins over the claimed body session.
+            origin = (self.headers.get("X-Amux-Session", "") or "").strip()[:64]
+            session = origin or str(body.get("session", "")).strip()[:64]
+            wd = str(body.get("dir", "")).strip()
+            paths = body.get("paths") if isinstance(body.get("paths"), list) else []
+            if not wd:
+                return self._json({"ok": False, "error": "dir required"}, 400)
+            res = _staged_guard_check(session, wd, paths)
+            if res.get("foreign"):
+                slog(f"[staged-guard] {session}: blocked commit in {wd} — "
+                     + ", ".join(f"{f['path']} (owned by {f['owner']})" for f in res["foreign"][:5]))
+            return self._json(res)
+
         # GET /api/git-branches?dir=... — list branches for a git repo
         if method == "GET" and path == "/api/git-branches":
             wd = qs.get("dir", [""])[0]
@@ -54094,6 +54402,7 @@ def main():
     schedule_job(_evict_stale_caches,    interval=300,                  name="cache_evict", initial_delay=60)
     schedule_job(_cleanup_tmp,           interval=1800,                 name="tmp_cleanup", initial_delay=60)
     schedule_job(_auto_archive_idle,     interval=3600,                 name="auto_archive", initial_delay=300)
+    schedule_job(_check_orphaned_git_state, interval=600,               name="git_orphan",  initial_delay=120)
     # DISABLED 2026-07-06 — auto-steering every idle session about stale doing/review
     # cards woke ~20 sessions at once into a churn storm and created a nag loop
     # (each nudge is a message → _summarize_task_bg re-titles the session's active
