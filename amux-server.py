@@ -9184,6 +9184,27 @@ def _sched_audit(schedule_id, field, old, new, source, by_who=""):
         slog(f"[sched-audit] failed for {schedule_id}: {e}")
 
 
+def _sched_mutation_by(headers, client_address, body) -> str:
+    """Attribution string for a schedule mutation (AMUX-1765/AMUX-1812).
+    The server-verified X-Amux-Session header (stamped by the amux CLI and the
+    session-side curl rule) is the strongest signal; an explicit body/query
+    'by' is only a CLAIM, so when both are present and disagree, record both
+    (AMUX-1768 provenance principle). Falls back to the cloud user-email
+    header, then the client IP — attribution can never be truly anonymous."""
+    try:
+        hdr = (headers.get("X-Amux-Session", "") or "").strip()[:64]
+        claimed = str(body.get("by") or body.get("source_session") or "").strip()[:64]
+        if hdr and claimed and hdr != claimed:
+            return f"{hdr} (claimed {claimed})"
+        who = hdr or claimed
+        if not who:
+            who = (headers.get("X-Amux-User-Email", "").strip()
+                   or ("ip:" + (client_address[0] if client_address else "?")))
+        return who[:64]
+    except Exception:
+        return "?"
+
+
 def _run_schedule(sched):
     """Execute a schedule entry — send message to tmux session (kind='tmux')
     or run as shell command (kind='shell'). Logs the run.
@@ -26087,7 +26108,7 @@ async function _peekRunSchedule(id) {
 }
 async function _peekDeleteSchedule(id) {
   if (!confirm('Delete this schedule?')) return;
-  await apiCall(API + '/api/schedules/' + id, { method: 'DELETE' });
+  await apiCall(API + '/api/schedules/' + id + '?by=dashboard', { method: 'DELETE' });
   _peekLoadSchedules();
 }
 async function _peekEditSchedule(id) {
@@ -26506,7 +26527,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.175';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.176';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -36055,7 +36076,8 @@ async function saveSchedModal() {
   const payload = { title, session, kind, command, sched_type: stype, recurrence: null, run_at,
                     schedule_expr: schedExpr || null,
                     watch, done_pattern: donePattern || null, done_action: doneAction, watch_timeout: watchTimeout,
-                    trigger_on: trig.join(','), trigger_cooldown: triggerCooldown, trigger_sessions: triggerSessions };
+                    trigger_on: trig.join(','), trigger_cooldown: triggerCooldown, trigger_sessions: triggerSessions,
+                    by: 'dashboard' };
   const url = _schedEditId ? API + '/api/schedules/' + _schedEditId : API + '/api/schedules';
   const method = _schedEditId ? 'PATCH' : 'POST';
   const r = await apiCall(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
@@ -36069,7 +36091,7 @@ async function saveSchedModal() {
 }
 async function deleteSchedule(id) {
   if (!confirm('Delete this schedule?')) return;
-  await apiCall(API + '/api/schedules/' + id, { method: 'DELETE' });
+  await apiCall(API + '/api/schedules/' + id + '?by=dashboard', { method: 'DELETE' });
   await fetchSchedules();
   renderCalendar();
   renderScheduler();
@@ -45055,7 +45077,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.175';
+const CACHE = 'amux-v0.9.176';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -48895,6 +48917,15 @@ class CCHandler(BaseHTTPRequestHandler):
                      sched["created"], sched["updated"], sched["deleted"])
                 )
                 db.commit()
+                # Creation is a mutation too — unaudited creates were half of
+                # the AMUX-1812 forensics gap (8 schedules appeared AND
+                # vanished between daily snapshots with no attribution).
+                _sched_audit(sid, "created", "",
+                             json.dumps({"title": sched["title"], "session": sched["session"],
+                                         "expr": sched["schedule_expr"] or sched["run_at"],
+                                         "kind": sched["kind"]}),
+                             "api-create",
+                             _sched_mutation_by(self.headers, self.client_address, data))
                 _push_ical_bg()   # schedules drive the calendar feed now
                 self._json(sched, 201)
                 return
@@ -48970,16 +49001,13 @@ class CCHandler(BaseHTTPRequestHandler):
                 body = self._read_body()
                 _AUDIT_FIELDS = ("enabled","session","command","schedule_expr","done_action","trigger_on","kind")
                 _old_vals = {k: sched.get(k) for k in _AUDIT_FIELDS}
-                # Attribution can never be truly anonymous (AMUX-1765): explicit
-                # `by` wins, else the cloud user-email header, else the client IP.
-                # The "recurring UNATTRIBUTED disabler" was the DASHBOARD toggle —
-                # it sent no `by`, so human UI flips looked like a rogue script to
-                # the guardian. Now every flip carries at least its origin.
-                _by = str(body.get("by") or body.get("source_session") or "").strip()
-                if not _by:
-                    _by = (self.headers.get("X-Amux-User-Email", "").strip()
-                           or ("ip:" + (self.client_address[0] if self.client_address else "?")))
-                _by = _by[:64]
+                # Attribution can never be truly anonymous (AMUX-1765): verified
+                # X-Amux-Session header, else explicit `by`, else the cloud
+                # user-email header, else the client IP. The "recurring
+                # UNATTRIBUTED disabler" was the DASHBOARD toggle — it sent no
+                # `by`, so human UI flips looked like a rogue script to the
+                # guardian. Now every flip carries at least its origin.
+                _by = _sched_mutation_by(self.headers, self.client_address, body)
                 for k in ("title","session","command","kind","sched_type","recurrence","run_at","enabled","schedule_expr",
                           "watch","watch_timeout","done_pattern","done_action","trigger_on","trigger_cooldown","trigger_sessions"):
                     if k in body:
@@ -49018,12 +49046,31 @@ class CCHandler(BaseHTTPRequestHandler):
                 self._json(sched)
                 return
 
-            # DELETE /api/schedules/<id>
+            # DELETE /api/schedules/<id> — soft-delete, AUDITED (AMUX-1812: 8
+            # schedules vanished 07-21→22 with zero attribution; deletes must
+            # leave the same by_who trail as field PATCHes). `by` comes from
+            # the ?by= query param (DELETE bodies are unreliable) or the
+            # verified X-Amux-Session header.
             if method == "DELETE":
                 db = get_db()
+                row = db.execute("SELECT * FROM schedules WHERE id=?", (sched_id,)).fetchone()
+                if not row:
+                    self._json({"error": "not found"}, 404); return
+                sched = _sched_row_to_dict(row, _sched_cols(db))
+                if sched.get("deleted"):
+                    # idempotent re-delete — no duplicate audit row
+                    self._json({"deleted": sched_id, "already": True}); return
+                now_ts = int(_time.time())
                 db.execute("UPDATE schedules SET deleted=?,updated=? WHERE id=?",
-                           (int(_time.time()), int(_time.time()), sched_id))
+                           (now_ts, now_ts, sched_id))
                 db.commit()
+                _sched_audit(sched_id, "deleted",
+                             json.dumps({"title": sched.get("title"), "session": sched.get("session"),
+                                         "enabled": sched.get("enabled"),
+                                         "expr": sched.get("schedule_expr") or sched.get("run_at")}),
+                             str(now_ts), "api-delete",
+                             _sched_mutation_by(self.headers, self.client_address,
+                                                {"by": (qs.get("by", [""])[0] or "")}))
                 _push_ical_bg()   # schedule removed → refresh calendar feed
                 self._json({"deleted": sched_id})
                 return
