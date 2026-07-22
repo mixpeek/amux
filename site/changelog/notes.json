@@ -1,5 +1,75 @@
 [
   {
+    "hash": "a5ee75f",
+    "short": "a5ee75f",
+    "title": "Scheduler now logs who created or deleted each schedule \u2014 full audit trail",
+    "date": "2026-07-22",
+    "type": "feat",
+    "tags": [
+      "scheduler",
+      "audit",
+      "attribution",
+      "observability"
+    ],
+    "description": "Every schedule create and delete is now recorded with attribution \u2014 who created it (by session name or IP), what session it runs in, and when. The audit trail appears in the scheduler's run history. Useful for debugging 'who scheduled this?' and for team setups where multiple agents manage shared schedules."
+  },
+  {
+    "hash": "eab30ed",
+    "short": "eab30ed",
+    "title": "Shared-checkout guard protects your staged files when agents try to check out the same branch",
+    "date": "2026-07-22",
+    "type": "feat",
+    "tags": [
+      "git",
+      "safety",
+      "parallel-agents",
+      "conflict-prevention"
+    ],
+    "description": "When multiple agents try to git checkout the same branch simultaneously, the new staged-state guard detects the conflict and holds \u2014 preventing a checkout from stomping your in-progress staged files. Also detects and reports orphaned rebase states left behind by crashed agents. Pairs with git worktree isolation for maximum parallel-agent safety."
+  },
+  {
+    "hash": "2960c3f",
+    "short": "2960c3f",
+    "title": "Click any message to insert it into the terminal, or copy it \u2014 with a locate button",
+    "date": "2026-07-22",
+    "type": "feat",
+    "tags": [
+      "messages",
+      "ux",
+      "terminal",
+      "productivity"
+    ],
+    "description": "The Messages tab now has per-message actions: a click-to-insert button switches to the Terminal tab and pastes the message into the input composer, a copy button copies to clipboard, and a locate button jumps to the message's source in the session output. Speeds up replay, iterating on past prompts, and finding where a specific message landed in the transcript."
+  },
+  {
+    "hash": "ea42238",
+    "short": "ea42238",
+    "title": "Pending messages visible as \u23f3 in the Messages tab while offline",
+    "date": "2026-07-22",
+    "type": "feat",
+    "tags": [
+      "offline",
+      "messages",
+      "pwa",
+      "reliability"
+    ],
+    "description": "Messages sent while the device is offline now appear immediately in the Messages tab with a \u23f3 pending indicator. A composer pill shows 'N unsent messages queued' until the connection is restored and they deliver. Previously, offline-queued messages were invisible until delivery \u2014 making it unclear whether your send had registered. Works on mobile PWA and native iOS app."
+  },
+  {
+    "hash": "ea62238",
+    "short": "ea62238",
+    "title": "Mental Model guide now covers Commits and Proxies \u2014 the full 21-surface map",
+    "date": "2026-07-22",
+    "type": "feat",
+    "tags": [
+      "docs",
+      "mental-model",
+      "guide",
+      "onboarding"
+    ],
+    "description": "The amux Mental Model guide is expanded with two new surfaces: Commits (how amux tracks git commits per session as a timeline of delivered work) and Proxies (amux's built-in request routing layer for MCP and REST API calls between agents). The guide now covers all 21 amux surfaces with UI mocks and knowledge-work analogies."
+  },
+  {
     "hash": "2e82154",
     "short": "2e82154",
     "title": "Session output restored for API integrations \u2014 peek endpoint was returning empty",

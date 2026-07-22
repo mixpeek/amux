@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Claude Code Rate Limits: What to Do When You Hit Them (2026) &mdash; amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Claude Code rate limits explained: subscription credit exhaustion vs API per-minute caps, common error messages, and 5 strategies to avoid hitting limits &mdash; including multi-runtime fallback with Codex and Gemini CLI.">
+  <meta name="keywords" content="Claude Code rate limit, Claude Code too many requests, Claude Code rate limited what to do, avoid Claude Code rate limits, Claude Code usage limits 2026, Claude Code overloaded, Claude Code Max plan, Claude Code API limits, Claude Code high demand error, multi-runtime fallback">
+  <link rel="canonical" href="https://amux.io/guides/claude-code-rate-limits/">
+  <meta property="og:title" content="Claude Code Rate Limits: What to Do When You Hit Them (2026) &mdash; amux">
+  <meta property="og:description" content="Claude Code rate limits explained: subscription credit exhaustion vs API per-minute caps, common error messages, and 5 strategies to avoid hitting limits &mdash; including multi-runtime fallback.">
+  <meta property="og:url" content="https://amux.io/guides/claude-code-rate-limits/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Claude Code Rate Limits","item":"https://amux.io/guides/claude-code-rate-limits/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Claude Code Rate Limits: What to Do When You Hit Them (2026)","description":"Claude Code rate limits explained: subscription credit exhaustion vs API per-minute caps, common error messages, and 5 strategies to avoid hitting limits — including multi-runtime fallback with Codex and Gemini CLI.","url":"https://amux.io/guides/claude-code-rate-limits/","datePublished":"2026-07-22","dateModified":"2026-07-22","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Why is Claude Code saying rate limit exceeded?","acceptedAnswer":{"@type":"Answer","text":"Claude Code rate limits come from two sources. If you are on a Claude Code Max subscription (Max 5x at $100/month or Max 20x at $200/month), you have a fixed monthly credit pool — hitting the limit means your credits are exhausted for the period. If you are using a direct Anthropic API key, rate limits are per-minute and per-day token caps enforced by the API; you can view your current limits in the Anthropic Console at console.anthropic.com. Service-wide outages also produce 'overloaded' errors — check status.anthropic.com to rule that out."}},{"@type":"Question","name":"How do I fix Claude Code 'overloaded' errors?","acceptedAnswer":{"@type":"Answer","text":"First, check status.anthropic.com to see if there is a service-wide outage. If Anthropic is healthy, the overloaded message means your account or plan hit a rate limit. For subscription plans: reduce parallel sessions, wait for your credit window to reset, or upgrade to a higher Max tier. For API keys: slow down request volume, reduce context size, or request a rate limit increase from Anthropic support. As a faster alternative, switch to a different runtime (Codex CLI or Gemini CLI) mid-session — amux supports all three from the same dashboard so you can continue work without interruption."}},{"@type":"Question","name":"What is the difference between Claude Code Max 5x and Max 20x?","acceptedAnswer":{"@type":"Answer","text":"Both plans are subscription-based with a monthly credit pool rather than per-token billing. Max 5x ($100/month) gives five times the usage of Claude Code Pro, making it suitable for developers running a moderate number of concurrent sessions. Max 20x ($200/month) provides twenty times the Pro usage, designed for teams or individuals running large agent fleets with many parallel sessions. When the monthly credit pool is exhausted, Claude Code will show rate limit errors until the next billing cycle. Using the Anthropic API with direct API keys bypasses these subscription caps but subjects you to per-minute and per-day token rate limits instead."}},{"@type":"Question","name":"Can I run multiple Claude Code agents without hitting rate limits faster?","acceptedAnswer":{"@type":"Answer","text":"Yes, but each parallel agent consumes credits or API quota independently. On a Max subscription, running five agents in parallel exhausts your credit pool five times faster than running one. Strategies to reduce rate-limit pressure when running multiple agents: (1) stagger session starts so they do not all make API calls simultaneously, (2) use context compaction to keep each session's token footprint small, (3) route lower-priority tasks to Codex CLI or Gemini CLI instead of Claude Code — both support the same coding tasks and draw from separate quota pools, (4) upgrade to Max 20x if you regularly hit Max 5x limits. amux's multi-runtime support lets you split work across Claude, Codex, and Gemini from one dashboard."}},{"@type":"Question","name":"How do I monitor Claude Code token usage to avoid hitting limits?","acceptedAnswer":{"@type":"Answer","text":"For API key users, the Anthropic Console (console.anthropic.com) shows per-day token usage against your rate limit cap. For Max plan users, there is no real-time credit meter in Claude Code itself — you discover the limit when you hit it. amux's Cost tab tracks real-time token spend per session, so you can see which agent is consuming the most budget before you hit the wall. The /api/observability endpoint returns machine-readable per-session token counts you can feed into your own alerting."}}]}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Claude Code Rate Limits</span></div>
+    <h1>Claude Code Rate Limits: What to Do When You Hit Them</h1>
+    <p class="subtitle">Why Claude Code gets rate limited, what the error messages mean, and five strategies to keep working when you hit the wall. <em>Updated July 2026.</em></p>
+
+    <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Contents</strong>
+      <ol style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="#answer" style="color:var(--dim);text-decoration:none;">Direct Answer: What to Do Right Now</a></li>
+        <li><a href="#triggers" style="color:var(--dim);text-decoration:none;">What Triggers Claude Code Rate Limits</a></li>
+        <li><a href="#errors" style="color:var(--dim);text-decoration:none;">Error Messages and What They Mean</a></li>
+        <li><a href="#strategies" style="color:var(--dim);text-decoration:none;">5 Strategies to Avoid and Handle Rate Limits</a></li>
+        <li><a href="#amux" style="color:var(--dim);text-decoration:none;">How amux Helps</a></li>
+        <li><a href="#comparison" style="color:var(--dim);text-decoration:none;">Max 5x vs Max 20x vs API Keys</a></li>
+        <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
+      </ol>
+    </nav>
+
+    <!-- ─────────────────────────── ANSWER BOX ─────────────────────────── -->
+    <div id="answer" style="background:var(--surface);border-left:4px solid #6366f1;border-radius:0 8px 8px 0;padding:1.2rem 1.6rem;margin:2rem 0;">
+      <strong style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.06em;color:#6366f1;">Direct Answer</strong>
+      <p style="margin:0.5rem 0 0;font-size:1.05rem;line-height:1.65;">When Claude Code shows a rate limit or overload error, first check <a href="https://status.anthropic.com" target="_blank" rel="noopener">status.anthropic.com</a> to rule out a service-wide outage. If Anthropic is healthy, you have hit your plan&rsquo;s credit pool (Max subscription) or your per-minute token cap (API key). <strong>The fastest fix is to switch to a different runtime</strong> &mdash; Codex CLI or Gemini CLI can handle the same coding tasks and draw from completely separate quota pools. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> supports all three runtimes from one dashboard so you can continue without interruption.</p>
+    </div>
+
+    <!-- ─────────────────────────── TRIGGERS ─────────────────────────── -->
+    <h2 id="triggers">What Triggers Claude Code Rate Limits</h2>
+
+    <p>Claude Code uses the Claude API under the hood. The rate limits you encounter depend on which access model you are using &mdash; a Max subscription plan or direct API keys.</p>
+
+    <h3>Claude Code Max Subscription Plans</h3>
+
+    <p>Claude Code Max plans replace per-token billing with a monthly credit pool. When the pool is exhausted, Claude Code stops accepting requests until the next billing cycle. There are two tiers:</p>
+
+    <ul>
+      <li><strong>Max 5x</strong> ($100/month) &mdash; five times the usage of Claude Code Pro. Suited for individual developers running a moderate number of sessions.</li>
+      <li><strong>Max 20x</strong> ($200/month) &mdash; twenty times the Pro usage. Designed for teams or individuals operating large agent fleets with many parallel sessions.</li>
+    </ul>
+
+    <p>The critical difference from API key billing: there is no per-minute cap, but once your monthly credits are gone, you are locked out for the rest of the period regardless of how much time remains. Running ten parallel agents on Max 5x exhausts credits ten times faster than running one.</p>
+
+    <h3>Direct API Keys (Pay-As-You-Go)</h3>
+
+    <p>If you supply an Anthropic API key directly to Claude Code instead of using a Max plan, rate limits are enforced differently &mdash; as per-minute and per-day token counts rather than a monthly pool. These limits are visible in the <a href="https://console.anthropic.com" target="_blank" rel="noopener">Anthropic Console</a> under Usage &amp; Limits. You can request higher limits through Anthropic support once your account has established usage history.</p>
+
+    <p>API key limits are typically more granular &mdash; a burst of many short requests in a short window can hit the per-minute cap even if your overall daily usage is low. This is the most common cause of rate limit errors for developers running automated agent loops.</p>
+
+    <h3>Service-Wide Overload</h3>
+
+    <p>Anthropic occasionally experiences high demand that affects all accounts simultaneously. These show up as &ldquo;overloaded&rdquo; errors that are unrelated to your plan or usage level. Always check <a href="https://status.anthropic.com" target="_blank" rel="noopener">status.anthropic.com</a> first &mdash; if there is an active incident, waiting it out (or switching runtimes) is the only option.</p>
+
+    <!-- ─────────────────────────── ERRORS ─────────────────────────── -->
+    <h2 id="errors">Error Messages and What They Mean</h2>
+
+    <p>Claude Code surfaces several distinct error messages when limits are hit. Each one points to a different root cause and a different fix.</p>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Error Message</th>
+            <th>Root Cause</th>
+            <th>What to Do</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>&ldquo;Claude AI is currently experiencing high demand. Please wait a moment and try again.&rdquo;</strong></td>
+            <td>Service-wide overload or your API rate limit was hit</td>
+            <td>Check status.anthropic.com; if healthy, wait 60&ndash;120 seconds or switch to Codex/Gemini CLI</td>
+          </tr>
+          <tr>
+            <td><strong>&ldquo;overloaded&rdquo;</strong></td>
+            <td>API returned HTTP 529 &mdash; server capacity issue</td>
+            <td>Check status.anthropic.com; usually resolves within minutes; switch runtimes if time-sensitive</td>
+          </tr>
+          <tr>
+            <td><strong>&ldquo;prompt too long&rdquo;</strong></td>
+            <td>Context window exceeded &mdash; accumulated context is larger than the model&rsquo;s limit</td>
+            <td>Start a new session; enable context compaction; use <code>/compact</code> command in Claude Code</td>
+          </tr>
+          <tr>
+            <td><strong>&ldquo;rate_limit_error&rdquo; (API key users)</strong></td>
+            <td>Per-minute or per-day token cap reached on your API key</td>
+            <td>Wait for the per-minute window to reset (usually 60s); reduce parallel sessions; request higher limits in Anthropic Console</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The &ldquo;prompt too long&rdquo; error is technically not a rate limit &mdash; it is a context size constraint. But it appears alongside rate limit errors when sessions run long, because large contexts also make each API call more expensive and can push you toward per-minute token caps faster.</p>
+
+    <!-- ─────────────────────────── STRATEGIES ─────────────────────────── -->
+    <h2 id="strategies">5 Strategies to Avoid and Handle Rate Limits</h2>
+
+    <h3>1. Multi-Runtime Fallback</h3>
+
+    <p>The most effective immediate fix: when Claude is rate-limited, switch to Codex CLI (OpenAI) or Gemini CLI (Google). These runtimes are fully capable of handling the same coding tasks &mdash; reading files, editing code, running tests &mdash; and they pull from completely separate quota pools. If Claude hits its wall at 2 AM during an overnight run, your agent fleet does not have to stop.</p>
+
+    <p>amux supports all three runtimes (Claude Code, Codex, and Gemini CLI, also known as Antigravity CLI) from the same dashboard. You can reassign sessions to a different runtime without changing your task prompts or losing context from the board.</p>
+
+    <h3>2. Context Compaction</h3>
+
+    <p>Shorter context means fewer tokens per API call. Fewer tokens per call means lower rate-limit pressure &mdash; especially on per-minute caps for API key users. Claude Code can automatically compact (summarize) the conversation when context grows large; you can also trigger this manually with <code>/compact</code>.</p>
+
+    <p>amux auto-compacts context for sessions it manages. Beyond compaction, keeping sessions scoped to one task rather than one long multi-task session significantly reduces how much context accumulates before the task is done.</p>
+
+    <h3>3. Stagger Session Starts</h3>
+
+    <p>When running many agents in parallel on a Max subscription, starting them all simultaneously creates a burst of API calls in the same minute. This can push API key users past per-minute limits and causes Max plan credits to drain unevenly. Staggering session starts by 30&ndash;60 seconds spreads the load and reduces burst-related limit hits.</p>
+
+    <pre><code><span class="comment"># amux stagger example — start sessions 30s apart</span>
+# Start first session
+amux session start auth-refactor --runtime claude
+
+# Wait 30 seconds before starting the next
+# (amux scheduler can automate this spacing)
+amux session start docs-update --runtime codex</code></pre>
+
+    <h3>4. Model Routing</h3>
+
+    <p>Not every task requires Claude&rsquo;s full capability. Routing lower-stakes work to Codex or Gemini CLI not only preserves Claude credits for tasks that genuinely need Claude&rsquo;s strengths &mdash; it also reduces your total rate-limit exposure because quota pools are independent.</p>
+
+    <p>A practical split:</p>
+    <ul>
+      <li><strong>Claude Code</strong> &mdash; complex refactors, hard debugging, architecture decisions, tasks requiring deep codebase understanding</li>
+      <li><strong>Codex CLI</strong> &mdash; feature scaffolding, test generation, documentation, routine file edits</li>
+      <li><strong>Gemini CLI</strong> &mdash; long-context tasks (Gemini has a very large context window), research, summarization across many files</li>
+    </ul>
+
+    <h3>5. Max Plan Upgrade</h3>
+
+    <p>If you regularly exhaust Max 5x credits before the end of the month, the arithmetic usually favors upgrading to Max 20x rather than throttling your workflow. At $200/month for 20x usage, the per-unit credit cost is lower, and you eliminate the interruptions caused by hitting the credit wall mid-project.</p>
+
+    <p>Before upgrading, use amux&rsquo;s Cost tab to verify that you are actually exhausting subscription credits rather than hitting a per-minute API burst limit &mdash; the fix for those two problems is different.</p>
+
+    <!-- ─────────────────────────── AMUX ─────────────────────────── -->
+    <h2 id="amux">How amux Helps</h2>
+
+    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is an open-source control plane for AI agent teams. It addresses rate limits at three levels: visibility, resilience, and multi-runtime routing.</p>
+
+    <h3>Cost Tab: Real-Time Token Spend per Session</h3>
+
+    <p>The amux dashboard&rsquo;s <strong>Cost tab</strong> shows real-time token spend broken down by session. For Max plan users who have no built-in credit meter, this is the only way to see which agent is consuming the most budget before you hit the limit. For API key users, it surfaces per-session usage so you can identify which session is driving you toward the per-minute cap.</p>
+
+    <pre><code><span class="comment"># Programmatic per-session token breakdown</span>
+curl -sk $AMUX_URL/api/observability | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for s in data.get('sessions', []):
+    print(s['name'], '|', s.get('total_tokens', 0), 'tokens', '|', s.get('total_cost_usd', 0), 'USD')
+"</code></pre>
+
+    <h3>Multi-Runtime Support</h3>
+
+    <p>amux treats Claude Code, Codex CLI, and Gemini CLI as interchangeable runtimes. Sessions can be assigned to any runtime; the board, CRM, kanban, and email integrations work the same regardless of which model is driving the agent. When Claude is rate-limited, you switch the affected sessions to Codex or Gemini from the dashboard &mdash; no reconfiguration required.</p>
+
+    <h3>Self-Healing Watchdog</h3>
+
+    <p>amux runs a watchdog that monitors each session for overload and rate-limit errors. When a session gets an overload response, the watchdog can automatically retry after a backoff delay or mark the session for manual review on the board. This prevents silent failures where an agent appears to be running but has actually been blocked by a rate limit for hours.</p>
+
+    <h3>Context Auto-Compaction</h3>
+
+    <p>amux monitors context size across sessions and triggers compaction before context grows large enough to cause &ldquo;prompt too long&rdquo; errors or push per-call token costs up toward rate-limit thresholds. This is especially useful for overnight runs where no developer is watching the sessions.</p>
+
+    <!-- ─────────────────────────── CTA EXP-014 ─────────────────────────── -->
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux &mdash; multi-runtime fallback when Claude hits rate limits (307&#9733; GitHub)</div>
+        <div style="color:var(--muted);font-size:.9rem">Switch from Claude Code to Codex or Gemini CLI mid-session. Self-healing watchdog retries on overload. Cost tab tracks token spend per session in real time.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub &#9733;</a>
+    </div>
+
+    <!-- ─────────────────────────── COMPARISON ─────────────────────────── -->
+    <h2 id="comparison">Max 5x vs Max 20x vs API Keys: Rate Limit Behavior</h2>
+
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Plan</th>
+            <th>Cost</th>
+            <th>Rate Limit Type</th>
+            <th>What Happens When You Hit It</th>
+            <th>Best For</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Claude Code Max 5x</strong></td>
+            <td>$100/month</td>
+            <td>Monthly credit pool (5&times; Pro)</td>
+            <td>Claude Code stops working until next billing cycle</td>
+            <td>Individual developers, moderate parallel usage (1&ndash;5 sessions)</td>
+          </tr>
+          <tr>
+            <td><strong>Claude Code Max 20x</strong></td>
+            <td>$200/month</td>
+            <td>Monthly credit pool (20&times; Pro)</td>
+            <td>Same &mdash; locked out until next cycle, but much harder to exhaust</td>
+            <td>Teams, heavy agent fleets, 10+ parallel sessions</td>
+          </tr>
+          <tr>
+            <td><strong>Anthropic API Key</strong></td>
+            <td>Pay-per-token (no monthly cap)</td>
+            <td>Per-minute and per-day token counts</td>
+            <td>Requests fail with 429 until the per-minute window resets (60s); no monthly lockout</td>
+            <td>Variable workloads, cost transparency, usage above Max plan limits</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Key trade-off: Max plans give predictable monthly costs but risk a hard stop if you over-run your credits. API keys have no monthly ceiling but expose you to burst-rate limits that are easy to hit with many parallel agents. Many teams use a hybrid &mdash; Max plan for primary sessions, API key accounts for overflow agents routed through Codex or Gemini CLI.</p>
+
+    <!-- ─────────────────────────── FAQ ─────────────────────────── -->
+    <h2 id="faq">FAQ</h2>
+
+    <div class="faq-list">
+      <details class="faq-item">
+        <summary>Why is Claude Code saying rate limit exceeded?</summary>
+        <p>Claude Code rate limits come from two sources. If you are on a Claude Code Max subscription (Max 5x at $100/month or Max 20x at $200/month), you have a fixed monthly credit pool &mdash; hitting the limit means your credits are exhausted for the period. If you are using a direct Anthropic API key, rate limits are per-minute and per-day token caps enforced by the API; you can view your current limits in the Anthropic Console at console.anthropic.com. Service-wide outages also produce &ldquo;overloaded&rdquo; errors &mdash; check status.anthropic.com to rule that out.</p>
+      </details>
+
+      <details class="faq-item">
+        <summary>How do I fix Claude Code &lsquo;overloaded&rsquo; errors?</summary>
+        <p>First, check status.anthropic.com to see if there is a service-wide outage. If Anthropic is healthy, the overloaded message means your account or plan hit a rate limit. For subscription plans: reduce parallel sessions, wait for your credit window to reset, or upgrade to a higher Max tier. For API keys: slow down request volume, reduce context size, or request a rate limit increase from Anthropic support. As a faster alternative, switch to a different runtime (Codex CLI or Gemini CLI) mid-session &mdash; amux supports all three from the same dashboard so you can continue work without interruption.</p>
+      </details>
+
+      <details class="faq-item">
+        <summary>What is the difference between Claude Code Max 5x and Max 20x?</summary>
+        <p>Both plans are subscription-based with a monthly credit pool rather than per-token billing. Max 5x ($100/month) gives five times the usage of Claude Code Pro, making it suitable for developers running a moderate number of concurrent sessions. Max 20x ($200/month) provides twenty times the Pro usage, designed for teams or individuals running large agent fleets with many parallel sessions. When the monthly credit pool is exhausted, Claude Code will show rate limit errors until the next billing cycle. Using the Anthropic API with direct API keys bypasses these subscription caps but subjects you to per-minute and per-day token rate limits instead.</p>
+      </details>
+
+      <details class="faq-item">
+        <summary>Can I run multiple Claude Code agents without hitting rate limits faster?</summary>
+        <p>Yes, but each parallel agent consumes credits or API quota independently. On a Max subscription, running five agents in parallel exhausts your credit pool five times faster than running one. Strategies to reduce rate-limit pressure when running multiple agents: (1) stagger session starts so they do not all make API calls simultaneously, (2) use context compaction to keep each session&rsquo;s token footprint small, (3) route lower-priority tasks to Codex CLI or Gemini CLI instead of Claude Code &mdash; both support the same coding tasks and draw from separate quota pools, (4) upgrade to Max 20x if you regularly hit Max 5x limits. amux&rsquo;s multi-runtime support lets you split work across Claude, Codex, and Gemini from one dashboard.</p>
+      </details>
+
+      <details class="faq-item">
+        <summary>How do I monitor Claude Code token usage to avoid hitting limits?</summary>
+        <p>For API key users, the Anthropic Console (console.anthropic.com) shows per-day token usage against your rate limit cap. For Max plan users, there is no real-time credit meter in Claude Code itself &mdash; you discover the limit when you hit it. amux&rsquo;s Cost tab tracks real-time token spend per session, so you can see which agent is consuming the most budget before you hit the wall. The <code>/api/observability</code> endpoint returns machine-readable per-session token counts you can feed into your own alerting.</p>
+      </details>
+    </div>
+
+    <div class="related-guides" style="margin-top:3rem;padding:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;">
+      <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);">Related Guides</strong>
+      <ul style="margin:0.6rem 0 0;padding-left:1.2rem;font-size:0.88rem;line-height:2;">
+        <li><a href="/guides/ai-agent-cost-monitoring/" style="color:var(--dim);">AI Agent Cost Monitoring</a></li>
+        <li><a href="/guides/claude-code-context-compaction/" style="color:var(--dim);">Claude Code Context Compaction</a></li>
+        <li><a href="/guides/claude-code-max-plan/" style="color:var(--dim);">Claude Code Max Plan</a></li>
+        <li><a href="/guides/multi-runtime-agent-setup/" style="color:var(--dim);">Multi-Runtime Agent Setup</a></li>
+        <li><a href="/guides/running-10-plus-agents/" style="color:var(--dim);">Running 10+ Parallel Agents</a></li>
+        <li><a href="/guides/ai-coding-agents-overnight/" style="color:var(--dim);">Running AI Coding Agents Overnight</a></li>
+      </ul>
+    </div>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
+          <p>Open-source control plane for AI agents. Runtime, observability, orchestration, and cost control &mdash; in one file.</p>
+        </div>
+        <div class="footer-link-cols">
+          <div class="footer-col">
+            <strong>Product</strong>
+            <a href="/guides/getting-started/">Getting Started</a>
+            <a href="/guides/rest-api-reference/">API Reference</a>
+            <a href="https://cloud.amux.io">Cloud</a>
+            <a href="/pricing/">Pricing</a>
+            <a href="/changelog/">Changelog</a>
+          </div>
+          <div class="footer-col">
+            <strong>Resources</strong>
+            <a href="/guides/">Guides</a>
+            <a href="/blog/">Blog</a>
+            <a href="/faq/">FAQ</a>
+            <a href="/glossary/">Glossary</a>
+            <a href="/demos/">Demos</a>
+          </div>
+          <div class="footer-col">
+            <strong>Compare</strong>
+            <a href="/compare/amux-vs-claude-managed-agents/">vs Managed Agents</a>
+            <a href="/compare/amux-vs-cursor/">vs Cursor</a>
+            <a href="/compare/amux-vs-devin/">vs Devin</a>
+            <a href="/compare/">All comparisons</a>
+          </div>
+          <div class="footer-col">
+            <strong>More</strong>
+            <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+            <a href="/llms.txt">llms.txt</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
