@@ -12106,20 +12106,33 @@ def main():
 
 sys.exit(main())
 '''
-# Tiny sh shim: lives in (or is appended to) pre-commit and execs the guard.
+# Tiny sh shim wired into pre-commit; execs the guard. Status-neutral by
+# construction: the `if` form returns 0 when the guard file is absent, so a
+# deleted guard can never fail-close commits, and it is INSERTED AFTER THE
+# SHEBANG of a foreign pre-commit (not appended) — appended snippets are dead
+# code in the many hooks that end with an explicit `exit 0`.
 _AMUX_GUARD_SNIPPET = (
-    "\n" + _AMUX_GUARD_MARKER + "\n"
+    _AMUX_GUARD_MARKER + "\n"
     'g="$(dirname -- "$0")/amux-staged-guard"\n'
-    '[ -x "$g" ] && { "$g" || exit 1; }\n'
+    'if [ -x "$g" ]; then "$g" || exit 1; fi\n'
 )
+# Lines any previous install may have written (old + new forms) — stripped on
+# migration so re-installs never duplicate or leave a stale appended copy.
+_AMUX_GUARD_SNIPPET_LINES = {
+    _AMUX_GUARD_MARKER,
+    'g="$(dirname -- "$0")/amux-staged-guard"',
+    'if [ -x "$g" ]; then "$g" || exit 1; fi',
+    '[ -x "$g" ] && { "$g" || exit 1; }',
+}
 
 
 def _install_amux_precommit_guard(work_dir: str) -> None:
     """Install the shared-checkout staged-state guard: hooks/amux-staged-guard
     (the logic, a standalone python3 script) plus a pre-commit shim that runs
-    it. Chain-safe — appends to a foreign pre-commit instead of clobbering it.
-    Idempotent; updates our guard file in place when the body changes; never
-    overwrites a foreign file. Best-effort — failures are swallowed."""
+    it. Chain-safe — inserts after a foreign pre-commit's shebang instead of
+    clobbering (or trailing an `exit 0`). Idempotent; updates our guard file
+    and migrates old shim placements in place; never overwrites a foreign
+    file. Best-effort — failures are swallowed."""
     try:
         gr = subprocess.run(["git", "-C", work_dir, "rev-parse", "--git-dir"],
                             capture_output=True, text=True, timeout=5)
@@ -12144,19 +12157,28 @@ def _install_amux_precommit_guard(work_dir: str) -> None:
                 fh.write(_AMUX_GUARD_BODY)
             os.chmod(guard_path, 0o755)
         hook_path = os.path.join(hooks_dir, "pre-commit")
-        if os.path.exists(hook_path):
-            try:
-                existing = open(hook_path).read()
-            except Exception:
-                return
-            if _AMUX_GUARD_MARKER in existing:
-                return  # already wired
-            with open(hook_path, "a") as fh:
-                fh.write(_AMUX_GUARD_SNIPPET)
-        else:
+        if not os.path.exists(hook_path):
             with open(hook_path, "w") as fh:
-                fh.write("#!/bin/sh" + _AMUX_GUARD_SNIPPET + "exit 0\n")
+                fh.write("#!/bin/sh\n" + _AMUX_GUARD_SNIPPET + "exit 0\n")
             os.chmod(hook_path, 0o755)
+            return
+        try:
+            existing = open(hook_path).read()
+        except Exception:
+            return
+        lines = existing.split("\n")
+        shebang = 1 if lines and lines[0].startswith("#!") else 0
+        want = lines[shebang:shebang + 3] == _AMUX_GUARD_SNIPPET.splitlines()
+        if want and _AMUX_GUARD_MARKER not in "\n".join(lines[shebang + 3:]):
+            return  # already wired in the current form and position
+        kept = [l for l in lines if l.strip() not in _AMUX_GUARD_SNIPPET_LINES]
+        out = kept[:shebang] + _AMUX_GUARD_SNIPPET.splitlines() + kept[shebang:]
+        with open(hook_path, "w") as fh:
+            fh.write("\n".join(out))
+        try:
+            os.chmod(hook_path, 0o755)
+        except Exception:
+            pass
     except Exception:
         pass
 
