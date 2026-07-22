@@ -50408,7 +50408,7 @@ end tell
                     return self._json({"error": "q parameter is required"}, 400)
                 # Prefer Gmail API for a connected account — maps mailbox to a
                 # Gmail query (e.g. Sent -> in:sent) so "read sent" works too.
-                if account and account in _gmail_connected_accounts():
+                def _gmail_query():
                     gq, mb = q, mailbox.lower()
                     if mb in ("sent", "sent mail"):
                         gq += " in:sent"
@@ -50416,10 +50416,47 @@ end tell
                         gq += " in:inbox"
                     elif mb and mb != "all":
                         gq += f" label:{mailbox}"
-                    res = _gmail_inbox_messages(account, count=limit, q=gq.strip())
+                    if days > 0:
+                        gq += f" newer_than:{days}d"   # days was silently ignored here
+                    return gq.strip()
+
+                if account and account in _gmail_connected_accounts():
+                    res = _gmail_inbox_messages(account, count=limit, q=_gmail_query())
                     if res.get("error"):
                         return self._json(res, 502)
                     return self._json(res.get("messages", []))
+                # No account filter: search ALL connected Gmail accounts via the
+                # API, in parallel — the same fan-out /inbox got. Without this,
+                # the common no-account call fell straight into the serial
+                # AppleScript walk below, which hangs for minutes on any large
+                # mailbox: gtm-engine burned three 30s+ timeouts hunting a
+                # contact and stalled its task on it (2026-07-22). A non-
+                # connected account is still searchable via ?account=<addr>.
+                _connected = _gmail_connected_accounts()
+                if not account and _connected:
+                    from concurrent.futures import ThreadPoolExecutor
+                    from email.utils import parsedate_to_datetime
+                    _gq = _gmail_query()
+
+                    def _search_one(a):
+                        try:
+                            r = _gmail_inbox_messages(a, count=limit, q=_gq)
+                            return r.get("messages", []) if not r.get("error") else []
+                        except Exception:
+                            return []
+
+                    with ThreadPoolExecutor(max_workers=4) as ex:
+                        merged = [m for msgs in ex.map(_search_one, _connected) for m in msgs]
+
+                    def _recv_key(m):
+                        """Newest first; an unparseable date sinks, never raises."""
+                        try:
+                            return parsedate_to_datetime(m.get("date", "")).timestamp()
+                        except Exception:
+                            return 0.0
+
+                    merged.sort(key=_recv_key, reverse=True)
+                    return self._json(merged[:limit])
                 q_safe = q.replace('"', '\\"')
                 acct_filter = ""
                 if account:
