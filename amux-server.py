@@ -15371,6 +15371,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   /* Session cards — list mode (default) */
   .cards { display: flex; flex-direction: column; gap: 10px; }
+  /* Wide screens: the single-column list stretches cards absurdly — flow into
+     a responsive column grid instead. The explicit tile view (.grid-mode)
+     keeps its own denser packing; mobile stays a single column. */
+  @media (min-width: 1100px) {
+    .cards:not(.grid-mode) { display: grid; grid-template-columns: repeat(auto-fill, minmax(500px, 1fr)); gap: 12px; align-items: start; }
+  }
 
   /* Layout view controls */
   .tile-controls { display: flex; gap: 4px; align-items: center; }
@@ -26669,7 +26675,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.179';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.180';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -45230,7 +45236,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.179';
+const CACHE = 'amux-v0.9.180';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
