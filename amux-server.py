@@ -45809,6 +45809,21 @@ class CCHandler(BaseHTTPRequestHandler):
                     self.wfile.flush()
                     break
 
+                # SSE threads live for hours and REBUILD the SHARED caches
+                # below — a dangling transaction on this thread's cached SQLite
+                # connection pins its WAL snapshot and would poison the board/
+                # sessions cache with frozen data every 2s, fleet-wide, until
+                # the connection dies (observed ~52s board-write invisibility,
+                # AMUX-1849 repros). Same guard as _route, per tick.
+                _sse_conn = getattr(_db_local, "conn", None)
+                if _sse_conn is not None and _sse_conn.in_transaction:
+                    try:
+                        _sse_conn.rollback()
+                        slog("[db] rolled back dangling transaction on SSE thread "
+                             "— it would have poisoned the shared caches")
+                    except Exception:
+                        pass
+
                 # Sessions — use shared cache to avoid redundant subprocess calls
                 # Lock prevents thundering herd: only one thread refreshes at a time
                 sc = _sse_cache["sessions"]
