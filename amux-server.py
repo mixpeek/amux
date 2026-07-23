@@ -11275,14 +11275,14 @@ def _session_work_dir(name: str) -> str:
 
 
 _git_info_cache: dict[str, tuple[float, dict]] = {}  # work_dir -> (timestamp, result)
-_GIT_INFO_TTL = 30  # seconds — branch names don't change that fast
+_GIT_INFO_TTL = 60  # seconds — branch names change on commit cadence, not seconds
 _git_subprocess_sem = threading.Semaphore(4)  # limit concurrent git subprocesses
 _GIT_INFO_DETAIL_TTL = 10  # seconds — detail view can be slightly fresher
 _GIT_INFO_CACHE_MAX_AGE = 300  # evict entries older than 5 min to prevent unbounded growth
 
 _sessions_git_cache: dict = {"data": None, "time": 0}
 _sessions_git_cache_lock = threading.Lock()
-_SESSIONS_GIT_CACHE_TTL = 15
+_SESSIONS_GIT_CACHE_TTL = 30
 
 
 def _git_info(work_dir: str, detail: bool = False) -> dict:
