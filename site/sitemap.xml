@@ -85,6 +85,7 @@
   <url><loc>https://amux.io/guides/claude-code-headless/</loc><lastmod>2026-07-22</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/ai-coding-finops/</loc><lastmod>2026-07-22</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/claude-code-rate-limits/</loc><lastmod>2026-07-22</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://amux.io/guides/pwa-offline-sync-outbox-pattern/</loc><lastmod>2026-07-23</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/guides/agent-control-plane/</loc><lastmod>2026-04-15</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/claude-code-max-plan/</loc><lastmod>2026-04-14</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>
   <url><loc>https://amux.io/guides/agentic-engineering/</loc><lastmod>2026-07-14</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>

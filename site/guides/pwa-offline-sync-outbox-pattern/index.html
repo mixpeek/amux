@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>PWA Offline Sync: The Outbox Pattern at the Fetch Boundary (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="How to implement offline sync in a PWA using the outbox pattern at the fetch boundary — one global interceptor instead of wrapping every call site. Covers retry taxonomy, exactly-once delivery with msg_id dedup, and why not to use Background Sync API on iOS.">
+  <link rel="canonical" href="https://amux.io/guides/pwa-offline-sync-outbox-pattern/">
+  <meta property="og:title" content="PWA Offline Sync: The Outbox Pattern at the Fetch Boundary (2026)">
+  <meta property="og:description" content="One global fetch interceptor instead of wrapping 93 call sites. Covers retry taxonomy, exactly-once delivery, and why Background Sync API fails on iOS.">
+  <meta property="og:url" content="https://amux.io/guides/pwa-offline-sync-outbox-pattern/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[
+    {"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},
+    {"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},
+    {"@type":"ListItem","position":3,"name":"PWA Offline Sync: Outbox Pattern","item":"https://amux.io/guides/pwa-offline-sync-outbox-pattern/"}
+  ]}
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "PWA Offline Sync: The Outbox Pattern at the Fetch Boundary (2026)",
+    "description": "How to implement offline sync in a PWA using the outbox pattern at the fetch boundary — one global interceptor instead of wrapping every call site. Covers retry taxonomy, exactly-once delivery with msg_id dedup, and why not to use Background Sync API on iOS.",
+    "datePublished": "2026-07-23",
+    "dateModified": "2026-07-23",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "url": "https://amux.io/guides/pwa-offline-sync-outbox-pattern/",
+    "about": {"@type": "SoftwareApplication", "name": "amux", "url": "https://amux.io/", "applicationCategory": "DeveloperApplication"}
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "Implement offline sync in a PWA using the outbox pattern",
+    "description": "Add offline-first write durability to any PWA with a global fetch interceptor, localStorage/IndexedDB outbox, and a single page-side replayer.",
+    "step": [
+      {"@type":"HowToStep","position":1,"name":"Cache the app shell in the service worker","text":"Serve '/' and static assets from cache on network failure so the app loads offline with zero bytes transferred."},
+      {"@type":"HowToStep","position":2,"name":"Install the global fetch interceptor","text":"Replace window.fetch with an interceptor that delegates to the original fetch when online, and queues mutations into localStorage+IndexedDB when offline or when the network throws."},
+      {"@type":"HowToStep","position":3,"name":"Define the mutation denylist","text":"Exclude interactive and ephemeral endpoints (terminal keystrokes, file uploads, login, TTS, telemetry) that must not be deferred."},
+      {"@type":"HowToStep","position":4,"name":"Inject msg_id for exactly-once delivery","text":"Generate a client-side UUID per queued operation. The server deduplicates on msg_id so a replay after a lost response cannot double-deliver."},
+      {"@type":"HowToStep","position":5,"name":"Wire the single page-side replayer","text":"Flush the outbox in sequence on the online event, visibilitychange, and app startup. Apply fresh auth headers at replay time, not at queue time. Use only the page-side replayer — not Background Sync API."}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is the outbox pattern in a PWA?",
+        "acceptedAnswer": {"@type":"Answer","text":"The outbox pattern captures write operations (POST, PATCH, DELETE) into a local queue (the outbox) when the network is unavailable, then replays them sequentially once connectivity returns. In a PWA the outbox lives in localStorage or IndexedDB. The pattern guarantees no mutation is silently lost when the user goes offline."}
+      },
+      {
+        "@type": "Question",
+        "name": "Why not use the Background Sync API for PWA offline sync?",
+        "acceptedAnswer": {"@type":"Answer","text":"Two reasons. First, iOS Safari does not support the Background Sync API — any PWA targeting iPhone users cannot rely on it. Second, if you also have a page-side flush (on the online event), you get two replayers racing: the service worker replays from a potentially stale IndexedDB snapshot and can resurrect operations the page already settled. One replayer — page-side only — avoids the race entirely and works identically on iOS and Android."}
+      },
+      {
+        "@type": "Question",
+        "name": "How do you make offline writes idempotent in a PWA?",
+        "acceptedAnswer": {"@type":"Answer","text":"Inject a client-generated UUID (msg_id) into every queued mutation before it is stored in the outbox. When the operation is replayed, the server checks msg_id against a dedup store (a short-TTL set or a database column with a unique constraint). A duplicate replay returns the original response without re-executing the side effects. This guarantees exactly-once delivery even when the network drops after the server processes the request but before the client receives the response."}
+      },
+      {
+        "@type": "Question",
+        "name": "How should a PWA outbox handle different HTTP error codes on replay?",
+        "acceptedAnswer": {"@type":"Answer","text":"Treat errors by their retry prognosis, not their status code alone. Transient errors (5xx server errors, 401 auth expiry, 408 timeout, 429 rate limit) should requeue the operation for the next sync cycle — the condition that caused them is likely temporary. Permanent client errors (400, 403, 404, 422) should surface the failure to the user once and drop the operation from the queue; retrying will never succeed. Also enforce a maximum outbox size (e.g. 200 operations) and a TTL (e.g. 7 days) to prevent unbounded growth."}
+      },
+      {
+        "@type": "Question",
+        "name": "Should auth headers be stamped at queue time or replay time in a PWA outbox?",
+        "acceptedAnswer": {"@type":"Answer","text":"Always apply auth headers fresh at replay time, never at queue time. Auth tokens expire. If you stamp them into the stored operation, a replay hours later will 401-fail silently — the server rejects it but the client may not recognise the failure correctly and the operation is lost. At replay time, read the current token from memory or a secure store and inject it into the replayed request."}
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>PWA Offline Sync: Outbox Pattern</span></div>
+
+    <h1>PWA Offline Sync: The Outbox Pattern at the Fetch Boundary</h1>
+    <p class="subtitle">One global fetch interceptor instead of wrapping 93 call sites — with retry taxonomy, exactly-once delivery, and why Background Sync API fails on iOS.</p>
+
+    <!-- Answer box -->
+    <div class="answer-box">
+      <strong>The short answer:</strong> To add offline write durability to a PWA, install a single global <code>fetch</code> interceptor that queues mutations into localStorage/IndexedDB when the network is unavailable, then replays them sequentially on reconnect. Use a page-side replayer only — not Background Sync API (iOS doesn't support it, and two replayers race). Stamp auth headers at replay time, not queue time. Inject a <code>msg_id</code> per operation so the server can deduplicate replays. This is how amux's dashboard (an iOS PWA managing AI coding agent fleets) made 93 mutation call sites offline-safe without touching a single one.
+    </div>
+
+    <nav class="toc">
+      <strong>On this page</strong>
+      <ul>
+        <li><a href="#problem">The problem: 93 call sites, silent loss</a></li>
+        <li><a href="#shell">Layer 1: app shell caching</a></li>
+        <li><a href="#interceptor">Layer 2: the fetch interceptor (the centerpiece)</a></li>
+        <li><a href="#denylist">The mutation denylist</a></li>
+        <li><a href="#exactly-once">Exactly-once delivery with msg_id</a></li>
+        <li><a href="#replayer">The single replayer</a></li>
+        <li><a href="#background-sync">Why not Background Sync API?</a></li>
+        <li><a href="#retry">Retry taxonomy</a></li>
+        <li><a href="#storage">localStorage vs IndexedDB</a></li>
+        <li><a href="#testing">Testing with a real network cut</a></li>
+        <li><a href="#production">In production: amux v0.9.179</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+    </nav>
+
+    <h2 id="problem">The problem: 93 call sites, silent loss</h2>
+
+    <p>amux is a PWA — installable on iPhone and Android — that manages fleets of Claude Code, Codex, and Gemini CLI coding agents running on a developer's machine. The dashboard is the control plane: you send prompts, move board cards, steer sessions, and approve actions from your phone.</p>
+
+    <p>Before v0.9.179, the app had 93 raw <code>fetch()</code> mutation sites. They all assumed a live network. Offline — on an airplane, in a dead zone, when the home server was unreachable — every one of those commands threw an unhandled network error and the operation was <strong>silently lost</strong>. The user got nothing: no feedback, no queue, no retry. The board card didn't move. The prompt didn't send. The action was gone.</p>
+
+    <p>The naive fix is to wrap every call site with a queue check: 93 edits, 93 places to get the logic wrong, and every new endpoint is another opportunity to forget. The right fix is to intercept at the fetch boundary.</p>
+
+    <h2 id="shell">Layer 1: app shell caching</h2>
+
+    <p>Offline write durability and offline load durability are two distinct problems. Solve them separately.</p>
+
+    <p>The service worker handles <strong>offline load</strong>: it uses a network-first strategy for <code>/</code> (the HTML shell) with a cache fallback, and cache-first for static assets (JS, CSS, images). When the network is down, the service worker serves the cached shell and the dashboard renders fully — <strong>zero bytes transferred</strong>. The amux e2e verifies this with the performance API: a shell offline-load must show <code>transferSize === 0</code>.</p>
+
+    <p>This is separate from the outbox. The service worker handles reads. The outbox handles writes.</p>
+
+    <h2 id="interceptor">Layer 2: the fetch interceptor (the centerpiece)</h2>
+
+    <p>The outbox pattern is installed as a <strong>single global fetch interceptor</strong> that wraps <code>window.fetch</code> at app startup:</p>
+
+    <pre><code>// Save original fetch before replacing it
+const _origFetch = window.fetch.bind(window);
+
+window.fetch = async function amuxFetchInterceptor(input, init = {}) {
+  const url = typeof input === 'string' ? input : input.url;
+  const method = (init.method || 'GET').toUpperCase();
+
+  // Pass-through: GET requests and denylisted endpoints
+  if (method === 'GET' || isDenylisted(url)) {
+    return _origFetch(input, init);
+  }
+
+  // Online path: delegate untouched — zero connected impact
+  if (navigator.onLine) {
+    try {
+      return await _origFetch(input, init);
+    } catch (err) {
+      // Network threw even though navigator.onLine was true (flaky connection)
+      // Fall through to queue
+    }
+  }
+
+  // Offline path: queue the mutation, return synthetic 202
+  const op = {
+    id: crypto.randomUUID(),        // msg_id for exactly-once dedup
+    url,
+    method,
+    body: init.body ?? null,
+    headers: { ...init.headers },   // NOTE: auth headers NOT stamped here
+    queuedAt: Date.now(),
+  };
+  enqueueOp(op);
+
+  // Caller gets a real Response — no special error handling required
+  return new Response(JSON.stringify({ queued: true, id: op.id }), {
+    status: 202,
+    headers: { 'Content-Type': 'application/json' },
+  });
+};</code></pre>
+
+    <p>The critical design decisions:</p>
+    <ul>
+      <li><strong>Online path is fully passive.</strong> When <code>navigator.onLine</code> is true and the request succeeds, the interceptor is invisible — it calls <code>_origFetch</code> and returns the real response. Zero performance impact on connected users.</li>
+      <li><strong>Replay uses <code>_origFetch</code>, not <code>window.fetch</code>.</strong> This prevents the interceptor from re-capturing its own replay calls and re-queueing them.</li>
+      <li><strong>Auth headers are NOT stamped at queue time.</strong> See <a href="#exactly-once">Exactly-once delivery</a> below for why.</li>
+      <li><strong>The caller requires no changes.</strong> It receives a <code>202</code> Response — a real <code>Response</code> object, not a thrown error — so existing error handling paths continue to work correctly.</li>
+    </ul>
+
+    <h2 id="denylist">The mutation denylist</h2>
+
+    <p>Not all mutations should be deferred. Some operations are interactive (they require a live connection to be meaningful) or ephemeral (deferring them would be actively wrong):</p>
+
+    <pre><code>const DENYLIST = [
+  '/api/terminal/',    // terminal keystrokes — stale when replayed
+  '/api/upload/',      // file uploads — body may be a stream, not re-readable
+  '/api/auth/',        // login — cannot dequeue before auth exists
+  '/api/tts/',         // text-to-speech — ephemeral audio request
+  '/api/telemetry/',   // analytics pings — not worth replaying
+  '/api/speedtest/',   // connectivity test — meaningless offline
+];
+
+function isDenylisted(url) {
+  return DENYLIST.some(prefix => url.includes(prefix));
+}</code></pre>
+
+    <p>Everything not on the denylist — board mutations, session sends, steer commands, CRM updates, notes, scheduler changes — is eligible for queueing.</p>
+
+    <h2 id="exactly-once">Exactly-once delivery with msg_id</h2>
+
+    <p>Consider the failure mode: the user sends a prompt while briefly offline. The outbox queues it. Connectivity returns. The replayer sends the request. The server processes it and returns <code>200</code> — but the response is lost in transit (the connection drops in the 50ms between server response and client receipt). The replayer sees a network error and retries. Without deduplication, the prompt is delivered twice.</p>
+
+    <p>The fix: inject a <code>msg_id</code> (a client-generated UUID) into every queued mutation. For JSON bodies:</p>
+
+    <pre><code>function injectMsgId(op) {
+  try {
+    const body = JSON.parse(op.body);
+    body.msg_id = op.id;
+    op.body = JSON.stringify(body);
+  } catch {
+    // Non-JSON body — attach as header instead
+    op.headers['X-Amux-Msg-Id'] = op.id;
+  }
+  return op;
+}</code></pre>
+
+    <p>The server maintains a dedup store (a short-TTL set keyed by <code>msg_id</code>). On replay, if <code>msg_id</code> is already present, the server returns the original response without re-executing side effects. This makes replays <strong>exactly-once</strong>: the operation lands once regardless of how many times the replayer tries.</p>
+
+    <p><strong>Auth headers at replay time, not queue time.</strong> The queued operation stores the URL, method, and body — but <em>not</em> the auth headers. Auth tokens expire (typically 1–24 hours). An operation queued while the user was online may replay hours later when those tokens have rotated. If you stamp the token at queue time, the replay silently 401-fails and the operation is lost. Instead, the replayer reads the current auth token from memory at replay time and injects it into the outgoing request.</p>
+
+    <h2 id="replayer">The single replayer</h2>
+
+    <p>The replayer flushes the outbox sequentially when connectivity returns:</p>
+
+    <pre><code>async function runOutboxReplay() {
+  const ops = loadOutbox();  // reads from localStorage + IDB
+  if (!ops.length) return;
+
+  for (const op of ops) {
+    if (!navigator.onLine) break;  // abort if we go offline mid-replay
+
+    const opWithAuth = injectMsgId(injectAuthHeaders(op));
+    try {
+      const res = await _origFetch(opWithAuth.url, {
+        method: opWithAuth.method,
+        body: opWithAuth.body,
+        headers: opWithAuth.headers,
+      });
+
+      if (isTransient(res.status)) {
+        // 5xx, 401, 408, 429 — keep in outbox for next sync
+        continue;
+      }
+      if (isPermanent(res.status)) {
+        // 400, 403, 404, 422 — surface once, drop from queue
+        surfaceError(op, res.status);
+        removeFromOutbox(op.id);
+        continue;
+      }
+      // Success
+      removeFromOutbox(op.id);
+    } catch {
+      // Network error mid-replay — stop, try again next time
+      break;
+    }
+  }
+}
+
+// Wire to connectivity events
+window.addEventListener('online', runOutboxReplay);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) runOutboxReplay();
+});
+// Also run at app startup (catches ops queued in a previous session)
+runOutboxReplay();</code></pre>
+
+    <p>Sequential replay (not parallel) is deliberate: it preserves operation order (important when ops depend on each other, e.g. create then update) and prevents a burst of concurrent requests from overwhelming the server after a long offline period.</p>
+
+    <h2 id="background-sync">Why not Background Sync API?</h2>
+
+    <p>The Background Sync API (<code>navigator.serviceWorker.ready.then(sw => sw.sync.register('outbox-replay'))</code>) sounds like the right tool. It's specifically designed for this. Two problems stopped us:</p>
+
+    <p><strong>1. iOS doesn't support it.</strong> The amux dashboard is used heavily from iPhone — it's the whole phone-first pitch. Background Sync is not implemented in Safari/WKWebView as of mid-2026. Any replay strategy that relies on it degrades silently to "never replays" on iOS. That's worse than not having offline support at all, because the user thinks their command went through.</p>
+
+    <p><strong>2. Two replayers race.</strong> amux's e2e caught this during development. At reconnect, <em>both</em> the page-side <code>online</code> handler and the service worker's Background Sync event fired. The service worker read from a potentially stale IndexedDB snapshot — it could resurrect operations the page had already settled and remove from the outbox. The service worker's <code>SYNC_COMPLETE</code> handler then merged those "settled" ops back into localStorage, re-queuing them. The result: duplicate delivery of already-completed operations.</p>
+
+    <p>The fix is having exactly one replayer. Page-side only. The service worker retains its app-shell caching role but does not touch the outbox.</p>
+
+    <h2 id="retry">Retry taxonomy</h2>
+
+    <table>
+      <thead><tr><th>Status</th><th>Classification</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td>5xx</td><td>Transient — server error</td><td>Keep in outbox, retry next sync</td></tr>
+        <tr><td>401</td><td>Transient — auth expiry</td><td>Refresh token, retry next sync</td></tr>
+        <tr><td>408</td><td>Transient — timeout</td><td>Keep in outbox, retry next sync</td></tr>
+        <tr><td>429</td><td>Transient — rate limited</td><td>Keep in outbox, retry next sync (with backoff)</td></tr>
+        <tr><td>400</td><td>Permanent — bad request</td><td>Surface error once, drop from queue</td></tr>
+        <tr><td>403</td><td>Permanent — forbidden</td><td>Surface error once, drop from queue</td></tr>
+        <tr><td>404</td><td>Permanent — not found</td><td>Surface error once, drop from queue</td></tr>
+        <tr><td>422</td><td>Permanent — validation error</td><td>Surface error once, drop from queue</td></tr>
+        <tr><td>Network throw</td><td>Transient — connectivity</td><td>Stop replay, retry at next online event</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>Outbox limits.</strong> Unbounded queues become a denial-of-service vector against your own server at reconnect. amux caps the outbox at <strong>200 operations</strong> and enforces a <strong>7-day TTL</strong> — operations older than 7 days are dropped on the assumption that the user's intent has changed. Before each replay, a reconciliation pass removes superseded operations (e.g. two PATCH calls to the same resource can often be collapsed to the latest one).</p>
+
+    <h2 id="storage">localStorage vs IndexedDB: use both</h2>
+
+    <p>The outbox is written to both localStorage and IndexedDB. This is intentional:</p>
+    <ul>
+      <li><strong>localStorage</strong> is synchronous — the interceptor can queue an op and return the synthetic 202 before any async IDB write completes. No race window.</li>
+      <li><strong>IndexedDB</strong> is the durable backup. On iOS, localStorage can be purged by the OS under storage pressure. IDB survives. On startup, if localStorage is empty but IDB has ops, they're recovered into localStorage before replay.</li>
+    </ul>
+
+    <p>The replayer always reads from localStorage as the primary source. IDB is the recovery path. They stay in sync: every write to localStorage gets a corresponding IDB write (async, best-effort). Every delete from localStorage gets a corresponding IDB delete.</p>
+
+    <h2 id="testing">Testing with a real network cut</h2>
+
+    <p>Testing offline behavior in a unit test gives false confidence — you're mocking <code>navigator.onLine</code>, not a real network failure. amux uses a Playwright e2e test that cuts the network at the CDP (Chrome DevTools Protocol) level:</p>
+
+    <pre><code>test('outbox queues offline and replays on reconnect', async ({ page, context }) => {
+  // 1. Load the app
+  await page.goto('/');
+  await page.waitForSelector('[data-testid="board"]');
+
+  // 2. Cut network at CDP level — real offline, not a mock
+  await context.setOffline(true);
+
+  // 3. Try a mutation that would normally go to the server
+  await page.click('[data-testid="board-card-move"]');
+
+  // 4. Verify: synthetic 202 received, op in outbox, card visually moved
+  const outbox = await page.evaluate(() => JSON.parse(localStorage.getItem('amux_outbox') || '[]'));
+  expect(outbox).toHaveLength(1);
+  expect(outbox[0].url).toContain('/api/board/');
+
+  // 5. Reload while offline — app shell must load from cache
+  await page.reload();
+  const transferSize = await page.evaluate(() =>
+    performance.getEntriesByType('navigation')[0].transferSize
+  );
+  expect(transferSize).toBe(0);  // zero bytes from network
+
+  // 6. Outbox survives reload
+  const outboxAfterReload = await page.evaluate(() => JSON.parse(localStorage.getItem('amux_outbox') || '[]'));
+  expect(outboxAfterReload).toHaveLength(1);
+
+  // 7. Reconnect
+  await context.setOffline(false);
+  await page.waitForTimeout(500);  // replayer fires on online event
+
+  // 8. Verify: op applied server-side, outbox empty
+  const outboxAfterSync = await page.evaluate(() => JSON.parse(localStorage.getItem('amux_outbox') || '[]'));
+  expect(outboxAfterSync).toHaveLength(0);
+
+  // 9. Verify server state matches client state
+  const serverState = await page.evaluate(() =>
+    fetch('/api/board').then(r => r.json())
+  );
+  expect(serverState.items.find(i => i.id === movedCard.id).status).toBe('done');
+});</code></pre>
+
+    <p>11 assertions total. The test catches the exact failure modes that bit the Background Sync approach: outbox survival across reload, zero-bytes shell load, and server-side confirmation after replay.</p>
+
+    <h2 id="production">In production: amux v0.9.179</h2>
+
+    <p>The outbox pattern shipped in amux v0.9.179 (commits <code>b13fea4</code> and <code>611a145</code>, July 2026). Results:</p>
+
+    <ul>
+      <li>93 mutation call sites made offline-durable with <strong>zero edits to any call site</strong></li>
+      <li>App shell loads in <strong>0 bytes transferred</strong> while offline (verified by e2e)</li>
+      <li>Operations survive page reload, tab close, and app reopen</li>
+      <li>No duplicate delivery on flaky connections (msg_id dedup confirmed by e2e)</li>
+      <li>iOS behavior identical to Android — no code paths diverge</li>
+    </ul>
+
+    <p>amux is an open-source control plane for running an AI engineering team — managing parallel Claude Code, Codex, and Gemini CLI sessions with a web dashboard and iOS app. The PWA needs to work reliably from wherever the developer is, including in environments where the home server is temporarily unreachable. Offline sync isn't a nice-to-have; it's a requirement.</p>
+
+    <!-- EXP-014 GitHub CTA -->
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — AI engineering team dashboard, offline-first PWA (311★ GitHub)</div>
+        <div style="color:var(--muted);font-size:.9rem">Run dozens of Claude Code, Codex, and Gemini CLI agents from your phone. The outbox pattern described here is live in the amux iOS PWA — open source, single Python file, MIT licensed. The full implementation is in amux-server.py.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
+    </div>
+
+    <h2 id="faq">FAQ</h2>
+
+    <h3>What is the outbox pattern in a PWA?</h3>
+    <p>The outbox pattern captures write operations (POST, PATCH, DELETE) into a local queue (the outbox) when the network is unavailable, then replays them sequentially once connectivity returns. In a PWA the outbox lives in localStorage or IndexedDB. The pattern guarantees no mutation is silently lost when the user goes offline.</p>
+
+    <h3>Why not use the Background Sync API for PWA offline sync?</h3>
+    <p>Two reasons. First, iOS Safari does not support Background Sync as of mid-2026 — any PWA targeting iPhone users cannot rely on it. Second, if you also have a page-side flush (on the <code>online</code> event), you get two replayers racing: the service worker replays from a potentially stale IndexedDB snapshot and can resurrect operations the page already settled. One replayer — page-side only — avoids the race and works on iOS and Android alike.</p>
+
+    <h3>How do you make offline writes idempotent?</h3>
+    <p>Inject a client-generated UUID (<code>msg_id</code>) into every queued mutation. The server deduplicates on <code>msg_id</code> — a duplicate replay returns the original response without re-executing side effects. This guarantees exactly-once delivery even when the network drops after the server processes the request but before the client receives the response.</p>
+
+    <h3>Should auth headers be stamped at queue time or replay time?</h3>
+    <p>Always at replay time. Auth tokens expire. Stamping them at queue time means a replay hours later silently 401-fails and the operation is lost. At replay time, read the current token from memory and inject it into the outgoing request.</p>
+
+    <h3>How do you handle different error codes on outbox replay?</h3>
+    <p>Transient errors (5xx, 401, 408, 429) requeue for the next sync cycle. Permanent client errors (400, 403, 404, 422) surface once and are dropped — retrying will never succeed. Network throws abort the replay loop; the replayer tries again at the next <code>online</code> event. Cap the outbox at a fixed size (200 ops) and TTL (7 days) to prevent unbounded growth.</p>
+
+    <div class="cta-box">
+      <h3>Try amux — offline-first AI agent dashboard</h3>
+      <p>Open-source control plane for AI agent teams with offline sync, self-healing watchdog, and phone-first management. Single Python file, MIT licensed.</p>
+      <pre><code>brew install mixpeek/amux/amux
+amux register myproject --dir ~/Dev/myproject --yolo
+amux serve  # → https://localhost:8822</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <a class="btn" href="/guides/getting-started/">Getting Started</a>
+    </div>
+
+    <h2>Related guides</h2>
+    <ul>
+      <li><a href="/guides/mobile-management-pwa/">Mobile management: run your AI agent fleet from your phone</a></li>
+      <li><a href="/guides/claude-code-headless/">Claude Code headless mode — self-hosting guide</a></li>
+      <li><a href="/guides/self-healing-configuration/">Self-healing AI agent configuration</a></li>
+      <li><a href="/guides/running-10-plus-agents/">Running 10+ AI coding agents in parallel</a></li>
+      <li><a href="/guides/ai-agent-quality-gates/">AI agent quality gates — done vs verified</a></li>
+    </ul>
+  </main>
+
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>
