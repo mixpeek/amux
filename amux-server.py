@@ -7966,7 +7966,15 @@ def _pickup_next_board_task(session_name: str):
         db.commit()
         _board_changed()
         _append_board_log(item_id, "Auto-picked up from queue")
-        prompt = title
+        # Provenance framing: the prompt is a BOARD REPLAY, and card descs often
+        # embed quoted messages ("[gtm-engine -> cold-outbound] ..."). Injected
+        # bare, such a quote reads as a live unstamped inter-session message —
+        # the 2026-07-23 phantom: auto-pickup replayed CO-188's desc and its
+        # embedded historical quote got attributed to gtm-engine as a fresh
+        # send. Frame it so nothing inside can masquerade as live traffic.
+        prompt = (f"[amux auto-pickup] Claimed board card {item_id} from your queue — "
+                  f"work it now. Anything quoted below is the CARD's stored text "
+                  f"(historical log), not a live message:\n{title}")
         if desc:
             prompt += f"\n\n{desc[:500]}"
         ok, _ = send_text(session_name, prompt)
