@@ -22738,18 +22738,18 @@ async function runSyncBanner() {
     try {
       const draft = item.draft;
       draft.syncing = true; saveDrafts(); render();
-      const createResp = await fetch(API + '/api/sessions', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
+      const createResp = await _origFetch(API + '/api/sessions', {
+        method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
         body: JSON.stringify({ name: draft.name, dir: draft.dir })
       });
       if (!createResp.ok && createResp.status !== 409) {
         item.status = 'failed'; draft.syncing = false; saveDrafts(); renderBanner(); continue;
       }
-      const startResp = await fetch(API + '/api/sessions/' + encodeURIComponent(draft.name) + '/start', { method: 'POST' });
+      const startResp = await _origFetch(API + '/api/sessions/' + encodeURIComponent(draft.name) + '/start', { method: 'POST', headers: _authHeaders() });
       if (draft.prompt && startResp.ok) {
         await new Promise(r => setTimeout(r, 5000));
-        await fetch(API + '/api/sessions/' + encodeURIComponent(draft.name) + '/send', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
+        await _origFetch(API + '/api/sessions/' + encodeURIComponent(draft.name) + '/send', {
+          method: 'POST', headers: _authHeaders({'Content-Type':'application/json'}),
           body: JSON.stringify({ text: draft.prompt })
         });
       }
@@ -22761,14 +22761,19 @@ async function runSyncBanner() {
     renderBanner();
   }
 
-  // Then replay queue items
+  // Then replay queue items — via _origFetch so the outbox interceptor can't
+  // re-capture its own replay (double-queue), with auth headers applied FRESH
+  // (they were not stamped at queue time, and a stale token would 401).
   for (const item of items.filter(i => i.type === 'queue')) {
     item.status = 'running';
     renderBanner();
     try {
-      const r = await fetch(item.item.url, item.item.options);
-      if (r.status >= 500) {
-        offlineQueue.push(item.item); item.status = 'failed';
+      const opts = { ...item.item.options, headers: _authHeaders(item.item.options.headers) };
+      const r = await _origFetch(item.item.url, opts);
+      if (r.status >= 500 || r.status === 401 || r.status === 408 || r.status === 429) {
+        offlineQueue.push(item.item); item.status = 'failed';   // transient — keep for next sync
+      } else if (!r.ok) {
+        item.status = 'failed';   // permanent 4xx — surface it, but don't retry forever
       } else {
         item.status = 'done';
       }
@@ -22864,7 +22869,24 @@ async function apiCall(url, options) {
   }
 }
 function _queueOp(url, options) {
-  offlineQueue.push({ url, options: { method: options.method, headers: options.headers, body: options.body }, timestamp: Date.now() });
+  // Cap the outbox so localStorage can't overflow — oldest ops drop first
+  if (offlineQueue.length >= 200) {
+    offlineQueue.shift();
+    showToast('Offline queue full — oldest operation dropped');
+  }
+  let body = options.body;
+  // Sends/steers dedup server-side on msg_id — make sure every queued one has
+  // it, so a replay after a lost response can't deliver the message twice.
+  if (typeof body === 'string' && /\/(send|steer)$/.test(url.split('?')[0])) {
+    try {
+      const b = JSON.parse(body);
+      if (!b.msg_id) {
+        b.msg_id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
+        body = JSON.stringify(b);
+      }
+    } catch (e) {}
+  }
+  offlineQueue.push({ url, options: { method: options.method, headers: options.headers, body }, timestamp: Date.now() });
   saveQueue();
   // Register Background Sync so SW can replay queue when connectivity returns
   if ('serviceWorker' in navigator && 'SyncManager' in window) {
@@ -22874,8 +22896,57 @@ function _queueOp(url, options) {
   showToast('Queued (' + offlineQueue.length + ' pending)');
 }
 
+// ═══════ GLOBAL OFFLINE OUTBOX — fetch interceptor ═══════
+// Dozens of call sites issue raw fetch() mutations; offline they used to just
+// throw and the command was LOST. This wrapper implements the outbox pattern
+// at the fetch boundary so every API command flows through offline sync
+// without touching call sites. PASSIVE by design: while online it delegates
+// straight to the native fetch (zero behavioral change); only a request that
+// would otherwise fail (offline, or the network throws) gets captured into
+// the queue, and the caller receives a synthetic 202 {queued:true} so UI
+// code treats it as accepted rather than crashed.
+const _origFetch = window.fetch.bind(window);
+// Never queue interactive/ephemeral endpoints: telemetry, speed tests, live
+// terminal keystrokes, uploads (bodies too big for localStorage), login and
+// tunnel flows, and request/response helpers whose answer the UI needs NOW.
+const _OUTBOX_SKIP = /\/api\/(client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser)/;
+const _OUTBOX_METHODS = { POST: 1, PATCH: 1, PUT: 1, DELETE: 1 };
+function _outboxQueueable(url, init) {
+  if (!url || typeof url !== 'string') return false;
+  if (url.startsWith('http') && !url.startsWith(location.origin)) return false;
+  if (!url.includes('/api/')) return false;
+  const method = ((init && init.method) || 'GET').toUpperCase();
+  if (!_OUTBOX_METHODS[method]) return false;
+  if (init && init._skipOutbox) return false;
+  const body = init && init.body;
+  if (body !== undefined && typeof body !== 'string') return false;   // FormData/Blob can't persist
+  return !_OUTBOX_SKIP.test(url);
+}
+function _outboxAccepted() {
+  return new Response(JSON.stringify({ ok: true, queued: true, offline: true }),
+                      { status: 202, headers: { 'Content-Type': 'application/json' } });
+}
+window.fetch = function(input, init) {
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  if (!_outboxQueueable(url, init)) return _origFetch(input, init);
+  if (!online) {
+    _queueOp(url, init || {});
+    return Promise.resolve(_outboxAccepted());
+  }
+  return _origFetch(input, init).catch(e => {
+    consecutiveFailures++;
+    if (consecutiveFailures >= 2) setOnline(false);
+    _queueOp(url, init || {});
+    return _outboxAccepted();
+  });
+};
+
 // Reconcile queue: remove contradictory/stale operations before replay
 function reconcileQueue(queue) {
+  // Drop ops older than 7 days — replaying a week-stale board move or message
+  // does more harm than losing it, and the user has long since moved on.
+  const cutoff = Date.now() - 7 * 86400 * 1000;
+  queue = queue.filter(q => !q.timestamp || q.timestamp >= cutoff);
   // Walk backwards and track the last action per session to skip superseded ops
   const lastAction = {};  // session -> last action seen
   const dominated = new Set();  // indices to skip
@@ -26602,7 +26673,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.178';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.179';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -45184,7 +45255,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.178';
+const CACHE = 'amux-v0.9.179';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
