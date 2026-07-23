@@ -10935,6 +10935,24 @@ def list_sessions() -> list:
         # doesn't show in badges/bulk-actions or trigger auto-resume.
         _arch = cfg.get("CC_ARCHIVED", "") == "1"
         _aa = {} if _arch else _session_auto_actions.get(name, {})
+        # Task label: the board is the source of truth WHILE ITS CARD IS ALIVE
+        # (touched within 24h). A doing card nobody has touched in days is a
+        # neglected ledger entry, not what the session is working on — fall
+        # back to the auto-summary (tracks actual activity) and let the client
+        # show an amber "board Nd" hint that a parked card exists. Stale board
+        # title is still the last resort when there's no summary at all.
+        _bt = _doing_tasks.get(name)
+        _bu = _doing_updated.get(name, 0) if _bt else 0
+        _summary = meta.get("task_summary", "")
+        _board_fresh = bool(_bt) and (time.time() - (_bu or 0) <= 86400)
+        if _board_fresh:
+            _tname, _tsrc = _bt, "board"
+        elif _summary:
+            _tname, _tsrc = _summary, "summary"
+        elif _bt:
+            _tname, _tsrc = _bt, "board"
+        else:
+            _tname, _tsrc = cfg.get("CC_DESC", "") or "", "desc"
         sessions.append({
             "name": name,
             "dir": resolved_dir,
@@ -10968,13 +10986,14 @@ def list_sessions() -> list:
             "active_model": active_model,
             "session_created": session_created,
             "task_time": task_time,
-            "task_name": _doing_tasks.get(name) or meta.get("task_summary", "") or cfg.get("CC_DESC", "") or "",
-            # board = from a doing card (task_updated = card's last touch);
-            # summary/desc = fallbacks, no age semantics. Lets the client dim
-            # stale board labels instead of presenting them as live truth.
-            "task_source": ("board" if _doing_tasks.get(name)
-                            else ("summary" if meta.get("task_summary", "") else "desc")),
-            "task_updated": _doing_updated.get(name, 0) if _doing_tasks.get(name) else 0,
+            "task_name": _tname,
+            # board = from a doing card fresh within 24h (task_updated = card's
+            # last touch); summary/desc = fallbacks. task_board_age lets the
+            # client hint that a stale doing card is parked on the board even
+            # when the displayed label came from the summary.
+            "task_source": _tsrc,
+            "task_updated": _bu,
+            "task_board_age": int(time.time() - _bu) if (_bt and _bu and not _board_fresh) else 0,
             "tokens": tokens,
             "branch": "" if cfg.get("CC_BRANCH", "") == "none" else cfg.get("CC_BRANCH", ""),
             "mcp": cfg.get("CC_MCP", ""),
@@ -23580,6 +23599,7 @@ function render() {
     const schedOn = _schedMine.filter(sc => sc.enabled).length;
     const schedOff = _schedMine.length - schedOn;
     const taskStale = _taskStaleAge(s);
+    const taskDim = taskStale && s.task_source === 'board';   // stale board title shown as last resort
     return `
     <div class="card ${isExp ? 'expanded' : ''}" data-session="${esc(s.name)}" onclick="event.stopPropagation();toggle('${s.name}')">
       <div class="card-header" onclick="headerTap('${s.name}', event)" onmousedown="tileMouseDown(event,'${s.name}')">
@@ -23629,7 +23649,7 @@ function render() {
       ${s.creator ? `<div class="card-dir" style="font-size:0.72rem;">${esc(s.creator)}</div>` : ''}
       ${s.dir ? _renderBranchBadge(s.name, s.branch) : ''}
       ${isExp && s.desc ? `<div class="card-desc">${esc(s.desc)}</div>` : ''}
-      ${!isExp && s.task_name ? `<div class="card-preview${taskStale ? ' task-stale' : ''}" style="font-weight:600;color:var(--text);">${esc(s.task_name)}${taskStale ? ` <span class="task-stale-badge">&middot; doing ${taskStale}</span>` : ''}</div>` : ''}
+      ${!isExp && s.task_name ? `<div class="card-preview${taskDim ? ' task-stale' : ''}" style="font-weight:600;color:var(--text);">${esc(s.task_name)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}</div>` : ''}
       ${!isExp && (schedOn + schedOff) ? `<div class="card-sched-count" onclick="event.stopPropagation();switchView('scheduler')" title="${schedOn} enabled, ${schedOff} disabled">&#x23F2; ${[schedOn ? `<span class="sched-on">${schedOn} on</span>` : '', schedOff ? `<span class="sched-off">${schedOff} off</span>` : ''].filter(Boolean).join(' &middot; ')}</div>` : ''}
       ${isExp && s.preview ? `<div class="card-preview">${esc(s.preview)}</div>` : ''}
       ${logSearchMode && _logMatches[s.name] ? (() => {
@@ -23650,7 +23670,7 @@ function render() {
         <button class="btn primary" style="width:100%;" onclick="doStart('${s.name}')">&#x25B6; Start</button>
       </div>` : ''}
       <div class="panel" onclick="event.stopPropagation()">
-        ${isExp && s.task_name ? `<div class="card-task-name${taskStale ? ' task-stale' : ''}" onclick="event.stopPropagation();editField('${s.name}','task','${esc(s.task_name)}')" title="Click to edit task label" style="cursor:pointer;"><span class="tn-label">Task:</span>${esc(s.task_name)}${taskStale ? ` <span class="task-stale-badge">&middot; doing ${taskStale}</span>` : ''}</div>` : ''}
+        ${isExp && s.task_name ? `<div class="card-task-name${taskDim ? ' task-stale' : ''}" onclick="event.stopPropagation();editField('${s.name}','task','${esc(s.task_name)}')" title="Click to edit task label" style="cursor:pointer;"><span class="tn-label">Task:</span>${esc(s.task_name)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}</div>` : ''}
         ${isExp && s.running ? `<div class="card-timing">
           ${s.session_created ? `<div class="timing-item"><span class="timing-label">Session</span><span class="timing-value">${fmtDuration(Math.floor(Date.now()/1000) - s.session_created)}</span></div>` : ''}
           ${s.task_time ? `<div class="timing-item"><span class="timing-label">Task</span><span class="timing-value accent">${esc(s.task_time)}</span></div>` : ''}
@@ -23833,14 +23853,13 @@ function _cssRect(el) {
 }
 
 function _taskStaleAge(s) {
-  // Age suffix for a session card's task label, ONLY when the label comes
-  // from a board doing-card untouched for >24h — a stale card must not
-  // present itself as live truth (2026-07-22: 3 of 3 cards showed a days-old
-  // task). Summary/desc fallbacks have no age semantics → never flagged.
-  if (s.task_source !== 'board' || !s.task_updated) return '';
-  const age = Math.floor(Date.now() / 1000) - s.task_updated;
-  if (age < 86400) return '';
-  return Math.floor(age / 86400) + 'd';
+  // Amber hint that a STALE doing card (>24h untouched) is parked on the
+  // board. The server no longer titles the card from such a fossil — it falls
+  // back to the live auto-summary — so this badge marks "the ledger has a
+  // neglected card", whatever label is displayed. Dimming only applies in the
+  // last-resort case where the stale board title itself is still shown.
+  if (!s.task_board_age) return '';
+  return Math.floor(s.task_board_age / 86400) + 'd';
 }
 function timeAgo(epoch) {
   if (!epoch) return '';
@@ -26675,7 +26694,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.180';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.181';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -45236,7 +45255,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.180';
+const CACHE = 'amux-v0.9.181';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
