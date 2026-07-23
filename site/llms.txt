@@ -178,7 +178,7 @@ Claude Code runs one agent per terminal. amux runs dozens — with live monitori
 - [amux vs Windsurf](https://amux.io/compare/amux-vs-windsurf/)
 - [amux vs OpenHands](https://amux.io/compare/amux-vs-openhands/)
 - [amux vs DIY tmux Scripts](https://amux.io/compare/amux-vs-diy-tmux/)
-- [amux vs CrewAI](https://amux.io/compare/amux-vs-crewai/)
+- [amux vs CrewAI — multi-agent framework vs fleet operator (2026)](https://amux.io/compare/amux-vs-crewai/): CrewAI (~50k GitHub stars, Apache 2.0, Python) is a framework for building custom multi-agent workflows in code — roles, tools, task sequences. amux (311 ★, MIT+CC) is a fleet operator for running Claude Code, Codex, and Gemini CLI agents with a web dashboard, iOS app, self-healing watchdog, kanban board, CRM, email, and browser automation. Key distinction: CrewAI builds the workflow; amux operates the fleet. 15-row comparison table, "Why not both?" section with 3 composition patterns (CrewAI orchestrator → amux board REST API → Claude Code sessions), decision guide, FAQPage JSON-LD (5 Qs). Added July 2026.
 - [amux vs Cline (Roo Code)](https://amux.io/compare/amux-vs-cline/)
 - [amux vs Goose](https://amux.io/compare/amux-vs-goose/)
 - [amux vs OpenAI Codex](https://amux.io/compare/amux-vs-codex/)
