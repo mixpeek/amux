@@ -146,18 +146,23 @@ try {
   // ── Cleanup: delete every board item this test created ─────────────────────
   // Sweep-and-verify: list staleness can hide just-created items and a DELETE
   // can fail silently, so keep sweeping until the board shows zero matches.
+  // done_limit=0 bypasses the board list cache — the default cached path is
+  // stale-while-revalidate (one refresh behind), which made cleanup verify
+  // against a pre-delete snapshot.
   const leftover = await page.evaluate(async ([mark, knownId]) => {
     const prefix = mark.split(' test ')[0];
+    const list = async () => {
+      const items = await (await fetch('/api/board?done_limit=0')).json();
+      return items.filter(i => !i.deleted && (i.title || '').startsWith(prefix));
+    };
     if (knownId) await fetch('/api/board/' + knownId, { method: 'DELETE' }).catch(() => {});
     for (let round = 0; round < 6; round++) {
-      const items = await (await fetch('/api/board')).json();
-      const mine = items.filter(i => (i.title || '').startsWith(prefix));
+      const mine = await list();
       if (!mine.length) return 0;
       for (const it of mine) await fetch('/api/board/' + it.id, { method: 'DELETE' }).catch(() => {});
       await new Promise(r => setTimeout(r, 1000));
     }
-    const items = await (await fetch('/api/board')).json();
-    return items.filter(i => (i.title || '').startsWith(prefix)).length;
+    return (await list()).length;
   }, [MARK, onlineResult.id]);
   ok(leftover === 0, 'all test board items cleaned up');
 } finally {
