@@ -4588,6 +4588,7 @@ _ALERT_TYPE_LABELS = {
     "auto_compact": "compact", "rate_limit_manual": "rate limit", "task_pickup": "task",
     "steering_delivered": "steering", "uncommitted": "uncommitted", "thinking_reset": "thinking reset",
     "urgent": "URGENT", "git_orphan": "git rebase orphaned",
+    "stale_cli": "stale amux CLI on PATH",
 }
 
 
@@ -10557,6 +10558,52 @@ def _check_orphaned_git_state():
                      "stragglers with `git checkout stash@{0} -- <path>`).")
             slog(f"[git-orphan] {msg}")
             _push_alert("git_orphan", "", msg)
+        except Exception:
+            continue
+
+
+def _check_stale_amux_cli():
+    """Detect an `amux` CLI on PATH whose SEND path predates the origin stamp.
+
+    AMUX-1818: the repo CLI (symlinked at ~/.local/bin/amux, ahead of the
+    server-installed /usr/local/bin stub in PATH) still sent via raw
+    `tmux send-keys` — every inter-session message arrived ANONYMOUS (no
+    [amux-origin] stamp, no message.sent audit, no busy-deferral). mvs-infra
+    guessed a sender, guessed wrong, and answered the wrong session while the
+    real flagger's workshop-critical build stayed blocked. A whole-file grep
+    for X-Amux-Session would NOT have caught it (cmd_alert/cmd_board already
+    had the header) — the check must inspect the send implementation itself.
+    Alerts once per (path, mtime): a fixed or re-staled copy re-alerts."""
+    candidates = []
+    seen: set = set()
+    for d in ("~/.local/bin", "~/bin", "/usr/local/bin", "/opt/homebrew/bin"):
+        p = os.path.expanduser(os.path.join(d, "amux"))
+        rp = os.path.realpath(p)
+        if os.path.isfile(rp) and os.access(rp, os.X_OK) and rp not in seen:
+            seen.add(rp)
+            candidates.append((p, rp))
+    for p, rp in candidates:
+        try:
+            src = open(rp, errors="replace").read()
+            # The send implementation: full-CLI bash function, or stub case arm.
+            m = (re.search(r"cmd_send\(\)\s*\{.*?\n\}", src, re.S)
+                 or re.search(r"\n\s*send\)\s*\n.*?;;", src, re.S))
+            if not m or "X-Amux-Session" in m.group(0):
+                continue
+            key = f"stale_cli_alerted:{p}:{int(os.path.getmtime(rp))}"
+            db = get_db()
+            if db.execute("SELECT 1 FROM prefs WHERE key=?", (key,)).fetchone():
+                continue
+            db.execute("INSERT INTO prefs (key, value) VALUES (?, '1') "
+                       "ON CONFLICT(key) DO NOTHING", (key,))
+            db.commit()
+            msg = (f"{p} (-> {rp}) has a pre-AMUX-1768 send path: `amux send` there "
+                   "delivers raw tmux text with NO server-verified origin stamp, no "
+                   "audit event, and no busy-deferral — messages arrive anonymous and "
+                   "misattribution follows (AMUX-1818). Update or remove that copy; "
+                   "the current CLI routes sends through /api/sessions/<name>/send.")
+            slog(f"[stale-cli] {msg}")
+            _push_alert("stale_cli", "", msg)
         except Exception:
             continue
 
@@ -54537,6 +54584,7 @@ def main():
     schedule_job(_cleanup_tmp,           interval=1800,                 name="tmp_cleanup", initial_delay=60)
     schedule_job(_auto_archive_idle,     interval=3600,                 name="auto_archive", initial_delay=300)
     schedule_job(_check_orphaned_git_state, interval=600,               name="git_orphan",  initial_delay=120)
+    schedule_job(_check_stale_amux_cli,     interval=21600,             name="stale_cli",   initial_delay=90)
     # DISABLED 2026-07-06 — auto-steering every idle session about stale doing/review
     # cards woke ~20 sessions at once into a churn storm and created a nag loop
     # (each nudge is a message → _summarize_task_bg re-titles the session's active
