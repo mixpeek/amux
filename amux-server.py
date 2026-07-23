@@ -26602,7 +26602,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.177';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.178';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -40994,23 +40994,55 @@ function _vpMimeFromUrl(url) {
   return map[ext] || 'video/mp4';
 }
 
+async function _vpPrepareAndPlay(v, q, origUrl) {
+  const status = document.getElementById('vp-status');
+  for (;;) {
+    if (v._vpUrl !== origUrl) return;   // player closed or another video opened
+    let d;
+    try {
+      const r = await fetch(_authUrl(API + '/api/file/prepare?' + q));
+      d = await r.json();
+    } catch (e) { d = null; }
+    if (d && d.ready && d.cached_path) {
+      v.src = _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(d.cached_path));
+      v.play().catch(() => {});
+      return;
+    }
+    if (!d || d.error) {
+      // Prepare unavailable (no ffmpeg / no disk) — fall back to the live
+      // transcode pipe, which still works in desktop browsers.
+      v.src = _authUrl(API + '/api/file/transcode?' + q);
+      v.play().catch(() => {});
+      if (d && d.error) console.warn('prepare failed:', d.error);
+      return;
+    }
+    status.style.display = 'flex';
+    const pct = d.progress != null ? Math.round(d.progress) : 0;
+    status.textContent = pct >= 99 ? 'Preparing video… finishing up'
+                                   : 'Preparing video… ' + pct + '%';
+    await new Promise(res => setTimeout(res, 2000));
+  }
+}
+
 function _playVideoUrl(url, title) {
   const v = document.getElementById('video-player');
   const status = document.getElementById('vp-status');
 
-  // MKV/AVI can't play natively — use server-side transcode to MP4
+  // MKV/AVI can't play natively — prepare a seekable MP4 server-side and play
+  // that. The old live-transcode pipe (no Content-Length, no ranges) never
+  // starts on iOS AVPlayer; a prepared cached mp4 streams + seeks everywhere.
   const ext = url.split('?')[0].split('.').pop().toLowerCase();
   const needsTranscode = ['mkv', 'avi'].includes(ext);
+  v._vpUrl = url;
   if (needsTranscode) {
-    // Extract path and cwd params from the raw URL to build transcode URL
+    // Extract path and cwd params from the raw URL for the prepare call
     const u = new URL(url, location.origin);
-    const tUrl = API + '/api/file/transcode?path=' + encodeURIComponent(u.searchParams.get('path') || '')
+    const q = 'path=' + encodeURIComponent(u.searchParams.get('path') || '')
       + (u.searchParams.get('cwd') ? '&cwd=' + encodeURIComponent(u.searchParams.get('cwd')) : '');
-    v.src = _authUrl(tUrl);
+    _vpPrepareAndPlay(v, q, url);
   } else {
     v.src = _authUrl(url);
   }
-  v._vpUrl = url;
 
   document.getElementById('vp-title').textContent = title || url.split('/').pop();
   document.getElementById('video-overlay').style.display = 'flex';
@@ -45152,7 +45184,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.177';
+const CACHE = 'amux-v0.9.178';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -45353,6 +45385,88 @@ class ResilientHTTPSServer(ThreadingHTTPServer):
             self.handle_error(request, client_address)
         finally:
             self.shutdown_request(request)
+
+
+# ── Media prepare: background remux to a seekable on-disk MP4 (AMUX-1824) ─────
+# iOS cannot demux MKV, and AVPlayer never starts playback on the live
+# /api/file/transcode pipe (chunked, no Content-Length, no Range support). The
+# only thing iOS reliably plays is a REAL mp4 file served with ranges — so
+# /api/file/prepare remuxes into ~/.amux/media-cache once, in the background,
+# and the player polls until it can stream the cached copy via /api/file/raw.
+_MEDIA_CACHE_DIR = Path(os.path.expanduser("~/.amux/media-cache"))
+_MEDIA_PREP_JOBS: dict = {}
+_media_prep_lock = threading.Lock()
+
+
+def _media_prepare_job(src: Path, out: Path, key: str):
+    """Remux/transcode `src` into a faststart MP4 at `out`, tracking progress in
+    _MEDIA_PREP_JOBS[key]. Stream-copy when codecs are iOS-playable — HEVC needs
+    the hvc1 sample-entry tag or AVPlayer rejects it — else transcode via the
+    videotoolbox hardware encoder (far faster than libx264 on this Mac)."""
+    import subprocess as sp
+    job = _MEDIA_PREP_JOBS[key]
+    tmp = out.parent / (out.stem + ".part.mp4")
+    try:
+        _MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        for old in _MEDIA_CACHE_DIR.glob("*.mp4"):   # prune copies idle >30 days
+            try:
+                if now - old.stat().st_atime > 30 * 86400:
+                    old.unlink()
+            except OSError:
+                pass
+        dur = 0.0
+        vcodec = acodec = ""
+        try:
+            probe = sp.run(["ffprobe", "-v", "quiet", "-show_entries",
+                            "format=duration:stream=codec_type,codec_name",
+                            "-of", "json", str(src)], capture_output=True, text=True, timeout=15)
+            info = json.loads(probe.stdout or "{}")
+            dur = float(info.get("format", {}).get("duration") or 0)
+            for s in info.get("streams", []):
+                if s.get("codec_type") == "video" and not vcodec:
+                    vcodec = s.get("codec_name", "")
+                elif s.get("codec_type") == "audio" and not acodec:
+                    acodec = s.get("codec_name", "")
+        except Exception:
+            pass
+        vcopy = vcodec in ("h264", "hevc")
+        acopy = acodec in ("aac", "mp3")
+        cmd = ["ffmpeg", "-y", "-i", str(src), "-map", "0:v:0", "-map", "0:a:0?",
+               "-c:v", "copy" if vcopy else "h264_videotoolbox"]
+        if vcopy and vcodec == "hevc":
+            cmd += ["-tag:v", "hvc1"]
+        if not vcopy:
+            cmd += ["-b:v", "6000k"]
+        cmd += ["-c:a", "copy" if acopy else "aac"]
+        if not acopy:
+            cmd += ["-b:a", "192k", "-ac", "2"]
+        cmd += ["-movflags", "+faststart", "-f", "mp4",
+                "-progress", "pipe:1", "-nostats", "-loglevel", "error", str(tmp)]
+        slog(f"[media-prep] {src.name}: v={vcodec}{'(copy)' if vcopy else '→h264'} "
+             f"a={acodec}{'(copy)' if acopy else '→aac'}")
+        proc = sp.Popen(cmd, stdout=sp.PIPE, stderr=sp.PIPE, text=True)
+        for line in proc.stdout:
+            if line.startswith("out_time_us=") and dur > 0:
+                try:   # caps at 99 — the faststart moov-relocation pass runs after
+                    job["progress"] = min(99.0, int(line.split("=")[1]) / 1e6 / dur * 100)
+                except ValueError:
+                    pass
+        proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg exit {proc.returncode}: "
+                               f"{(proc.stderr.read() or '')[:300]}")
+        tmp.replace(out)
+        job["progress"] = 100.0
+        job["done"] = True
+        slog(f"[media-prep] {src.name} → {out.name} ready ({out.stat().st_size:,} bytes)")
+    except Exception as e:
+        job["error"] = str(e)[:300]
+        slog(f"[media-prep] {src.name} FAILED: {e}")
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 class CCHandler(BaseHTTPRequestHandler):
@@ -47944,6 +48058,52 @@ class CCHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self._stream_file_body(p, 0, file_size)
             return
+
+        # GET /api/file/prepare?path=...&cwd=...  — background-remux into a
+        # SEEKABLE on-disk MP4 (media-cache) and report progress. iOS AVPlayer
+        # never starts on the live /api/file/transcode pipe (no Content-Length,
+        # no ranges); the prepared copy streams through /api/file/raw instead.
+        if method == "GET" and path == "/api/file/prepare":
+            import shutil as _sh, hashlib as _hl
+            fpath = qs.get("path", [""])[0]
+            cwd = qs.get("cwd", [""])[0]
+            if not fpath:
+                return self._json({"error": "missing path"}, 400)
+            p = Path(fpath).expanduser()
+            if not p.is_absolute() and cwd:
+                p = Path(cwd).expanduser() / p
+            elif not p.is_absolute():
+                return self._json({"error": "relative path without cwd"}, 400)
+            if not _is_path_allowed(p):
+                return self._json({"error": "access denied"}, 403)
+            if not p.is_file():
+                return self._json({"error": "file not found"}, 404)
+            if not _sh.which("ffmpeg"):
+                return self._json({"error": "ffmpeg not installed"}, 500)
+            st = p.stat()
+            key = _hl.sha1(f"{p}|{int(st.st_mtime)}|{st.st_size}".encode()).hexdigest()[:24]
+            out = _MEDIA_CACHE_DIR / f"{key}.mp4"
+            with _media_prep_lock:
+                job = _MEDIA_PREP_JOBS.get(key)
+                if job:
+                    if job.get("error"):
+                        _MEDIA_PREP_JOBS.pop(key, None)   # allow a retry next call
+                        return self._json({"ready": False, "error": job["error"]})
+                    if job.get("done"):
+                        return self._json({"ready": True, "cached_path": str(out)})
+                    return self._json({"ready": False,
+                                       "progress": round(job.get("progress", 0.0), 1)})
+                if out.exists():
+                    return self._json({"ready": True, "cached_path": str(out)})
+                try:   # a remux lands at roughly input size — need that free, plus slack
+                    if _sh.disk_usage(str(Path.home())).free < st.st_size * 1.2:
+                        return self._json({"error": "not enough free disk for prepared copy"}, 507)
+                except Exception:
+                    pass
+                _MEDIA_PREP_JOBS[key] = {"progress": 0.0, "done": False, "error": ""}
+            threading.Thread(target=_media_prepare_job, args=(p, out, key),
+                             daemon=True, name=f"media-prep-{key[:8]}").start()
+            return self._json({"ready": False, "progress": 0.0, "started": True})
 
         # GET /api/file/transcode?path=...&cwd=...  — remux MKV/AVI → MP4 via ffmpeg
         if method == "GET" and path == "/api/file/transcode":
