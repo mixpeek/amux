@@ -502,13 +502,42 @@ cmd_send() {
   else
     local text="$*"
     [[ -n "$text" ]] || die "usage: amux send <name> <text>  or  amux send <name> --keys 'C-c'"
-    # Send text literally (-l), then Enter as a separate key after a short
-    # delay. Claude Code's TUI buffers/debounces input; sending text and Enter
-    # in one send-keys call lets Enter arrive before the text is processed.
+    # Route through the server so the message gets the SERVER-VERIFIED origin
+    # stamp (X-Amux-Session, AMUX-1768), busy-deferral, and an audit event.
+    # The old raw `tmux send-keys` path delivered ANONYMOUS text straight into
+    # the pane — no provenance, no record, could interrupt an in-flight turn —
+    # which is how the 2026-07-22 ts-gke→mvs-infra→gtm-engine misroute happened
+    # (AMUX-1818). Kept only as a loud last-resort fallback if the server is down.
+    local AMUX_API="${AMUX_API:-https://localhost:8822}"
+    local body resp rc
+    body=$(MSG="$text" python3 -c "import json,os; print(json.dumps({'text': os.environ['MSG']}))")
+    resp=$(curl -sk -m 15 -X POST -H 'Content-Type: application/json' \
+      -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+      -d "$body" "$AMUX_API/api/sessions/$name/send" 2>/dev/null) || resp=""
+    if [[ -n "$resp" ]]; then
+      rc=0
+      RESP="$resp" TGT="$name" python3 - <<'PYEOF' || rc=$?
+import json, os, sys
+try:
+    d = json.loads(os.environ["RESP"])
+except Exception:
+    sys.exit(1)
+tgt = os.environ["TGT"]
+if d.get("error") or d.get("ok") is False:
+    print(f"send to {tgt} FAILED: {d.get('error') or d.get('message')}")
+    sys.exit(2)
+print(f"sent to {tgt} (origin-stamped): {d.get('message', 'ok')}")
+PYEOF
+      [[ $rc -eq 0 ]] && return 0
+      [[ $rc -eq 2 ]] && return 1   # server understood and refused — do NOT fall back
+    fi
+    # Server unreachable/garbled — fall back to raw tmux, but say so loudly:
+    # this delivery carries NO verified origin and NO server-side record.
+    echo "${YELLOW}warning:${RESET} amux server unreachable — falling back to raw tmux send (UNSTAMPED, unaudited)" >&2
     tmux send-keys -t "=$tname:" -l "$text"
     sleep 0.05
     tmux send-keys -t "=$tname:" Enter
-    echo "${GREEN}sent${RESET} to $name: $text"
+    echo "${GREEN}sent${RESET} to $name (raw tmux, no origin stamp): $text"
   fi
 }
 
