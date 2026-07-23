@@ -45495,23 +45495,18 @@ class CCHandler(BaseHTTPRequestHandler):
                     end = int(m_range.group(2)) if m_range.group(2) else fsize - 1
                     end = min(end, fsize - 1)
                     length = end - start + 1
+                    self._media_keepalive()
                     self.send_response(206)
                     self._cors()
                     self.send_header("Content-Type", ct)
                     self.send_header("Content-Range", f"bytes {start}-{end}/{fsize}")
                     self.send_header("Content-Length", str(length))
                     self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Connection", "keep-alive")
                     self.end_headers()
-                    with real.open("rb") as fp:
-                        fp.seek(start)
-                        remaining = length
-                        while remaining > 0:
-                            chunk = fp.read(min(65536, remaining))
-                            if not chunk:
-                                break
-                            self.wfile.write(chunk)
-                            remaining -= len(chunk)
+                    self._stream_file_body(real, start, length)
                     return
+            self._media_keepalive()
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", ct)
@@ -45519,16 +45514,47 @@ class CCHandler(BaseHTTPRequestHandler):
             self.send_header("Accept-Ranges", "bytes")
             fname = real.name
             self.send_header("Content-Disposition", f'inline; filename="{fname}"')
+            self.send_header("Connection", "keep-alive")
             self.end_headers()
-            with real.open("rb") as fp:
-                while True:
-                    chunk = fp.read(65536)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
+            self._stream_file_body(real, 0, fsize)
             return
 
         return self._json({"error": "torrent route not found"}, 404)
+
+    def _media_keepalive(self):
+        """Switch THIS connection to HTTP/1.1 keep-alive for media streaming.
+        Video players fetch a file as hundreds of Range requests; under the
+        handler's default HTTP/1.0 close-per-response, every one pays a fresh
+        TCP+TLS handshake — measured 457 MB/s for a single 100MB range vs
+        13.5 MB/s across 30 fresh-connection 1MB ranges on LOOPBACK, and far
+        worse over a real WiFi/Tailscale RTT (AMUX-1820). Safe here because
+        media responses always send an exact Content-Length. The pairing
+        send_header("Connection", "keep-alive") flips close_connection so the
+        handler loop keeps reading requests off this socket. The idle timeout
+        stops a parked player from pinning a worker thread forever."""
+        self.protocol_version = "HTTP/1.1"
+        try:
+            self.connection.settimeout(75)
+        except Exception:
+            pass
+
+    def _stream_file_body(self, path, start, length):
+        """Stream `length` bytes of `path` from offset `start` in 1MB chunks.
+        Players abort connections constantly (seeks, quality probes, teardown):
+        that must close this connection quietly, not traceback — and never let
+        the next request reuse a half-written socket."""
+        try:
+            with open(path, "rb") as fp:
+                fp.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = fp.read(min(1048576, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except OSError:   # BrokenPipe/ConnectionReset/SSLError/timeout
+            self.close_connection = True
 
     def _json(self, data, status=200):
         body = json.dumps(data).encode()
@@ -47884,46 +47910,39 @@ class CCHandler(BaseHTTPRequestHandler):
                 return
             range_header = self.headers.get("Range", "")
             import re as _re
-            CHUNK = 65536  # 64KB chunks for streaming
+            # Streamable media plays in place (video/audio elements need inline;
+            # attachment makes iOS Safari download 3GB instead of streaming it).
+            disp = "inline" if mime.split("/")[0] in ("video", "audio") else "attachment"
             if range_header:
                 m = _re.match(r'bytes=(\d*)-(\d*)', range_header)
                 start = int(m.group(1)) if m and m.group(1) else 0
                 end = int(m.group(2)) if m and m.group(2) else file_size - 1
                 end = min(end, file_size - 1)
                 length = end - start + 1
+                self._media_keepalive()
                 self.send_response(206)
                 self.send_header("Content-Type", mime)
-                self.send_header("Content-Disposition", f'attachment; filename="{p.name}"')
+                self.send_header("Content-Disposition", f'{disp}; filename="{p.name}"')
                 self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
                 self.send_header("Content-Length", str(length))
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("ETag", etag)
                 self.send_header("Cache-Control", "private, max-age=3600, immutable")
+                self.send_header("Connection", "keep-alive")
                 self.end_headers()
-                with open(p, "rb") as f:
-                    f.seek(start)
-                    remaining = length
-                    while remaining > 0:
-                        chunk = f.read(min(CHUNK, remaining))
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                        remaining -= len(chunk)
+                self._stream_file_body(p, start, length)
             else:
+                self._media_keepalive()
                 self.send_response(200)
                 self.send_header("Content-Type", mime)
-                self.send_header("Content-Disposition", f'attachment; filename="{p.name}"')
+                self.send_header("Content-Disposition", f'{disp}; filename="{p.name}"')
                 self.send_header("Content-Length", str(file_size))
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("ETag", etag)
                 self.send_header("Cache-Control", "private, max-age=3600, immutable")
+                self.send_header("Connection", "keep-alive")
                 self.end_headers()
-                with open(p, "rb") as f:
-                    while True:
-                        chunk = f.read(CHUNK)
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
+                self._stream_file_body(p, 0, file_size)
             return
 
         # GET /api/file/transcode?path=...&cwd=...  — remux MKV/AVI → MP4 via ffmpeg
