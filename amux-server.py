@@ -22888,10 +22888,6 @@ function _queueOp(url, options) {
   }
   offlineQueue.push({ url, options: { method: options.method, headers: options.headers, body }, timestamp: Date.now() });
   saveQueue();
-  // Register Background Sync so SW can replay queue when connectivity returns
-  if ('serviceWorker' in navigator && 'SyncManager' in window) {
-    navigator.serviceWorker.ready.then(r => r.sync.register('replay-queue').catch(() => {}));
-  }
   updateConnectionStatus();
   showToast('Queued (' + offlineQueue.length + ' pending)');
 }
@@ -38557,23 +38553,6 @@ if ('serviceWorker' in navigator) {
         if (reg.active) reg.active.postMessage({ type: 'CACHE_HTML', html });
       }).catch(() => {});
     }
-    // Listen for Background Sync completion messages from SW
-    navigator.serviceWorker.addEventListener('message', function(e) {
-      if (e.data && e.data.type === 'SYNC_COMPLETE') {
-        const { replayed, remaining } = e.data;
-        if (replayed > 0) showToast('Synced ' + replayed + ' queued op' + (replayed > 1 ? 's' : ''));
-        // Reload queue from IDB
-        _idb.get('offline_queue').then(val => {
-          offlineQueue = val || [];
-          saveQueue();
-          updateConnectionStatus();
-        });
-        // Refresh data and reconnect SSE
-        fetchSessions();
-        fetchBoard();
-        if (!_sseFallback && !_sse) { _sseRetries = 0; connectSSE(); }
-      }
-    });
   // Auto-reload when a new SW takes control (ensures fresh HTML after update)
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     // Rescue in-progress peek input from the reload
@@ -38632,11 +38611,7 @@ _idb.get('offline_queue').then(val => {
     saveQueue();
     updateConnectionStatus();
   }
-  // On startup, register Background Sync if queue is non-empty
-  if ((offlineQueue.length || (val && val.length)) && 'serviceWorker' in navigator && 'SyncManager' in window) {
-    navigator.serviceWorker.ready.then(r => r.sync.register('replay-queue').catch(() => {}));
-  }
-  // Auto-retry queued ops on startup if online (fallback when BackgroundSync isn't available)
+  // Auto-retry queued ops on startup if online (single replayer: page-side only)
   if (offlineQueue.length || (val && val.length)) {
     setTimeout(() => {
       if (online && navigator.onLine !== false && (offlineQueue.length || drafts.length)) {
@@ -45365,56 +45340,13 @@ self.addEventListener('fetch', e => {
   );
 });
 
-// Background Sync — replay offline queue when connectivity returns
-self.addEventListener('sync', e => {
-  if (e.tag !== 'replay-queue') return;
-  e.waitUntil((async () => {
-    // Open IndexedDB directly (SW can't access localStorage)
-    const db = await new Promise((resolve, reject) => {
-      const req = indexedDB.open('amux', 1);
-      req.onupgradeneeded = () => {
-        const d = req.result;
-        if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-    const tx = db.transaction('kv', 'readonly');
-    const queue = await new Promise((resolve, reject) => {
-      const r = tx.objectStore('kv').get('offline_queue');
-      r.onsuccess = () => resolve(r.result || []);
-      r.onerror = () => reject(r.error);
-    });
-    if (!queue.length) return;
-
-    const failures = [];
-    let replayed = 0;
-    for (const item of queue) {
-      try {
-        const r = await fetch(item.url, item.options);
-        if (r.status >= 500) {
-          failures.push(item);  // retry later
-        } else {
-          replayed++;  // 2xx/3xx/4xx — done (4xx = stale, drop)
-        }
-      } catch(e) {
-        failures.push(item);  // network error — retry later
-      }
-    }
-
-    // Write remaining failures back to IDB
-    const tx2 = db.transaction('kv', 'readwrite');
-    tx2.objectStore('kv').put(failures, 'offline_queue');
-    await new Promise((resolve, reject) => {
-      tx2.oncomplete = resolve;
-      tx2.onerror = () => reject(tx2.error);
-    });
-
-    // Notify all clients
-    const clients = await self.clients.matchAll();
-    clients.forEach(c => c.postMessage({ type: 'SYNC_COMPLETE', replayed, remaining: failures.length }));
-  })());
-});
+// NOTE: no Background Sync replay here — deliberately. The page-side flush
+// (runSyncBanner, triggered by online/visibilitychange/startup) is the SINGLE
+// replayer. A second SW-side replayer raced it: both fired at reconnect, the
+// SW replayed from a stale IDB snapshot (duplicate-delivery risk) and its
+// SYNC_COMPLETE→IDB merge resurrected ops the page had already settled
+// (observed live in the AMUX-1825 e2e). iOS never supported Background Sync
+// anyway, so page-side-only is also the one behavior that works everywhere.
 """.strip()
 
 
