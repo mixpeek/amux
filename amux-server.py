@@ -7949,8 +7949,13 @@ def _pickup_next_board_task(session_name: str):
         row = db.execute(
             "SELECT id, title, desc FROM issues "
             "WHERE session=? AND status='todo' AND owner_type='agent' AND deleted IS NULL "
+            # Freshness gate: never auto-run a card nobody has touched in 7+
+            # days — fossils get triaged/parked by a human, not silently
+            # executed at idle (2026-07-23 sweep found 337 such cards; blind
+            # oldest-first pickup would have ground through dead work).
+            "AND updated >= ? "
             "ORDER BY created ASC LIMIT 1",
-            (session_name,)
+            (session_name, int(time.time()) - 7 * 86400)
         ).fetchone()
         if not row:
             return
