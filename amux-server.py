@@ -45922,6 +45922,22 @@ class CCHandler(BaseHTTPRequestHandler):
         qs = parse_qs(parsed.query)
         self._resp_status = 200
         t0 = time.monotonic()
+        # A dangling transaction left on this thread's cached SQLite connection
+        # pins its WAL read snapshot: every later request served by the thread
+        # reads FROZEN data. Harmless when threads died after one request; with
+        # media keep-alive (v0.9.179) handler threads live for minutes, and a
+        # stale thread even poisons shared caches it rebuilds (observed: board
+        # writes invisible fleet-wide for ~52s, AMUX-1849 repro). A finished
+        # request that didn't commit was never durable anyway — roll it back so
+        # every request starts on a fresh snapshot.
+        _conn = getattr(_db_local, "conn", None)
+        if _conn is not None and _conn.in_transaction:
+            try:
+                _conn.rollback()
+                slog(f"[db] rolled back dangling transaction on handler thread "
+                     f"(before {method} {path}) — some prior request leaked an open tx")
+            except Exception:
+                pass
         try:
             return self._route_inner(method, path, qs)
         except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError) as e:
