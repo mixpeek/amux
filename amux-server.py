@@ -48637,7 +48637,17 @@ class CCHandler(BaseHTTPRequestHandler):
                 status = body.get("status", "todo")
                 due = body.get("due", "").strip() or None
                 due_time = body.get("due_time", "").strip() or None
-                creator = body.get("creator", "")
+                # Creator attribution, AMUX-1812 recipe: the body value is a
+                # self-reported CLAIM. The verified X-Amux-Session header wins;
+                # a disagreement is recorded, not silently trusted (caught live
+                # on GV-620: a session's raw curl left creator empty). No ip:
+                # fallback here — creator is a display field, not an audit row.
+                creator = (body.get("creator") or "").strip()[:64]
+                _chdr = (self.headers.get("X-Amux-Session", "") or "").strip()[:64]
+                if _chdr and creator and _chdr != creator:
+                    creator = f"{_chdr} (claimed {creator})"
+                elif not creator:
+                    creator = _chdr or self.headers.get("X-Amux-User-Email", "").strip()
                 desc = body.get("desc", "").strip()
                 tags = [t for t in body.get("tags", []) if t]
                 owner_type = body.get("owner_type", "agent" if session else "human")
