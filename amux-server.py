@@ -21657,6 +21657,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="file-view-tab" id="file-tab-teleprompter" onclick="_filesOpenTeleprompter()" title="Teleprompter mode" style="display:none;">&#x25B6; Teleprompter</button>
       <button class="file-view-tab" id="file-tab-search" onclick="_mdSearchToggle()" title="Find in markdown" style="display:none;">&#x1F50D; Find</button>
       <button class="file-view-tab" id="file-tab-copy" onclick="copyFileContent()" title="Copy to clipboard">Copy</button>
+      <button class="file-view-tab" id="file-tab-copypath" onclick="_copyFilePath(_fileData&&_fileData.path||'')" title="Copy relative path">Path</button>
       <button class="file-view-tab" id="file-tab-link" onclick="_copyFileDeeplink(_fileData&&_fileData.path||'')" title="Copy deep link">Link</button>
     </div>
     <button id="file-save-btn" onclick="_fileSave()" style="display:none;">Save</button>
@@ -32305,19 +32306,25 @@ function _encodeHashPath(p) {
 }
 function _copyFileDeeplink(path) {
   const url = location.origin + location.pathname + '#path=' + _encodeHashPath(path);
+  _copyTextWithToast(url, 'Link copied');
+}
+function _copyFilePath(path) {
+  _copyTextWithToast(path, 'Path copied');
+}
+function _copyTextWithToast(text, message) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(url).then(() => showToast('Link copied'), () => _copyFileDeeplinkFallback(url));
+    navigator.clipboard.writeText(text).then(() => showToast(message), () => _copyTextWithToastFallback(text, message));
   } else {
-    _copyFileDeeplinkFallback(url);
+    _copyTextWithToastFallback(text, message);
   }
 }
-function _copyFileDeeplinkFallback(url) {
+function _copyTextWithToastFallback(text, message) {
   const ta = document.createElement('textarea');
-  ta.value = url; ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+  ta.value = text; ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
   document.body.appendChild(ta); ta.focus(); ta.select();
   try { document.execCommand('copy'); } catch(e) {}
   document.body.removeChild(ta);
-  showToast('Link copied');
+  showToast(message);
 }
 async function loadExplore(path) {
   const body = document.getElementById('explore-body');
