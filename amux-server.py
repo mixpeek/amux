@@ -45884,6 +45884,9 @@ class CCHandler(BaseHTTPRequestHandler):
                 def __init__(self, raw):
                     self._raw = raw
                     self._c = _zlib.compressobj(6, _zlib.DEFLATED, 31)  # 31 = gzip wrapper
+                @property
+                def closed(self):
+                    return getattr(self._raw, 'closed', False)
                 def write(self, data):
                     out = self._c.compress(data) + self._c.flush(_zlib.Z_SYNC_FLUSH)
                     if out:
