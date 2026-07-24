@@ -13744,6 +13744,9 @@ _ALLOWED_TMUX_KEYS = frozenset({
     "M-b", "M-f", "M-d",  # Alt/Meta combos
     "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
     "y", "n", "q",  # common single-char confirmations
+    "x",  # agent manager: "x to stop" the selected subagent. Without it a HUNG
+          # subagent was unkillable through the API — a wedged WebFetch pinned
+          # `random` for 1d7h and every send just queued behind it (2026-07-23).
 })
 
 def send_keys(name: str, keys: str) -> tuple[bool, str]:
