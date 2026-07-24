@@ -2071,6 +2071,20 @@ _sse_cache = {
 _sse_cache_lock = threading.Lock()  # prevents thundering herd on cache refresh
 _SSE_CACHE_TTL = 2  # seconds
 
+
+def _cache_etag(c: dict) -> str:
+    """Content-hash ETag for a shared cache entry, memoized per generation —
+    a polling client whose view is current gets a bodyless 304 instead of the
+    full 2.4MB board / 104KB sessions payload every few seconds (AMUX-1859)."""
+    j = c.get("json") or ""
+    if not j:
+        return ""
+    if c.get("_etag_src") is not j:
+        import hashlib as _hl
+        c["_etag"] = '"' + _hl.md5(j.encode()).hexdigest()[:16] + '"'
+        c["_etag_src"] = j
+    return c["_etag"]
+
 # ── Structured event log (in-memory ring buffer, 2 000 events) ─────────────────
 import collections
 _event_log: "collections.deque[dict]" = collections.deque(maxlen=2000)
@@ -26720,7 +26734,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.182';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.183';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -45281,7 +45295,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.182';
+const CACHE = 'amux-v0.9.183';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -45724,20 +45738,56 @@ class CCHandler(BaseHTTPRequestHandler):
         except OSError:   # BrokenPipe/ConnectionReset/SSLError/timeout
             self.close_connection = True
 
+    def _gzip_out(self, body: bytes) -> tuple[bytes, bool]:
+        """Compress a response body when the client accepts gzip and it pays.
+        Mobile was pulling everything raw: 1.56MB app shell, 2.4MB board list,
+        104KB sessions on a polling loop (AMUX-1859) — gzip cuts those 63-84%
+        for ~1-56ms of CPU. Small bodies and non-accepting clients pass through."""
+        try:
+            if len(body) < 1024:
+                return body, False
+            if "gzip" not in (self.headers.get("Accept-Encoding") or "").lower():
+                return body, False
+            import gzip as _gzmod
+            gz = _gzmod.compress(body, 6)
+            if len(gz) >= len(body):
+                return body, False
+            return gz, True
+        except Exception:
+            return body, False
+
     def _json(self, data, status=200):
         body = json.dumps(data).encode()
+        body, gz = self._gzip_out(body)
         self.send_response(status)
         self._cors()
         self.send_header("Content-Type", "application/json")
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
-    def _json_raw(self, json_str, status=200):
+    def _json_raw(self, json_str, status=200, etag=""):
         body = json_str.encode() if isinstance(json_str, str) else json_str
+        if etag and self.headers.get("If-None-Match", "") == etag:
+            self.send_response(304)
+            self._cors()
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
+        body, gz = self._gzip_out(body)
         self.send_response(status)
         self._cors()
         self.send_header("Content-Type", "application/json")
+        if etag:
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -45759,11 +45809,15 @@ class CCHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             return
+        body, gz = self._gzip_out(body)
         self.send_response(200)
         self._cors()
         self.send_header("Content-Type", "application/json")
         self.send_header("ETag", etag)
         self.send_header("Cache-Control", "no-store")
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         try:
@@ -45773,17 +45827,28 @@ class CCHandler(BaseHTTPRequestHandler):
 
     def _html(self, html):
         body = html.encode()
+        body, gz = self._gzip_out(body)
         self.send_response(200)
         self._cors()
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def _raw(self, body: bytes, content_type: str, cache=False):
+        # gzip text-ish payloads only — images/video are already compressed
+        gz = False
+        if any(t in content_type for t in ("text/", "json", "svg", "javascript")):
+            body, gz = self._gzip_out(body)
         self.send_response(200)
         self._cors()
         self.send_header("Content-Type", content_type)
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         if cache:
             self.send_header("Cache-Control", "public, max-age=86400")
@@ -45797,8 +45862,33 @@ class CCHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.send_header("X-Accel-Buffering", "no")
+        # Stream-level gzip with a sync-flush per write: every event leaves the
+        # socket immediately, compressed. The recurring SSE payloads were the
+        # biggest mobile drain — 104KB sessions per change, up to 2.4MB board —
+        # gzip cuts them 63-84% (AMUX-1859). EventSource decompresses natively.
+        _sse_gzip = "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+        if _sse_gzip:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self._cors()
         self.end_headers()
+        if _sse_gzip:
+            import zlib as _zlib
+
+            class _GzipEventStream:
+                """File-like wrapper compressing SSE writes with Z_SYNC_FLUSH so
+                each event is delivered whole, immediately."""
+                def __init__(self, raw):
+                    self._raw = raw
+                    self._c = _zlib.compressobj(6, _zlib.DEFLATED, 31)  # 31 = gzip wrapper
+                def write(self, data):
+                    out = self._c.compress(data) + self._c.flush(_zlib.Z_SYNC_FLUSH)
+                    if out:
+                        self._raw.write(out)
+                    return len(data)
+                def flush(self):
+                    self._raw.flush()
+            self.wfile = _GzipEventStream(self.wfile)
 
         # Cap SSE connection lifetime to avoid thread accumulation.
         # Browser EventSource auto-reconnects, so this is transparent.
@@ -46631,7 +46721,7 @@ class CCHandler(BaseHTTPRequestHandler):
                                         _sse_cache_lock.release()
                                 threading.Thread(target=_bg_refresh, daemon=True).start()
                                 released_to_bg = True
-                                return self._json_raw(sc["json"])
+                                return self._json_raw(sc["json"], etag=_cache_etag(sc))
                             # Cold cache — must block.
                             data = list_sessions()
                             sc["data"] = data
@@ -46644,12 +46734,12 @@ class CCHandler(BaseHTTPRequestHandler):
                     # Another thread is refreshing. Return stale data immediately
                     # if we have any, otherwise wait briefly for the refresher.
                     if sc["json"]:
-                        return self._json_raw(sc["json"])
+                        return self._json_raw(sc["json"], etag=_cache_etag(sc))
                     for _ in range(100):  # up to 10s for cold start
                         time.sleep(0.1)
                         if sc["json"]:
                             break
-            return self._json_raw(sc["json"]) if sc["json"] else self._json([])
+            return self._json_raw(sc["json"], etag=_cache_etag(sc)) if sc["json"] else self._json([])
 
         # GET /api/sessions-git — bulk git info for all sessions (avoids 80+ individual requests)
         if method == "GET" and path == "/api/sessions-git":
@@ -48663,7 +48753,7 @@ class CCHandler(BaseHTTPRequestHandler):
                                             _sse_cache_lock.release()
                                     threading.Thread(target=_bg_board, daemon=True).start()
                                     released_to_bg = True
-                                    return self._json_raw(bc["json"])
+                                    return self._json_raw(bc["json"], etag=_cache_etag(bc))
                                 data = _load_board()
                                 bc["data"] = data
                                 bc["json"] = json.dumps(data, sort_keys=True)
@@ -48673,12 +48763,12 @@ class CCHandler(BaseHTTPRequestHandler):
                                 _sse_cache_lock.release()
                     else:
                         if bc["json"]:
-                            return self._json_raw(bc["json"])
+                            return self._json_raw(bc["json"], etag=_cache_etag(bc))
                         for _ in range(100):
                             time.sleep(0.1)
                             if bc["json"]:
                                 break
-                return self._json_raw(bc["json"]) if bc["json"] else self._json([])
+                return self._json_raw(bc["json"], etag=_cache_etag(bc)) if bc["json"] else self._json([])
 
             # POST /api/board — create issue
             if method == "POST" and path == "/api/board":
