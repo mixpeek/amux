@@ -1758,6 +1758,7 @@ _PROVIDER_LOOKUP_MODEL = {
     "claude": "haiku",
     "gemini": "gemini-2.5-flash-lite",
     "codex":  "gpt-5-mini",
+    "minimax": "MiniMax-M2.7",
 }
 
 
@@ -1794,6 +1795,40 @@ def _ollama_first_model() -> str:
     except Exception:
         pass
     return ""
+
+
+# MiniMax ships no first-party CLI, so its Look up shot rides the
+# OpenAI-compatible chat endpoint over HTTP. Two regions exist: the global
+# endpoint (api.minimax.io) and the China endpoint (api.minimaxi.com).
+_MINIMAX_OPENAI_BASE = {
+    "global_en": "https://api.minimax.io/v1",
+    "cn_zh":     "https://api.minimaxi.com/v1",
+}
+
+
+def _minimax_region(base_url: str) -> str:
+    """China (api.minimaxi.com) when the base URL names it, else global."""
+    return "cn_zh" if "minimaxi.com" in (base_url or "") else "global_en"
+
+
+def _minimax_session_endpoint(name: str) -> tuple:
+    """(openai_base_url, auth_token) for a MiniMax session's Look up shot.
+
+    Region follows whatever the session already points its base URL at, so a
+    session configured for the global or the China endpoint is honored as-is
+    (defaulting to global). Auth reuses the session's own token, kept in
+    ANTHROPIC_AUTH_TOKEN, and falls back to MINIMAX_API_KEY.
+    """
+    base = token = ""
+    try:
+        cfg = parse_env_file(CC_SESSIONS / f"{name}.env")
+        base = (cfg.get("ANTHROPIC_BASE_URL") or "").strip()
+        token = (cfg.get("ANTHROPIC_AUTH_TOKEN")
+                 or cfg.get("MINIMAX_API_KEY") or "").strip()
+    except Exception:
+        pass
+    token = token or os.environ.get("MINIMAX_API_KEY", "")
+    return (_MINIMAX_OPENAI_BASE[_minimax_region(base)], token)
 
 
 def _lookup_via_claude(prompt: str, timeout: int = 35) -> tuple:
@@ -1841,6 +1876,24 @@ def _lookup_via_provider(provider: str, prompt: str, name: str = "", timeout: in
                     capture_output=True, text=True, timeout=timeout, cwd=str(CC_HOME))
                 if r.returncode == 0 and r.stdout.strip():
                     return (r.stdout.strip(), "")
+        elif provider == "minimax":
+            base, token = _minimax_session_endpoint(name)
+            if token:
+                payload = json.dumps({
+                    "model": _PROVIDER_LOOKUP_MODEL["minimax"],
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 400,
+                }).encode()
+                req = urllib.request.Request(
+                    f"{base}/chat/completions", data=payload, method="POST",
+                    headers={"Content-Type": "application/json",
+                             "Authorization": f"Bearer {token}"})
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode())
+                out = ((data.get("choices") or [{}])[0]
+                       .get("message", {}).get("content", "") or "").strip()
+                if out:
+                    return (out, "")
     except Exception:
         pass
     return ("", "")   # fall back to claude
