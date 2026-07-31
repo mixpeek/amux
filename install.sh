@@ -35,9 +35,19 @@ $SUDO cp "$SCRIPT_DIR/amux-server.py" "$INSTALL_DIR/amux-server.py"
 $SUDO cp "$SCRIPT_DIR/amux-remote" "$INSTALL_DIR/amux-remote"
 $SUDO chmod +x "$INSTALL_DIR/amux-remote"
 
+# Copy the icon assets. The dashboard links /icon.svg, /icon.png and the PWA
+# manifest references icon-192/512; the server resolves those relative to
+# amux-server.py's own directory. Without this the endpoints 404 and the
+# dashboard has no favicon or installable app icon.
+if [[ -d "$SCRIPT_DIR/assets" ]]; then
+  $SUDO mkdir -p "$INSTALL_DIR/assets"
+  $SUDO cp "$SCRIPT_DIR"/assets/icon*.png "$SCRIPT_DIR"/assets/icon.svg "$INSTALL_DIR/assets/"
+fi
+
 echo "${GREEN}✓${RESET} installed ${BOLD}amux${RESET} → $INSTALL_DIR/amux"
 echo "${GREEN}✓${RESET} installed ${BOLD}amux-server.py${RESET} → $INSTALL_DIR/amux-server.py"
 echo "${GREEN}✓${RESET} installed ${BOLD}amux-remote${RESET} → $INSTALL_DIR/amux-remote"
+[[ -d "$INSTALL_DIR/assets" ]] && echo "${GREEN}✓${RESET} installed ${BOLD}icon assets${RESET} → $INSTALL_DIR/assets/"
 echo ""
 echo "Quick start:"
 echo "  amux register myproject --dir ~/Dev/myproject --yolo"
