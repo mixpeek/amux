@@ -19005,6 +19005,77 @@ def _whisper_transcribe(raw: bytes, mime: str) -> tuple:
             except Exception: pass
 
 
+# ── Local text-to-speech (Piper) ────────────────────────────────────────────
+# Same presence-detection shape as Whisper above: if the module and a voice are
+# on this box, "read aloud" speaks locally and free; otherwise /api/tts falls
+# back to ElevenLabs if a key is configured. Same file, both deployments.
+_PIPER_VOICE_NAME = os.environ.get("AMUX_PIPER_VOICE", "en_US-amy-medium").strip()
+_piper_py_cached = None
+
+
+def _piper_voice_path(name: str):
+    """(onnx, config) paths for a downloaded voice, or (None, None)."""
+    d = Path(os.path.expanduser("~/.amux/piper-voices"))
+    onnx, cfg = d / f"{name}.onnx", d / f"{name}.onnx.json"
+    return (onnx, cfg) if onnx.exists() and cfg.exists() else (None, None)
+
+
+def _piper_python():
+    """An interpreter that can `import piper`, or None. AMUX_PIPER_PYTHON first,
+    same reasoning as _whisper_python: the server's own interpreter usually
+    isn't the one with the model deps installed."""
+    global _piper_py_cached
+    if _piper_py_cached is not None:
+        return _piper_py_cached or None
+    cands = [os.environ.get("AMUX_PIPER_PYTHON", "").strip(), sys.executable]
+    cands += [shutil.which(c) for c in ("python3.11", "python3.12", "python3.13", "python3.14", "python3")]
+    for c in cands:
+        if not c or not os.path.exists(c):
+            continue
+        try:
+            r = subprocess.run([c, "-c", "import importlib.util as u,sys;"
+                                         "sys.exit(0 if u.find_spec('piper') else 1)"],
+                               capture_output=True, timeout=20)
+            if r.returncode == 0:
+                _piper_py_cached = c
+                return c
+        except Exception:
+            continue
+    _piper_py_cached = ""
+    return None
+
+
+def _piper_available() -> bool:
+    onnx, cfg = _piper_voice_path(_PIPER_VOICE_NAME)
+    return onnx is not None and _piper_python() is not None
+
+
+def _piper_generate(text: str):
+    """WAV bytes, or None. Spawned per-call rather than kept warm — measured
+    ~1s for a full paragraph on this host, well under the latency a warm
+    worker (like Whisper's) exists to avoid."""
+    py = _piper_python()
+    onnx, _cfg = _piper_voice_path(_PIPER_VOICE_NAME)
+    if not py or not onnx:
+        return None
+    import tempfile
+    fd, out_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        r = subprocess.run([py, "-m", "piper", "-m", str(onnx), "-f", out_path],
+                            input=text.encode(), capture_output=True, timeout=60)
+        if r.returncode != 0:
+            slog(f"[tts] piper failed: {r.stderr.decode(errors='replace')[:200]}")
+            return None
+        return Path(out_path).read_bytes()
+    except Exception as e:
+        slog(f"[tts] piper exception: {e}")
+        return None
+    finally:
+        try: os.unlink(out_path)
+        except Exception: pass
+
+
 # ── Session-name recovery for locally-transcribed text ──────────────────────
 # Speech-to-text mangles session names constantly and they are the one token you
 # actually paste. A deterministic pass fixes them with no network, which is what
@@ -31675,7 +31746,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.380';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.381';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -34582,9 +34653,37 @@ if (_abAudio) {
   window.addEventListener('beforeunload', _abSavePos);
 }
 
-// ── Text-to-Speech (ElevenLabs) ──
+// ── Text-to-Speech (Piper local, free — ElevenLabs as fallback if keyed) ──
 let _ttsVoices = null;
 let _ttsSelectedVoice = '';
+let _ttsSpeakAudio = null;   // currently-playing one-click clip, so a second press stops the first
+
+// One-click "read aloud" for a single message — no dialog, just plays. Hits
+// the same /api/tts route as the Text-to-Speech dialog below, so it gets
+// Piper (free, local) when installed and ElevenLabs otherwise.
+async function _ttsSpeak(text, btn) {
+  if (_ttsSpeakAudio) { _ttsSpeakAudio.pause(); _ttsSpeakAudio = null; }
+  if (!text) return;
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '&#x23F3;';
+  try {
+    const r = await fetch(API + '/api/tts', {
+      method: 'POST',
+      headers: _authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({ text }),
+    });
+    const d = await r.json();
+    if (d.error) { showToast(d.error, 'error'); return; }
+    const audio = new Audio(d.url);
+    _ttsSpeakAudio = audio;
+    audio.onended = () => { if (_ttsSpeakAudio === audio) _ttsSpeakAudio = null; };
+    await audio.play();
+  } catch(e) {
+    showToast('Read aloud failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.innerHTML = orig;
+  }
+}
 
 function openTTS(prefillText) {
   const existing = document.getElementById('tts-wrap');
@@ -35422,8 +35521,9 @@ function _cmdHistItemHTML(e) {
   const meta = tag + sessTag + tsTag + _msgCardChip(typeof e === 'string' ? '' : (e.card_id || ''));
   const locSess = (session || peekSession || '').replace(/'/g,'');
   const copyBtn = `<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" title="Copy message text" onclick="event.stopPropagation();_msgCopyBtn(this,'${enc}')">&#x1F4CB;</button>`;
+  const speakBtn = `<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;min-width:44px;min-height:28px;" title="Read aloud" onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent('${enc}'),this)">&#x1F50A;</button>`;
   const locate = locSess ? `<button class="btn" style="flex-shrink:0;align-self:center;font-size:0.7rem;padding:3px 9px;" title="Open the peek and scroll to where this was sent" onclick="event.stopPropagation();_msgLocate('${locSess}','${enc}')">&#x2316;</button>` : '';
-  return `<div onclick="_pickCmdHistory(decodeURIComponent('${enc}'))" title="Click to insert into the composer" style="cursor:pointer;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="this.style.borderColor='var(--border)'"><div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${_linkifyCardIds(safe)}</div>${copyBtn}${locate}</div>`;
+  return `<div onclick="_pickCmdHistory(decodeURIComponent('${enc}'))" title="Click to insert into the composer" style="cursor:pointer;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:0.85rem;color:var(--text);transition:border-color 0.15s;display:flex;gap:6px;align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='var(--accent)'" onmouseleave="this.style.borderColor='var(--border)'"><div style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;line-height:1.45;">${meta?`<div style="margin-bottom:4px;">${meta}</div>`:''}${_linkifyCardIds(safe)}</div>${copyBtn}${speakBtn}${locate}</div>`;
 }
 function _peekMessagesFor() {
   if (!peekSession) return [];
@@ -52814,7 +52914,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.380';
+const CACHE = 'amux-v0.9.381';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -56662,6 +56762,7 @@ class CCHandler(BaseHTTPRequestHandler):
                 ".pdf": "application/pdf", ".txt": "text/plain; charset=utf-8",
                 ".md": "text/plain; charset=utf-8", ".csv": "text/csv; charset=utf-8",
                 ".json": "application/json", ".log": "text/plain; charset=utf-8",
+                ".mp3": "audio/mpeg", ".wav": "audio/wav",
             }
             ct = ct_map.get(ext, "application/octet-stream")
             data = fpath.read_bytes()
@@ -58918,11 +59019,20 @@ class CCHandler(BaseHTTPRequestHandler):
                 _tts_ctx = _tts_ssl._create_unverified_context()
 
             elevenlabs_key = os.environ.get("ELEVENLABS_API_KEY", "")
+            piper_id = f"piper:{_PIPER_VOICE_NAME}"
 
-            # GET /api/tts/voices — list available voices
+            # GET /api/tts/voices — list available voices. Local Piper is listed
+            # first (free, no key) when present; ElevenLabs voices are appended
+            # if a key is configured. Neither being present is the only error.
             if method == "GET" and path == "/api/tts/voices":
+                voices = []
+                if _piper_available():
+                    voices.append({"voice_id": piper_id, "name": f"{_PIPER_VOICE_NAME} (local, free)", "category": "local"})
                 if not elevenlabs_key:
-                    return self._json({"error": "ELEVENLABS_API_KEY not set in ~/.amux/server.env"}, 400)
+                    if not voices:
+                        return self._json({"error": "No TTS backend available: Piper isn't installed locally, "
+                                                      "and ELEVENLABS_API_KEY isn't set in ~/.amux/server.env"}, 400)
+                    return self._json({"voices": voices})
                 # Try API first, fall back to built-in defaults
                 _default_voices = [
                     {"voice_id": "JBFqnCBsd6RMkjVDRZzb", "name": "George", "category": "premade"},
@@ -58945,20 +59055,33 @@ class CCHandler(BaseHTTPRequestHandler):
                     )
                     resp = _tts_ureq.urlopen(req, timeout=10, context=_tts_ctx)
                     data = json.loads(resp.read())
-                    voices = [{"voice_id": v["voice_id"], "name": v["name"], "category": v.get("category", "")} for v in data.get("voices", [])]
+                    voices += [{"voice_id": v["voice_id"], "name": v["name"], "category": v.get("category", "")} for v in data.get("voices", [])]
                     return self._json({"voices": voices})
                 except Exception:
-                    return self._json({"voices": _default_voices})
+                    return self._json({"voices": voices + _default_voices})
 
-            # POST /api/tts — generate speech, return audio file URL
+            # POST /api/tts — generate speech, return audio file URL. Piper
+            # (free, local) is used whenever it's installed and the caller asked
+            # for it (or asked for nothing, since it's the free default);
+            # ElevenLabs only runs for a voice_id that's actually one of its own.
             if method == "POST" and path == "/api/tts":
-                if not elevenlabs_key:
-                    return self._json({"error": "ELEVENLABS_API_KEY not set in ~/.amux/server.env"}, 400)
                 body = self._read_body()
                 text = body.get("text", "").strip()
                 if not text:
                     return self._json({"error": "text is required"}, 400)
-                voice_id = body.get("voice_id", "JBFqnCBsd6RMkjVDRZzb")  # default: George
+                voice_id = body.get("voice_id", "")
+                if (not voice_id or voice_id == piper_id) and _piper_available():
+                    wav = _piper_generate(text)
+                    if wav is None:
+                        return self._json({"error": "Piper generation failed — see server log"}, 500)
+                    fname = f"tts-{int(time.time())}.wav"
+                    (CC_UPLOADS / fname).write_bytes(wav)
+                    return self._json({"url": f"/api/uploads/{fname}", "size": len(wav),
+                                       "voice_id": piper_id, "backend": "piper"})
+                if not elevenlabs_key:
+                    return self._json({"error": "No TTS backend available: Piper isn't installed locally, "
+                                                  "and ELEVENLABS_API_KEY isn't set in ~/.amux/server.env"}, 400)
+                voice_id = voice_id or "JBFqnCBsd6RMkjVDRZzb"  # default: George
                 model = body.get("model", "eleven_multilingual_v2")
                 try:
                     payload = json.dumps({
@@ -58978,11 +59101,9 @@ class CCHandler(BaseHTTPRequestHandler):
                     resp = _tts_ureq.urlopen(req, timeout=60, context=_tts_ctx)
                     audio_data = resp.read()
                     fname = f"tts-{int(time.time())}.mp3"
-                    out_path = _amux_home / "uploads" / fname
-                    out_path.parent.mkdir(parents=True, exist_ok=True)
-                    out_path.write_bytes(audio_data)
+                    (CC_UPLOADS / fname).write_bytes(audio_data)
                     return self._json({
-                        "url": f"/uploads/{fname}",
+                        "url": f"/api/uploads/{fname}",
                         "size": len(audio_data),
                         "voice_id": voice_id,
                     })
