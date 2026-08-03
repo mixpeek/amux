@@ -129,12 +129,86 @@ migrate_tmux() {
   done
 }
 
+# ─── herdr backend helpers ───────────────────────────────────────────────────
+# Mirror of the server's _backend_of_cfg: CC_BACKEND in the session env wins,
+# then $AMUX_BACKEND, default tmux. herdr sessions live in one headless named
+# herdr session (AMUX_HERDR_SESSION, default "amux") that the SERVER owns, so
+# start/stop go through the server API; attach/peek can talk to herdr direct.
+
+herdr_session_name() { echo "${AMUX_HERDR_SESSION:-amux}"; }
+
+session_backend() {
+  local name="$1" b=""
+  if [[ -f "$CC_SESSIONS/$name.env" ]]; then
+    b=$(sed -n 's/^CC_BACKEND=//p' "$CC_SESSIONS/$name.env" | tail -1 | tr -d '"' | tr '[:upper:]' '[:lower:]')
+  fi
+  [[ -n "$b" ]] || b=$(printf '%s' "${AMUX_BACKEND:-tmux}" | tr '[:upper:]' '[:lower:]')
+  if [[ "$b" == "herdr" ]]; then echo "herdr"; else echo "tmux"; fi
+}
+
+# Persisted herdr agent name for an amux session (server writes CC_HERDR_AGENT
+# on first start; empty until then).
+herdr_agent_of() {
+  local name="$1"
+  [[ -f "$CC_SESSIONS/$name.env" ]] || return 0
+  sed -n 's/^CC_HERDR_AGENT=//p' "$CC_SESSIONS/$name.env" | tail -1 | tr -d '"'
+}
+
+need_herdr() {
+  command -v herdr &>/dev/null || die "herdr is required for herdr-backend sessions. Install herdr or set AMUX_BACKEND=tmux"
+}
+
+_start_via_api() {
+  local name="$1"
+  local AMUX_API="${AMUX_API:-https://localhost:8822}"
+  local resp
+  resp=$(curl -sk -m 90 -X POST -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
+    "$AMUX_API/api/workers/$name/start" 2>/dev/null) || resp=""
+  if [[ -z "$resp" ]]; then
+    die "amux server unreachable — herdr sessions start through the server (amux serve). NOTHING was started."
+  fi
+  local rc=0
+  RESP="$resp" TGT="$name" python3 - <<'PYEOF' || rc=$?
+import json, os, sys
+try:
+    d = json.loads(os.environ["RESP"])
+except Exception:
+    sys.exit(1)
+tgt = os.environ["TGT"]
+if d.get("error") or d.get("ok") is False:
+    print(f"start {tgt} FAILED: {d.get('error') or d.get('message')}")
+    sys.exit(1)
+print(f"started {tgt}: {d.get('message', 'ok')}")
+PYEOF
+  return $rc
+}
+
+_stop_via_api() {
+  local name="$1"
+  local AMUX_API="${AMUX_API:-https://localhost:8822}"
+  local resp
+  resp=$(curl -sk -m 15 -X POST -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
+    "$AMUX_API/api/workers/$name/stop" 2>/dev/null) || resp=""
+  if [[ -z "$resp" ]]; then
+    return 1
+  fi
+  echo "${RED}stopping${RESET} $name (graceful, via server)"
+  return 0
+}
+
 # Check if tmux session is alive.
 # NOTE: tmux's -t prefix-matches session names by default, so a bare
 # "amux-foo" would also match a running "amux-foo-worker". Prefix the
 # target with '=' to force an exact match. Name resolution / abbreviation
 # is already handled safely upstream by resolve_session().
 is_running() {
+  if [[ "$(session_backend "$1")" == "herdr" ]]; then
+    local agent
+    agent=$(herdr_agent_of "$1")
+    [[ -n "$agent" ]] || return 1
+    herdr --session "$(herdr_session_name)" agent get "$agent" >/dev/null 2>&1
+    return $?
+  fi
   migrate_tmux "$1"
   tmux has-session -t "=$(tmux_name "$1")" 2>/dev/null
 }
@@ -311,6 +385,29 @@ cmd_start() {
     esac
     shift
   done
+  # herdr backend: the server owns the herdr session, so start goes through
+  # the server API (herdr agent start + readiness detection live there).
+  if [[ "$(session_backend "$name")" == "herdr" ]]; then
+    if $dry_run; then
+      echo "${BOLD}$name${RESET} (herdr backend — started via server API: POST /api/sessions/$name/start)"
+      return
+    fi
+    _start_via_api "$name" || return 1
+    if $detach; then
+      echo "  ${DIM}detached — attach with: amux attach $name${RESET}"
+      return
+    fi
+    need_herdr
+    local agent
+    agent=$(herdr_agent_of "$name")
+    if [[ -n "$agent" ]]; then
+      herdr --session "$(herdr_session_name)" agent attach "$agent" \
+        || herdr --session "$(herdr_session_name)"
+    else
+      herdr --session "$(herdr_session_name)"
+    fi
+    return
+  fi
   # dry-run is a pure command preview — no tmux session is spawned, so the
   # tmux dependency only matters for the real start path.
   $dry_run || need_tmux
@@ -462,6 +559,16 @@ EOF
 cmd_attach() {
   local name
   name=$(resolve_session "${1:-}")
+  if [[ "$(session_backend "$name")" == "herdr" ]]; then
+    need_herdr
+    is_running "$name" || die "session '$name' is not running. Start with: amux start $name"
+    local agent
+    agent=$(herdr_agent_of "$name")
+    if [[ -n "$agent" ]]; then
+      exec herdr --session "$(herdr_session_name)" agent attach "$agent"
+    fi
+    exec herdr --session "$(herdr_session_name)"
+  fi
   need_tmux
   local tname
   tname=$(tmux_name "$name")
@@ -473,8 +580,21 @@ cmd_peek() {
   local name
   name=$(resolve_session "${1:-}")
   local lines="${2:-30}"
-  need_tmux
 
+  if [[ "$(session_backend "$name")" == "herdr" ]]; then
+    need_herdr
+    is_running "$name" || die "session '$name' is not running"
+    local agent
+    agent=$(herdr_agent_of "$name")
+    echo "${BOLD}── $name ──${RESET}"
+    herdr --session "$(herdr_session_name)" agent read "$agent" \
+      --source recent-unwrapped --lines "$lines" --format text 2>/dev/null \
+      || echo "${DIM}(no output)${RESET}"
+    echo "${BOLD}── end ──${RESET}"
+    return
+  fi
+
+  need_tmux
   local tname
   tname=$(tmux_name "$name")
   is_running "$name" || die "worker '$name' is not running"
@@ -527,7 +647,11 @@ cmd_send() {
   # heard of it. Consumed in a loop so it works before or after --stdin/--file.
   local _nb=""
   while [[ "${1:-}" == "--no-board" ]]; do _nb=1; shift; done
-  need_tmux
+  # herdr sessions deliver through the server API; tmux is only needed for
+  # the raw fallback path on tmux-backed sessions.
+  if [[ "$(session_backend "$name")" != "herdr" ]]; then
+    need_tmux
+  fi
 
   local tname
   tname=$(tmux_name "$name")
@@ -612,6 +736,10 @@ PYEOF
     [[ $rc -eq 0 ]] && return 0
     [[ $rc -eq 2 ]] && return 1   # server understood and refused — do NOT fall back
   fi
+  if [[ "$(session_backend "$name")" == "herdr" ]]; then
+    echo "${RED}FAILED${RESET} to send to $name: amux server unreachable, and herdr sessions can only be driven through the server. NOTHING was delivered." >&2
+    return 1
+  fi
   # ── Raw-tmux last resort (AMUX-1987) ────────────────────────────────────
   # This path used to print a GREEN "sent to <name>" followed by the entire
   # message body, with no check that tmux had accepted anything. That echo is
@@ -649,6 +777,26 @@ PYEOF
 cmd_stop() {
   local name
   name=$(resolve_session "${1:-}")
+  if [[ "$(session_backend "$name")" == "herdr" ]]; then
+    if ! is_running "$name"; then
+      echo "${DIM}$name is not running${RESET}"
+      return
+    fi
+    # Prefer the server's graceful stop (transcript snapshot + /exit); if the
+    # server is down, close the pane directly — loud, like the tmux kill below.
+    if _stop_via_api "$name"; then
+      return
+    fi
+    need_herdr
+    local pane
+    pane=$(sed -n 's/^CC_HERDR_PANE_ID=//p' "$CC_SESSIONS/$name.env" | tail -1 | tr -d '"')
+    if [[ -n "$pane" ]] && herdr --session "$(herdr_session_name)" pane close "$pane" >/dev/null 2>&1; then
+      echo "${RED}stopped${RESET} $name (pane closed — server was unreachable, no transcript snapshot)"
+    else
+      die "failed to stop $name: server unreachable and pane close failed"
+    fi
+    return
+  fi
   need_tmux
 
   local tname
@@ -722,7 +870,13 @@ cmd_ls() {
     # Preview last output line if running
     local preview=""
     if is_running "$name" 2>/dev/null; then
-      preview=$(tmux capture-pane -t "=$(tmux_name "$name"):" -p -S -3 2>/dev/null | grep -v '^$' | tail -1 | cut -c1-60)
+      if [[ "$(session_backend "$name")" == "herdr" ]]; then
+        local agent
+        agent=$(herdr_agent_of "$name")
+        preview=$(herdr --session "$(herdr_session_name)" agent read "$agent" --source recent-unwrapped --lines 3 --format text 2>/dev/null | grep -v '^$' | tail -1 | cut -c1-60)
+      else
+        preview=$(tmux capture-pane -t "=$(tmux_name "$name"):" -p -S -3 2>/dev/null | grep -v '^$' | tail -1 | cut -c1-60)
+      fi
       [[ -n "$preview" ]] && preview=" ${DIM}│ $preview${RESET}"
     fi
 

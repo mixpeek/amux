@@ -3896,6 +3896,8 @@ def is_running(session: str) -> bool:
     iterm2_id = _session_iterm2_id(session)
     if iterm2_id:
         return _iterm2_session_exists(iterm2_id)
+    if _session_backend(session) == "herdr":
+        return _herdr_agent_get(session) is not None
     try:
         r = subprocess.run(
             ["tmux", "list-sessions", "-F", "#{session_name}"],
@@ -3935,6 +3937,8 @@ def tmux_capture(session: str, lines: int = 500) -> str:
     iterm2_id = _session_iterm2_id(session)
     if iterm2_id:
         return _iterm2_capture(iterm2_id)
+    if _session_backend(session) == "herdr":
+        return _herdr_capture(session, lines)
     try:
         r = subprocess.run(
             ["tmux", "capture-pane", "-t", tmux_target(session), "-p", "-e",
@@ -4010,6 +4014,8 @@ def _tmux_alt_screen(session: str) -> bool:
     iterm2_id = _session_iterm2_id(session)
     if iterm2_id:
         return False
+    if _session_backend(session) == "herdr":
+        return False  # herdr keeps scrollback even under the alternate screen
     try:
         r = subprocess.run(
             ["tmux", "display-message", "-t", tmux_target(session), "-p", "#{alternate_on}"],
@@ -4164,6 +4170,434 @@ def _session_iterm2_id(name: str) -> str:
     if not env_file.exists():
         return ""
     return parse_env_file(env_file).get("CC_ITERM2_SESSION_ID", "").strip()
+
+
+# ── herdr backend ────────────────────────────────────────────────────────────
+# Alternative terminal backend alongside tmux (mixpeek/amux#79). Where tmux
+# hosts a session in its own tmux session, herdr hosts it as a RECOGNIZED
+# AGENT inside a pane of one headless named herdr session (default: "amux",
+# AMUX_HERDR_SESSION). Selection: per-session CC_BACKEND wins, then the
+# AMUX_BACKEND server env, default tmux. All herdr logic lives in this
+# section; the rest of the file reaches it through the same early-return
+# branch pattern the iTerm2 integration uses, so tmux paths stay untouched.
+#
+# Spiked against herdr 0.7.5 (2026-08-03): headless named session driven from
+# a non-pane daemon context, agent start/read/prompt/wait/stop, graceful
+# /exit stop with name release. Two findings shaped this code: (1) leftover
+# input-buffer text gets concatenated into the next `agent prompt`, so sends
+# clear with ctrl+u first (same shape as the tmux path's C-u); (2) after a
+# FAILED agent start, the same name cannot restart in the same terminal, so
+# every start gets a fresh workspace+pane — which matches how tmux starts get
+# a fresh tmux session anyway.
+
+_HERDR_BACKENDS = ("tmux", "herdr")
+_AMUX_BACKEND = os.environ.get("AMUX_BACKEND", "tmux").strip().lower()
+if _AMUX_BACKEND not in _HERDR_BACKENDS:
+    _AMUX_BACKEND = "tmux"
+# Name of the herdr session amux owns. Herdr gives each named session its own
+# server + socket (~/.config/herdr/sessions/<name>/), so amux never touches
+# the user's own herdr sessions.
+_HERDR_SESSION = os.environ.get("AMUX_HERDR_SESSION", "amux").strip() or "amux"
+
+
+def _backend_of_cfg(cfg: dict) -> str:
+    """Terminal backend for a session: CC_BACKEND wins, then AMUX_BACKEND."""
+    b = (cfg.get("CC_BACKEND", "") or "").strip().lower()
+    return b if b in _HERDR_BACKENDS else _AMUX_BACKEND
+
+
+def _session_backend(name: str) -> str:
+    env_file = CC_SESSIONS / f"{name}.env"
+    if not env_file.exists():
+        return _AMUX_BACKEND
+    try:
+        return _backend_of_cfg(parse_env_file(env_file))
+    except Exception:
+        return _AMUX_BACKEND
+
+
+def _herdr_available() -> bool:
+    return shutil.which("herdr") is not None
+
+
+def _herdr(args: list, timeout: float = 10) -> subprocess.CompletedProcess | None:
+    """Run `herdr --session <amux-session> <args>`. None on any failure."""
+    try:
+        return subprocess.run(["herdr", "--session", _HERDR_SESSION] + args,
+                              capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
+
+
+def _herdr_json(args: list, timeout: float = 10) -> dict | None:
+    """Run a herdr CLI command and parse its JSON reply.
+
+    None on process failure, bad JSON, or an error payload — callers treat
+    all three as "did not work"."""
+    r = _herdr(args, timeout=timeout)
+    if r is None or r.returncode != 0 or not r.stdout.strip():
+        return None
+    try:
+        d = json.loads(r.stdout)
+    except Exception:
+        return None
+    if not isinstance(d, dict) or d.get("error"):
+        return None
+    return d
+
+
+def _herdr_session_running() -> bool:
+    """True if the amux herdr session's server is up (session list is global)."""
+    try:
+        r = subprocess.run(["herdr", "session", "list", "--json"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            return False
+        for s in json.loads(r.stdout).get("sessions", []):
+            if s.get("name") == _HERDR_SESSION and s.get("running"):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+_herdr_server_lock = threading.Lock()
+_herdr_server_proc: subprocess.Popen | None = None
+
+
+def _herdr_ensure_server() -> bool:
+    """Make sure the headless server for the amux herdr session is running."""
+    global _herdr_server_proc
+    if _herdr_session_running():
+        return True
+    with _herdr_server_lock:
+        if _herdr_session_running():
+            return True
+        try:
+            _herdr_server_proc = subprocess.Popen(
+                ["herdr", "--session", _HERDR_SESSION, "server"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as e:
+            slog(f"[herdr] failed to launch server: {e}")
+            return False
+    for _ in range(20):
+        time.sleep(0.25)
+        if _herdr_session_running():
+            return True
+    slog("[herdr] session server did not come up within 5s")
+    return False
+
+
+def _herdr_agent_name(name: str) -> str:
+    """Map an amux session name to a herdr agent name.
+
+    Herdr agent names must match [a-z][a-z0-9_-]{0,31}; amux names allow
+    upper case and dots. The mapping is persisted in CC_HERDR_AGENT so it is
+    stable across restarts and the CLI can resolve it without recomputing."""
+    env_file = CC_SESSIONS / f"{name}.env"
+    cfg: dict = {}
+    if env_file.exists():
+        try:
+            cfg = parse_env_file(env_file)
+        except Exception:
+            cfg = {}
+        existing = (cfg.get("CC_HERDR_AGENT", "") or "").strip()
+        if existing:
+            return existing
+    mapped = re.sub(r"[^a-z0-9_-]", "-", name.lower())
+    mapped = re.sub(r"-{2,}", "-", mapped).strip("-")[:32].strip("-")
+    if not mapped or not re.match(r"^[a-z]", mapped):
+        mapped = ("a-" + mapped)[:32].rstrip("-")
+    if env_file.exists():
+        try:
+            cfg["CC_HERDR_AGENT"] = mapped
+            _write_env(env_file, cfg)
+        except Exception:
+            pass
+    return mapped
+
+
+def _herdr_agent_get(name: str) -> dict | None:
+    """Live herdr agent info for this amux session, or None if not running."""
+    d = _herdr_json(["agent", "get", _herdr_agent_name(name)], timeout=5)
+    if not d:
+        return None
+    return (d.get("result") or {}).get("agent") or None
+
+
+def _herdr_capture(name: str, lines: int = 500) -> str:
+    """Pane transcript for peek. recent-unwrapped keeps history even under
+    Claude Code's alternate screen (spiked 2026-08-03)."""
+    r = _herdr(["agent", "read", _herdr_agent_name(name),
+                "--source", "recent-unwrapped",
+                "--lines", str(max(int(lines), 1)), "--format", "text"],
+               timeout=8)
+    if r is None or r.returncode != 0:
+        return ""
+    return r.stdout.strip()
+
+
+def _herdr_env_pairs(cfg: dict) -> list:
+    """Env forwarding parity with the tmux path's -e flags: provider
+    credentials plus the global agent credentials file (MCP registry
+    variables resolve from these)."""
+    pairs = []
+    _has_oauth = False
+    try:
+        _cj = Path.home() / ".claude.json"
+        if _cj.exists():
+            _has_oauth = bool(json.loads(_cj.read_text()).get("oauthAccount"))
+    except Exception:
+        pass
+    if _has_oauth:
+        pairs.append("ANTHROPIC_API_KEY=")
+    else:
+        _v = os.environ.get("ANTHROPIC_API_KEY", "")
+        if _v:
+            pairs.append(f"ANTHROPIC_API_KEY={_v}")
+    # Superset of the tmux path's explicit -e list: herdr panes don't source
+    # amux's shell_rc, so token/base-URL auth (custom endpoints) must be
+    # forwarded explicitly rather than relying on profile sourcing.
+    for _k in ("ANTHROPIC_API_BASE", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+               "OPENAI_API_KEY", "GEMINI_API_KEY",
+               "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI",
+               "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"):
+        _v = os.environ.get(_k, "")
+        if _v:
+            pairs.append(f"{_k}={_v}")
+    # tmux sources CC_AMUX_ENV into the pane shell; herdr panes get it as
+    # explicit env instead. Values may reference other vars — expand
+    # best-effort against the process env.
+    if CC_AMUX_ENV.exists():
+        try:
+            for _k, _v in parse_env_file(CC_AMUX_ENV).items():
+                if _v and not any(p.startswith(_k + "=") for p in pairs):
+                    pairs.append(f"{_k}={os.path.expandvars(_v)}")
+        except Exception:
+            pass
+    return pairs
+
+
+def _herdr_capture_session_uuid(name: str, agent_name: str) -> None:
+    """herdr captures the Claude session UUID lazily after startup
+    (agent_session.value); store it where the resume/token paths expect it."""
+    for _ in range(15):
+        time.sleep(1)
+        try:
+            d = _herdr_json(["agent", "get", agent_name], timeout=5)
+            uuid_val = ((((d or {}).get("result") or {}).get("agent") or {})
+                        .get("agent_session") or {}).get("value", "")
+            if uuid_val:
+                meta = _load_meta(name)
+                if not meta.get("cc_conversation_id"):
+                    meta["cc_conversation_id"] = uuid_val
+                    _save_meta(name, meta)
+                return
+        except Exception:
+            pass
+
+
+def _herdr_create_and_start(name: str, kind: str, args: list, work_dir: str,
+                            env_pairs: list) -> tuple[bool, str]:
+    """Create a fresh workspace+pane in the amux herdr session and start the
+    agent in it. A fresh pane per start also sidesteps herdr's stale
+    name-on-terminal state left by a failed start (see section header)."""
+    if not _herdr_available():
+        return False, "herdr binary not found (install herdr or set AMUX_BACKEND=tmux)"
+    if not _herdr_ensure_server():
+        return False, "herdr session server did not start"
+    agent_name = _herdr_agent_name(name)
+    # Reuse the pane a previous graceful stop left behind — same semantics as
+    # tmux, where stop keeps the session alive for the next start. Without
+    # this, every stop/start cycle would pile up a dead workspace. After a
+    # FAILED start the pane was closed, so pane get fails and a fresh
+    # workspace is created instead.
+    pane_id = ""
+    try:
+        _prev_pane = (parse_env_file(CC_SESSIONS / f"{name}.env")
+                      .get("CC_HERDR_PANE_ID", "") or "").strip()
+    except Exception:
+        _prev_pane = ""
+    if _prev_pane:
+        d_prev = _herdr_json(["pane", "get", _prev_pane], timeout=5)
+        if d_prev and ((d_prev.get("result") or {}).get("pane")):
+            pane_id = _prev_pane
+            # The shell kept its env; only the (possibly changed) work dir
+            # needs re-applying before the agent launches in it.
+            _herdr(["pane", "run", pane_id, f"cd {shlex.quote(work_dir)}"],
+                   timeout=5)
+            time.sleep(0.2)
+    if not pane_id:
+        ws_args = ["workspace", "create", "--cwd", work_dir,
+                   "--label", f"amux-{name}", "--no-focus"]
+        for pair in env_pairs:
+            ws_args += ["--env", pair]
+        d = _herdr_json(ws_args, timeout=15)
+        pane_id = (((d or {}).get("result") or {}).get("root_pane") or {}).get("pane_id", "")
+        if not pane_id:
+            return False, "herdr workspace create failed"
+    start_args = ["agent", "start", agent_name, "--kind", kind,
+                  "--pane", pane_id, "--timeout", "60000"]
+    if args:
+        start_args += ["--"] + args
+    d2 = _herdr_json(start_args, timeout=90)
+    if not d2 or not ((d2.get("result") or {}).get("agent")):
+        # Don't leave a half-started pane behind.
+        _herdr_json(["pane", "close", pane_id], timeout=10)
+        return False, "herdr agent start failed"
+    try:
+        env_file = CC_SESSIONS / f"{name}.env"
+        cfg = parse_env_file(env_file)
+        cfg["CC_HERDR_PANE_ID"] = pane_id
+        _write_env(env_file, cfg)
+    except Exception:
+        pass
+    threading.Thread(target=_herdr_capture_session_uuid,
+                     args=(name, agent_name), daemon=True).start()
+    return True, "started"
+
+
+def _herdr_start_claude(name: str, work_dir: str, flags: str, default_flags: str,
+                        session_flag: str, extra_flags: str, cfg: dict) -> tuple[bool, str]:
+    """Start a claude agent via `herdr agent start ... -- <args>`.
+
+    Mirrors the claude branch of start_session minus the shell-only pieces
+    (herdr panes start login shells on their own, so no shell_rc/profile
+    sourcing is needed here)."""
+    def _split(f: str) -> list:
+        try:
+            return shlex.split(f)
+        except ValueError:
+            return [f]
+
+    args: list = []
+    if default_flags:
+        args += _split(default_flags)
+    if flags:
+        args += _split(flags)
+    if session_flag:
+        args += _split(session_flag)
+    if extra_flags:
+        args += _split(extra_flags)
+    # Same MCP opt-OUT as the tmux claude branch.
+    mcp_val = cfg.get("CC_MCP", "").strip().lower()
+    if mcp_val not in ("off", "none", "0"):
+        _reg = _mcp_registry_path()
+        if _reg:
+            args += ["--mcp-config", str(_reg)]
+    if "--model" not in args:
+        args += ["--model", "sonnet"]
+    env_pairs = _herdr_env_pairs(cfg)
+    ok, msg = _herdr_create_and_start(name, "claude", args, work_dir, env_pairs)
+    if not ok and any(a == "--resume" for a in args):
+        # Parity with the tmux path's resume-failure fallback: drop the stale
+        # resume ids and start fresh under the amux session name.
+        meta = _load_meta(name)
+        meta.pop("cc_session_name", None)
+        meta.pop("cc_conversation_id", None)
+        _save_meta(name, meta)
+        # Rebuild the arg list without the --resume <uuid> pair.
+        _cleaned = []
+        _skip = False
+        for a in args:
+            if a == "--resume":
+                _skip = True
+                continue
+            if _skip:
+                _skip = False
+                continue
+            _cleaned.append(a)
+        _cleaned += ["--name", name]
+        print(f"[start] {name}: herdr --resume failed, starting fresh")
+        ok, msg = _herdr_create_and_start(name, "claude", _cleaned, work_dir, env_pairs)
+    return ok, msg
+
+
+def _herdr_send(name: str, text: str) -> tuple[bool, str]:
+    agent_name = _herdr_agent_name(name)
+    if _herdr_agent_get(name) is None:
+        # Auto-wake parity with the tmux path: start, then deliver once ready.
+        if name in _auto_waking:
+            return False, "not running"
+        _auto_waking.add(name)
+        try:
+            ok, msg = start_session(name)
+            if not ok:
+                return False, f"auto-wake failed: {msg}"
+            for _ in range(60):
+                time.sleep(0.5)
+                if _herdr_agent_get(name) is not None:
+                    break
+            else:
+                return False, "auto-woke but agent did not become ready"
+        finally:
+            _auto_waking.discard(name)
+    # Same resume-picker guard as the tmux path (text-based, works on the
+    # herdr capture too).
+    cap = _herdr_capture(name, 15)
+    if cap and _at_resume_picker(cap):
+        return False, "session is in resume picker"
+    with _get_send_lock(name):
+        # Clear input-buffer residue first: leftover text would be
+        # concatenated with this prompt and submitted as one message.
+        _herdr_json(["agent", "send-keys", agent_name, "ctrl+u"], timeout=5)
+        time.sleep(0.1)
+        r = _herdr_json(["agent", "prompt", agent_name, text], timeout=15)
+    if r is None:
+        return False, "herdr prompt failed"
+    return True, "sent"
+
+
+def _herdr_stop(name: str) -> tuple[bool, str]:
+    """Graceful stop (clear input → /exit), pane close as the hard kill.
+
+    The tmux equivalent keeps the tmux session alive with a shell inside;
+    the herdr equivalent closes the pane, which also removes the workspace
+    when it was the only pane."""
+    info = _herdr_agent_get(name)
+    if not info:
+        return True, "not running"
+    agent_name = _herdr_agent_name(name)
+    pane_id = info.get("pane_id", "")
+    # Snapshot the transcript to the session log before stopping — the
+    # pipe-pane equivalent, since the pane (and herdr's scrollback with it)
+    # goes away on close.
+    try:
+        _cap = _herdr_capture(name, 5000)
+        if _cap:
+            CC_LOGS.mkdir(parents=True, exist_ok=True)
+            with _log_path(name).open("ab") as _lf:
+                _lf.write(("\n" + _cap + "\n").encode("utf-8", errors="replace"))
+    except Exception:
+        pass
+    meta = _load_meta(name)
+    if not meta.get("cc_session_name"):
+        meta["cc_session_name"] = name
+        _save_meta(name, meta)
+    _herdr_json(["agent", "send-keys", agent_name, "ctrl+u"], timeout=5)
+    time.sleep(0.1)
+    _herdr_json(["agent", "prompt", agent_name, "/exit"], timeout=10)
+    for _ in range(30):
+        time.sleep(0.5)
+        if _herdr_agent_get(name) is None:
+            return True, "stopped"
+    print(f"[herdr-stop] {name}: timeout after 15s, closing pane")
+    if pane_id:
+        _herdr_json(["pane", "close", pane_id], timeout=10)
+    return True, "stopped (hard-kill)"
+
+
+def _herdr_kill(name: str) -> None:
+    """Best-effort removal of the pane backing an archived herdr session."""
+    try:
+        cfg = parse_env_file(CC_SESSIONS / f"{name}.env")
+        pane_id = (cfg.get("CC_HERDR_PANE_ID", "") or "").strip()
+        if pane_id:
+            _herdr_json(["pane", "close", pane_id], timeout=10)
+    except Exception:
+        pass
 
 
 def _log_path(session: str) -> Path:
@@ -16919,6 +17353,15 @@ def list_sessions() -> list:
     env_files = [f for f in sorted(CC_SESSIONS.glob("*.env")) if not _is_session_blocked(f.stem)]
     running_names = [f.stem for f in env_files if tmux_name(f.stem) in tmux_info]
     captures = _tmux_capture_batch(running_names, 30, activity=tmux_info) if running_names else {}
+    # herdr-backed sessions have no tmux session; their liveness and capture
+    # are resolved per-session below.
+    _herdr_names = set()
+    for f in env_files:
+        try:
+            if _backend_of_cfg(parse_env_file(f)) == "herdr":
+                _herdr_names.add(f.stem)
+        except Exception:
+            pass
     # Token cache is refreshed by background job (_refresh_token_cache via scheduler)
     # Last HUMAN message per session, batched in one query. "Last activity" is
     # dominated by schedulers and inter-session traffic, so a lane you have not
@@ -16973,7 +17416,8 @@ def list_sessions() -> list:
     for f in env_files:
         name = f.stem
         cfg = parse_env_file(f)
-        running = tmux_name(name) in tmux_info
+        running = (tmux_name(name) in tmux_info
+                   or (name in _herdr_names and _herdr_agent_get(name) is not None))
         preview = ""
         preview_lines = []
         status = ""
@@ -16987,6 +17431,8 @@ def list_sessions() -> list:
         raw = ""
         if running:
             raw = captures.get(name, "")
+            if not raw and name in _herdr_names:
+                raw = _herdr_capture(name, 30)
         elif _log_path(name).exists():
             # Load saved log for stopped sessions (last 30 lines worth)
             # Only read tail 16KB — avoid loading multi-MB logs into memory
@@ -17159,6 +17605,7 @@ def list_sessions() -> list:
             "flags": cfg.get("CC_FLAGS", ""),
             "creator": cfg.get("CC_CREATOR", ""),
             "provider": cfg.get("CC_PROVIDER", "claude"),
+            "backend": _backend_of_cfg(cfg),
             "running": running,
             "status": status,
             "preview": preview,
@@ -20319,6 +20766,60 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
             dcfg = parse_env_file(defaults_file)
             default_flags = dcfg.get("CC_DEFAULT_FLAGS", "")
 
+        # ── herdr backend ── the agent starts via `herdr agent start`
+        # (structured args), not a shell command typed into a pane, so the
+        # provider command construction below does not apply. MVP: claude.
+        if _backend_of_cfg(cfg) == "herdr":
+            if provider != "claude":
+                return False, (f"herdr backend supports provider=claude only "
+                               f"(session '{name}' has provider={provider})")
+            ok, msg = _herdr_start_claude(name, work_dir, flags, default_flags,
+                                          session_flag, extra_flags, cfg)
+            if not ok:
+                meta["start_error"] = msg
+                _save_meta(name, meta)
+                return False, msg
+            # Bookkeeping parity with the tmux launch path below: log header,
+            # meta stamps, boot briefing, started event. pipe-pane has no
+            # herdr equivalent; _herdr_stop snapshots the transcript instead.
+            CC_LOGS.mkdir(parents=True, exist_ok=True)
+            try:
+                with _log_path(name).open("ab") as _lf:
+                    _lf.write(f"\n\n=== Session started: {time.strftime('%Y-%m-%dT%H:%M:%S')} ===\n\n".encode())
+            except Exception:
+                pass
+            meta.pop("start_error", None)
+            meta["last_started"] = int(time.time())
+            meta["start_count"] = meta.get("start_count", 0) + 1
+            _save_meta(name, meta)
+            _instr = _session_instructions(name)
+            _digest = _board_digest(name) if _task_guard_enabled() else ""
+            if _instr or _digest:
+                def _herdr_boot_briefing(sname=name, instr=_instr, digest=_digest):
+                    if instr:
+                        _send_after_ready(sname, instr, 60)
+                    if digest:
+                        if instr:
+                            time.sleep(1.0)  # space the two sends out
+                        _send_after_ready(
+                            sname,
+                            "Board snapshot (startup):\n\n" + digest +
+                            "\n\nSTANDING RULE — decompose prompts into tasks: when a prompt "
+                            "you receive contains more than one distinct task, immediately "
+                            "create one board card PER unit of work (correct type; queue in "
+                            "todo) instead of one umbrella card, then work them through the "
+                            "gates in order. amux auto-captures each prompt as a single card "
+                            "for the ledger; SPLIT that card when it covers several tasks — "
+                            "you have the context to decompose it, amux does not. A card is "
+                            "one unit of work: something that can be honestly done or not "
+                            "done. Never fold new tasks into an old card's description.", 60)
+                threading.Thread(target=_herdr_boot_briefing, daemon=True,
+                                 name=f"boot-{name}").start()
+            _emit_event(name, "session.started",
+                        {"resumed": bool(meta.get("cc_session_name") or meta.get("cc_conversation_id"))},
+                        source="start_session")
+            return True, "started"
+
         if provider == "codex":
             _auto_trust_codex_dir(work_dir)
             # Resume from stored codex session ID (per amux session), not by cwd
@@ -20884,6 +21385,9 @@ def stop_session(name: str) -> tuple[bool, str]:
     """Gracefully stop Claude in this session. Tmux stays alive."""
     if not _VALID_SESSION_NAME_RE.match(name):
         return False, "invalid session name"
+    if _session_backend(name) == "herdr":
+        with _get_session_lock(name):
+            return _herdr_stop(name)
     with _get_session_lock(name):
         tmux_sess = tmux_name(name)
         # Check tmux exists at all
@@ -20994,26 +21498,43 @@ def archive_session(name: str) -> tuple[bool, str]:
     f = CC_SESSIONS / f"{name}.env"
     if not f.exists():
         return False, f"session '{name}' not found"
-    # Capture full scrollback while still running (50k line history)
-    if is_running(name):
-        try:
-            r = subprocess.run(
-                ["tmux", "capture-pane", "-t", tmux_target(name), "-p", "-S", "-"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if r.stdout.strip():
-                lp = _log_path(name)
-                data = r.stdout.encode("utf-8", errors="replace")
-                if len(data) > MAX_LOG_BYTES:
-                    data = data[-MAX_LOG_BYTES:]
-                lp.write_bytes(data)
-        except Exception:
-            pass
-        stop_session(name)
-    # Always tear down the tmux session — even if the process already died
-    # (is_running False), so an archived session never leaves an orphan idle
-    # shell holding memory. kill-session is a no-op if it's already gone.
-    _kill_tmux_session(name)
+    if _backend_of_cfg(parse_env_file(f)) == "herdr":
+        # Same shape as the tmux path: snapshot the transcript while alive,
+        # stop gracefully, then remove the pane.
+        if is_running(name):
+            try:
+                _cap = _herdr_capture(name, 50000)
+                if _cap:
+                    lp = _log_path(name)
+                    data = _cap.encode("utf-8", errors="replace")
+                    if len(data) > MAX_LOG_BYTES:
+                        data = data[-MAX_LOG_BYTES:]
+                    lp.write_bytes(data)
+            except Exception:
+                pass
+            stop_session(name)
+        _herdr_kill(name)
+    else:
+        # Capture full scrollback while still running (50k line history)
+        if is_running(name):
+            try:
+                r = subprocess.run(
+                    ["tmux", "capture-pane", "-t", tmux_target(name), "-p", "-S", "-"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if r.stdout.strip():
+                    lp = _log_path(name)
+                    data = r.stdout.encode("utf-8", errors="replace")
+                    if len(data) > MAX_LOG_BYTES:
+                        data = data[-MAX_LOG_BYTES:]
+                    lp.write_bytes(data)
+            except Exception:
+                pass
+            stop_session(name)
+        # Always tear down the tmux session — even if the process already died
+        # (is_running False), so an archived session never leaves an orphan idle
+        # shell holding memory. kill-session is a no-op if it's already gone.
+        _kill_tmux_session(name)
     # Drop any rate/credit-limit state — with no live tmux it can't be resumed,
     # and it must not linger in badges/bulk-actions or the auto-resume loop.
     acts = _session_auto_actions.get(name)
@@ -21324,6 +21845,8 @@ def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy:
     iterm2_id = _session_iterm2_id(name)
     if iterm2_id:
         return _iterm2_send(iterm2_id, text)
+    if _session_backend(name) == "herdr":
+        return _herdr_send(name, text)
     # Don't send into a resume picker — text lands in the search box and
     # corrupts session selection. Wait for Claude to finish loading.
     _actions_st = _session_auto_actions.get(name, {})
@@ -24211,6 +24734,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .badge.codex { background: rgba(16,185,129,0.2); color: #10b981; }
   .badge.gemini { background: rgba(168,85,247,0.2); color: #c084fc; }
   .badge.iterm2 { background: rgba(0,200,160,0.18); color: #00c8a0; }
+  .badge.herdr { background: rgba(140,120,255,0.18); color: #a89cff; }
 
   /* Expanded panel */
   .panel { display: none; margin-top: 12px; }
@@ -33390,6 +33914,7 @@ function render() {
         ).join('') + (hits.length > 2 ? `<div class="card-log-hit" style="color:var(--dim);font-style:italic;" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}'})">+${hits.length - 2} more matches</div>` : '');
       })() : ''}
       ${(isYolo || model || s.tags.length || provider) ? `<div class="badges">
+        ${s.backend === 'herdr' ? `<span class="badge herdr" title="Hosted on herdr">herdr</span>` : ''}
         ${provider && provider !== 'claude' ? `<span class="badge provider ${provider}" onclick="event.stopPropagation();editField('${s.name}','provider','${escJs(provider)}')" title="Change provider">${pLabel}</span>` : ''}
         ${isYolo ? '<span class="badge yolo">YOLO</span>' : ''}
         ${model ? `<span class="badge model" onclick="event.stopPropagation();editField('${s.name}','model','${esc(model)}','${esc(provider)}')" title="Change model">${esc(model)}</span>` : ''}
@@ -36940,7 +37465,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.493';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.494';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -58358,7 +58883,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.493';
+const CACHE = 'amux-v0.9.494';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -64880,6 +65405,11 @@ class CCHandler(BaseHTTPRequestHandler):
                 if not iterm2_sid:
                     return self._json({"error": "iterm2_session_id required for iterm2 provider"}, 400)
                 cfg["CC_ITERM2_SESSION_ID"] = iterm2_sid
+            # Pin the terminal backend at creation so a session keeps the
+            # backend it was created under even if AMUX_BACKEND later changes.
+            _req_backend = str(body.get("backend", "") or "").strip().lower()
+            cfg["CC_BACKEND"] = (_req_backend if _req_backend in _HERDR_BACKENDS
+                                 else _AMUX_BACKEND)
             mcp = body.get("mcp", "").strip().lower()
             if mcp and mcp == "chrome":
                 cfg["CC_MCP"] = mcp
