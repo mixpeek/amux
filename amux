@@ -192,6 +192,21 @@ _stop_via_api() {
   if [[ -z "$resp" ]]; then
     return 1
   fi
+  # A non-empty body is NOT proof of success: an error JSON or a proxy's
+  # HTML page must fall through to the direct pane-close fallback, not
+  # masquerade as a graceful stop.
+  if ! RESP="$resp" python3 - <<'PYEOF'
+import json, os, sys
+try:
+    d = json.loads(os.environ["RESP"])
+except Exception:
+    sys.exit(1)
+if not isinstance(d, dict) or d.get("error") or d.get("ok") is False:
+    sys.exit(1)
+PYEOF
+  then
+    return 1
+  fi
   echo "${RED}stopping${RESET} $name (graceful, via server)"
   return 0
 }

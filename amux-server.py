@@ -4563,13 +4563,12 @@ def _herdr_stop(name: str) -> tuple[bool, str]:
     pane_id = info.get("pane_id", "")
     # Snapshot the transcript to the session log before stopping — the
     # pipe-pane equivalent, since the pane (and herdr's scrollback with it)
-    # goes away on close.
+    # goes away on close. Route through save_session_log so the same
+    # MAX_LOG_BYTES front-trimming applies as everywhere else.
     try:
         _cap = _herdr_capture(name, 5000)
         if _cap:
-            CC_LOGS.mkdir(parents=True, exist_ok=True)
-            with _log_path(name).open("ab") as _lf:
-                _lf.write(("\n" + _cap + "\n").encode("utf-8", errors="replace"))
+            save_session_log(name, "\n" + _cap + "\n", force=True)
     except Exception:
         pass
     meta = _load_meta(name)
