@@ -20872,10 +20872,16 @@ def send_text(name: str, text: str, _from_steering: bool = False, defer_if_busy:
                         # Steering must land at a real idle boundary, never type
                         # into a live turn — re-queue for the next tick.
                         return False, "session started generating — retry at next turn boundary"
-                else:
+                elif not _waiting:
                     # Close any picker left open by a previous attempt, so the C-u
                     # below actually reaches the input. Without this a retry appends
-                    # and the message is submitted twice ("msg msg").
+                    # and the message is submitted twice ("msg msg"). Skipped when
+                    # _waiting: there the pane IS a genuine, CURRENT live selector
+                    # (AskUserQuestion / tool approval / confirm dialog), not a
+                    # stale leftover — this same Escape REJECTS that pending tool
+                    # instead of closing an old popup (Terminal-tab composer
+                    # couldn't answer a picker, mobile app had to be used instead —
+                    # AI-3, 2026-08-02/03). Type straight into it instead.
                     subprocess.run(["tmux", "send-keys", "-t", t, "Escape"], capture_output=True, timeout=5)
                     _esc_at = time.monotonic()
                     time.sleep(0.05)
