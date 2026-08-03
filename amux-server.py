@@ -31746,7 +31746,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.381';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.382';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -49704,6 +49704,7 @@ function _messagesRender() {
         '<div class="msg-text">' + _linkifyCardIds(esc(m.text || '')) + '</div>' +
       '</div>' +
       '<button class="btn msg-copy" onclick="event.stopPropagation();_msgCopyBtn(this,\'' + enc + '\')" title="Copy message text">&#x1F4CB;</button>' +
+      '<button class="btn msg-speak" onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(\'' + enc + '\'),this)" title="Read aloud">&#x1F50A;</button>' +
       '<button class="btn msg-locate" onclick="event.stopPropagation();_msgLocate(\'' + escJs(sess) + '\',\'' + enc + '\')" title="Open the peek and scroll to where this was sent">&#x2316; Locate</button>' +
     '</div>';
   }).join('');
@@ -52914,7 +52915,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.381';
+const CACHE = 'amux-v0.9.382';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
