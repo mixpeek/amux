@@ -19,22 +19,14 @@ jobs:
         with: { node-version: '22' }
       - name: Python syntax (amux-server.py parses)
         run: python3 -c "import ast; ast.parse(open('amux-server.py').read())"
-      - name: JS syntax (inline dashboard script parses)
-        run: |
-          python3 - <<'PY'
-          import re, subprocess, sys, tempfile, os
-          content = open('amux-server.py').read()
-          m = re.search(r'<script>\s*\n(.*?)</script>', content, re.DOTALL)
-          if not m:
-              print('WARNING: no <script> block found'); sys.exit(0)
-          fd, path = tempfile.mkstemp(suffix='.js')
-          os.write(fd, m.group(1).encode()); os.close(fd)
-          r = subprocess.run(['node', '--check', path], capture_output=True, text=True)
-          os.unlink(path)
-          if r.returncode != 0:
-              print(r.stderr); sys.exit(1)
-          print('JS OK')
-          PY
+      # EVERY inline script block, not just the first. The inlined version of
+      # this step used re.search, which returns one match, so it validated
+      # 2,380 of ~1.27M characters of client code and stayed green with the
+      # main dashboard script broken. It lives in scripts/ rather than inline
+      # so the local PostToolUse hook can call the SAME code once #66 lands —
+      # a second copy of this logic is how the two drifted in the first place.
+      - name: JS syntax (every inline dashboard script parses)
+        run: python3 scripts/check-inline-js.py amux-server.py
       - name: Tests
         run: |
           pip install -q pytest psutil
