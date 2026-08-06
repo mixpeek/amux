@@ -1538,8 +1538,21 @@ except ValueError:
 print(u) if u else sys.exit('tunnel not running')
 "
       ;;
+    help|-h|--help)
+      _tunnel_help
+      ;;
     *)
-      cat <<EOF
+      # Same exit-0-on-unknown trap as `amux board` had: fail loudly instead,
+      # so a caller can distinguish "ran" from "silently printed help".
+      echo "${RED}unknown tunnel subcommand:${RESET} $subcmd" >&2
+      _tunnel_help >&2
+      exit 2
+      ;;
+  esac
+}
+
+_tunnel_help() {
+  cat <<EOF
 ${BOLD}amux tunnel${RESET} — expose a local port at a public HTTPS URL
 
   amux tunnel status          Show tunnel state and public URL
@@ -1551,8 +1564,6 @@ Any localhost port works: ${BOLD}amux tunnel start 3000${RESET} publishes your d
 Requires an active amux cloud subscription; set AMUX_TUNNEL_TOKEN in
 ~/.amux/server.env, then \`touch amux-server.py\` to reload.
 EOF
-      ;;
-  esac
 }
 
 cmd_alert() {
