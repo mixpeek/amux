@@ -54,6 +54,23 @@ your task, not the platform.
 
 ## Workflow
 
+- **Staleness announces itself; nothing auto-pulls.** The `SessionStart` hook
+  (`.claude/session-freshness.sh`) fetches and reports two things a session cannot see
+  on its own: how far this checkout is behind `origin/main` (naming `amux-server.py` /
+  `amux` / `CLAUDE.md` when they are in the diff, because those are the conflicts you
+  are about to hit), and whether the INSTALLED CLI and the RUNNING server still match
+  this checkout. It is silent when everything is current.
+
+  **Do not "improve" it into a scheduled pull.** This is a shared checkout, and the
+  Deploy section below records a peer's `git pull --rebase` replaying another session's
+  unpushed commit onto origin. A background job that rewrites the working tree can
+  destroy in-flight work belonging to a session that is not even running. The hook
+  reports; the human decides. Set `AMUX_SKIP_FRESHNESS=1` to silence it.
+
+  Both axes are there because both bit on 2026-08-05: the checkout was ~110 commits
+  behind (a fix was written that upstream already had), and the installed CLI was a
+  Jul-31 copy whose missing verb printed help and exited 0, silently swallowing three
+  status requests.
 - **Commit after every completed task.** When you finish a piece of work (bug fix, feature, refactor), immediately `git add amux-server.py && git commit` with a concise message. Don't batch multiple tasks into one commit.
 - The server auto-restarts on file save (watches its own mtime) — but **it watches the
   file it is RUNNING, which is `~/.local/bin/amux-server.py`, not your repo checkout.**

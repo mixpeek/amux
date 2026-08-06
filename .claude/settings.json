@@ -2,6 +2,18 @@
   "model": "claude-opus-4-6",
   "thinking": true,
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/session-freshness.sh",
+            "timeout": 20,
+            "statusMessage": "Checking amux freshness..."
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit",
