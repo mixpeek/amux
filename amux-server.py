@@ -32738,8 +32738,17 @@ async function _askCardStatus(id, sess) {
     const r = await apiCall(API + '/api/board/' + id + '/status-request', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({}) });
-    if (r && r.delivered) showToast('Asked ' + sess + ' to post a status update');
-    else showToast((r && (r.reason || r.message)) || 'Could not reach ' + sess);
+    // apiCall resolves to the raw Response, NOT parsed JSON — and to null when
+    // it already toasted an HTTP error or queued the op offline. Reading
+    // .delivered straight off the Response made the success branch
+    // unreachable, so this said "Could not reach <sess>" on every click even
+    // though the request was delivered and written to the card log (AMUX-4).
+    // A toast that cannot report success is an instrument that cannot express
+    // the outcome it exists to report (ethos §4).
+    if (!r) return;
+    const d = await r.json().catch(() => ({}));
+    if (d && d.delivered) showToast('Asked ' + sess + ' to post a status update');
+    else showToast((d && (d.reason || d.message)) || 'Could not reach ' + sess);
   } catch (e) { showToast('Status request failed'); }
 }
 
@@ -35672,7 +35681,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.452';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.453';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -57187,7 +57196,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.452';
+const CACHE = 'amux-v0.9.453';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
