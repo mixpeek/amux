@@ -4969,6 +4969,176 @@ def _render_session_transcript(name: str, max_chars: int = 40000) -> str:
     return text
 
 
+# Marker written to a card's history when the needs:you tag was applied BY the
+# idle detector rather than by a session deciding to park the card. Only an
+# auto-applied tag is auto-cleared when the human answers — a tag a session set
+# deliberately is that session's to clear, and silently dropping it would be an
+# agent overruling a judgment that was not its own (ethos rule 8).
+_AUTO_NEEDSYOU = "AUTO-NEEDSYOU"
+
+
+def _closing_question(name: str) -> str:
+    """The question the last assistant turn ended on, or "" if that turn did
+    not end by asking the human something.
+
+    Deliberately COMPUTED, not model-judged (ethos rule 2). "Did this turn end
+    on a question mark" is string manipulation; paying a model call on every
+    idle transition — the most frequent event in the log, 161 session.working
+    rows in a 500-row sample — is exactly the per-call waste that earned the
+    board-title call its throttle.
+
+    Returns "" unless the LAST conversational entry is from the assistant: if
+    the human has already spoken since, there is no unanswered question.
+    """
+    path = _session_jsonl_path(name)
+    if not path:
+        return ""
+    last_role, last_text = "", ""
+    try:
+        for o in _iter_jsonl_tail(path, max_bytes=2_000_000):
+            if o.get("type") not in ("user", "assistant"):
+                continue
+            msg = o.get("message")
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            content = msg.get("content")
+            if isinstance(content, str):
+                blocks = [{"type": "text", "text": content}]
+            elif isinstance(content, list):
+                blocks = content
+            else:
+                continue
+            texts = [(b.get("text") or "") for b in blocks
+                     if isinstance(b, dict) and b.get("type") == "text"]
+            joined = "\n".join(t for t in texts if t.strip())
+            if not joined.strip():
+                # A tool-only assistant turn is not the end of the turn; keep
+                # the previous text so a trailing question still counts.
+                continue
+            if role == "user":
+                # Harness-injected wrappers are not the human speaking. Treating
+                # a system-reminder as an answer would clear the very tag this
+                # exists to raise.
+                stripped = re.sub(r"<system-reminder>.*?</system-reminder>", "", joined, flags=re.S)
+                stripped = re.sub(r"<task-notification>.*?</task-notification>", "", stripped, flags=re.S)
+                stripped = re.sub(r"<local-command-caveat>.*?</local-command-caveat>", "", stripped, flags=re.S)
+                if not stripped.strip():
+                    continue
+            last_role, last_text = role, joined
+    except Exception:
+        return ""
+    if last_role != "assistant" or not last_text.strip():
+        return ""
+    # A '?' inside an unterminated fenced block is code or sample output, not an
+    # ask directed at the human.
+    if last_text.count("```") % 2 == 1:
+        return ""
+    lines = [ln.strip() for ln in last_text.strip().splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    # Strip formatting BEFORE testing for the '?'. A bold question ends with
+    # '**', not '?', so testing first silently missed the single most common
+    # shape a question actually takes in a rendered answer.
+    tail = re.sub(r"[*_`#>]+", "", lines[-1]).strip()     # markdown emphasis
+    tail = re.sub(r"^[-+\d.)\s]+", "", tail).strip()      # list/bullet prefix
+    if not tail.endswith("?"):
+        return ""
+    return tail[:240]
+
+
+def _mark_needsyou_on_open_question(name: str) -> None:
+    """A worker that stops having asked the human something has an OPEN LOOP.
+    Record it on the card so the ask survives the conversation moving on.
+
+    This exists because relying on the agent to remember `amux board needsyou`
+    is what failed: on 2026-08-05 a design was approved, the session asked
+    "does this look right before I write the spec?", the topic changed, and the
+    workstream became invisible. The advance loop DID notice the card was stuck
+    — five times — and wrote 'SKIPPED' into a card log nobody opens, which is
+    the same failure as not noticing (ethos rule 4: will they see it where they
+    already look?). needs:you already surfaces in Focus and is:needsyou, so the
+    fix is to make the existing marker automatic, not to invent a new surface.
+    """
+    try:
+        # A report can arrive under an identity that does not exist. The state
+        # hooks build their URL from $AMUX_SESSION, which a RESUMED transcript
+        # carries over from the pane it was started in — `amux whoami` warns
+        # about exactly this drift, but nothing runs whoami automatically. When
+        # it happens the name has no transcript and no cards, so every check
+        # below would quietly find nothing and this would look like "no open
+        # loops" forever. Say it instead: a detector that cannot fire is
+        # indistinguishable from one that found nothing (ethos rule 7).
+        if not _session_jsonl_path(name):
+            slog(f"[open-loop] {name}: no transcript for this identity — open-loop "
+                 f"detection is INERT for it (stale AMUX_SESSION? run `amux whoami`)")
+            return
+        q = _closing_question(name)
+        if not q:
+            return
+        db = get_db()
+        row = db.execute(
+            "SELECT id, tags FROM issues WHERE session=? AND status='doing' "
+            "AND owner_type='agent' AND deleted IS NULL AND COALESCE(archived,0)=0 "
+            "ORDER BY updated DESC LIMIT 1", (name,)).fetchone()
+        if not row:
+            return
+        item = dict(row)
+        already = db.execute(
+            "SELECT 1 FROM issue_tags WHERE issue_id=? AND lower(tag) LIKE 'needs:you%'",
+            (item["id"],)).fetchone()
+        if already:
+            return          # already parked — do not re-nag or overwrite the ask
+        # added_at is load-bearing: the >3d re-nag times the ask from the TAG,
+        # not the row's last touch (AC-178). The ask starts now.
+        db.execute("INSERT OR IGNORE INTO issue_tags (issue_id, tag, added_at) VALUES (?,?,?)",
+                   (item["id"], "needs:you", int(time.time())))
+        db.commit()
+        _append_board_log(item["id"], f"{_AUTO_NEEDSYOU} — worker stopped on an unanswered question: \"{q}\"")
+        _emit_event(name, "needsyou.auto", {"issue": item["id"], "question": q},
+                    source="idle-open-question")
+        _ilog("board", "needsyou_auto", actor=name, target=item["id"],
+              detail={"question": q}, ok=True)
+        slog(f"[open-loop] {name}: tagged {item['id']} needs:you — asked: {q[:80]}")
+    except Exception as e:
+        slog(f"[open-loop] {name}: auto-needsyou failed: {e}")
+
+
+def _clear_auto_needsyou(name: str) -> None:
+    """The human answered, so an AUTO-applied needs:you is satisfied.
+
+    Without this the tag is write-only and every card it touches stays flagged
+    forever — a Focus list that is never wrong is also never useful, and the
+    noise is what gets the whole mechanism ignored. Only clears tags this
+    detector applied; a session's own deliberate park is left alone.
+    """
+    try:
+        db = get_db()
+        for row in db.execute(
+                "SELECT id, log FROM issues WHERE session=? AND status='doing' "
+                "AND owner_type='agent' AND deleted IS NULL AND COALESCE(archived,0)=0",
+                (name,)).fetchall():
+            item = dict(row)
+            if not db.execute(
+                    "SELECT 1 FROM issue_tags WHERE issue_id=? AND lower(tag) LIKE 'needs:you%'",
+                    (item["id"],)).fetchone():
+                continue
+            log = item.get("log") or ""
+            # Whichever came last wins: an auto-tag the human has now answered
+            # clears, but a later deliberate park by the session does not.
+            auto_at = log.rfind(_AUTO_NEEDSYOU)
+            manual_at = log.rfind("NEEDS-YOU:")
+            if auto_at < 0 or manual_at > auto_at:
+                continue
+            db.execute("DELETE FROM issue_tags WHERE issue_id=? AND lower(tag) LIKE 'needs:you%'",
+                       (item["id"],))
+            db.commit()
+            _append_board_log(item["id"], f"{_AUTO_NEEDSYOU} cleared — the human replied")
+            slog(f"[open-loop] {name}: cleared auto needs:you on {item['id']}")
+    except Exception as e:
+        slog(f"[open-loop] {name}: clearing auto-needsyou failed: {e}")
+
+
 def _trim_live_overlap(transcript: str, live: str) -> str:
     """Return the live frame minus the portion that re-renders content the
     transcript already covers. History must render from ONE source: the
@@ -67566,6 +67736,16 @@ p{{color:#888;margin:12px 0 28px;font-size:0.9rem;line-height:1.5}}
                                            "source": str(body.get("source") or "hook")[:40],
                                            "ts": time.time()}
                 _persist_session_reports()
+                # An OPEN LOOP is created the moment a worker stops having asked
+                # the human something, and closed when the human answers. Both
+                # edges are already reported here by the Stop / UserPromptSubmit
+                # hooks, so no new scraper and no new poll: the session's own
+                # harness tells us, and we only decide what it means for the
+                # card (the D1 durable inverse).
+                if st == "idle":
+                    _mark_needsyou_on_open_question(name)
+                elif st == "active":
+                    _clear_auto_needsyou(name)
                 return self._json({"ok": True, "state": st})
             if action == "apply-template":
                 body = self._read_body()
