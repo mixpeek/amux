@@ -61,6 +61,7 @@ ns = {
     "tempfile": __import__("tempfile"),
     "os": os,
     # I/O boundary stubs — none of these paths are under test here.
+    "_session_backend": lambda name: "tmux",   # herdr dispatch reads session env; not under test
     "_session_iterm2_id": lambda name: None,
     "_iterm2_send": lambda *a, **k: (True, "ok"),
     "_session_auto_actions": {},
