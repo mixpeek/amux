@@ -70803,6 +70803,18 @@ def _watch_server_env():
 
 
 
+_PLACEHOLDER_API_KEYS = frozenset({
+    "changeme", "change-me", "change_me",
+    "your-api-key", "your_api_key", "your-key", "yourkey",
+    "your_key_here", "your-key-here", "your-api-key-here",
+    "placeholder", "dummy", "example", "sample",
+    "test", "test-key", "testkey",
+    "replace-me", "replace_me",
+    "xxx", "xxxx",
+    "sk-ant-xxx", "sk-ant-your-key", "sk-ant-example", "sk-ant-placeholder",
+})
+
+
 def _is_placeholder_api_key(val: str) -> bool:
     """Return True if ``val`` is an obvious placeholder/template, not a real key."""
     v = val.strip().strip('"').strip("'").lower()
