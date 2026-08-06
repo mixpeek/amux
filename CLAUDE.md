@@ -55,7 +55,22 @@ your task, not the platform.
 ## Workflow
 
 - **Commit after every completed task.** When you finish a piece of work (bug fix, feature, refactor), immediately `git add amux-server.py && git commit` with a concise message. Don't batch multiple tasks into one commit.
-- The server auto-restarts on file save (watches its own mtime), so changes are live immediately.
+- The server auto-restarts on file save (watches its own mtime) — but **it watches the
+  file it is RUNNING, which is `~/.local/bin/amux-server.py`, not your repo checkout.**
+  Editing `~/amux/amux-server.py` alone changes nothing that is live: `ps` the process
+  and you will see it running out of `~/.local/bin`. To see a change on
+  `https://localhost:8822`, install it, then confirm it actually took:
+  ```bash
+  cp amux-server.py ~/.local/bin/amux-server.py
+  launchctl kickstart -k gui/$(id -u)/com.amux.serve   # label is com.amux.serve
+  curl -sk https://localhost:8822/ | grep -c '<a line unique to your change>'
+  ```
+  Verify with a string your edit INTRODUCED, not one that already existed — grepping a
+  common idiom returns a happy non-zero count against the old build and tells you
+  nothing (this cost a wrong "it's live" call on AMUX-4).
+- Always verify Python syntax after edits: `python3 -c "import ast; ast.parse(open('amux-server.py').read())"`
+- **Client JS changes need `APP_VER` and the sw.js `CACHE` bumped together**, or a
+  browser holding the cached script never receives the fix.
 - Always verify Python syntax after edits: `python3 -c "import ast; ast.parse(open('amux-server.py').read())"`
 
 ## Deploy
@@ -121,7 +136,7 @@ S3 bucket config (on `ethan-personal`):
 - Bucket policy grants public `s3:GetObject` on `arn:aws:s3:::ethan-personal/amux/*.ics` (widened from the single `calendar.ics` key so cache-busting keys work). Bucket LISTING is denied (403), so a random key is not discoverable.
 - Current key: a **random token** (`amux/cal-<32hex>.ics`) that lives ONLY in `~/.amux/server.env` — **NEVER commit the actual key/URL to this repo: the repo is public, and a committed feed URL is how the old guessable key leaked.** Read it with `grep AMUX_S3_KEY ~/.amux/server.env`; the dashboard's Subscribe button shows the full URL.
 
-**Google caches ICS feeds by URL, hard.** There is no reliable way to force a refresh — Google refetches on its own cadence (hours). If you edit the feed's *content shape* and need Google to see it now, publish to a NEW random key and re-subscribe; the old URL keeps serving Google's stale cache. `AMUX_S3_KEY` is read at startup via `os.environ.setdefault`, and execv reloads inherit the env, so changing it needs a real restart: `launchctl kickstart -k gui/$(id -u)/com.amux.server`.
+**Google caches ICS feeds by URL, hard.** There is no reliable way to force a refresh — Google refetches on its own cadence (hours). If you edit the feed's *content shape* and need Google to see it now, publish to a NEW random key and re-subscribe; the old URL keeps serving Google's stale cache. `AMUX_S3_KEY` is read at startup via `os.environ.setdefault`, and execv reloads inherit the env, so changing it needs a real restart: `launchctl kickstart -k gui/$(id -u)/com.amux.serve`.
 
 The feed auto-uploads to S3 on every event write. The dashboard's calendar subscription button shows the S3 URL directly when configured.
 
