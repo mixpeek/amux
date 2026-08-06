@@ -18665,9 +18665,25 @@ def main():
             local_sha, remote_sha = parts[1], parts[3]
             if local_sha.strip("0") == "":
                 continue                      # branch deletion
-            rng = local_sha if remote_sha == ZERO else remote_sha + ".." + local_sha
+            # A NEW branch has no remote counterpart, so remote_sha is all
+            # zeros. Walking `local_sha` alone then means "everything reachable"
+            # — the ENTIRE history — and the guard reported 1081 foreign commits
+            # for a branch that added exactly one, every other commit already
+            # sitting on origin and shipping nothing.
+            #
+            # That is worse than a missing check. The guard's whole value is
+            # that AMUX_ALLOW_FOREIGN=1 stays a deliberate act; one that cries
+            # wolf on every `git checkout -b` teaches the reflex of setting it
+            # blind, and then the one push that really does carry someone
+            # else's work sails through. Bound the walk by what origin ALREADY
+            # has, which is the question the guard actually means to ask.
+            if remote_sha == ZERO:
+                rng_args = [local_sha, "--not", "--remotes=origin"]
+            else:
+                rng_args = [remote_sha + ".." + local_sha]
             out = subprocess.run(
-                ["git", "log", "--format=%h%x1f%s%x1f%(trailers:key=Amux-Session,valueonly)", rng],
+                ["git", "log", "--format=%h%x1f%s%x1f%(trailers:key=Amux-Session,valueonly)"]
+                + rng_args,
                 capture_output=True, text=True, timeout=15).stdout
             for row in out.splitlines():
                 if not row.strip():
