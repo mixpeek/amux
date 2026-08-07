@@ -39337,7 +39337,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.506';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.507';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -60882,7 +60882,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.506';
+const CACHE = 'amux-v0.9.507';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
