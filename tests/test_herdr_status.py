@@ -150,3 +150,45 @@ def test_agent_statuses_failed_read_also_cached(amux_server, monkeypatch):
     amux_server._herdr_agent_statuses(max_age_s=5.0)
     amux_server._herdr_agent_statuses(max_age_s=5.0)
     assert calls["n"] == 1
+
+
+# ── _herdr_capture visible fallback (§1d, E2E-found: agent_not_idle) ─────────
+#
+# herdr rejects `--source recent-unwrapped` with agent_not_idle (exit 1) while
+# the agent is working/blocked, so a blocked lane's preview/status pipeline
+# went blind for the whole episode until this fallback (found 2026-08-07).
+
+def test_capture_falls_back_to_visible_on_agent_not_idle(amux_server, monkeypatch):
+    monkeypatch.setattr(amux_server, "_herdr_agent_name", lambda n: "w1")
+    seen_sources = []
+
+    def fake_run(cmd, **kw):
+        src = cmd[cmd.index("--source") + 1]
+        seen_sources.append(src)
+        if src == "recent-unwrapped":
+            return _FakeProc(json.dumps({"error": {"code": "agent_not_idle"}}), 1)
+        return _FakeProc("visible screen text", 0)
+
+    monkeypatch.setattr(amux_server.subprocess, "run", fake_run)
+    assert amux_server._herdr_capture("whatever") == "visible screen text"
+    assert seen_sources == ["recent-unwrapped", "visible"]
+
+
+def test_capture_no_fallback_needed_when_recent_unwrapped_succeeds(amux_server, monkeypatch):
+    monkeypatch.setattr(amux_server, "_herdr_agent_name", lambda n: "w1")
+    calls = {"n": 0}
+
+    def fake_run(cmd, **kw):
+        calls["n"] += 1
+        return _FakeProc("idle screen text", 0)
+
+    monkeypatch.setattr(amux_server.subprocess, "run", fake_run)
+    assert amux_server._herdr_capture("whatever") == "idle screen text"
+    assert calls["n"] == 1
+
+
+def test_capture_both_sources_failing_is_empty(amux_server, monkeypatch):
+    monkeypatch.setattr(amux_server, "_herdr_agent_name", lambda n: "w1")
+    monkeypatch.setattr(amux_server.subprocess, "run",
+                        lambda *a, **k: _FakeProc("", 1))
+    assert amux_server._herdr_capture("whatever") == ""

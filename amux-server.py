@@ -4347,6 +4347,15 @@ def _herdr_capture(name: str, lines: int = 500) -> str:
                 "--lines", str(max(int(lines), 1)), "--format", "text"],
                timeout=8)
     if r is None or r.returncode != 0:
+        # herdr refuses recent-unwrapped while the agent is working/blocked
+        # (agent_not_idle: alternate-screen history is only scrollable at idle).
+        # The visible screen is exactly what preview + content classification
+        # need in those states — a blocked lane's picker IS its visible frame.
+        # Without this fallback a herdr lane goes status='' for the whole
+        # working/blocked episode (found by #84 E2E, 2026-08-07).
+        r = _herdr(["agent", "read", _herdr_agent_name(name),
+                    "--source", "visible", "--format", "text"], timeout=8)
+    if r is None or r.returncode != 0:
         return ""
     return r.stdout.strip()
 
