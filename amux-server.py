@@ -959,10 +959,24 @@ _proc_info_lock = threading.Lock()
 _proc_info_last_update: float = 0.0
 _PROC_INFO_TTL = 10.0  # refresh every 10s
 
-_opencode_models_cache: dict = {"models": [], "last_update": 0, "updating": False}
+_opencode_models_cache: dict = {
+    "models": [],
+    "last_update": 0,
+    # When we last *attempted* a refresh (success OR failure). Without this,
+    # a persistently-failing refresh (e.g. opencode not installed) would
+    # spawn a new subprocess on every call, because last_update only moves
+    # on success. Capped at one attempt per TTL window.
+    "last_attempt": 0,
+    "updating": False,
+}
 _opencode_models_lock = threading.Lock()
 _OPENCODE_MODELS_TTL = 3600
 _OPENCODE_MODELS_CACHE_FILE = _amux_home / "opencode-models.json"
+# Returned when discovery has never succeeded so the dashboard picker still
+# has something to render. Matches the default injected into start_session.
+_OPENCODE_DEFAULT_MODELS = [
+    {"provider": "anthropic", "model": "claude-sonnet-4-5", "full": "anthropic/claude-sonnet-4-5"},
+]
 
 def _load_opencode_models_cache():
     try:
@@ -971,6 +985,8 @@ def _load_opencode_models_cache():
             with _opencode_models_lock:
                 _opencode_models_cache["models"] = data.get("models", [])
                 _opencode_models_cache["last_update"] = data.get("last_update", 0)
+                if _opencode_models_cache["last_attempt"] == 0:
+                    _opencode_models_cache["last_attempt"] = _opencode_models_cache["last_update"]
     except Exception:
         pass
 
@@ -988,6 +1004,7 @@ def _refresh_opencode_models():
         if _opencode_models_cache["updating"]:
             return
         _opencode_models_cache["updating"] = True
+        _opencode_models_cache["last_attempt"] = int(time.time())
     try:
         r = subprocess.run(
             ["opencode", "models"],
@@ -1015,11 +1032,13 @@ def _refresh_opencode_models():
 def _get_opencode_models():
     with _opencode_models_lock:
         age = time.time() - _opencode_models_cache["last_update"]
+        since_attempt = time.time() - _opencode_models_cache["last_attempt"]
         models = list(_opencode_models_cache["models"])
         updating = _opencode_models_cache["updating"]
-    if not models or (age > _OPENCODE_MODELS_TTL and not updating):
+    if not models or (age > _OPENCODE_MODELS_TTL and not updating
+                      and since_attempt > _OPENCODE_MODELS_TTL):
         threading.Thread(target=_refresh_opencode_models, daemon=True).start()
-    return models
+    return models if models else list(_OPENCODE_DEFAULT_MODELS)
 
 _load_opencode_models_cache()
 
@@ -22084,23 +22103,23 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
         def _find_latest_opencode_session(cwd: str) -> str:
             """Find the most recent OpenCode session ID for a given working directory."""
             import sqlite3
+            from contextlib import closing
             db_path = os.path.expanduser("~/.local/share/opencode/opencode.db")
             if not os.path.exists(db_path):
                 return ""
+            # quote the path so chars like '#' in a worktree dir don't break the URI
+            uri = "file:" + quote(str(db_path)) + "?mode=ro"
             try:
-                conn = sqlite3.connect(f"file://{db_path}?mode=ro", uri=True)
-                conn.execute("PRAGMA busy_timeout = 5000")
-                cur = conn.cursor()
-                cur.execute(
-                    "SELECT id FROM session WHERE directory = ? "
-                    "ORDER BY time_created DESC LIMIT 1",
-                    (cwd.rstrip("/"),),
-                )
-                row = cur.fetchone()
-                conn.close()
-                if row:
-                    return row[0]
-                return ""
+                with closing(sqlite3.connect(uri, uri=True)) as conn:
+                    conn.execute("PRAGMA busy_timeout = 5000")
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT id FROM session WHERE directory = ? "
+                        "ORDER BY time_created DESC LIMIT 1",
+                        (cwd.rstrip("/"),),
+                    )
+                    row = cur.fetchone()
+                    return row[0] if row else ""
             except Exception:
                 return ""
 
@@ -22304,9 +22323,9 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
             # capture), no --add-dir/--session-id injection available in TUI.
             opencode_session_id = meta.get("opencode_session_id", "")
             _oc_flags = flags or ""
-            _oc_yolo = False
+            # opencode has no YOLO flag — strip any provider YOLO flag so we
+            # never pass opencode an undefined flag (e.g. --dangerously-skip-permissions).
             if any(f in _oc_flags for f in _PROVIDER_YOLO_FLAGS):
-                _oc_yolo = True
                 _oc_flags = _strip_provider_yolo_flags(_oc_flags)
             _oc_opts = ""
             if _oc_flags:
@@ -22316,14 +22335,22 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
             # Default model (provider/model form)
             if "--model" not in _oc_opts and "-m " not in _oc_opts:
                 _oc_opts += " --model anthropic/claude-sonnet-4-5"
-            # NOTE: opencode has no YOLO flag — it permits all by default.
-            # Do NOT inject --dangerously-skip-permissions (undefined flag).
             if opencode_session_id:
                 cmd = f"opencode --session {shlex.quote(opencode_session_id)}{_oc_opts}"
                 print(f"[start] {name}: opencode resume {opencode_session_id}")
             else:
-                cmd = f"opencode{_oc_opts}"
-                print(f"[start] {name}: opencode fresh start")
+                # No stored id yet — try to resume the most recent opencode
+                # session for this cwd before falling back to a fresh launch,
+                # so re-opening a worker picks up where it left off.
+                _found = _find_latest_opencode_session(work_dir)
+                if _found:
+                    opencode_session_id = _found
+                    meta["opencode_session_id"] = _found
+                    cmd = f"opencode --session {shlex.quote(_found)}{_oc_opts}"
+                    print(f"[start] {name}: opencode resume {_found} (from cwd)")
+                else:
+                    cmd = f"opencode{_oc_opts}"
+                    print(f"[start] {name}: opencode fresh start")
         else:
             _custom_claude = os.environ.get("AMUX_CLAUDE_CMD", "").strip()
             cmd = _custom_claude or "claude"
