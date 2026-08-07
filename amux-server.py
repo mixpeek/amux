@@ -4611,6 +4611,42 @@ def _herdr_kill(name: str) -> None:
         pass
 
 
+_herdr_status_cache: dict = {"ts": 0.0, "by_name": {}}
+_herdr_status_lock = threading.Lock()
+
+
+def _herdr_agent_statuses(max_age_s: float = 5.0) -> dict:
+    """herdr agent name -> agent dict, from ONE `herdr agent list` (issue #84).
+
+    Cached for max_age_s so one scan tick reads the whole herdr fleet in a
+    single subprocess instead of one `agent get` per lane. A failed read
+    caches an EMPTY map for the same window — every consumer then falls back
+    to the scrape path, which is the pre-#84 behavior.
+    """
+    now = time.time()
+    with _herdr_status_lock:
+        if now - _herdr_status_cache["ts"] < max_age_s:
+            return _herdr_status_cache["by_name"]
+        d = _herdr_json(["agent", "list"], timeout=5)
+        agents = ((d or {}).get("result") or {}).get("agents") or []
+        by_name = {a["name"]: a for a in agents if a.get("name")}
+        _herdr_status_cache["ts"] = now
+        _herdr_status_cache["by_name"] = by_name
+        return by_name
+
+
+_HERDR_STATUS_MAP = {"working": "active", "blocked": "waiting",
+                     "idle": "idle", "done": "idle"}
+
+
+def _herdr_status_to_amux(agent_status) -> str:
+    """'' = no structured answer -> caller keeps the scrape result."""
+    return _HERDR_STATUS_MAP.get((agent_status or "").strip().lower(), "")
+
+
+_herdr_vs_scrape: dict = {}   # name -> last herdr/scrape/report disagreement (#84, ethos #4)
+
+
 def _log_path(session: str) -> Path:
     return CC_LOGS / f"{session}.log"
 
@@ -17762,6 +17798,9 @@ def list_sessions() -> list:
                 _herdr_names.add(f.stem)
         except Exception:
             pass
+    # One batched `herdr agent list` for the whole fleet (#84) instead of one
+    # `agent get` subprocess per herdr lane below.
+    _herdr_by_name = _herdr_agent_statuses() if _herdr_names else {}
     # Token cache is refreshed by background job (_refresh_token_cache via scheduler)
     # Last HUMAN message per session, batched in one query. "Last activity" is
     # dominated by schedulers and inter-session traffic, so a lane you have not
@@ -17816,8 +17855,9 @@ def list_sessions() -> list:
     for f in env_files:
         name = f.stem
         cfg = parse_env_file(f)
-        running = (tmux_name(name) in tmux_info
-                   or (name in _herdr_names and _herdr_agent_get(name) is not None))
+        _herdr_agent = (_herdr_by_name.get(_herdr_agent_name(name))
+                        if name in _herdr_names else None)
+        running = (tmux_name(name) in tmux_info or _herdr_agent is not None)
         preview = ""
         preview_lines = []
         status = ""
@@ -17864,6 +17904,21 @@ def list_sessions() -> list:
                         _scrape_vs_report[name] = {"scrape": status, "report": "idle",
                                                    "ts": time.time()}
                     status = _rep["state"]
+                # HERDR STRUCTURED STATE (#84): while the agent is alive, herdr's own
+                # lifecycle state outranks both the scrape AND the self-report — the
+                # report only changes at hook boundaries (UserPromptSubmit/Stop), so a
+                # fresh 'active' report would mask a mid-turn `blocked`, which is the
+                # exact state this override exists to surface. '' (unknown/agent-gone)
+                # keeps whatever the layers below concluded. Disagreements are recorded,
+                # not resolved silently (ethos #4).
+                if _herdr_agent is not None:
+                    _h_mapped = _herdr_status_to_amux(_herdr_agent.get("agent_status"))
+                    if _h_mapped and _h_mapped != status:
+                        _herdr_vs_scrape[name] = {"herdr": _h_mapped, "scrape": status,
+                                                  "report": (_rep or {}).get("state", ""),
+                                                  "ts": time.time()}
+                    if _h_mapped:
+                        status = _h_mapped
             # Detect session becoming idle → auto-complete board issue, then pick up next queued task
             prev = _session_prev_status.get(name)
             # Observable status transition → the event log (issue #48). Only on a
@@ -17871,6 +17926,18 @@ def list_sessions() -> list:
             if prev in ("active", "waiting", "idle") and status in ("active", "waiting", "idle") and status != prev:
                 _emit_event(name, "session." + ("working" if status == "active" else status),
                             {"prev": prev}, source="status-loop")
+            # waiting_since for herdr lanes (#84): the snapshot loop that stamps
+            # ac_waiting_since never visits herdr lanes (its tmux list-sessions gate),
+            # so derive the episode start from the durable event log — the same
+            # recovery the snapshot loop itself uses across restarts. Stamped into
+            # _session_auto_actions so the exporter below needs no branch.
+            if name in _herdr_names and running:
+                _h_actions = _session_auto_actions.setdefault(name, {})
+                if status == "waiting":
+                    if "ac_waiting_since" not in _h_actions:
+                        _h_actions["ac_waiting_since"] = _waiting_since_from_events(name, time.time())
+                else:
+                    _h_actions.pop("ac_waiting_since", None)
             if status == "idle" and prev in ("active", "waiting"):
                 # A worker finished a turn → emit a closed-loop event so any
                 # orchestrator schedule subscribed to 'session_idle' can wake.
@@ -66284,7 +66351,8 @@ class CCHandler(BaseHTTPRequestHandler):
                 "full_per_min": round(60.0 * _scan_stats["full"] / _up, 1),
                 "hooks_live_s": _HOOKS_LIVE_S, "hooks_live_idle_s": _HOOKS_LIVE_IDLE_S,
                 "demote_interval_s": _SCAN_DEMOTE_S,
-                "sessions": _rows})
+                "sessions": _rows,
+                "herdr_vs_scrape": _herdr_vs_scrape})
 
         if method == "GET" and path == "/api/debug/threads":
             import traceback as _tb
