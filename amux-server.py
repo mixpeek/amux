@@ -959,6 +959,89 @@ _proc_info_lock = threading.Lock()
 _proc_info_last_update: float = 0.0
 _PROC_INFO_TTL = 10.0  # refresh every 10s
 
+_opencode_models_cache: dict = {
+    "models": [],
+    "last_update": 0,
+    # When we last *attempted* a refresh (success OR failure). Without this,
+    # a persistently-failing refresh (e.g. opencode not installed) would
+    # spawn a new subprocess on every call, because last_update only moves
+    # on success. Capped at one attempt per TTL window.
+    "last_attempt": 0,
+    "updating": False,
+}
+_opencode_models_lock = threading.Lock()
+_OPENCODE_MODELS_TTL = 3600
+_OPENCODE_MODELS_CACHE_FILE = _amux_home / "opencode-models.json"
+# Returned when discovery has never succeeded so the dashboard picker still
+# has something to render. Matches the default injected into start_session.
+_OPENCODE_DEFAULT_MODELS = [
+    {"provider": "anthropic", "model": "claude-sonnet-4-5", "full": "anthropic/claude-sonnet-4-5"},
+]
+
+def _load_opencode_models_cache():
+    try:
+        if _OPENCODE_MODELS_CACHE_FILE.exists():
+            data = json.loads(_OPENCODE_MODELS_CACHE_FILE.read_text())
+            with _opencode_models_lock:
+                _opencode_models_cache["models"] = data.get("models", [])
+                _opencode_models_cache["last_update"] = data.get("last_update", 0)
+                if _opencode_models_cache["last_attempt"] == 0:
+                    _opencode_models_cache["last_attempt"] = _opencode_models_cache["last_update"]
+    except Exception:
+        pass
+
+def _save_opencode_models_cache(models: list):
+    try:
+        _OPENCODE_MODELS_CACHE_FILE.write_text(json.dumps({
+            "models": models,
+            "last_update": int(time.time()),
+        }))
+    except Exception:
+        pass
+
+def _refresh_opencode_models():
+    with _opencode_models_lock:
+        if _opencode_models_cache["updating"]:
+            return
+        _opencode_models_cache["updating"] = True
+        _opencode_models_cache["last_attempt"] = int(time.time())
+    try:
+        r = subprocess.run(
+            ["opencode", "models"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if r.returncode != 0:
+            return
+        models = []
+        for line in r.stdout.strip().splitlines():
+            line = line.strip()
+            if not line or "/" not in line:
+                continue
+            provider, _, model = line.partition("/")
+            models.append({"provider": provider, "model": model, "full": line})
+        with _opencode_models_lock:
+            _opencode_models_cache["models"] = models
+            _opencode_models_cache["last_update"] = int(time.time())
+        _save_opencode_models_cache(models)
+    except Exception:
+        pass
+    finally:
+        with _opencode_models_lock:
+            _opencode_models_cache["updating"] = False
+
+def _get_opencode_models():
+    with _opencode_models_lock:
+        age = time.time() - _opencode_models_cache["last_update"]
+        since_attempt = time.time() - _opencode_models_cache["last_attempt"]
+        models = list(_opencode_models_cache["models"])
+        updating = _opencode_models_cache["updating"]
+    if not models or (age > _OPENCODE_MODELS_TTL and not updating
+                      and since_attempt > _OPENCODE_MODELS_TTL):
+        threading.Thread(target=_refresh_opencode_models, daemon=True).start()
+    return models if models else list(_OPENCODE_DEFAULT_MODELS)
+
+_load_opencode_models_cache()
+
 def _build_proc_info() -> dict:
     """Gather process-level diagnostics (blocks ~500ms for CPU sampling)."""
     info = {}
@@ -7593,6 +7676,15 @@ def _claude_ui_visible(clean_output: str) -> bool:
             if ls == ">" or ls.startswith("> ") or ls.startswith("›"):
                 return True
             if "gemini-" in ls or "yolo" in ls or "approval" in ls:
+                return True
+    # OpenCode TUI prompt/status. Ink-based UI like codex/gemini.
+    has_opencode = any("opencode" in l.lower() for l in lines[:20] + lines[-12:])
+    if has_opencode:
+        for l in lines[-8:]:
+            ls = l.strip().lower()
+            if ls == ">" or ls.startswith("> ") or ls.startswith("›"):
+                return True
+            if "anthropic/" in ls or "openai/" in ls or "google/" in ls:
                 return True
     return False
 
@@ -18467,7 +18559,7 @@ def list_sessions() -> list:
         raw_dir = cfg.get("CC_DIR", "")
         resolved_dir = str(Path(raw_dir).expanduser().resolve()) if raw_dir else ""
         provider = cfg.get("CC_PROVIDER", "claude")
-        if provider in ("codex", "gemini"):
+        if provider in ("codex", "gemini", "opencode"):
             active_model = _extract_model_from_flags(cfg.get("CC_FLAGS", "")) or _default_model_for_provider(provider)
         else:
             active_model = detect_active_model(raw_dir, meta.get("cc_conversation_id", ""))
@@ -20578,7 +20670,7 @@ def _set_effort_flag(flags: str, effort: str) -> str:
     return f"{base} --effort {effort}".strip() if base else f"--effort {effort}"
 
 
-_SESSION_PROVIDERS = ("claude", "codex", "gemini", "iterm2")
+_SESSION_PROVIDERS = ("claude", "codex", "gemini", "iterm2", "opencode")
 
 
 _PROVIDER_YOLO_FLAGS = (
@@ -20593,6 +20685,8 @@ def _default_model_for_provider(provider: str) -> str:
         return "gpt-5.5"
     if provider == "gemini":
         return "auto"
+    if provider == "opencode":
+        return "anthropic/claude-sonnet-4-5"
     return _get_default_model()
 
 
@@ -20602,6 +20696,7 @@ def _provider_label(provider: str) -> str:
         "codex": "Codex",
         "gemini": "Gemini",
         "iterm2": "iTerm2",
+        "opencode": "OpenCode",
     }.get(provider, provider or "Claude Code")
 
 
@@ -20610,6 +20705,9 @@ def _provider_yolo_flag(provider: str) -> str:
         return "--dangerously-bypass-approvals-and-sandbox"
     if provider == "gemini":
         return "--yolo"
+    # opencode has no YOLO flag (it permits all by default);
+    # returning claude's flag for UI consistency, but start_session
+    # will NOT inject it into the opencode command.
     return "--dangerously-skip-permissions"
 
 
@@ -22002,6 +22100,29 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
         # Load defaults
         defaults_file = CC_HOME / "defaults.env"
 
+        def _find_latest_opencode_session(cwd: str) -> str:
+            """Find the most recent OpenCode session ID for a given working directory."""
+            import sqlite3
+            from contextlib import closing
+            db_path = os.path.expanduser("~/.local/share/opencode/opencode.db")
+            if not os.path.exists(db_path):
+                return ""
+            # quote the path so chars like '#' in a worktree dir don't break the URI
+            uri = "file:" + quote(str(db_path)) + "?mode=ro"
+            try:
+                with closing(sqlite3.connect(uri, uri=True)) as conn:
+                    conn.execute("PRAGMA busy_timeout = 5000")
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT id FROM session WHERE directory = ? "
+                        "ORDER BY time_created DESC LIMIT 1",
+                        (cwd.rstrip("/"),),
+                    )
+                    row = cur.fetchone()
+                    return row[0] if row else ""
+            except Exception:
+                return ""
+
         def _find_latest_codex_session(cwd: str) -> str:
             """Find the most recent Codex session ID for a given working directory."""
             codex_sessions = Path.home() / ".codex" / "sessions"
@@ -22197,6 +22318,39 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 meta["gemini_session_id"] = gemini_session_id
                 cmd = f"gemini{_gemini_opts} --session-id {shlex.quote(gemini_session_id)}"
                 print(f"[start] {name}: gemini fresh start {gemini_session_id}")
+        elif provider == "opencode":
+            # OpenCode TUI. Resume by stored session ID (codex-like post-hoc
+            # capture), no --add-dir/--session-id injection available in TUI.
+            opencode_session_id = meta.get("opencode_session_id", "")
+            _oc_flags = flags or ""
+            # opencode has no YOLO flag — strip any provider YOLO flag so we
+            # never pass opencode an undefined flag (e.g. --dangerously-skip-permissions).
+            if any(f in _oc_flags for f in _PROVIDER_YOLO_FLAGS):
+                _oc_flags = _strip_provider_yolo_flags(_oc_flags)
+            _oc_opts = ""
+            if _oc_flags:
+                _oc_opts += f" {_shell_quote_flags(_oc_flags)}"
+            if extra_flags:
+                _oc_opts += f" {_shell_quote_flags(extra_flags)}"
+            # Default model (provider/model form)
+            if "--model" not in _oc_opts and "-m " not in _oc_opts:
+                _oc_opts += " --model anthropic/claude-sonnet-4-5"
+            if opencode_session_id:
+                cmd = f"opencode --session {shlex.quote(opencode_session_id)}{_oc_opts}"
+                print(f"[start] {name}: opencode resume {opencode_session_id}")
+            else:
+                # No stored id yet — try to resume the most recent opencode
+                # session for this cwd before falling back to a fresh launch,
+                # so re-opening a worker picks up where it left off.
+                _found = _find_latest_opencode_session(work_dir)
+                if _found:
+                    opencode_session_id = _found
+                    meta["opencode_session_id"] = _found
+                    cmd = f"opencode --session {shlex.quote(_found)}{_oc_opts}"
+                    print(f"[start] {name}: opencode resume {_found} (from cwd)")
+                else:
+                    cmd = f"opencode{_oc_opts}"
+                    print(f"[start] {name}: opencode fresh start")
         else:
             _custom_claude = os.environ.get("AMUX_CLAUDE_CMD", "").strip()
             cmd = _custom_claude or "claude"
@@ -22236,7 +22390,7 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
             tmux_sess = tmux_name(name)
             # Build shell setup string — skip Claude env cleanup for codex
             _has_oauth = False
-            if provider in ("codex", "gemini"):
+            if provider in ("codex", "gemini", "opencode"):
                 shell_rc = ""
             else:
                 shell_rc = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; "
@@ -22262,7 +22416,7 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 shell_rc += f"set -a; source {shlex.quote(str(CC_AMUX_ENV))} 2>/dev/null; set +a; "
             else:
                 shell_rc += f"cd {shlex.quote(work_dir)}; "
-            if provider not in ("codex", "gemini") and _has_oauth:
+            if provider not in ("codex", "gemini", "opencode") and _has_oauth:
                 shell_rc += "unset ANTHROPIC_API_KEY; "
             # Forward select env vars into the tmux session.
             _env_args = []
@@ -22397,7 +22551,7 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                 _poll_shell_prompt(name, timeout=3.0)  # let profile source complete
     
             # Ensure ANTHROPIC_API_KEY is unset when OAuth is available
-            if _has_oauth and provider not in ("codex", "gemini"):
+            if _has_oauth and provider not in ("codex", "gemini", "opencode"):
                 subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "-l",
                                 "unset ANTHROPIC_API_KEY"],
                                capture_output=True, timeout=5)
@@ -22540,6 +22694,16 @@ def start_session(name: str, extra_flags: str = "", _skip_conv_id: bool = False)
                         _save_meta(sname, m)
                         print(f"[start] {sname}: captured codex session {sid}")
                 threading.Thread(target=_capture_codex_id, daemon=True).start()
+            if provider == "opencode" and not meta.get("opencode_session_id"):
+                def _capture_opencode_id(sname=name, wd=work_dir):
+                    time.sleep(8)
+                    sid = _find_latest_opencode_session(wd)
+                    if sid:
+                        m = _load_meta(sname)
+                        m["opencode_session_id"] = sid
+                        _save_meta(sname, m)
+                        print(f"[start] {sname}: captured opencode session {sid}")
+                threading.Thread(target=_capture_opencode_id, daemon=True).start()
             _save_meta(name, meta)
             if pending_log_reload:
                 _start_pending_log_reload_thread(name, pending_log_reload_reason)
@@ -26028,6 +26192,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .badge.gemini { background: rgba(168,85,247,0.2); color: #c084fc; }
   .badge.iterm2 { background: rgba(0,200,160,0.18); color: #00c8a0; }
   .badge.herdr { background: rgba(140,120,255,0.18); color: #a89cff; }
+  .badge.opencode { background: rgba(245,158,11,0.2); color: #f59e0b; }
 
   /* Expanded panel */
   .panel { display: none; margin-top: 12px; }
@@ -31859,6 +32024,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button type="button" id="create-provider-claude" class="btn provider-btn selected" onclick="_selectProvider('claude')">Claude Code</button>
         <button type="button" id="create-provider-codex" class="btn provider-btn" onclick="_selectProvider('codex')">Codex</button>
         <button type="button" id="create-provider-gemini" class="btn provider-btn" onclick="_selectProvider('gemini')">Gemini</button>
+        <button type="button" id="create-provider-opencode" class="btn provider-btn" onclick="_selectProvider('opencode')">OpenCode</button>
       </div>
     </div>
     <div class="field-group">
@@ -34914,17 +35080,19 @@ function providerLabel(provider) {
   if (provider === 'codex') return 'Codex';
   if (provider === 'gemini') return 'Gemini';
   if (provider === 'iterm2') return 'iTerm2';
+  if (provider === 'opencode') return 'OpenCode';
   return 'Claude';
 }
 
 function sessionProvider(s) {
   const p = ((s && s.provider) || 'claude').toLowerCase();
-  return (p === 'codex' || p === 'gemini' || p === 'iterm2') ? p : 'claude';
+  return (p === 'codex' || p === 'gemini' || p === 'iterm2' || p === 'opencode') ? p : 'claude';
 }
 
 function providerDefaultModel(provider) {
   if (provider === 'codex') return 'gpt-5.5';
   if (provider === 'gemini') return 'auto';
+  if (provider === 'opencode') return 'anthropic/claude-sonnet-4-5';
   return window._AMUX_DEFAULT_MODEL || 'sonnet';
 }
 
@@ -34936,6 +35104,7 @@ function sessionConfiguredModel(s) {
 function providerYoloFlag(provider) {
   if (provider === 'codex') return '--dangerously-bypass-approvals-and-sandbox';
   if (provider === 'gemini') return '--yolo';
+  // opencode has no YOLO flag (default all-permit); return claude's flag for UI consistency
   return '--dangerously-skip-permissions';
 }
 
@@ -36495,7 +36664,8 @@ function editField(session, field, current, provider) {
     const providers = [
       {v:'claude',l:'Claude Code'},
       {v:'codex',l:'Codex'},
-      {v:'gemini',l:'Gemini'}
+      {v:'gemini',l:'Gemini'},
+      {v:'opencode',l:'OpenCode'}
     ];
     sel.innerHTML = '';
     providers.forEach(p => { const o = document.createElement('option'); o.value = p.v; o.textContent = p.l; sel.appendChild(o); });
@@ -36522,17 +36692,42 @@ function editField(session, field, current, provider) {
       {v:'gemini-2.5-flash',l:'gemini-2.5-flash'},{v:'gemini-2.5-flash-lite',l:'gemini-2.5-flash-lite'},
       {v:'gemini-3-pro-preview',l:'gemini-3-pro-preview'},{v:'gemini-3-flash-preview',l:'gemini-3-flash-preview'}
     ];
-    const models = provider === 'codex' ? codexModels : (provider === 'gemini' ? geminiModels : claudeModels);
     sel.innerHTML = '';
-    models.forEach(m => { const o = document.createElement('option'); o.value = m.v; o.textContent = m.l; sel.appendChild(o); });
     inpWrap.style.display = 'none';
     sel.style.display = 'block';
-    sel.value = current || '';
-    if (current && !Array.from(sel.options).some(o => o.value === current)) {
-      const opt = document.createElement('option');
-      opt.value = current; opt.textContent = current;
-      sel.appendChild(opt);
-      sel.value = current;
+    function populateModelOptions(models) {
+      sel.innerHTML = '';
+      models.forEach(m => { const o = document.createElement('option'); o.value = m.v; o.textContent = m.l; sel.appendChild(o); });
+      sel.value = current || '';
+      if (current && !Array.from(sel.options).some(o => o.value === current)) {
+        const opt = document.createElement('option');
+        opt.value = current; opt.textContent = current;
+        sel.appendChild(opt);
+        sel.value = current;
+      }
+    }
+    if (provider === 'opencode') {
+      fetch('/api/opencode-models')
+        .then(r => r.json())
+        .then(data => {
+          const models = (data.models || []).map(m => ({v: m.full, l: m.full}));
+          if (!models.some(m => m.v === '')) {
+            models.unshift({v:'',l:'Default'});
+          }
+          populateModelOptions(models);
+        })
+        .catch(() => {
+          populateModelOptions([
+            {v:'',l:'Default'},{v:'anthropic/claude-sonnet-4-5',l:'anthropic/claude-sonnet-4-5'},
+            {v:'anthropic/claude-opus-4-5',l:'anthropic/claude-opus-4-5'},
+            {v:'anthropic/claude-haiku-4-5',l:'anthropic/claude-haiku-4-5'},
+            {v:'openai/gpt-5.5',l:'openai/gpt-5.5'},
+            {v:'google/gemini-2.5-pro',l:'google/gemini-2.5-pro'}
+          ]);
+        });
+    } else {
+      const models = provider === 'codex' ? codexModels : (provider === 'gemini' ? geminiModels : claudeModels);
+      populateModelOptions(models);
     }
     // Reasoning effort — Claude only. Pre-fill from the session's current --effort flag.
     const effortWrap = document.getElementById('edit-effort-wrap');
@@ -39169,7 +39364,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.506';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.507';   // bump together with the sw.js CACHE version
 let _peekScrollLockY = 0;
 // Paint a cached peek entry (offline / instant-open). Returns false when the
 // cache has no real content — the caller then keeps 'Loading…'/reconnecting
@@ -46520,6 +46715,7 @@ function _selectProvider(p) {
   document.getElementById('create-provider-claude').classList.toggle('selected', p === 'claude');
   document.getElementById('create-provider-codex').classList.toggle('selected', p === 'codex');
   document.getElementById('create-provider-gemini').classList.toggle('selected', p === 'gemini');
+  document.getElementById('create-provider-opencode').classList.toggle('selected', p === 'opencode');
   // Hide branch/template/session-name options for non-Claude providers since they use different mechanics
   const isClaude = p === 'claude';
   document.getElementById('create-branch-enabled').closest('.field-group').style.display = isClaude ? '' : 'none';
@@ -46531,6 +46727,7 @@ function openCreate() {
   document.getElementById('create-provider-claude').classList.add('selected');
   document.getElementById('create-provider-codex').classList.remove('selected');
   document.getElementById('create-provider-gemini').classList.remove('selected');
+  document.getElementById('create-provider-opencode').classList.remove('selected');
   document.getElementById('create-branch-enabled').closest('.field-group').style.display = '';
   document.getElementById('create-template-field').style.display = '';
   document.getElementById('create-name').value = '';
@@ -60712,7 +60909,7 @@ PWA_MANIFEST = json.dumps({
 
 # Robust service worker: cache-first with localStorage fallback for multi-day offline
 SERVICE_WORKER = r"""
-const CACHE = 'amux-v0.9.506';
+const CACHE = 'amux-v0.9.507';
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg', '/icon.png', '/icon-192.png', '/icon-512.png'];
 
 // Install: pre-cache entire app shell
@@ -62360,6 +62557,9 @@ class CCHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             return self._json({"error": "CA not found"}, 404)
+
+        if method == "GET" and path == "/api/opencode-models":
+            return self._json({"models": _get_opencode_models()})
 
         # GET /api/events (SSE stream)
         if method == "GET" and path == "/api/events":
