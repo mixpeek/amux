@@ -36,9 +36,11 @@ def amux_server():
 def _reset_status_cache(amux_server):
     # Each test gets a cold cache so max_age_s timing from a prior test can't leak in.
     amux_server._herdr_status_cache["ts"] = 0.0
+    amux_server._herdr_status_cache["ok"] = True
     amux_server._herdr_status_cache["by_name"] = {}
     yield
     amux_server._herdr_status_cache["ts"] = 0.0
+    amux_server._herdr_status_cache["ok"] = True
     amux_server._herdr_status_cache["by_name"] = {}
 
 
@@ -105,7 +107,9 @@ def _agent_list_payload():
 def test_agent_statuses_parses_by_name(amux_server, monkeypatch):
     monkeypatch.setattr(amux_server.subprocess, "run",
                         lambda *a, **k: _FakeProc(json.dumps(_agent_list_payload()), 0))
-    by_name = amux_server._herdr_agent_statuses()
+    result = amux_server._herdr_agent_statuses()
+    by_name = result["by_name"]
+    assert result["ok"] is True
     assert set(by_name.keys()) == {"lane-one", "lane-two"}
     assert by_name["lane-one"]["agent_status"] == "working"
     assert by_name["lane-two"]["agent_status"] == "blocked"
@@ -114,14 +118,24 @@ def test_agent_statuses_parses_by_name(amux_server, monkeypatch):
 def test_agent_statuses_drops_nameless_entries(amux_server, monkeypatch):
     monkeypatch.setattr(amux_server.subprocess, "run",
                         lambda *a, **k: _FakeProc(json.dumps(_agent_list_payload()), 0))
-    by_name = amux_server._herdr_agent_statuses()
+    by_name = amux_server._herdr_agent_statuses()["by_name"]
     assert all(v.get("pane_id") != "w3:p1" for v in by_name.values())
 
 
-def test_agent_statuses_failed_read_is_empty_map(amux_server, monkeypatch):
+def test_agent_statuses_failed_read_is_ok_false_empty_map(amux_server, monkeypatch):
+    # §1e (PR #87 review): a failed read must NOT collapse into "fleet is
+    # empty" — the two are distinguished by `ok`, so a caller can tell a
+    # transient herdr failure apart from every agent genuinely being gone.
     monkeypatch.setattr(amux_server.subprocess, "run",
                         lambda *a, **k: _FakeProc("not json", 0))
-    assert amux_server._herdr_agent_statuses() == {}
+    assert amux_server._herdr_agent_statuses() == {"ok": False, "by_name": {}}
+
+
+def test_agent_statuses_success_with_no_agents_is_ok_true(amux_server, monkeypatch):
+    payload = {"id": "x", "result": {"type": "agent_list", "agents": []}}
+    monkeypatch.setattr(amux_server.subprocess, "run",
+                        lambda *a, **k: _FakeProc(json.dumps(payload), 0))
+    assert amux_server._herdr_agent_statuses() == {"ok": True, "by_name": {}}
 
 
 # ── Tick cache ───────────────────────────────────────────────────────────────

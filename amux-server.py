@@ -4620,28 +4620,35 @@ def _herdr_kill(name: str) -> None:
         pass
 
 
-_herdr_status_cache: dict = {"ts": 0.0, "by_name": {}}
+_herdr_status_cache: dict = {"ts": 0.0, "ok": True, "by_name": {}}
 _herdr_status_lock = threading.Lock()
 
 
 def _herdr_agent_statuses(max_age_s: float = 5.0) -> dict:
-    """herdr agent name -> agent dict, from ONE `herdr agent list` (issue #84).
+    """{"ok": bool, "by_name": {herdr agent name -> agent dict}} from ONE
+    `herdr agent list` (issue #84).
 
     Cached for max_age_s so one scan tick reads the whole herdr fleet in a
-    single subprocess instead of one `agent get` per lane. A failed read
-    caches an EMPTY map for the same window — every consumer then falls back
-    to the scrape path, which is the pre-#84 behavior.
+    single subprocess instead of one `agent get` per lane. `ok: False` means
+    the read itself failed — distinct from `ok: True` with an empty/partial
+    map, which means the fleet was queried successfully and those agents are
+    genuinely not there (PR #87 review: collapsing the two let a transient
+    `agent list` failure read as "every herdr lane stopped" and misfire board
+    auto-complete fleet-wide, ethos #4 — an instrument must express the
+    difference between "false" and "couldn't tell").
     """
     now = time.time()
     with _herdr_status_lock:
         if now - _herdr_status_cache["ts"] < max_age_s:
-            return _herdr_status_cache["by_name"]
+            return {"ok": _herdr_status_cache["ok"], "by_name": _herdr_status_cache["by_name"]}
         d = _herdr_json(["agent", "list"], timeout=5)
+        ok = d is not None
         agents = ((d or {}).get("result") or {}).get("agents") or []
         by_name = {a["name"]: a for a in agents if a.get("name")}
         _herdr_status_cache["ts"] = now
+        _herdr_status_cache["ok"] = ok
         _herdr_status_cache["by_name"] = by_name
-        return by_name
+        return {"ok": ok, "by_name": by_name}
 
 
 _HERDR_STATUS_MAP = {"working": "active", "blocked": "waiting",
@@ -17809,7 +17816,7 @@ def list_sessions() -> list:
             pass
     # One batched `herdr agent list` for the whole fleet (#84) instead of one
     # `agent get` subprocess per herdr lane below.
-    _herdr_by_name = _herdr_agent_statuses() if _herdr_names else {}
+    _herdr_batch = _herdr_agent_statuses() if _herdr_names else {"ok": True, "by_name": {}}
     # Token cache is refreshed by background job (_refresh_token_cache via scheduler)
     # Last HUMAN message per session, batched in one query. "Last activity" is
     # dominated by schedulers and inter-session traffic, so a lane you have not
@@ -17864,8 +17871,16 @@ def list_sessions() -> list:
     for f in env_files:
         name = f.stem
         cfg = parse_env_file(f)
-        _herdr_agent = (_herdr_by_name.get(_herdr_agent_name(name))
-                        if name in _herdr_names else None)
+        if name in _herdr_names:
+            _herdr_agent = _herdr_batch["by_name"].get(_herdr_agent_name(name))
+            if _herdr_agent is None and not _herdr_batch["ok"]:
+                # The batched read FAILED — a failed instrument must not read as
+                # "every herdr lane stopped" (that transition fires board
+                # auto-complete). Fall back to the pre-#84 per-lane probe, which
+                # confines a transient failure to the lane it actually touches.
+                _herdr_agent = _herdr_agent_get(name)
+        else:
+            _herdr_agent = None
         running = (tmux_name(name) in tmux_info or _herdr_agent is not None)
         preview = ""
         preview_lines = []
