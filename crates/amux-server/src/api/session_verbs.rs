@@ -349,6 +349,20 @@ fn meta_str(meta: &Map<String, Value>, key: &str) -> String {
     meta.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
 }
 
+/// Read an integer out of a session's meta.
+///
+/// ALWAYS reach for this instead of `load_meta(name)["key"]`. `load_meta`
+/// returns a `serde_json::Map`, NOT a `Value`, and the two index identically to
+/// the eye while behaving oppositely: `Value["missing"]` yields `Null`, but
+/// `Map["missing"]` forwards to `BTreeMap::index` and PANICS with "no entry
+/// found for key". That is not a hypothetical — it took the whole server down
+/// on the first boot after the Python->Rust cutover (see below), because no
+/// pre-cutover `*.meta.json` carries `rate_limited_since` and the sweep indexes
+/// it on every lane.
+fn meta_i64(meta: &Map<String, Value>, key: &str) -> i64 {
+    meta.get(key).and_then(|v| v.as_i64()).unwrap_or(0)
+}
+
 // ---------------------------------------------------------------------------
 // tmux ops. Targets come ONLY from backend::tmux's L2 helpers; the fleet's
 // tmux name is `amux-<name>` (py:4307 tmux_name — legacy cmux-/cc- migration
@@ -7211,7 +7225,7 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
         // and answers it below, so flagging it would ask a human for something
         // nobody needs to decide.
         let selector_now = !is_rate_limit_menu(&pane) && detect_claude_status(&pane) == "waiting";
-        let selector_was = load_meta(name)["input_required_since"].as_i64().unwrap_or(0) > 0;
+        let selector_was = meta_i64(&load_meta(name), "input_required_since") > 0;
         if selector_now != selector_was {
             update_meta(
                 name,
@@ -7261,7 +7275,7 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             .flatten();
         let stuck_now = typed_pending.is_some();
         let meta_now = load_meta(name);
-        let stuck_was = meta_now["composer_stuck_since"].as_i64().unwrap_or(0) > 0;
+        let stuck_was = meta_i64(&meta_now, "composer_stuck_since") > 0;
         if stuck_now != stuck_was {
             let preview = typed_pending
                 .as_deref()
@@ -7292,13 +7306,13 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
         if !is_rate_limit_menu(&pane) {
             // Recovered on its own (or was never limited): clear a stale stamp
             // so the fleet view does not stay red after the fact.
-            if load_meta(name)["rate_limited_since"].as_i64().unwrap_or(0) > 0 {
+            if meta_i64(&load_meta(name), "rate_limited_since") > 0 {
                 update_meta(name, &[("rate_limited_since", json!(0))]);
             }
             continue;
         }
         found += 1;
-        if load_meta(name)["rate_limited_since"].as_i64().unwrap_or(0) == 0 {
+        if meta_i64(&load_meta(name), "rate_limited_since") == 0 {
             update_meta(
                 name,
                 &[
@@ -11144,6 +11158,59 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
+
+    /// The literal shape of a pre-cutover `*.meta.json`, copied from a live
+    /// `~/.amux/sessions/` file on the machine where this incident happened.
+    /// The load-bearing property is what it does NOT contain: no
+    /// `rate_limited_since`. A meta blob invented for a test would have been
+    /// written WITH the key and could never have caught this.
+    const PRE_CUTOVER_META: &str = r#"{
+        "created_at": 1785985494,
+        "creator": "Mac",
+        "start_count": 2,
+        "last_started": 1786451118,
+        "task_summary": "Reduce Verbose Output"
+    }"#;
+
+    fn pre_cutover_map() -> Map<String, Value> {
+        serde_json::from_str::<Value>(PRE_CUTOVER_META)
+            .unwrap()
+            .as_object()
+            .cloned()
+            .unwrap()
+    }
+
+    /// The regression. Every lane created before the Rust cutover lacks
+    /// `rate_limited_since`, so the rate-limit sweep read it on the FIRST tick
+    /// after install, panicked, and the server stopped answering entirely —
+    /// TCP still accepted from the kernel backlog while nothing serviced the
+    /// TLS hello, which is why it presented as a hang rather than a crash.
+    #[test]
+    fn meta_i64_absent_key_is_zero_not_a_panic() {
+        assert_eq!(meta_i64(&pre_cutover_map(), "rate_limited_since"), 0);
+    }
+
+    /// Pins the trap itself, so nobody "simplifies" `meta_i64` back into the
+    /// indexing form. `load_meta` returns a `Map`, and `Map[key]` forwards to
+    /// `BTreeMap::index` — it PANICS on a missing key, where the
+    /// near-identical-looking `Value[key]` would have yielded `Null`. If this
+    /// test ever stops panicking, serde_json changed and the comment on
+    /// `meta_i64` needs revisiting.
+    #[test]
+    #[should_panic(expected = "no entry found for key")]
+    fn map_indexing_panics_on_absent_key() {
+        let _ = pre_cutover_map()["rate_limited_since"].as_i64();
+    }
+
+    /// A present key still reads back, so the fix did not trade a panic for a
+    /// silent zero on the path that actually matters (a genuinely limited lane
+    /// must stay flagged).
+    #[test]
+    fn meta_i64_reads_a_present_value() {
+        let mut m = pre_cutover_map();
+        m.insert("rate_limited_since".into(), json!(1786451118i64));
+        assert_eq!(meta_i64(&m, "rate_limited_since"), 1786451118);
+    }
 
     /// Feed `input` to the real generated pipe command and return the log.
     /// Runs the SHIPPED string through `sh -c`, exactly as tmux's `pipe-pane`

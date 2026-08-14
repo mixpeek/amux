@@ -1332,22 +1332,100 @@ fn disk_samples() -> &'static std::sync::RwLock<Vec<(f64, u64)>> {
     CELL.get_or_init(|| std::sync::RwLock::new(Vec::new()))
 }
 
+/// Ceiling for ONE `du` walk, and for the whole set. Both are env-tunable
+/// because the right number is a property of the machine's disk, not of amux.
+fn du_path_timeout_s() -> f64 {
+    std::env::var("AMUX_DISK_DU_PATH_TIMEOUT_S")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(5.0)
+}
+
+fn du_total_timeout_s() -> f64 {
+    std::env::var("AMUX_DISK_DU_TOTAL_TIMEOUT_S")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(15.0)
+}
+
+/// One bounded `du -skx`. Returns `None` if it did not finish in time — a
+/// SKIPPED path, not a zero-sized one, which matters because a silent 0 would
+/// rank the biggest consumer last and point the report at an innocent
+/// directory.
+fn du_one(p: &std::path::Path, deadline: std::time::Instant) -> Option<u64> {
+    let mut child = std::process::Command::new("/usr/bin/du")
+        .args(["-skx"])
+        .arg(p)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    // Kill AND reap: an unreaped `du` is a zombie holding the
+                    // very FDs the neighbouring FdPressure detector counts.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    tracing::warn!(path = %p.display(), "disk: du timed out — path skipped in the size ranking");
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
+    }
+    let out = child.wait_with_output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let kb: u64 = text.split_whitespace().next()?.parse().ok()?;
+    Some(kb * 1024)
+}
+
+/// Rank the biggest consumers, under a hard wall-clock budget.
+///
+/// EVERY `du` HERE IS BOUNDED, and that is the whole point. This runs only
+/// when free space is already under the floor (see `detect_disk`), i.e. only
+/// on the machine where a `du` of `~/Library/Caches` is slowest — so an
+/// unbounded walk is not a slow path, it is the failure mode. Unbounded, it
+/// took the SERVER DOWN: `std::process::Command::output()` blocks the calling
+/// thread, this runs on a tokio worker, and the tick repeats — so each tick
+/// parked another worker on a multi-minute directory walk until none were left
+/// to poll the accept loop. The server then held its listening socket with
+/// every thread parked and 0% CPU: no panic, no log line, connections accepted
+/// by the kernel and answered by nobody. It reads as a hang with no cause,
+/// which is the most expensive shape a fault can have.
+///
+/// This is ethos rule 7's "what does the DETECTOR cost, and is the cost paid in
+/// the same resource as the fault?" — here it was worse than the spin-catcher
+/// it echoes, because the cost landed on the runtime rather than on the disk.
 fn du_top(paths: &[std::path::PathBuf], limit: usize) -> Vec<(String, u64)> {
-    let mut sized: Vec<(String, u64)> = paths
-        .iter()
-        .filter(|p| p.exists())
-        .filter_map(|p| {
-            let out = std::process::Command::new("/usr/bin/du")
-                .args(["-skx"])
-                .arg(p)
-                .output()
-                .ok()?;
-            let text = String::from_utf8_lossy(&out.stdout);
-            let kb: u64 = text.split_whitespace().next()?.parse().ok()?;
-            Some((p.display().to_string(), kb * 1024))
-        })
-        .collect();
-    sized.sort_by_key(|e| std::cmp::Reverse(e.1));
+    let started = std::time::Instant::now();
+    let total_budget = std::time::Duration::from_secs_f64(du_total_timeout_s());
+    let per_path = std::time::Duration::from_secs_f64(du_path_timeout_s());
+    let mut sized: Vec<(String, u64)> = Vec::new();
+    let mut skipped = 0usize;
+    for p in paths.iter().filter(|p| p.exists()) {
+        let remaining = total_budget.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            skipped += 1;
+            continue;
+        }
+        let deadline = std::time::Instant::now() + per_path.min(remaining);
+        match du_one(p, deadline) {
+            Some(bytes) => sized.push((p.display().to_string(), bytes)),
+            None => skipped += 1,
+        }
+    }
+    // Rule 4: a truncated ranking that does not say it was truncated reads as a
+    // complete one. Whoever acts on this report must see that paths are missing.
+    if skipped > 0 {
+        tracing::warn!(skipped, "disk: size ranking is INCOMPLETE — some paths exceeded the du budget");
+    }
+    sized.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
     sized.truncate(limit);
     sized
 }
@@ -2865,6 +2943,59 @@ fn parse_ts(s: &str) -> Option<f64> {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    /// `du_top` must RETURN under its budget even when a path cannot be walked
+    /// in time. The incident this guards: an unbounded `du` on a nearly-full
+    /// disk parked a tokio worker per tick until the server stopped answering.
+    ///
+    /// The slow path is `/` — a real directory whose walk cannot finish in the
+    /// budget, rather than a fake one. A tempdir with a few files completes
+    /// instantly and would pass against the ORIGINAL unbounded code, which is
+    /// exactly the "convenient case lacks the property that made the incident"
+    /// trap; this asserts the bound by making the walk genuinely unfinishable.
+    #[test]
+    fn du_top_returns_within_budget_on_an_unwalkable_path() {
+        std::env::set_var("AMUX_DISK_DU_PATH_TIMEOUT_S", "1");
+        std::env::set_var("AMUX_DISK_DU_TOTAL_TIMEOUT_S", "2");
+        let started = std::time::Instant::now();
+        let _ = du_top(&[std::path::PathBuf::from("/")], 8);
+        let elapsed = started.elapsed().as_secs_f64();
+        std::env::remove_var("AMUX_DISK_DU_PATH_TIMEOUT_S");
+        std::env::remove_var("AMUX_DISK_DU_TOTAL_TIMEOUT_S");
+        assert!(
+            elapsed < 10.0,
+            "du_top ran {elapsed:.1}s against a 2s total budget — the bound is not being enforced, \
+             which is the exact condition that wedged the server"
+        );
+    }
+
+    /// A timed-out path is OMITTED, never recorded as 0 bytes. A silent zero
+    /// would sort the largest consumer last and aim the disk report at an
+    /// innocent directory.
+    #[test]
+    fn du_top_omits_a_timed_out_path_rather_than_sizing_it_zero() {
+        std::env::set_var("AMUX_DISK_DU_PATH_TIMEOUT_S", "1");
+        std::env::set_var("AMUX_DISK_DU_TOTAL_TIMEOUT_S", "2");
+        let got = du_top(&[std::path::PathBuf::from("/")], 8);
+        std::env::remove_var("AMUX_DISK_DU_PATH_TIMEOUT_S");
+        std::env::remove_var("AMUX_DISK_DU_TOTAL_TIMEOUT_S");
+        assert!(
+            !got.iter().any(|(_, bytes)| *bytes == 0),
+            "a skipped path was reported with a size instead of being omitted: {got:?}"
+        );
+    }
+
+    /// Control: a path that CAN be walked is still measured and non-zero, so
+    /// the two tests above are not passing merely because `du_top` returns
+    /// nothing at all.
+    #[test]
+    fn du_top_still_measures_a_walkable_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f"), vec![0u8; 64 * 1024]).unwrap();
+        let got = du_top(&[dir.path().to_path_buf()], 8);
+        assert_eq!(got.len(), 1, "expected the tempdir to be measured: {got:?}");
+        assert!(got[0].1 > 0, "measured size should be non-zero: {got:?}");
+    }
 
     /// AMUX-3014: autofix cards must default ON (local ops board) and turn OFF
     /// only on an explicit falsey value (the cloud image sets 0 so per-tenant
