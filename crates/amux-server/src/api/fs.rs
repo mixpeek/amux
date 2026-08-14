@@ -1199,7 +1199,7 @@ async fn list_dir(method: Method, RawQuery(q): RawQuery) -> Response {
             json!({"error": "not a directory — use /api/fs/read", "path": pystr(&target)}),
         );
     }
-    let rd = match std::fs::read_dir(&target) {
+    let rd = match retry_eintr(|| std::fs::read_dir(&target)) {
         Ok(rd) => rd,
         Err(e) => return j(500, json!({"error": e.to_string()})),
     };
@@ -1251,6 +1251,32 @@ async fn list_dir(method: Method, RawQuery(q): RawQuery) -> Response {
 // succeeds, is_dir fails), and there is no 1000-entry cap.
 // ---------------------------------------------------------------------------
 
+/// Retry a syscall that failed with `EINTR`.
+///
+/// `EINTR` is not a failure. It means a signal arrived while the call was
+/// blocked, and the only correct response is to try again — but neither
+/// `std::fs::read_dir` nor `std::fs::metadata` retries for you.
+///
+/// This matters here specifically because the server spawns child processes
+/// constantly (tmux, git, `du`), so `SIGCHLD` is routine, and listing a large
+/// directory is a wide enough window to catch one. When that happened, `ls`
+/// fell through to its catch-all arm and returned HTTP 500 carrying the raw
+/// `io::Error` string, so the Files browser told the user
+/// "Interrupted system call (os error 4)" — which reads as a broken directory
+/// rather than a retryable blip, and is not actionable by anyone who sees it.
+///
+/// Bounded rather than unbounded: a genuine repeated `EINTR` should surface,
+/// not spin.
+fn retry_eintr<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    for _ in 0..4 {
+        match f() {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            other => return other,
+        }
+    }
+    f()
+}
+
 pub async fn ls(method: Method, RawQuery(q): RawQuery) -> Response {
     if method != Method::GET {
         return not_found().await;
@@ -1268,7 +1294,7 @@ pub async fn ls(method: Method, RawQuery(q): RawQuery) -> Response {
     if !p.is_dir() {
         return j(400, json!({"error": "not a directory"}));
     }
-    let rd = match std::fs::read_dir(&p) {
+    let rd = match retry_eintr(|| std::fs::read_dir(&p)) {
         Ok(rd) => rd,
         // Python: PermissionError on iterdir → 403.
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -1285,7 +1311,7 @@ pub async fn ls(method: Method, RawQuery(q): RawQuery) -> Response {
             }
             // Python: st = item.stat() inside try — a failing stat (broken
             // symlink) SKIPS the entry.
-            let meta = std::fs::metadata(e.path()).ok()?;
+            let meta = retry_eintr(|| std::fs::metadata(e.path())).ok()?;
             let is_dir = meta.is_dir();
             Some((!is_dir, name.to_lowercase(), name, meta))
         })
@@ -1339,7 +1365,7 @@ pub async fn autocomplete_dir(method: Method, RawQuery(q): RawQuery) -> Response
     if !parent.is_dir() {
         return j(200, json!([]));
     }
-    let rd = match std::fs::read_dir(&parent) {
+    let rd = match retry_eintr(|| std::fs::read_dir(&parent)) {
         Ok(rd) => rd,
         Err(_) => return j(200, json!([])), // PermissionError → []
     };
@@ -1408,6 +1434,57 @@ async fn delete_path(req: Request) -> Response {
 
 #[cfg(test)]
 mod tests {
+
+    use std::cell::Cell;
+    use std::io::{Error, ErrorKind};
+
+    /// A transient EINTR must be retried, not surfaced. This is the incident:
+    /// the Files browser showed "Interrupted system call (os error 4)" for a
+    /// directory that was perfectly readable a moment later.
+    #[test]
+    fn retry_eintr_retries_past_a_transient_interrupt() {
+        let calls = Cell::new(0);
+        let got = super::retry_eintr(|| {
+            calls.set(calls.get() + 1);
+            if calls.get() < 3 {
+                Err(Error::new(ErrorKind::Interrupted, "eintr"))
+            } else {
+                Ok(42)
+            }
+        });
+        assert_eq!(got.unwrap(), 42);
+        assert_eq!(calls.get(), 3, "should have retried until it succeeded");
+    }
+
+    /// CONTROL, and the one that makes the two tests around it mean anything:
+    /// a non-EINTR error must come straight back, un-retried. Without this, a
+    /// helper that blindly retried EVERY error would pass the other two — and
+    /// would turn a real PermissionDenied into four syscalls and the same
+    /// error, hiding a genuine fault behind a retry loop.
+    #[test]
+    fn retry_eintr_does_not_retry_other_errors() {
+        let calls = Cell::new(0);
+        let got: std::io::Result<u8> = super::retry_eintr(|| {
+            calls.set(calls.get() + 1);
+            Err(Error::new(ErrorKind::PermissionDenied, "nope"))
+        });
+        assert_eq!(got.unwrap_err().kind(), ErrorKind::PermissionDenied);
+        assert_eq!(calls.get(), 1, "a non-EINTR error must not be retried");
+    }
+
+    /// A PERSISTENT EINTR must still terminate and surface, rather than spin.
+    /// Bounded retry is the point; an unbounded one trades a visible error for
+    /// a hung request, which is strictly worse to diagnose.
+    #[test]
+    fn retry_eintr_surfaces_a_persistent_interrupt() {
+        let calls = Cell::new(0);
+        let got: std::io::Result<u8> = super::retry_eintr(|| {
+            calls.set(calls.get() + 1);
+            Err(Error::new(ErrorKind::Interrupted, "eintr"))
+        });
+        assert_eq!(got.unwrap_err().kind(), ErrorKind::Interrupted);
+        assert!(calls.get() <= 8, "retry must be bounded, got {} calls", calls.get());
+    }
     use super::*;
     use axum::body::Body;
     use tower::ServiceExt;
