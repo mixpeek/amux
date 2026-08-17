@@ -172,6 +172,46 @@ impl RunOutcome {
     pub fn landed(&self) -> bool {
         matches!(self, RunOutcome::Delivered { .. } | RunOutcome::ShellOk { .. })
     }
+
+    /// Is the command GONE — nothing arrived and nothing is pending?
+    ///
+    /// The inverse of `landed()` is not this. `!landed()` is true for `Queued`,
+    /// which is the healthy path for a busy lane: the steer sits on a real queue
+    /// with a row id and lands at the target's next turn boundary. Answering
+    /// "did this reach nobody?" with `!landed()` therefore reports the normal
+    /// case as a fleet outage.
+    ///
+    /// That is not hypothetical. On 2026-08-17 both daily schedules fired,
+    /// returned `Queued`, drained, and ran — and the log carried
+    /// "schedule fired but nothing was delivered" for both. The log review that
+    /// found it was itself the message the warning said had not been delivered.
+    ///
+    /// `landed()` is correct as written and must not be widened: pending is not
+    /// done, and `schedule_runs.status` must keep saying `queued`. What was
+    /// wrong is one CONSUMER using it to answer a different question. Note
+    /// `api::schedules` already reads this fact correctly as
+    /// `landed() || matches!(Queued)` — two consumers of one fact disagreed, and
+    /// the log-facing one was the wrong half.
+    pub fn lost(&self) -> bool {
+        matches!(
+            self,
+            RunOutcome::Refused { .. } | RunOutcome::Failed { .. } | RunOutcome::ShellError { .. }
+        )
+    }
+}
+
+/// Should the fire path shout "nothing was delivered"?
+///
+/// A free function, not an inline `all(...)`, so the decision the log actually
+/// makes is reachable from a test. The bug it replaces was invisible precisely
+/// because the predicate lived inline in an `if` and nothing could assert on it
+/// without a tracing capture.
+///
+/// `lost()` on every outcome — an empty set counts as lost, since nothing
+/// attempted reads as silence from the log's side, which is what today's
+/// behaviour already did.
+fn should_warn_undelivered(outcomes: &[RunOutcome]) -> bool {
+    outcomes.iter().all(|o| o.lost())
 }
 
 /// How the scheduler delivers a schedule's command.
@@ -1617,7 +1657,7 @@ async fn fire_one(
     // ---- RECORD what actually happened ----
     let sid = claim.sched.id().to_string();
     let notes = claim.notes;
-    let landed = outcomes.iter().filter(|o| o.landed()).count();
+    let all_lost = should_warn_undelivered(&outcomes);
     let statuses: Vec<&'static str> = outcomes.iter().map(|o| o.status()).collect();
     store
         .write_async(move |conn| {
@@ -1628,7 +1668,9 @@ async fn fire_one(
             Ok(WriteOutcome { applied: true, events: vec![] })
         })
         .await?;
-    if landed == 0 {
+    // An empty outcome set still warns — nothing was delivered because nothing
+    // was attempted, which is the same silence from a reader's side.
+    if all_lost {
         // Loud, because it is the AMUX-2647 shape: the schedule fired and the
         // command did not reach anyone. It is on the run row too, but a fleet
         // going quiet must be greppable in the log without opening the DB.
@@ -2228,6 +2270,53 @@ mod tests {
             RunOutcome::Delivered { submission: "confirmed".into(), detail: String::new() }.status(),
             "delivered"
         );
+    }
+
+    /// Rebuilt from the 2026-08-17 specimen, not from a convenient one. SCHED-1
+    /// (13:00:25Z) and SCHED-2 (13:30:25Z) each fired, each returned exactly one
+    /// `Queued`, each drained from `steering_queue`, and each ran — the daily log
+    /// review that found this was itself the message the log said had not been
+    /// delivered. The convenient specimen (a Refused) passes either way, which is
+    /// why it has to be the Queued one.
+    ///
+    /// The Refused/Failed/ShellError cases are the load-bearing control: a
+    /// predicate that simply returned `false` would satisfy "Queued does not
+    /// warn" and silently delete the AMUX-2647 detector this warning exists to
+    /// be. Both directions or neither.
+    #[test]
+    fn a_queued_steer_is_pending_not_undelivered() {
+        let queued =
+            || RunOutcome::Queued { queue_id: "steer-1786973425".into(), detail: "queued (steering)".into() };
+
+        // The specimen: one Queued outcome, which is what both fires produced.
+        assert!(!should_warn_undelivered(&[queued()]), "a queued steer lands at the next turn boundary — not an outage");
+        // Still not `landed`: pending is not done, and the run row must keep
+        // saying `queued`. Fixing the warning must not widen this.
+        assert!(!queued().landed(), "queued must stay pending at the type level");
+        assert!(!queued().lost(), "queued is pending, not lost");
+        assert_eq!(queued().status(), "queued");
+
+        // CONTROL — the detector must still fire, or the fix deleted it.
+        for o in [
+            RunOutcome::Refused { reason: "target 'x' is archived".into() },
+            RunOutcome::Failed { reason: "not submitted".into() },
+            RunOutcome::ShellError { note: "exit 1".into() },
+        ] {
+            assert!(o.lost(), "{o:?} reached nobody and is not pending");
+            assert!(should_warn_undelivered(&[o.clone()]), "{o:?} must still warn");
+        }
+        // Nothing attempted still reads as silence — unchanged behaviour.
+        assert!(should_warn_undelivered(&[]));
+        // A mixed fire is not a fleet going quiet: one steer is still pending.
+        assert!(!should_warn_undelivered(&[
+            RunOutcome::Refused { reason: "archived".into() },
+            queued(),
+        ]));
+        // And a real delivery obviously does not warn.
+        assert!(!should_warn_undelivered(&[RunOutcome::Delivered {
+            submission: "confirmed".into(),
+            detail: String::new()
+        }]));
     }
 
     #[tokio::test]
