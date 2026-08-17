@@ -424,7 +424,7 @@ let _logMatches = {};       // name -> matched snippet string
 let _logSearchTimer = null;
 let _logSearchAbort = null;
 // Filters modal facets (session list). Multi-select within a facet.
-let filterProviders = new Set();   // 'claude' | 'codex' | 'gemini' | 'iterm2'
+let filterProviders = new Set();   // 'claude' | 'codex' | 'gemini' | 'iterm2' | 'ollama' | 'grok'
 let filterStatuses = new Set();    // 'working' | 'waiting' | 'idle' | 'stopped'
 // Stable status key for filtering: card WORKING = 'active' internally.
 function _sessStatusKey(s) {
@@ -2662,18 +2662,20 @@ function providerLabel(provider) {
   if (provider === 'gemini') return 'Gemini';
   if (provider === 'ollama') return 'Ollama';
   if (provider === 'iterm2') return 'iTerm2';
+  if (provider === 'grok') return 'Grok';
   return 'Claude';
 }
 
 function sessionProvider(s) {
   const p = ((s && s.provider) || 'claude').toLowerCase();
-  return (p === 'codex' || p === 'gemini' || p === 'ollama' || p === 'iterm2') ? p : 'claude';
+  return (p === 'codex' || p === 'gemini' || p === 'ollama' || p === 'iterm2' || p === 'grok') ? p : 'claude';
 }
 
 function providerDefaultModel(provider) {
   if (provider === 'codex') return 'gpt-5.5';
   if (provider === 'gemini') return 'auto';
   if (provider === 'ollama') return 'qwen3.8:27b';
+  if (provider === 'grok') return 'grok-4.6';
   return window._AMUX_DEFAULT_MODEL || 'sonnet';
 }
 
@@ -4666,6 +4668,7 @@ function editField(session, field, current, provider) {
       {v:'claude',l:'Claude Code'},
       {v:'codex',l:'Codex'},
       {v:'gemini',l:'Gemini'},
+      {v:'grok',l:'Grok'},
       {v:'ollama',l:'Ollama (local)'}
     ];
     sel.innerHTML = '';
@@ -4712,7 +4715,10 @@ function editField(session, field, current, provider) {
         })
         .catch(() => { sel.innerHTML = '<option value="">Could not reach Ollama</option>'; });
     } else {
-    const models = provider === 'codex' ? codexModels : (provider === 'gemini' ? geminiModels : claudeModels);
+    const grokModels = [
+      {v:'',l:'Default'},{v:'grok-4.6',l:'grok-4.6'},{v:'grok-4.5',l:'grok-4.5'}
+    ];
+    const models = provider === 'codex' ? codexModels : (provider === 'gemini' ? geminiModels : (provider === 'grok' ? grokModels : claudeModels));
     sel.innerHTML = '';
     models.forEach(m => { const o = document.createElement('option'); o.value = m.v; o.textContent = m.l; sel.appendChild(o); });
     inpWrap.style.display = 'none';
@@ -7774,7 +7780,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.667';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.668';   // bump together with the sw.js CACHE version
 
 // ── No silent failures (Ethan, 2026-08-09: "make sure every action has some
 // kind of response in the ui — i just deleted a worker and nothing happened").
@@ -13388,7 +13394,7 @@ function closeFiltersModal() {
   if (m) m.classList.remove('active');
   renderActiveFilters();
 }
-const _PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', iterm2: 'iTerm2' };
+const _PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', iterm2: 'iTerm2', ollama: 'Ollama', grok: 'Grok' };
 const _MODEL_LABELS = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable', gpt: 'GPT', gemini: 'Gemini', 'o-series': 'o-series' };
 function _mLabel(x){ return _MODEL_LABELS[x] || (x.charAt(0).toUpperCase()+x.slice(1)); }
 const _STATUS_LABELS = { working: 'Working', waiting: 'Needs input', rate_limited: 'Rate limited', idle: 'Idle', stopped: 'Stopped' };
@@ -16513,6 +16519,8 @@ function _selectProvider(p) {
   document.getElementById('create-provider-claude').classList.toggle('selected', p === 'claude');
   document.getElementById('create-provider-codex').classList.toggle('selected', p === 'codex');
   document.getElementById('create-provider-gemini').classList.toggle('selected', p === 'gemini');
+  const _grokBtn = document.getElementById('create-provider-grok');
+  if (_grokBtn) _grokBtn.classList.toggle('selected', p === 'grok');
   const _ollamaBtn = document.getElementById('create-provider-ollama');
   if (_ollamaBtn) _ollamaBtn.classList.toggle('selected', p === 'ollama');
   // Hide branch/template/session-name options for non-Claude providers since they use different mechanics
@@ -16560,6 +16568,8 @@ function openCreate() {
   document.getElementById('create-provider-claude').classList.add('selected');
   document.getElementById('create-provider-codex').classList.remove('selected');
   document.getElementById('create-provider-gemini').classList.remove('selected');
+  const _grokBtn0 = document.getElementById('create-provider-grok');
+  if (_grokBtn0) _grokBtn0.classList.remove('selected');
   const _ollamaBtn0 = document.getElementById('create-provider-ollama');
   if (_ollamaBtn0) _ollamaBtn0.classList.remove('selected');
   const _omField0 = document.getElementById('create-ollama-model-field');
