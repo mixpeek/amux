@@ -1364,15 +1364,37 @@ fn unverifiable_types_sql() -> String {
     format!("AND COALESCE(type,'code') NOT IN ({})", names.join(","))
 }
 
+/// The SQL fragment excluding cards parked on a human.
+///
+/// The nudge's own closing line tells the session that a card it cannot verify
+/// "should be tagged `needs:you` so they surface in the owner digest rather than
+/// sitting here indefinitely" — but neither query below ever looked at
+/// `issue_tags`, so taking that escape did not exit the loop. AEAB-5 carried the
+/// tag for two days and was nudged anyway; the sanctioned compliance path was
+/// unwalkable, which is ethos rule 6.
+///
+/// It also double-nags: the `needsyou.renag` job in this same file already
+/// chases the HUMAN on these cards every 3d. Nudging the agent too asks the one
+/// party who cannot answer.
+///
+/// Same `LIKE 'needs:you%'` form as `select_pickup`, deliberately — a sub-tagged
+/// ask (`needs:you:decision`) must not slip past, and the two loops must never
+/// disagree about which cards are human-blocked.
+fn needs_human_sql() -> &'static str {
+    "AND NOT EXISTS (SELECT 1 FROM issue_tags t WHERE t.issue_id=issues.id \
+     AND lower(t.tag) LIKE 'needs:you%')"
+}
+
 /// Cards in `done` that this session could verify. Returns (id, title, type)
 /// tuples, capped at 8 for prompt brevity.
 fn done_verify_candidates(conn: &Connection, session: &str) -> Vec<(String, String, String)> {
     conn.prepare(&format!(
         "SELECT id, title, COALESCE(type,'code') FROM issues \
          WHERE session=?1 AND status='done' AND deleted IS NULL \
-         AND COALESCE(archived,0)=0 AND owner_type='agent' {} \
+         AND COALESCE(archived,0)=0 AND owner_type='agent' {} {} \
          ORDER BY updated DESC LIMIT 8",
-        unverifiable_types_sql()
+        unverifiable_types_sql(),
+        needs_human_sql()
     ))
     .and_then(|mut st| {
         st.query_map(rusqlite::params![session], |r| {
@@ -1385,14 +1407,15 @@ fn done_verify_candidates(conn: &Connection, session: &str) -> Vec<(String, Stri
 
 /// Total count of done cards for this session (for the "and N more" line).
 fn done_card_count(conn: &Connection, session: &str) -> i64 {
-    // SAME predicate as the selector, including the type filter. These two feed
-    // the "... and N more" arithmetic; if they diverge the prompt states a
-    // total its own list cannot account for.
+    // SAME predicate as the selector, including the type filter AND the
+    // needs:you exclusion. These two feed the "... and N more" arithmetic; if
+    // they diverge the prompt states a total its own list cannot account for.
     conn.query_row(
         &format!(
             "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='done' \
-             AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' {}",
-            unverifiable_types_sql()
+             AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' {} {}",
+            unverifiable_types_sql(),
+            needs_human_sql()
         ),
         rusqlite::params![session],
         |r| r.get(0),
@@ -3307,6 +3330,61 @@ mod tests {
         let ids: Vec<&str> = got.iter().map(|(i, _, _)| i.as_str()).collect();
         assert_eq!(ids, vec!["A-1"], "only this lane's own live agent-owned done card");
         assert_eq!(done_card_count(&conn, "me"), 1, "the count must share the selector's predicate");
+    }
+
+    /// The nudge's closing line NAMES `needs:you` as the way out. Until AEAB-9
+    /// neither query looked at `issue_tags`, so taking the sanctioned escape did
+    /// not exit the loop — AEAB-5 carried the tag for two days and was nudged
+    /// anyway. A constraint whose documented escape is unwalkable is theatre
+    /// (ethos rule 6), so this pins the escape, not just the exclusion.
+    ///
+    /// The `N-1` control is load-bearing. A predicate that matched EVERYTHING
+    /// would also produce an empty candidate list and pass a
+    /// "the tagged card is absent" assertion on its own — the unbounded-filter
+    /// failure this repo has shipped twice. The sub-tag case is the second
+    /// control: `select_pickup` uses LIKE, and an exact-match here would let
+    /// `needs:you:decision` through while agreeing with it on the plain tag.
+    #[test]
+    fn a_card_tagged_needs_you_is_not_nudged_at_its_agent() {
+        let conn = board_db();
+        let ins = |id: &str| {
+            conn.execute(
+                "INSERT INTO issues (id,title,status,session,owner_type,archived,type,updated) \
+                 VALUES (?1,?2,'done','me','agent',0,'code',100)",
+                rusqlite::params![id, format!("card {id}")],
+            )
+            .expect("insert");
+        };
+        let tag = |id: &str, t: &str| {
+            conn.execute(
+                "INSERT INTO issue_tags (issue_id,tag,added_at) VALUES (?1,?2,1.0)",
+                rusqlite::params![id, t],
+            )
+            .expect("tag");
+        };
+        ins("N-1"); // CONTROL: untagged — must still be nudged, or the filter matches all
+        ins("N-2");
+        tag("N-2", "needs:you");
+        ins("N-3");
+        tag("N-3", "NEEDS:YOU"); // case is not the discriminator
+        ins("N-4");
+        tag("N-4", "needs:you:decision"); // sub-tagged ask — same LIKE form as select_pickup
+        ins("N-5");
+        tag("N-5", "mobile"); // an unrelated tag must not exempt anything
+
+        let got = done_verify_candidates(&conn, "me");
+        let mut ids: Vec<&str> = got.iter().map(|(i, _, _)| i.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            vec!["N-1", "N-5"],
+            "only cards NOT parked on a human; N-1/N-5 present proves the filter is not matching everything"
+        );
+        assert_eq!(
+            done_card_count(&conn, "me"),
+            2,
+            "the count must share the selector's needs:you predicate too"
+        );
     }
 
     /// The "... and N more" line is arithmetic over TWO queries. If they ever
