@@ -1871,10 +1871,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
     <div class="field-group">
       <label class="field-label">Provider</label>
-      <div style="display:flex;gap:6px;">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button type="button" id="create-provider-claude" class="btn provider-btn selected" onclick="_selectProvider('claude')">Claude Code</button>
         <button type="button" id="create-provider-codex" class="btn provider-btn" onclick="_selectProvider('codex')">Codex</button>
         <button type="button" id="create-provider-gemini" class="btn provider-btn" onclick="_selectProvider('gemini')">Gemini</button>
+        <button type="button" id="create-provider-grok" class="btn provider-btn" onclick="_selectProvider('grok')">Grok</button>
         <button type="button" id="create-provider-ollama" class="btn provider-btn" onclick="_selectProvider('ollama')">Ollama</button>
       </div>
     </div>
