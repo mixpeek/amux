@@ -121,6 +121,48 @@ if [ -r "$PROV" ]; then
     out+=$'    intentional pin? fine. accident? put the build source back on main —\n'
     out+=$'    develop in a git worktree, never in the checkout the builder watches\n'
   fi
+
+  # ── Axis 1d (AEAB-32): is the RUNNING BUILD behind origin/main? ────────────
+  #
+  # `on_main` above catches a build off a BRANCH. It says nothing about the more
+  # common and more dangerous case: the build is on main, on_main reads `yes`,
+  # and main has simply moved on without it. Both look identical in the
+  # provenance file, so the one instrument that exists here could not express
+  # the difference.
+  #
+  # It matters because MERGING IS NOT DEPLOYING. The builder rebuilds when the
+  # build source's LOCAL HEAD moves, and it deliberately never fetches — it runs
+  # on a 60s timer and must not touch the network, which is a decision recorded
+  # in rust-auto-build.sh and left alone here. So a merged fix reaches the fleet
+  # only when somebody advances that checkout by hand. Measured twice:
+  # `423dd00c` fixed a live worker panic at 2026-08-13 22:15 and the fleet ran
+  # the panicking binary until 09:11 the next morning (39 panics fired inside
+  # that window); and on 2026-08-18 a merged PR did not reach the fleet until
+  # the build source was moved off the feature branch by hand.
+  #
+  # This hook is the right place for it precisely because it ALREADY fetched
+  # above — the number costs nothing here and would cost a network call per
+  # minute in the builder. Report, never act: nothing below touches a tree.
+  if [ -n "${prov_sha:-}" ] && git rev-parse --verify -q origin/main >/dev/null 2>&1; then
+    if git cat-file -e "${prov_sha}^{commit}" 2>/dev/null; then
+      built_behind="$(git rev-list --count "${prov_sha}..origin/main" 2>/dev/null || echo 0)"
+      if [ "${built_behind:-0}" -gt 0 ]; then
+        # Age of the OLDEST commit the running build is missing. A count alone
+        # reads as bookkeeping; "and the oldest is 11 hours old" is the number
+        # that says whether a fix has been sitting undeployed overnight.
+        oldest="$(git log -1 --format=%cr "${prov_sha}..origin/main" 2>/dev/null | tail -1)"
+        out+="  - the RUNNING SERVER is ${built_behind} commit(s) behind origin/main"$'\n'
+        out+="    built ${prov_sha:0:9}; oldest undeployed commit landed ${oldest:-?}"$'\n'
+        out+=$'    merging does NOT deploy — the build source advances only when someone\n'
+        out+=$'    moves it. A fix on main is not a fix in prod until then.\n'
+      fi
+    else
+      # An unknown sha is INFORMATIVE, not a parse failure to swallow: it means
+      # the fleet is running a commit that never reached origin at all.
+      out+="  - the RUNNING SERVER's build ${prov_sha:0:9} is not a commit this checkout knows"$'\n'
+      out+=$'    it never reached origin — nothing upstream contains what is running\n'
+    fi
+  fi
 fi
 
 # ── Axis 2: does what is INSTALLED match this checkout? ──────────────────────
