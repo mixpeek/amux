@@ -126,6 +126,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0020_mdai_runs",
         sql: include_str!("../../migrations/0020_mdai_runs.sql"),
     },
+    Migration {
+        version: 21,
+        name: "0021_heartbeat",
+        sql: include_str!("../../migrations/0021_heartbeat.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.

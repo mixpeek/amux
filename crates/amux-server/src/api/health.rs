@@ -46,6 +46,19 @@ pub struct Health {
     /// has never recorded a verdict. A growing age with `confidence:unknown` is
     /// a wedged monitor — visible instead of a frozen `healthy`.
     pub confidence_age_s: Option<f64>,
+    /// Seconds amux was NOT RUNNING immediately before this boot (AEAB-29).
+    ///
+    /// `uptime_s` alone cannot distinguish "restarted 60s ago to adopt a build"
+    /// from "restarted 60s ago after four hours down", and on 2026-08-18 that
+    /// was exactly the question — the user's prompts had been going nowhere and
+    /// the only evidence was a GAP between two log lines, which nothing counted.
+    /// This publishes the gap on the endpoint every consumer already polls.
+    ///
+    /// `None` is honestly different from `0.0`: it means no outage was recorded
+    /// for this boot — either there was none, or the heartbeat could not be
+    /// stamped (which logs a WARN of its own rather than reporting health).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub downtime_before_boot_s: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -119,6 +132,8 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>)
             fds,
             confidence: conf.as_str(),
             confidence_age_s: conf_age,
+            downtime_before_boot_s: crate::runtime_jobs::heartbeat::boot_gap()
+                .map(|g| g.seconds),
         }),
     )
 }
@@ -204,4 +219,53 @@ pub async fn debug_scan() -> axum::Json<serde_json::Value> {
             "deduped": serde_json::Map::new(),
         })),
     }
+}
+
+/// GET /api/debug/downtime — the recorded outages, most recent first (AEAB-29).
+///
+/// The CATALOG row for the `heartbeat` job advertises this path, and an
+/// advertised-but-unrouted instrument is ethos rule 6 (an audit trail that is
+/// claimed and not implemented). It answers the question that had no answer on
+/// 2026-08-18: was amux down, when, and for how long?
+pub async fn debug_downtime(State(state): State<AppState>) -> axum::Json<serde_json::Value> {
+    let conn = match state.store.read() {
+        Ok(c) => c,
+        Err(e) => {
+            return axum::Json(serde_json::json!({ "error": e.to_string() }));
+        }
+    };
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT down_from, up_at, seconds, port FROM server_downtime ORDER BY up_at DESC LIMIT 100",
+    ) {
+        if let Ok(it) = stmt.query_map([], |r| {
+            Ok(serde_json::json!({
+                "down_from": crate::api::request_log::local_when(r.get::<_, f64>(0)?),
+                "up_at": crate::api::request_log::local_when(r.get::<_, f64>(1)?),
+                "down_from_ts": r.get::<_, f64>(0)?,
+                "up_at_ts": r.get::<_, f64>(1)?,
+                "seconds": r.get::<_, f64>(2)?,
+                "minutes": (r.get::<_, f64>(2)? / 60.0 * 10.0).round() / 10.0,
+                "noticed_by_port": r.get::<_, Option<i64>>(3)?,
+            }))
+        }) {
+            rows.extend(it.filter_map(|r| r.ok()));
+        }
+    }
+    let last_beat: Option<f64> = conn
+        .query_row("SELECT beat_at FROM server_heartbeat WHERE id = 1", [], |r| r.get(0))
+        .ok();
+    axum::Json(serde_json::json!({
+        "note": "Stretches with no amux server running, derived from the liveness \
+                 heartbeat. `down_from` is the LAST CONFIRMED BEAT, so the true stop is \
+                 within one beat interval after it — the number is deliberately the one \
+                 that can be proved rather than a guess. A duration reported elsewhere \
+                 (steer queue age, rot, missed schedules) that spans one of these rows \
+                 includes time no lane could have made progress.",
+        "beat_interval_s": crate::runtime_jobs::heartbeat::beat_interval().as_secs(),
+        "min_gap_s": crate::runtime_jobs::heartbeat::min_gap_s(),
+        "last_beat_at": last_beat.map(crate::api::request_log::local_when),
+        "this_boot_followed_downtime_s": crate::runtime_jobs::heartbeat::boot_gap().map(|g| g.seconds),
+        "outages": rows,
+    }))
 }

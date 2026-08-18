@@ -3074,3 +3074,72 @@ FIX: Migrated today's four entries here and verified against
   (c) have the rule REFUSE to append to a checkout that is behind origin, or at minimum
   warn. (c) is the one that survives the next time two checkouts drift, because this
   failure is silent by construction.
+
+---
+## amux was down for 4h26m and recorded that fact nowhere — the outage was visible only as a GAP between two log lines
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-08-18
+SESSION: amux-errors-and-bugs
+CARD: AEAB-29
+SYMPTOM: The user asked "My prompts are hanging. What's wrong with my Amux server?" The
+  server had not been hanging — it had been DOWN from 14:03 to 18:29 EDT. The only
+  evidence anywhere was that `server-rs.log` had no line between `18:03:32Z` and
+  `22:29:24Z`. Nothing counted the gap, nothing named it, nothing surfaced it. The
+  restart logged `starting amux-rust`, byte-identical to what it logs after a routine
+  5-second auto-adopt reload — same framing for a 5s blip and a four-hour outage.
+  Reconstructing it took `kern.boottime`, `last`, and a macOS ResetCounter diagnostic,
+  none of which are amux.
+COST: The user had to notice by their own prompts failing and open a ticket to ask.
+  ~35 minutes of forensics to establish something the server itself knew and did not
+  say. Worse, and still live elsewhere: every duration amux reports is measured against
+  wall-clock time that may include hours with no server, and nothing marks which. The
+  same log carries `steering queue STALLED ... queued=1 oldest_min=2131
+  reason=not-running` — some of those 2131 minutes were a genuinely wedged lane and
+  some were minutes when no amux existed to deliver anything. The instrument cannot
+  express the discriminator (ethos rule 4), so any conclusion drawn from that number is
+  a guess with a confident-looking figure attached.
+FIX: Fixed on branch `fix/server-downtime-record`. A liveness heartbeat row stamped
+  every 15s; at boot the previous stamp is read and written inside ONE `Store::write`
+  closure (the writer thread's `BEGIN IMMEDIATE` is what makes it atomic across the two
+  amux-server processes sharing this DB, so one outage files exactly one row, not two).
+  A gap past `AMUX_DOWNTIME_MIN_S` (default 120s, comfortably above a self-adopt
+  restart) logs at WARN, persists to `server_downtime`, and publishes as
+  `downtime_before_boot_s` on `/health` — the endpoint every consumer already polls —
+  plus `GET /api/debug/downtime` for the history. `downtime_within()` is there so the
+  stall/rot/schedule readers can subtract the part that was not the lane's fault; wiring
+  those callers is NOT done and is the obvious follow-up.
+  The heartbeat write is `applied: false` on purpose: `applied` bumps the global
+  revision that SSE delta-sync hangs off, so a heartbeat that "applied" would make every
+  connected dashboard refetch the world every 15 seconds — a detector whose cost lands
+  on the same resource it watches.
+  Tests assert BOTH directions and were verified by mutation, not by being green: making
+  the detector never fire fails 4 of 8, making it fire unconditionally fails 4 of 8, and
+  the positive case is rebuilt from this incident's own numbers (14:03 -> 18:29, 266
+  minutes) rather than from a conveniently-shaped one.
+
+---
+## The two causes behind that outage are not amux bugs, and amux had nothing to say about either
+AREA: instruments
+SEVERITY: annoys
+STATUS: open
+DATE: 2026-08-18
+SESSION: amux-errors-and-bugs
+CARD: AEAB-28
+SYMPTOM: The machine was up and on the network at 15:18; amux did not start until the
+  console login at 18:28 — 3h10m later. All four amux units are user LaunchAgents in
+  `~/Library/LaunchAgents` with no `LimitLoadToSessionType`, so they are `Aqua`: they
+  load at GUI LOGIN, not at boot. `ls /Library/LaunchDaemons | grep -i amux` -> none.
+  `RunAtLoad=true` is doing exactly what it says; "load" just never happened. Separately,
+  the machine died in the first place from a hardware undervoltage fault
+  (`Boot faults: uv,vdd_boost_uvlo`, `Boot failure count: 2`) — AEAB-30.
+COST: Turned a ~75-minute hardware outage into a 4h26m amux outage. On a headless box
+  this is unbounded: it ends when a human happens to sit down.
+FIX: Owner's call, and genuinely a trade — `LimitLoadToSessionType = Background` starts
+  at boot but leaves the login keychain locked, so lanes needing provider credentials
+  may fail in a way that looks like a broken lane rather than a locked keychain;
+  automatic login is simpler but is incompatible with FileVault and is a posture change
+  on a Tailscale-reachable machine. Filed rather than chosen (ethos rule 8). What is NOT
+  the owner's call and should ship regardless: `install.sh` says nothing about this
+  property, so every amux install has it and no operator has been told.

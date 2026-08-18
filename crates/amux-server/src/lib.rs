@@ -208,6 +208,14 @@ async fn async_main() {
         }
     };
 
+    // AEAB-29: name the outage that preceded this boot, BEFORE anything else
+    // reports a duration. amux was down 4h26m on 2026-08-18 and the only
+    // evidence anywhere was a gap between two log lines — an absence nothing
+    // counted. This runs before the background loops so a stall/rot/schedule
+    // reader that starts up cannot report an age spanning the outage without
+    // the outage itself already being on the record.
+    runtime_jobs::heartbeat::record_boot(&store, cfg.port);
+
     // Migration-rehearsal mode (Phase 11): open + migrate + report + exit.
     // Lets docs/rust-migration/migration-rehearsal.sh exercise the EXACT production
     // migration path against a DB copy without binding ports.
@@ -357,6 +365,7 @@ async fn async_main() {
     // prune logic media-cache and uploads already had was correct and only ran
     // while those directories were GROWING, so a fleet that stopped transcoding
     // never evicted a transcode.
+    drop(runtime_jobs::heartbeat::spawn(store.clone()));
     drop(runtime_jobs::storage::spawn(state.clone()));
     // The token_ledger WRITER. Every reader of that table was ported at the
     // cutover and this was not, so /api/stats/daily served a confident

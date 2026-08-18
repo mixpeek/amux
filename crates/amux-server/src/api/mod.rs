@@ -342,6 +342,7 @@ pub fn router(state: AppState) -> Router {
         // deviation). Advertised in ethos.md and the job registry but unrouted
         // until now. Public like its debug siblings (lane names and timings).
         .route("/api/debug/scan", axum::routing::get(health::debug_scan))
+        .route("/api/debug/downtime", axum::routing::get(health::debug_downtime))
         // Per-session logging health + a computed stale verdict (AMUX-2628).
         // Public like its debug siblings: session names and byte counts only.
         .route("/api/debug/logs", axum::routing::get(session_verbs::debug_logs))
