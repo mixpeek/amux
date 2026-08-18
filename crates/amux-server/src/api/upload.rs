@@ -129,6 +129,31 @@ async fn start(state: UploadState, Json(body): Json<StartReq>) -> Response {
         }
     }
 
+    // The map above is IN MEMORY, so every restart orphans the .chunked-* dirs
+    // on disk with no record left to purge them by — they accumulate forever
+    // (four empty ones were sitting in ~/.amux/uploads when this was found).
+    // Sweep the directory itself, skipping anything still tracked: a live
+    // upload's dir gets an mtime bump with each chunk written into it.
+    if let Ok(rd) = std::fs::read_dir(uploads_dir()) {
+        for ent in rd.flatten() {
+            let name = ent.file_name().to_string_lossy().to_string();
+            let Some(other_uid) = name.strip_prefix(".chunked-") else { continue };
+            if other_uid == uid || map.contains_key(other_uid) {
+                continue;
+            }
+            let is_stale = ent
+                .metadata()
+                .ok()
+                .filter(|m| m.is_dir())
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .is_some_and(|d| d.as_secs() < cutoff);
+            if is_stale {
+                let _ = std::fs::remove_dir_all(ent.path());
+            }
+        }
+    }
+
     map.insert(uid.clone(), InFlight {
         filename,
         chunks: total_chunks,

@@ -1890,8 +1890,26 @@
   .peek-attach-chip img { width: 24px; height: 24px; object-fit: cover; border-radius: 3px; flex-shrink: 0; }
   .peek-attach-chip .chip-icon { font-size: 1rem; line-height: 1; flex-shrink: 0; }
   .peek-attach-chip .chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
-  .peek-attach-chip .chip-remove { cursor: pointer; color: var(--dim); flex-shrink: 0; font-size: 1.1rem; line-height: 1; opacity: 0.7; }
+  .peek-attach-chip .chip-remove { cursor: pointer; color: var(--dim); flex-shrink: 0; font-size: 1.1rem; line-height: 1; opacity: 0.7;
+    min-width: 22px; min-height: 22px; display: inline-flex; align-items: center; justify-content: center; }
   .peek-attach-chip .chip-remove:hover { color: var(--red); opacity: 1; }
+  /* A failed chip stays put, holds still (no pulse — it is not progressing) and
+     carries its own way out: retry, or remove. */
+  .peek-attach-chip.failed { border-color: var(--red); animation: none; opacity: 1; }
+  .peek-attach-chip .chip-err { color: var(--red); font-size: 0.75rem; font-weight: 700; flex-shrink: 0; }
+  .peek-attach-chip .chip-retry { cursor: pointer; color: var(--dim); flex-shrink: 0; font-size: 0.85rem; line-height: 1;
+    min-width: 22px; min-height: 22px; display: inline-flex; align-items: center; justify-content: center; }
+  .peek-attach-chip .chip-retry:hover { color: var(--accent); }
+  @media (max-width: 600px) {
+    /* Thumb-sized targets. A remove control you cannot reliably hit is the same
+       as no remove control, which is the bug this change exists to fix. Two
+       adjacent 44px-WIDE targets do not fit a 180px chip without overlapping
+       each other's hit area, so the chip is allowed to take the full row and
+       the controls get full 44px height with a comfortable width. */
+    .peek-attach-chip { max-width: 100%; gap: 8px; }
+    .peek-attach-chip .chip-remove,
+    .peek-attach-chip .chip-retry { min-width: 36px; min-height: 44px; font-size: 1.2rem; }
+  }
   .peek-attach-summary {
     display: flex; align-items: center; gap: 8px; padding: 6px 10px;
     background: var(--card); border: 1px solid var(--border); border-radius: 8px;

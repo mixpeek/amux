@@ -3074,3 +3074,56 @@ FIX: Migrated today's four entries here and verified against
   (c) have the rule REFUSE to append to a checkout that is behind origin, or at minimum
   warn. (c) is the one that survives the next time two checkouts drift, because this
   failure is silent by construction.
+
+---
+## An attachment stuck mid-upload has no remove control, and Send refuses forever
+AREA: instruments
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-08-18
+SESSION: amux (Doron, reported from the phone)
+CARD: AMUX-85
+SYMPTOM: Attach images in a peek, close or switch the peek before they finish, reopen.
+  The chips come back frozen at a percentage and render NO × — the remove control only
+  ever existed in the `done` branch of `_renderPeekFileChips`. `sendPeekCmd` refuses
+  while any chip lacks a `.path`, and its toast says "Wait for upload to finish" for an
+  upload that no longer has anything driving it. Physical artifact: four EMPTY
+  `.chunked-*` dirs in ~/.amux/uploads — `/api/upload/start` succeeded, chunk 0 never
+  wrote, because `uploadAndAttach` inferred "the user cancelled" from
+  `peekFiles.indexOf(placeholder) >= 0` and `_peekFilesStash` swaps that array wholesale.
+COST: The composer was unusable for that worker — the user could not send the prompt the
+  pictures were attached to, and re-uploading only added more unremovable chips. The
+  reported experience was "no delete button, no remove button, no way for me to send".
+  Two failure modes of the same shape: a failed upload also deleted its own chip behind
+  one toast, silently losing the file.
+FIX: 8b89c89c — cancellation is an explicit flag plus an AbortController rather than array
+  membership, so a stash is no longer read as a removal; the × renders in EVERY chip
+  state; a failed upload keeps its chip with a retry (the File is retained); the send
+  guard names the file and says what to do. Regression cover:
+  e2e/upload-chip-escape.spec.ts, verified to FAIL against the parent commit.
+
+---
+## The freshness hook says a DELETED file "changed upstream", so a stale checkout gets fixed in the dead architecture
+AREA: instruments
+SEVERITY: slows
+STATUS: open
+DATE: 2026-08-18
+SESSION: amux (upload-chip fix)
+CARD: AMUX-86
+SYMPTOM: SessionStart reported "checkout is 1158 commit(s) behind origin/main — including:
+  CLAUDE.md amux amux-server.py". That names amux-server.py the way it names any changed
+  file. It was not changed, it was DELETED: the server is Rust now, the SPA lives in
+  `crates/amux-dashboard/static/`, and upstream CLAUDE.md line 28 says so plainly. The
+  local CLAUDE.md — 1158 commits old and the one actually loaded into context — still
+  describes the single-file Python server as ground truth, mentions `amux-server.py` 14
+  times, and prescribes `launchctl kickstart` to see a change go live.
+COST: A complete fix, its syntax checks and a 16-assertion behavioural harness, all
+  written against a file that no longer exists upstream, before the PR step revealed it.
+  The work ported, so the cost was time rather than a wrong result — but the failure mode
+  it sets up is worse than that: the honest next move for a session that does NOT check
+  is `git push origin main` of a commit re-adding a 70k-line deleted file. Following the
+  loaded CLAUDE.md exactly is what produces this.
+FIX: Have the hook classify by status, not just name: `git diff --diff-filter=D --name-only
+  HEAD..origin/main` distinguishes "changed" from "deleted upstream", and a deleted file
+  that CLAUDE.md still instructs sessions to edit deserves its own loud line. Ethos rule 7:
+  the sanctioned instruction was itself the theatre.

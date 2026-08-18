@@ -7779,7 +7779,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.680';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.681';   // bump together with the sw.js CACHE version
 
 // ── No silent failures (Ethan, 2026-08-09: "make sure every action has some
 // kind of response in the ui — i just deleted a worker and nothing happened").
@@ -9825,9 +9825,14 @@ function renderPeekFiles() {
     const totalMB = peekFiles.reduce((a, f) => a + (parseFloat(f.sizeMB) || 0), 0);
     const queued = _uploadQueue.length;
     let status = '';
+    const failed = peekFiles.filter(f => !f.path && (f.error || !f.inflight)).length;
     if (uploading > 0) {
       const avgPct = peekFiles.filter(f => !f.path).reduce((a, f) => a + (f.totalChunks ? f.chunk / f.totalChunks : 0), 0) / (uploading || 1);
-      status = `<span style="color:var(--dim)">${done}/${peekFiles.length} done (${Math.round(avgPct * 100)}%)${queued ? ', ' + queued + ' queued' : ''}</span>`;
+      // Failures must be visible in the COLLAPSED summary. Past 12 files the
+      // chips are hidden by default, so a failed upload would block Send from
+      // behind a row that only ever reported progress.
+      status = `<span style="color:var(--dim)">${done}/${peekFiles.length} done (${Math.round(avgPct * 100)}%)${queued ? ', ' + queued + ' queued' : ''}</span>`
+        + (failed ? `<span style="color:var(--red)">${failed} failed — tap to fix</span>` : '');
     } else {
       status = `<span style="color:var(--green)">all uploaded</span>`;
     }
@@ -9851,13 +9856,24 @@ function _renderPeekFileChips() {
       thumb = `<span class="chip-icon">${_fileIcon(f.name)}</span>`;
     }
     let statusHtml = '';
-    if (isUploading) {
+    if (!isUploading) {
+      statusHtml = `<span style="color:var(--green);font-size:0.75rem;margin-right:2px;">✓</span>`;
+    } else if (f.error) {
+      statusHtml = `<span class="chip-err" title="${esc(f.error)}">!</span>`
+        + `<span class="chip-retry" onclick="retryPeekFile(${i})" title="Retry this upload">↻</span>`;
+    } else {
       const pct = f.totalChunks ? Math.round(f.chunk / f.totalChunks * 100) : 0;
       statusHtml = `<span style="color:var(--dim);font-size:0.6rem;">${pct}%</span>`;
-    } else {
-      statusHtml = `<span style="color:var(--green);font-size:0.75rem;margin-right:2px;">✓</span><span class="chip-remove" onclick="removePeekFile(${i})">×</span>`;
     }
-    return `<div class="peek-attach-chip${isUploading ? ' uploading' : ''}">
+    // The × is rendered on EVERY chip, in every state. It used to appear only
+    // once an upload had FINISHED, so an attachment that never completed had no
+    // remove control at all — and sendPeekCmd() refuses while any chip lacks a
+    // .path, so one stuck chip made the composer permanently unsendable with no
+    // way out but abandoning the draft. An escape hatch that exists only in the
+    // success state is not an escape hatch.
+    statusHtml += `<span class="chip-remove" onclick="removePeekFile(${i})" title="Remove this attachment">×</span>`;
+    const _cls = f.path ? '' : (f.error || !f.inflight ? ' failed' : ' uploading');
+    return `<div class="peek-attach-chip${_cls}">
       ${thumb}
       <span class="chip-name">${esc(f.name)}</span>
       ${statusHtml}
@@ -9865,15 +9881,36 @@ function _renderPeekFileChips() {
   }).join('');
 }
 
+// Cancellation is a FLAG ON THE OBJECT, never "is it still in peekFiles?".
+// peekFiles is swapped wholesale by _peekFilesStash/_peekFilesRestore when the
+// peek closes or switches worker, so membership-based detection read a STASH as
+// a REMOVAL: it abandoned the transfer and left the placeholder sitting in the
+// stashed array at 0% forever. That is the zombie chip that blocks Send.
+function _cancelUpload(f) {
+  if (!f) return;
+  f.cancelled = true;
+  try { if (f.aborter) f.aborter.abort(); } catch (e) {}
+  f.inflight = false;
+}
+
 function removePeekFile(idx) {
   const f = peekFiles[idx];
-  if (f && f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+  if (!f) return;
+  _cancelUpload(f);
+  if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
   peekFiles.splice(idx, 1);
   renderPeekFiles();
 }
 
+function retryPeekFile(idx) {
+  const f = peekFiles[idx];
+  if (!f || f.path || f.inflight) return;
+  if (!f.file) { showToast('The original file is no longer held — remove this chip and re-attach'); return; }
+  _runUpload(f);
+}
+
 function clearPeekFiles() {
-  peekFiles.forEach(f => { if (f && f.previewUrl) URL.revokeObjectURL(f.previewUrl); });
+  peekFiles.forEach(f => { _cancelUpload(f); if (f && f.previewUrl) URL.revokeObjectURL(f.previewUrl); });
   peekFiles = [];
   // Drop the stash too, or a send would clear the bar and the next open would
   // resurrect the files that were just sent.
@@ -9899,6 +9936,11 @@ function _peekFilesStash(session) {
 
 function _peekFilesRestore(session) {
   peekFiles = (session && _peekFilesBySession[session]) || [];
+  // An attachment that is neither uploaded nor still in flight cannot finish on
+  // its own. Show it as FAILED (Retry + ×) rather than as a chip frozen at a
+  // percentage, which is indistinguishable from progress and blocks Send with
+  // no recourse.
+  peekFiles.forEach(f => { if (f && !f.path && !f.inflight && !f.error) f.error = 'interrupted'; });
   renderPeekFiles();
 }
 
@@ -9945,52 +9987,77 @@ async function uploadAndAttach(file) {
   // another chip, a second attach, a failed-chunk retry that splices — so a
   // numeric index goes stale and the finished file writes to the wrong slot or a
   // placeholder never gets its .path (send then stalls on "wait for upload").
-  const placeholder = { name: file.name, path: null, url: null, isImage, previewUrl, sizeMB, chunk: 0, totalChunks };
+  //
+  // `file` is RETAINED so a failed upload can be retried from the chip itself.
+  // Without it, a transient failure (a server restart mid-upload answers the
+  // next chunk with 404 "unknown upload") means picking the file again by hand.
+  const placeholder = { name: file.name, path: null, url: null, isImage, previewUrl, sizeMB,
+                        chunk: 0, totalChunks, file, error: null, inflight: false, cancelled: false };
   peekFiles.push(placeholder);
+  await _runUpload(placeholder);
+}
+
+// Drives one attachment to completion. Safe to call again on a failed chip.
+// Progress is written by mutating `f` in place, so the transfer does not care
+// which array `f` currently lives in — the peek can close, switch worker and
+// reopen mid-upload and the chip still lands on its path.
+async function _runUpload(f) {
+  const file = f.file;
+  if (!file) { f.error = 'file no longer held'; renderPeekFiles(); return; }
+  f.error = null; f.cancelled = false; f.inflight = true; f.chunk = 0;
+  f.aborter = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  const _sig = f.aborter ? f.aborter.signal : undefined;
+  const totalChunks = f.totalChunks;
   _scheduleRenderPeekFiles();
-  const _present = () => peekFiles.indexOf(placeholder) >= 0;
 
   try {
     const startR = await fetch(API + '/api/upload/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: file.name, size: file.size, chunks: totalChunks })
+      body: JSON.stringify({ name: file.name, size: file.size, chunks: totalChunks }),
+      signal: _sig
     });
     const startD = await startR.json();
     if (!startR.ok || startD.error) throw new Error(startD.error || 'start failed');
     const uploadId = startD.id;
 
     for (let i = 0; i < totalChunks; i++) {
-      if (!_present()) return;
+      if (f.cancelled) return;   // user removed the chip mid-upload — stop cleanly
       const start = i * CHUNK_SIZE;
       const end = Math.min(start + CHUNK_SIZE, file.size);
       const blob = file.slice(start, end);
       const r = await fetch(API + '/api/upload/' + uploadId + '/chunk/' + i, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/octet-stream' },
-        body: blob
+        body: blob,
+        signal: _sig
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
         throw new Error(d.error || 'chunk ' + i + ' failed');
       }
-      placeholder.chunk = i + 1;
+      f.chunk = i + 1;   // mutate the same object, wherever it now sits
       _scheduleRenderPeekFiles();
     }
 
-    const finR = await fetch(API + '/api/upload/' + uploadId + '/finish', { method: 'POST' });
+    const finR = await fetch(API + '/api/upload/' + uploadId + '/finish', { method: 'POST', signal: _sig });
     const finD = await finR.json();
     if (!finR.ok || finD.error) throw new Error(finD.error || 'finalize failed');
-    if (!_present()) return;
-    placeholder.path = finD.path;
-    placeholder.url = finD.url;
+    if (f.cancelled) return;   // removed while finishing — don't resurrect it
+    f.path = finD.path;
+    f.url = finD.url;
   } catch(e) {
+    if (f.cancelled) return;
     console.error('Upload error:', e);
-    showToast('Upload failed: ' + e.message);
-    const i = peekFiles.indexOf(placeholder);
-    if (i >= 0) peekFiles.splice(i, 1);
+    // KEEP the chip in a failed state instead of splicing it out. A vanishing
+    // chip loses the file silently behind one toast; a failed chip carries its
+    // own Retry and ×, so the user can act on it.
+    f.error = (e && e.message) || 'upload failed';
+    showToast('Upload failed: ' + f.error + ' — tap ↻ to retry or × to remove');
+  } finally {
+    f.inflight = false;
+    _scheduleRenderPeekFiles();
   }
-  _scheduleRenderPeekFiles();
 }
 
 function handlePeekFileInput(e) {
@@ -10074,7 +10141,18 @@ setTimeout(_updateSendSplit, 0);
 
 async function sendPeekCmd() {
   if (!peekSession) return;
-  if (peekFiles.some(f => !f.path)) { showToast('Wait for upload to finish'); return; }
+  // Name the blocker and say what to do about it. "Wait for upload to finish"
+  // is a lie when nothing is still transferring — which is exactly the state a
+  // stuck chip is in — and it left the user waiting on an upload that was never
+  // going to complete.
+  const _stuck = peekFiles.filter(f => !f.path);
+  if (_stuck.length) {
+    const _more = _stuck.length > 1 ? ' (+' + (_stuck.length - 1) + ' more)' : '';
+    showToast(_stuck.some(f => f.inflight)
+      ? 'Still uploading ' + _stuck[0].name + _more
+      : _stuck[0].name + _more + " didn't upload — tap ↻ to retry or × to remove");
+    return;
+  }
   const inp = document.getElementById('peek-cmd-input');
   const text = inp.value.trim();
   const files = peekFiles.filter(f => f.path);
