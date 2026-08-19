@@ -71,6 +71,24 @@ if printf '%s\n' "$out3" | grep -qE "DISK LOW"; then
   bad "(d) with free space above the floor nothing may be cleared" "$out3"
 else ok; fi
 
+# --- (f) the free-space figure must actually PARSE -------------------------
+#     This is why (a)-(c) failed on their first CI run, and they failed only
+#     INCIDENTALLY: the script used `df -g`, which is BSD-only, so GNU coreutils
+#     printed "df: invalid option -- 'g'", FREE_GB came back empty and the guard
+#     silently never fired. A disk guard that is a no-op on Linux while reporting
+#     nothing is exactly the shape this repo keeps finding.
+#
+#     Ordering assertions cannot catch that on their own — they force the branch
+#     with a huge floor, so an unparsed figure still reaches the loop. Assert the
+#     NUMBER, or the portability regression is only ever caught by luck.
+if printf '%s\n' "$out" | grep -qE "DISK LOW: [0-9]+GB free"; then ok
+else bad "(f) the free-space figure must parse to a number (df -Pk, not the BSD-only df -g)" "$out"; fi
+
+# --- (g) the per-candidate size must parse too -----------------------------
+#     Same defect one line over: `du -sg` is BSD-only in the same way.
+if printf '%s\n' "$out" | grep -qE "Clearing the [0-9]+GB"; then ok
+else bad "(g) the candidate size must parse to a number (du -sk, not the BSD-only du -sg)" "$out"; fi
+
 # --- (e) the dry-run seam must not actually delete -------------------------
 #     If it deleted, every case above would be testing a destroyed fixture and
 #     (a) would still pass — so this is what makes the others trustworthy.

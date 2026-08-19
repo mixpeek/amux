@@ -172,11 +172,19 @@ fi
   # stop as soon as the floor is cleared. `-e2e-head` belongs to e2e/serve-head.sh
   # and is regenerable; clearing it costs a cold e2e build the next time someone
   # runs e2e locally, which is far rarer than this 60s tick.
-  FREE_GB=$(df -g "$HOME" | awk 'NR==2{print $4}')
+  # `df -Pk` / `du -sk`, NOT `df -g` / `du -sg`. The -g forms are BSD-only: GNU
+  # coreutils rejects them with "df: invalid option -- 'g'", FREE_GB comes back
+  # EMPTY, `${FREE_GB:-999}` substitutes 999, and the guard silently never fires.
+  # A disk guard that is a no-op on Linux while reporting nothing is the shape
+  # this repo keeps finding — it does not fail, it just quietly does not run.
+  # Caught by scripts/test-build-disk-clear.sh on its first CI run; the Rust side
+  # already had it right (storage::disk_free_bytes uses `df -Pk`), so this was
+  # one convention drifting from another inside the same codebase.
+  FREE_GB=$(df -Pk "$HOME" | awk 'NR==2{print int($4/1048576)}')
   if [ "${FREE_GB:-999}" -lt "${AMUX_BUILD_MIN_FREE_GB:-25}" ]; then
     for cand in "$HOME/.amux/rust-build-target-e2e-head" "$HOME/.amux/rust-build-target"; do
       [ -d "$cand" ] || continue
-      CAND_GB=$(du -sg "$cand" 2>/dev/null | awk '{print $1}')
+      CAND_GB=$(du -sk "$cand" 2>/dev/null | awk '{print int($1/1048576)}')
       if [ "$cand" = "$HOME/.amux/rust-build-target" ]; then
         echo "== DISK LOW: ${FREE_GB}GB free. Clearing the ${CAND_GB:-?}GB SHARED target dir — this build goes cold."
       else
@@ -188,7 +196,7 @@ fi
       # is about to use. Under dry-run there is nothing to re-measure, so keep
       # listing candidates to show the full order.
       if [ "${AMUX_RS_DISK_CLEAR_DRYRUN:-}" != "1" ]; then
-        FREE_GB=$(df -g "$HOME" | awk 'NR==2{print $4}')
+        FREE_GB=$(df -Pk "$HOME" | awk 'NR==2{print int($4/1048576)}')
         if [ "${FREE_GB:-999}" -ge "${AMUX_BUILD_MIN_FREE_GB:-25}" ]; then
           echo "== reclaimed to ${FREE_GB}GB free — the shared target dir is untouched, so this build stays warm."
           break

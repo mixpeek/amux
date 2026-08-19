@@ -3239,3 +3239,31 @@ FIX: Clear candidates in order of what the current build does NOT need — idle 
   disk-full outage the guard exists to prevent, which is exactly why that case is there.
   The hand-maintained candidate list is the deeper issue and is NOT fixed: it will go stale
   again the next time a directory appears. Noted on AEAB-34 rather than papered over.
+
+---
+## The build-disk guard used a BSD-only `df -g`, so it was a silent no-op on Linux
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-08-19
+SESSION: amux-errors-and-bugs
+CARD: AEAB-34
+SYMPTOM: `scripts/rust-auto-build.sh` measured free space with `df -g` and candidate
+  sizes with `du -sg`. Both flags are BSD-only. On GNU coreutils: `df: invalid option --
+  'g'`, so `FREE_GB` comes back EMPTY, `${FREE_GB:-999}` substitutes 999, and the disk
+  guard never fires — while printing nothing that says it did not run.
+COST: Zero on this machine (macOS, where the flags work), which is exactly why it went
+  unnoticed. The cost is latent and it is the shape that matters: a guard whose failure
+  mode is "silently does not run" on any Linux host, in a repo whose single-codebase rule
+  says the same code must work in both places. Found ONLY because a new test ran it in CI
+  — and even then the ordering assertions caught it INCIDENTALLY, because the script died
+  rather than because anything asserted the number.
+FIX: `df -Pk` and `du -sk` with the GB conversion in awk — POSIX, and already the
+  convention on the Rust side (`storage::disk_free_bytes` has used `df -Pk` all along).
+  So this was one convention inside the codebase drifting from another, not an oversight
+  about portability in general.
+  Two new assertions in `scripts/test-build-disk-clear.sh` check that the free-space and
+  candidate-size figures PARSE TO A NUMBER, because the ordering cases cannot: they force
+  the branch with a huge floor, so an unparsed figure still reaches the loop and the
+  regression is caught only by luck. Mutation-checked: restoring a bad df flag fails case
+  (f) specifically, not just the ordering cases.
