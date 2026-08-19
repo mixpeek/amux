@@ -163,3 +163,9 @@ jobs:
           ./scripts/test-session-freshness.sh
           ./scripts/test-build-provenance.sh
           ./scripts/test-build-disk-clear.sh
+          # AEAB-36: a board write that never reached the server must say so,
+          # and must never be confused with one the server refused. Its (c)/(d)
+          # controls are the load-bearing half — a CLI that shouted "cannot
+          # reach the board" at every error would pass the failure cases while
+          # destroying the retry/do-not-retry distinction.
+          ./scripts/test-board-transport-failure.sh

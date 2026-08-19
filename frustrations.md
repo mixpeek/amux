@@ -3302,3 +3302,43 @@ WHY IT IS WORTH AN ENTRY EVEN THOUGH I FIXED IT: the ethos file records "a thres
   earlier two were also written down. The generalisable check: when adding an early exit,
   state the RANGE OF INPUTS under which it fires, and confirm the live system produces
   values in that range.
+
+---
+## `set -euo pipefail` turned a deliberately non-fatal board write into a silent abort
+AREA: cli
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-08-19
+SESSION: amux-errors-and-bugs
+CARD: AEAB-36
+SYMPTOM: SUPERSEDES the earlier entry "board done --outcome-stdin printed a warning about
+  the outcome and silently applied NOTHING" — that entry recorded the symptom correctly and
+  called the cause unknown. It is now known and reproduced deterministically.
+  The outcome write is `curl ... | python3 -c ...`, and the python exits 0 on failure ON
+  PURPOSE so a lost outcome never blocks the transition that follows. `set -euo pipefail`
+  (amux line 19) defeats that entirely: on a TRANSPORT failure curl exits non-zero,
+  `pipefail` makes the pipeline return curl's status rather than python's, and `set -e`
+  aborts the script right there — AFTER the warning has printed. One warning, scoped to
+  the outcome, and the transition never ran and never said so.
+  The transition write was worse. Not piped at all, so `result=$(_board_transition ...)`
+  aborted the caller directly: `amux board done <ID>` against an unreachable server printed
+  ABSOLUTELY NOTHING and exited 7.
+  Reproduced with `AMUX_API=http://127.0.0.1:9`: one warning + exit 7 with an outcome,
+  total silence + exit 7 without one — byte-identical to the live incident.
+COST: A card reported closed that was still in `review`, caught only by re-reading the
+  operand. The live trigger was the server restarting to adopt a build I had just merged —
+  so the failure fires exactly when amux is deploying itself, which is when a session is
+  most likely to be closing cards. And the warning's wording actively misleads: naming only
+  the outcome makes "status moved, prose lost" the natural reading, which is inverted.
+FIX: Capture curl's OWN exit status at both sites instead of piping it, and on a transport
+  failure say plainly that NOTHING was applied — naming both writes — then stop. A dropped
+  connection and a refused gate now read completely differently, which matters because one
+  should be retried and the other must not be.
+  `scripts/test-board-transport-failure.sh` (11 cases, wired into checks.yml). Its (c)/(d)
+  controls are the load-bearing half: a CLI that shouted "cannot reach the board" at every
+  error would pass both failure cases while destroying that distinction, and
+  mutation-checking confirms it fails (c) and (d) specifically.
+  THE GENERAL LESSON, worth more than the fix: `set -e` + `pipefail` silently overrides
+  every `sys.exit(0)` written to make a step non-fatal. Any `cmd | python3 -c '...exit(0)'`
+  in this file has the same defect latent. Grep for the pattern before trusting that a step
+  is really optional.

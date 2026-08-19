@@ -1355,14 +1355,45 @@ Usage: amux board <status> <ID> [--checked \"crit\" ...] [--ack] [--type T] [--r
       # look identical to a saved one. AC-323 shape a third time (board
       # progress, --trigger stamp, now here), found by the sweep
       # mixpeek-frustrations suggested rather than by it being reported.
-    curl -sk -X PATCH -H 'Content-Type: application/json' \
+    # CAPTURE curl's OWN exit status, do not pipe it straight into python.
+    #
+    # AEAB-36. This was `curl ... | python3 -c ...`, and the python deliberately
+    # exits 0 on failure so a lost outcome does not block the transition below.
+    # `set -euo pipefail` (line 19) defeated that completely: on a TRANSPORT
+    # failure curl exits non-zero, `pipefail` makes the pipeline return curl's
+    # status rather than python's, and `set -e` aborts the whole script right
+    # here — AFTER python has printed "outcome NOT recorded".
+    #
+    # So the user saw one warning, scoped to the OUTCOME, and the status
+    # transition never ran and never said so. Observed live on 2026-08-19
+    # closing AEAB-34, while the server happened to be restarting to adopt a new
+    # build: status stayed `review`, desc unchanged, and the natural reading of
+    # that warning — "status moved, prose lost" — was the exact opposite of the
+    # truth. Reproduced deterministically with AMUX_API pointed at a dead port:
+    # one warning line, exit 7, no transition.
+    #
+    # A code path written to be non-fatal was made fatal by a shell option one
+    # line from the top of the file, in precisely the case it was designed to
+    # survive.
+    local _oresp _ocurl=0
+    _oresp=$(curl -sk -X PATCH -H 'Content-Type: application/json' \
       -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d "$_obody" \
-      "${AMUX_API:-https://localhost:8824}/api/board/$id" \
-    | python3 -c '
+      "${AMUX_API:-https://localhost:8824}/api/board/$id" 2>/dev/null) || _ocurl=$?
+    if [[ "$_ocurl" -ne 0 ]]; then
+      # Unreachable for the outcome means unreachable for the transition. Say
+      # BOTH facts, because reporting only the first is what made this
+      # dangerous, and stop rather than pretending to try.
+      die "cannot reach the board at ${AMUX_API:-https://localhost:8824} (curl exit $_ocurl).
+NOTHING was applied — not the outcome, and not the '$status' transition.
+The card is unchanged. Re-run when the server is back; if it just restarted to
+adopt a build, that is expected and a retry normally succeeds."
+    fi
+    printf '%s' "$_oresp" | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
 except Exception:
-    sys.stderr.write("warning: outcome NOT recorded — server sent no JSON\n"); sys.exit(0)
+    sys.stderr.write("warning: outcome NOT recorded — server sent no JSON. "
+                     "The transition below was still attempted; check its result.\n"); sys.exit(0)
 if d.get("error") or d.get("blocked"):
     sys.stderr.write("warning: outcome NOT recorded: %s\n" % (d.get("error") or "blocked")); sys.exit(0)
 ign = [f for f in (d.get("ignored_fields") or []) if f]
@@ -1390,11 +1421,29 @@ if os.environ.get("G"):
 crit = sys.argv[1:]
 if crit: b["gate_checked"] = crit
 print(json.dumps(b))' ${checked[@]+"${checked[@]}"})
-  curl -sk -X PATCH \
+  # Same AEAB-36 trap as the outcome write above, and WORSE here because this
+  # one is not piped: `result=$(_board_transition ...)` under `set -e` aborted
+  # the caller the instant curl failed at the transport level, so
+  # `amux board done <ID>` against an unreachable server printed ABSOLUTELY
+  # NOTHING and exited 7. Not a warning, not an error, not the id — the purest
+  # form of the silent-failure class this file already guards against in three
+  # other places, sitting on the sanctioned path.
+  #
+  # A dropped connection and a refused transition must never look alike: one
+  # means "nothing happened, retry", the other means "the board said no".
+  local _tresp _tcurl=0
+  _tresp=$(curl -sk -X PATCH \
     -H 'Content-Type: application/json' \
     -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
     -d "$body" \
-    "${AMUX_API:-https://localhost:8824}/api/board/$id"
+    "${AMUX_API:-https://localhost:8824}/api/board/$id" 2>/dev/null) || _tcurl=$?
+  if [[ "$_tcurl" -ne 0 ]]; then
+    printf '%s\n' "cannot reach the board at ${AMUX_API:-https://localhost:8824} (curl exit $_tcurl).
+The '$status' transition was NOT applied and the card is unchanged — this is a
+transport failure, not a refused gate. Re-run when the server is back." >&2
+    return 1
+  fi
+  printf '%s' "$_tresp"
 }
 
 # The board's valid item types, ASKED FOR rather than carried.
