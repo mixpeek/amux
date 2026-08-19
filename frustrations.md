@@ -3157,9 +3157,18 @@ SYMPTOM: `disk: size ranking is INCOMPLETE — these paths exceeded the du budge
   Measured by hand with `du` unbounded, those paths hold 9.9G + 6.4G, against 3.7G free.
   `du` time scales with size, so the budget skips the LARGEST directories by
   construction: the ranking that survives lists the also-rans as the top consumers. And
-  `~/.Trash` never times out at all — `du` returns "Operation not permitted" (macOS TCC)
-  — but a failure and a timeout both returned `None` and were reported under the same
-  "exceeded the du budget" message, which is false for that path and always will be.
+  a failure and a timeout both returned `None` and were reported under the same "exceeded
+  the du budget" message, so an unreadable path was indistinguishable from a slow one.
+  CORRECTION, measured in prod AFTER the fix shipped and recorded here rather than left
+  standing: I claimed `~/.Trash` was the specimen — "Operation not permitted, not slow".
+  That is true of MY SHELL and NOT of the server. The launchd-spawned server has the
+  access my interactive shell lacks, so it really does walk `.Trash` and really does time
+  out; prod has logged ZERO "could not be READ" lines since deploy and `.Trash` still
+  appears in the timed-out list. I measured from the producer's vantage and attributed it
+  to the consumer, which is the exact inversion ethos rule 4 warns about. The code change
+  is still correct — an unreadable path and a timeout genuinely need different responses —
+  but the motivating example was wrong, and no test would have caught that because the
+  test asks `du` itself whether the case is live and correctly skipped when it was not.
 COST: The auto-filed card AMUX-30 ("disk: 4.2 GB free, below the 50 GB floor") says of
   itself "It is a REPORT, not a diagnosis: the evidence below is computed, the cause is
   not." The cause was missing because this ranker skipped it — so the one card raised

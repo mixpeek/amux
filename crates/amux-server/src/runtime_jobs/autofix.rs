@@ -1679,7 +1679,12 @@ pub fn detect_disk(now: f64, home: &std::path::Path) -> (Vec<Finding>, Vec<Suppr
 
     // Only now pay for `du` — a directory walk on every tick would be a
     // detector whose cost lands on the resource it is watching.
-    let du_cache = home.join(".amux").join("du-sizes.json");
+    // `home` here is the AMUX home (`~/.amux`), NOT `$HOME` — see the call site,
+    // which passes `autofix::amux_home()`. Joining ".amux" again wrote the cache
+    // to `~/.amux/.amux/du-sizes.json`, which worked but left a stray nested
+    // directory and would confuse anyone looking for it. Caught only by checking
+    // the shipped path in prod rather than assuming the deploy matched intent.
+    let du_cache = home.join("du-sizes.json");
     let top = du_top(&disk_candidates(home), 8, Some(&du_cache));
     // A carried-forward figure is LABELLED, never presented as a fresh
     // measurement. The whole value of keeping it is that the reader can weigh
@@ -3365,6 +3370,27 @@ mod tests {
         assert!(
             reloaded.contains_key(&dir.path().display().to_string()),
             "a fresh process must be able to read back what this one measured: {reloaded:?}"
+        );
+    }
+
+    /// Pins WHERE the cache lives, because the name `home` at the detect_disk
+    /// call site is the AMUX home (`~/.amux`), not `$HOME` — and the first cut of
+    /// this joined ".amux" again, writing to `~/.amux/.amux/du-sizes.json`. It
+    /// worked, so no test and no log line objected; it was found by looking at
+    /// the shipped filesystem after the deploy. This asserts the file lands
+    /// directly in the directory it is given.
+    #[test]
+    fn the_size_cache_lands_directly_in_the_amux_home_not_a_nested_one() {
+        let _g = du_env_lock();
+        let fake_amux_home = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f"), vec![0u8; 32 * 1024]).unwrap();
+        let cf = fake_amux_home.path().join("du-sizes.json");
+        let _ = du_top(&[dir.path().to_path_buf()], 8, Some(&cf));
+        assert!(cf.exists(), "cache must be written at the path given");
+        assert!(
+            !fake_amux_home.path().join(".amux").exists(),
+            "no nested .amux directory may be created"
         );
     }
 
