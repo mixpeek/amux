@@ -2660,9 +2660,19 @@ if d.get("error"): print("error:", d["error"], file=sys.stderr); sys.exit(1)
 print("logged", d.get("id", ""))'
       ;;
     followups|fu)
+      # Read the body defensively, like `tunnel status` and `alert` already do.
+      # Unparseable input used to reach `json.load` directly and print a raw
+      # Python traceback — loud, but naming json/__init__.py rather than the
+      # server, so "amux is down" and "amux crm is broken" looked identical.
+      # AEAB-37: this is NOT the AEAB-36 silent-abort shape, which is what that
+      # card originally claimed; it is a smaller instrument defect in the same
+      # family. See the card for the correction.
       curl -sk "$AMUX_API/api/crm/followups" | python3 -c '
 import json, sys
-items = json.load(sys.stdin)
+raw = sys.stdin.read()
+try: items = json.loads(raw)
+except ValueError: sys.exit("amux server not responding at %s (restarting?) — retry in a moment" % __import__("os").environ.get("AMUX_API", "the configured API"))
+if isinstance(items, dict) and items.get("error"): sys.exit("error: %s" % items["error"])
 if not items: print("No pending follow-ups"); sys.exit(0)
 for i in items:
     print(i.get("follow_up_date", ""), i.get("name", ""), "-", i.get("follow_up_note", ""))'
@@ -2670,7 +2680,13 @@ for i in items:
     list|ls|"")
       curl -sk "$AMUX_API/api/crm/contacts$([ -n "${1:-}" ] && printf '?q=%s' "$1")" | python3 -c '
 import json, sys
-cs = json.load(sys.stdin)
+raw = sys.stdin.read()
+try: cs = json.loads(raw)
+except ValueError: sys.exit("amux server not responding at %s (restarting?) — retry in a moment" % __import__("os").environ.get("AMUX_API", "the configured API"))
+# An error OBJECT is not an empty list. Iterating a dict yields its KEYS, so
+# without this the loop below called .get() on a string and died with an
+# AttributeError that named neither the server nor the error it returned.
+if isinstance(cs, dict) and cs.get("error"): sys.exit("error: %s" % cs["error"])
 if not cs: print("No contacts"); sys.exit(0)
 for c in cs:
     print("%-8s %-28s %s" % (c.get("id", ""), (c.get("name") or "")[:28], c.get("company", "")))'
