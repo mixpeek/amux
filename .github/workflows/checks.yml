@@ -151,8 +151,15 @@ jobs:
       # unconditionally would pass the incident case while being pure noise, and
       # the hook's own header names silence-when-current as the reason it gets
       # read at all.
-      - name: SessionStart freshness hook (AEAB-18) + build provenance (AEAB-12)
+      # The disk-clear case is ORDERING, not behaviour: the builder used to delete
+      # the cache it was about to fill while a 4x larger idle one sat beside it,
+      # so it burned a cold build every 60s and never relieved the pressure.
+      # Its control (nothing cleared above the floor) and its last-resort case
+      # (the shared dir must STILL be reachable) are what stop the fix becoming
+      # either a no-op or a reintroduction of the disk-full outage.
+      - name: SessionStart freshness hook (AEAB-18) + build provenance (AEAB-12) + disk clear (AEAB-34)
         run: |
           set -uo pipefail
           ./scripts/test-session-freshness.sh
           ./scripts/test-build-provenance.sh
+          ./scripts/test-build-disk-clear.sh

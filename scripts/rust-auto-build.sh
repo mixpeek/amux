@@ -144,11 +144,9 @@ fi
     echo "==    with no CI and no review. Intentional pin? fine. Accident? put"
     echo "==    $REPO back on main — develop in a git worktree, not the build source."
   fi
-  # Build from a clean, committed snapshot: a worktree of HEAD, so nobody's
-  # uncommitted edits (or a mid-edit broken tree) can poison the deploy.
-  WORK=$(mktemp -d /tmp/amux-rs-build.XXXXXX)
-  git -C "$REPO" worktree add --detach "$WORK" "$(git -C "$REPO" rev-parse HEAD)" >/dev/null
-  # DISK GUARD (AMUX-2754). The shared target dir has no GC — cargo never
+  # DISK GUARD (AMUX-2754). Runs BEFORE the worktree checkout below, because
+  # that checkout writes 1000+ files — freeing space after consuming it is the
+  # wrong order when the whole point is that the volume is nearly full. The shared target dir has no GC — cargo never
   # reclaims — so it grows without bound, and on 2026-08-10 the volume hit
   # 741MB free with a 50-session fleet and writes failing with ENOSPC.
   #
@@ -161,12 +159,49 @@ fi
   # Clearing the cache costs one cold build (~3min, once). That is the cheap
   # side of this trade by a wide margin: the expensive side is every lane
   # failing to write.
+  # CLEAR THE IDLE CACHE FIRST, AND THE ONE THIS BUILD NEEDS ONLY AS A LAST
+  # RESORT. Until 2026-08-19 this deleted `rust-build-target` unconditionally —
+  # the cache it was ABOUT TO FILL on the very next line — while
+  # `rust-build-target-e2e-head` sat untouched beside it at 4.2GB. Measured that
+  # day: the clear fired 16 times, free space still reached 1GB, and each pass
+  # freed ~2GB that the immediately-following cold build put straight back. A
+  # treadmill that burns a cold build every 60s and never relieves the pressure,
+  # while four times as much reclaimable space sat one directory over.
+  #
+  # So: order by what this build does NOT need, re-measure between steps, and
+  # stop as soon as the floor is cleared. `-e2e-head` belongs to e2e/serve-head.sh
+  # and is regenerable; clearing it costs a cold e2e build the next time someone
+  # runs e2e locally, which is far rarer than this 60s tick.
   FREE_GB=$(df -g "$HOME" | awk 'NR==2{print $4}')
   if [ "${FREE_GB:-999}" -lt "${AMUX_BUILD_MIN_FREE_GB:-25}" ]; then
-    TGT_GB=$(du -sg "$HOME/.amux/rust-build-target" 2>/dev/null | awk '{print $1}')
-    echo "== DISK LOW: ${FREE_GB}GB free (< ${AMUX_BUILD_MIN_FREE_GB:-25}GB). Clearing the ${TGT_GB:-?}GB shared target dir; next build is cold."
-    rm -rf "$HOME/.amux/rust-build-target"
+    for cand in "$HOME/.amux/rust-build-target-e2e-head" "$HOME/.amux/rust-build-target"; do
+      [ -d "$cand" ] || continue
+      CAND_GB=$(du -sg "$cand" 2>/dev/null | awk '{print $1}')
+      if [ "$cand" = "$HOME/.amux/rust-build-target" ]; then
+        echo "== DISK LOW: ${FREE_GB}GB free. Clearing the ${CAND_GB:-?}GB SHARED target dir — this build goes cold."
+      else
+        echo "== DISK LOW: ${FREE_GB}GB free. Clearing the ${CAND_GB:-?}GB idle e2e target dir first (this build does not need it)."
+      fi
+      # A seam so the ORDERING is testable without a 4GB fixture or a real build.
+      [ "${AMUX_RS_DISK_CLEAR_DRYRUN:-}" = "1" ] || rm -rf "$cand"
+      # Re-measure: if the idle cache was enough, never touch the one this build
+      # is about to use. Under dry-run there is nothing to re-measure, so keep
+      # listing candidates to show the full order.
+      if [ "${AMUX_RS_DISK_CLEAR_DRYRUN:-}" != "1" ]; then
+        FREE_GB=$(df -g "$HOME" | awk 'NR==2{print $4}')
+        if [ "${FREE_GB:-999}" -ge "${AMUX_BUILD_MIN_FREE_GB:-25}" ]; then
+          echo "== reclaimed to ${FREE_GB}GB free — the shared target dir is untouched, so this build stays warm."
+          break
+        fi
+      fi
+    done
   fi
+  if [ "${AMUX_RS_DISK_CLEAR_ONLY:-}" = "1" ]; then exit 0; fi
+
+  # Build from a clean, committed snapshot: a worktree of HEAD, so nobody's
+  # uncommitted edits (or a mid-edit broken tree) can poison the deploy.
+  WORK=$(mktemp -d /tmp/amux-rs-build.XXXXXX)
+  git -C "$REPO" worktree add --detach "$WORK" "$(git -C "$REPO" rev-parse HEAD)" >/dev/null
   # Shared target dir: incremental rebuilds (~15s) instead of cold ones
   # (~3min) — the worktree isolates SOURCE, the cache is content-keyed.
   # CAPTURE THE WHOLE BUILD, THEN DECIDE WHAT TO KEEP (AMUX-2927).

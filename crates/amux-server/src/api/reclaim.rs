@@ -201,6 +201,21 @@ fn devtool_roots() -> Vec<(PathBuf, &'static str, &'static str)> {
             "build",
             "Shared cargo target dir",
         ),
+        // The BIGGER sibling, and it was missing from this list for as long as
+        // it has existed. Measured 2026-08-19: 4.2GB here against 1.0GB in the
+        // shared dir, on a machine that had reached 1GB free — so the tool whose
+        // whole job is finding reclaimable space was blind to the largest
+        // reclaimable directory amux owns.
+        //
+        // This is the hand-maintained-list failure: the list agrees with reality
+        // until something new appears, and the day it disagrees is the day it is
+        // needed. Written by e2e/serve-head.sh (a debug-profile build), so it is
+        // fully regenerable and costs one cold e2e run.
+        (
+            home.join(".amux/rust-build-target-e2e-head"),
+            "build",
+            "e2e head-build cargo target dir",
+        ),
     ]
 }
 
@@ -1581,6 +1596,7 @@ mod tests {
         let home = home_dir();
         let must_allow: Vec<PathBuf> = vec![
             home.join(".amux/rust-build-target"),
+            home.join(".amux/rust-build-target-e2e-head"),
             home.join("Library/Caches"),
             home.join("Library/Developer/Xcode/DerivedData"),
             home.join(".ollama/models"),

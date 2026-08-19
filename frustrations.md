@@ -3204,3 +3204,38 @@ FIX: `du_one` now returns a typed `DuOutcome` — `Sized` / `TimedOut` /
   never been visible because the budgets in play were large enough not to break a
   neighbour. A new case using a 1ms budget broke one, and the failure appeared in a test
   with nothing wrong in it. All seven now take a shared lock.
+
+---
+## The low-disk emergency clear deleted the cache it was about to fill, and spared a 4x larger idle one
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-08-19
+SESSION: amux-errors-and-bugs
+CARD: AEAB-34
+SYMPTOM: `scripts/rust-auto-build.sh` cleared `~/.amux/rust-build-target` unconditionally
+  when free space fell below its floor — the cache filled by the very next line of the
+  same script — while `~/.amux/rust-build-target-e2e-head` sat untouched beside it at
+  4.2 GB. From the builder's own log: fired 16 times, free space still reached 1 GB, and
+  each pass freed ~2 GB that the immediately-following cold build put straight back.
+  Separately, `api/reclaim.rs` — the subsystem whose whole job is finding reclaimable
+  space — had `rust-build-target` in its candidate list and not `-e2e-head`, so it was
+  blind to the largest reclaimable directory amux owns.
+COST: Every build on this machine today was cold (~1m40s instead of ~15s incremental),
+  16 times over, and the pressure was never relieved — the volume still reached 1 GB free.
+  The guard was doing the maximum possible damage per byte reclaimed: the most expensive
+  cache to lose, the least space freed, and it regrew immediately. It also masked the real
+  answer, since a "DISK LOW, clearing the target dir" line reads like the guard working.
+FIX: Clear candidates in order of what the current build does NOT need — idle e2e cache
+  first, re-measure, and touch the shared target dir only if still under the floor. Moved
+  ahead of the worktree checkout, because that writes 1000+ files and freeing space after
+  consuming it is the wrong order on a nearly-full volume. `-e2e-head` added to reclaim's
+  candidates and its allow-list guard test.
+  `scripts/test-build-disk-clear.sh` (6 cases, wired into checks.yml) runs the SHIPPED
+  script through a dry-run seam and asserts ORDERING, which is the whole fix.
+  Mutation-checked three ways: shared-only fails the ordering case, unconditional clearing
+  fails the above-the-floor control, and never-clearing-the-shared-dir fails the
+  last-resort case — that last mutation passes the ordering test while reintroducing the
+  disk-full outage the guard exists to prevent, which is exactly why that case is there.
+  The hand-maintained candidate list is the deeper issue and is NOT fixed: it will go stale
+  again the next time a directory appears. Noted on AEAB-34 rather than papered over.
