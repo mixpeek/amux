@@ -213,4 +213,4 @@ amux is growing into the durable operating system around agents: it owns executi
 
 If amux saves you time, a ⭐ helps others find it.
 
-[![Star History Chart](https://api.star-history.com/svg?repos=mixpeek/amux&type=Date)](https://star-history.com/#mixpeek/amux&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=mixpeek/amux&type=Date)](https://star-history.dera.page/#mixpeek/amux&Date)
