@@ -1350,18 +1350,49 @@ fn du_total_timeout_s() -> f64 {
         .unwrap_or(15.0)
 }
 
-/// One bounded `du -skx`. Returns `None` if it did not finish in time — a
-/// SKIPPED path, not a zero-sized one, which matters because a silent 0 would
-/// rank the biggest consumer last and point the report at an innocent
-/// directory.
-fn du_one(p: &std::path::Path, deadline: std::time::Instant) -> Option<u64> {
-    let mut child = std::process::Command::new("/usr/bin/du")
+/// Why a path has no size. A skip and a zero are already distinguished (a silent
+/// 0 would rank the biggest consumer last and point the report at an innocent
+/// directory); this splits the SKIP, because the two kinds need opposite
+/// responses and were reported identically.
+///
+/// `~/.Trash` is the specimen. `du` on it returns "Operation not permitted"
+/// (macOS TCC) — it does not run slowly, it cannot run at all. It landed in the
+/// same bucket as a timeout, under a message reading "these paths exceeded the
+/// du budget", and was named there 914 times in 24h. That message is false for
+/// this path, will be false forever, and points whoever reads it at a budget
+/// knob that cannot help (ethos rule 4: the instrument must express the
+/// discriminator).
+#[derive(Debug, PartialEq)]
+enum DuOutcome {
+    Sized(u64),
+    /// Ran, hit the wall clock, was killed. Raising the budget would help.
+    TimedOut,
+    /// Exited without a parseable size. Raising the budget would NOT help.
+    /// Carries the exit code rather than stderr text on purpose: reading stderr
+    /// means piping it, and `du` over a tree with many unreadable subdirectories
+    /// emits enough to fill the pipe buffer and BLOCK the child while we poll
+    /// `try_wait` — which would convert a path that would have finished into a
+    /// timeout. The detector must not manufacture the fault it reports.
+    Unreadable(Option<i32>),
+}
+
+/// One bounded `du -skx`.
+///
+/// A non-zero exit with USABLE stdout is still a size: `du` exits 1 when it
+/// could not descend into some subdirectory but it still prints the total for
+/// everything it did read. Treating that as unreadable would discard a
+/// mostly-correct figure for the common case of a few protected subdirs.
+fn du_one(p: &std::path::Path, deadline: std::time::Instant) -> DuOutcome {
+    let mut child = match std::process::Command::new("/usr/bin/du")
         .args(["-skx"])
         .arg(p)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .ok()?;
+    {
+        Ok(c) => c,
+        Err(_) => return DuOutcome::Unreadable(None),
+    };
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
@@ -1376,17 +1407,22 @@ fn du_one(p: &std::path::Path, deadline: std::time::Instant) -> Option<u64> {
                     // unchanging path (~/Library/Caches), which made it 78% of the
                     // server log in a 30-minute window and buried a per-minute panic.
                     tracing::debug!(path = %p.display(), "disk: du timed out — path skipped in the size ranking");
-                    return None;
+                    return DuOutcome::TimedOut;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            Err(_) => return None,
+            Err(_) => return DuOutcome::Unreadable(None),
         }
     }
-    let out = child.wait_with_output().ok()?;
+    let out = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(_) => return DuOutcome::Unreadable(None),
+    };
     let text = String::from_utf8_lossy(&out.stdout);
-    let kb: u64 = text.split_whitespace().next()?.parse().ok()?;
-    Some(kb * 1024)
+    match text.split_whitespace().next().and_then(|t| t.parse::<u64>().ok()) {
+        Some(kb) => DuOutcome::Sized(kb * 1024),
+        None => DuOutcome::Unreadable(out.status.code()),
+    }
 }
 
 /// Rank the biggest consumers, under a hard wall-clock budget.
@@ -1411,30 +1447,58 @@ fn du_top(paths: &[std::path::PathBuf], limit: usize) -> Vec<(String, u64)> {
     let total_budget = std::time::Duration::from_secs_f64(du_total_timeout_s());
     let per_path = std::time::Duration::from_secs_f64(du_path_timeout_s());
     let mut sized: Vec<(String, u64)> = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
+    // Two skip reasons, kept apart, because they need OPPOSITE responses: a
+    // timeout is a budget story and an unreadable path is a permissions story,
+    // and one message covering both sent readers at a knob that cannot help.
+    let mut timed_out: Vec<String> = Vec::new();
+    let mut unreadable: Vec<String> = Vec::new();
     for p in paths.iter().filter(|p| p.exists()) {
         let remaining = total_budget.saturating_sub(started.elapsed());
         if remaining.is_zero() {
-            skipped.push(p.display().to_string());
+            timed_out.push(p.display().to_string());
             continue;
         }
         let deadline = std::time::Instant::now() + per_path.min(remaining);
         match du_one(p, deadline) {
-            Some(bytes) => sized.push((p.display().to_string(), bytes)),
-            None => skipped.push(p.display().to_string()),
+            DuOutcome::Sized(bytes) => sized.push((p.display().to_string(), bytes)),
+            DuOutcome::TimedOut => timed_out.push(p.display().to_string()),
+            DuOutcome::Unreadable(code) => unreadable.push(match code {
+                Some(c) => format!("{} (du exit {c})", p.display()),
+                None => format!("{} (du could not run)", p.display()),
+            }),
         }
     }
     // Rule 4: a truncated ranking that does not say it was truncated reads as a
-    // complete one. Whoever acts on this report must see that paths are missing.
-    if !skipped.is_empty() {
-        // Rule 4 still applies — a truncated ranking must say so. But it must say
-        // it ONCE per run, naming the paths, rather than once per attempt: the
-        // per-attempt spelling reported the same unchanging path thousands of
-        // times and drowned the log it shares with real faults.
+    // complete one. Whoever acts on this report must see that paths are missing
+    // — AND why, since the two reasons have different fixes.
+    //
+    // It says it ONCE per run, naming the paths, rather than once per attempt:
+    // the per-attempt spelling reported the same unchanging path thousands of
+    // times and drowned the log it shares with real faults.
+    //
+    // The known bias is stated in the message itself rather than left for the
+    // reader to infer: `du` time scales with directory size, so the paths that
+    // blow the budget are disproportionately the LARGEST ones. Measured
+    // 2026-08-19 on this machine, the three skipped paths held ~18.5G against
+    // 3.7G free while the ranking that DID emerge listed only the also-rans. A
+    // report saying merely "incomplete" reads as "here are the big ones plus a
+    // few we missed", which is closer to the inverse of the truth.
+    if !timed_out.is_empty() {
         tracing::warn!(
-            skipped = skipped.len(),
-            paths = %skipped.join(", "),
-            "disk: size ranking is INCOMPLETE — these paths exceeded the du budget"
+            skipped = timed_out.len(),
+            paths = %timed_out.join(", "),
+            "disk: size ranking is INCOMPLETE — these paths exceeded the du budget. \
+             du time scales with size, so the paths missing here are LIKELIER TO BE \
+             THE LARGEST than the ones ranked below"
+        );
+    }
+    if !unreadable.is_empty() {
+        tracing::warn!(
+            skipped = unreadable.len(),
+            paths = %unreadable.join(", "),
+            "disk: size ranking is INCOMPLETE — these paths could not be READ at all \
+             (permissions, e.g. macOS TCC on ~/.Trash). This is NOT a budget problem \
+             and no timeout increase will fix it"
         );
     }
     sized.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
@@ -2953,6 +3017,107 @@ fn parse_ts(s: &str) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+
+    // ── du_one: a timeout and an unreadable path are DIFFERENT (AEAB-33) ────
+    //
+    // These ran identically before: both returned `None` and both were reported
+    // under "these paths exceeded the du budget", which is false for a path that
+    // cannot be read at all and sends the reader at a knob that cannot help.
+
+    /// The POSITIVE control. Without it every assertion below is satisfied by a
+    /// function that returns Unreadable for everything.
+    #[test]
+    fn a_readable_directory_is_sized() {
+        let d = std::env::temp_dir().join(format!("amux-du-ok-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let _ = std::fs::write(d.join("f"), vec![0u8; 4096]);
+        let out = du_one(&d, std::time::Instant::now() + std::time::Duration::from_secs(10));
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(matches!(out, DuOutcome::Sized(_)), "got {out:?}");
+    }
+
+    /// Rebuilt from the INCIDENT'S OWN SPECIMEN rather than a convenient one:
+    /// `~/.Trash` is the path that was named 914 times in 24h as a budget
+    /// overrun while `du` on it actually returns "Operation not permitted".
+    ///
+    /// Skipped rather than failed where the specimen is absent (Linux CI, or a
+    /// mac that has granted this process Full Disk Access) — asserting there
+    /// would make the suite fail for a reason that has nothing to do with the
+    /// code. The `du` probe below is what decides, so this can never pass by
+    /// mistaking a missing directory for a permissions error.
+    #[test]
+    fn an_unreadable_path_is_not_reported_as_a_timeout() {
+        let trash = match std::env::var("HOME") {
+            Ok(h) => std::path::PathBuf::from(h).join(".Trash"),
+            Err(_) => return,
+        };
+        if !trash.exists() {
+            return;
+        }
+        // Only assert when `du` genuinely cannot read it — confirmed by running
+        // the same command this code runs, unbounded.
+        let probe = std::process::Command::new("/usr/bin/du")
+            .args(["-skx"])
+            .arg(&trash)
+            .output();
+        let denied = match probe {
+            Ok(o) => o.stdout.split(|c| c.is_ascii_whitespace()).next()
+                .and_then(|t| std::str::from_utf8(t).ok())
+                .and_then(|t| t.parse::<u64>().ok())
+                .is_none(),
+            Err(_) => return,
+        };
+        if !denied {
+            return;
+        }
+        // A generous deadline, so a TimedOut verdict here could only mean the
+        // code confused the two — which is the whole point of the assertion.
+        let out = du_one(&trash, std::time::Instant::now() + std::time::Duration::from_secs(30));
+        assert_eq!(
+            out,
+            DuOutcome::Unreadable(Some(1)),
+            "du cannot read {} — that must report as Unreadable, never as a budget overrun",
+            trash.display()
+        );
+    }
+
+    /// The NEGATIVE direction on the deadline: a deadline already in the past
+    /// must produce TimedOut, not Unreadable. Without this, a function
+    /// returning Unreadable unconditionally passes the specimen test above.
+    #[test]
+    fn an_expired_deadline_is_a_timeout_not_an_unreadable_path() {
+        let d = std::env::temp_dir();
+        let out = du_one(&d, std::time::Instant::now() - std::time::Duration::from_secs(1));
+        assert_eq!(out, DuOutcome::TimedOut, "got {out:?}");
+    }
+
+    /// `du` exits non-zero when it could not descend into SOME subdirectory but
+    /// still prints a total. That total is a usable size, and discarding it
+    /// would throw away a mostly-correct figure for the common case of a few
+    /// protected subdirs — turning a partial answer into no answer.
+    #[test]
+    fn a_partial_walk_that_still_prints_a_total_counts_as_sized() {
+        let d = std::env::temp_dir().join(format!("amux-du-part-{}", std::process::id()));
+        let sub = d.join("locked");
+        let _ = std::fs::create_dir_all(&sub);
+        let _ = std::fs::write(d.join("f"), vec![0u8; 8192]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000));
+        }
+        let out = du_one(&d, std::time::Instant::now() + std::time::Duration::from_secs(10));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755));
+        }
+        let _ = std::fs::remove_dir_all(&d);
+        // Running as root defeats the setup — the walk succeeds cleanly and the
+        // case is untestable rather than failing.
+        assert!(matches!(out, DuOutcome::Sized(_)), "got {out:?}");
+    }
+
     use super::*;
     use std::sync::Arc;
 
