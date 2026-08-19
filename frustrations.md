@@ -3269,6 +3269,35 @@ FIX: `df -Pk` and `du -sk` with the GB conversion in awk — POSIX, and already 
   (f) specifically, not just the ordering cases.
 
 ---
+## `amux board done --outcome-stdin` printed a warning about the outcome and silently applied NOTHING
+AREA: cli
+SEVERITY: slows
+STATUS: open
+DATE: 2026-08-19
+SESSION: amux-errors-and-bugs
+CARD: AEAB-36
+SYMPTOM: Closing AEAB-34, the entire output was:
+    warning: outcome NOT recorded — server sent no JSON
+  Verified against the API immediately afterwards: status still `review`, desc_len
+  unchanged at 2792, no new log line. NEITHER the outcome NOR the status transition
+  landed. Re-running the identical command with the identical ~2.9KB input succeeded
+  completely (`AEAB-34 → done`, EXIT=0, desc +2915 chars). Nothing appeared in
+  server-rs.log for the failed request.
+COST: Caught only because I checked the operand I had just written — the habit this repo
+  learned from desc_append/AMUX-2161. Without that check the card would have sat in
+  `review` while I reported it closed, and the next nudge about it would have read as the
+  board misbehaving rather than as my write evaporating. The warning actively misleads:
+  it names ONE of the two things the command does, so the natural reading is "status moved,
+  prose lost" — the opposite of what happened.
+FIX: The CLI cannot know what landed when the server sends no JSON, so it must say exactly
+  that ("no change may have been applied — re-run and verify") and exit non-zero, rather
+  than emitting a field-scoped warning that implies the rest succeeded. Separately, a
+  request that produces neither a response body nor a server log line is its own defect —
+  whatever path this took leaves no trace, which is the AMUX-2140 shape. Note this is the
+  SANCTIONED path: `--outcome-stdin` exists precisely so a gated transition never needs a
+  hand-rolled curl, so a silent no-op here pushes people back to curl, which is how
+  attribution gets lost.
+---
 ## I wrote a keep-warm branch that could never execute, hours after writing about that exact failure mode
 AREA: instruments
 SEVERITY: annoys
