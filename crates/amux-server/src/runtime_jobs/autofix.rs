@@ -1425,6 +1425,57 @@ fn du_one(p: &std::path::Path, deadline: std::time::Instant) -> DuOutcome {
     }
 }
 
+/// One path in the size ranking. `stale_age_s` is `Some` when the figure is a
+/// CARRIED-FORWARD reading rather than one taken on this run.
+#[derive(Debug, Clone, PartialEq)]
+struct Ranked {
+    path: String,
+    bytes: u64,
+    stale_age_s: Option<f64>,
+}
+
+/// Last successful size per path, persisted so a skipped path still has a
+/// figure (AEAB-33).
+///
+/// # Why carry a stale number forward at all
+///
+/// `du` time scales with directory size, so the paths that blow the budget are
+/// systematically the LARGEST — the ranker was biased against exactly the answer
+/// it exists to produce. Measured 2026-08-19: `~/Library/Caches` (9.9G) was
+/// skipped on 914 of 914 attempts in 24h while free space fell to 3.7G, and the
+/// ranking that survived listed only the paths small enough to finish, i.e. the
+/// also-rans, presented as the top consumers.
+///
+/// A day-old 9.9G answers "what is eating my disk". Absence does not, and
+/// absence is what it reported. Cache directories do not shrink fast enough for
+/// staleness to mislead at this granularity, and the age is carried alongside so
+/// the reader can judge rather than being asked to trust.
+///
+/// # Why a file and not memory
+///
+/// This process re-execs to adopt a new build. In-memory state would be empty
+/// on exactly the first run after every restart — and the ethos file records
+/// that same mistake costing a whole optimisation invisibly. A ~200-byte JSON
+/// file survives; it is written only on the ticks that already paid for a `du`,
+/// which is only when free space is under the floor.
+fn du_cache_load(path: Option<&std::path::Path>) -> std::collections::HashMap<String, (u64, f64)> {
+    let Some(p) = path else { return Default::default() };
+    std::fs::read_to_string(p)
+        .ok()
+        .and_then(|t| serde_json::from_str::<std::collections::HashMap<String, (u64, f64)>>(&t).ok())
+        .unwrap_or_default()
+}
+
+fn du_cache_save(path: Option<&std::path::Path>, m: &std::collections::HashMap<String, (u64, f64)>) {
+    let Some(p) = path else { return };
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(t) = serde_json::to_string(m) {
+        let _ = std::fs::write(p, t);
+    }
+}
+
 /// Rank the biggest consumers, under a hard wall-clock budget.
 ///
 /// EVERY `du` HERE IS BOUNDED, and that is the whole point. This runs only
@@ -1442,32 +1493,66 @@ fn du_one(p: &std::path::Path, deadline: std::time::Instant) -> DuOutcome {
 /// This is ethos rule 7's "what does the DETECTOR cost, and is the cost paid in
 /// the same resource as the fault?" — here it was worse than the spin-catcher
 /// it echoes, because the cost landed on the runtime rather than on the disk.
-fn du_top(paths: &[std::path::PathBuf], limit: usize) -> Vec<(String, u64)> {
+fn du_top(
+    paths: &[std::path::PathBuf],
+    limit: usize,
+    cache_path: Option<&std::path::Path>,
+) -> Vec<Ranked> {
     let started = std::time::Instant::now();
+    let now = crate::runtime_jobs::registry::unix_now();
+    let mut cache = du_cache_load(cache_path);
     let total_budget = std::time::Duration::from_secs_f64(du_total_timeout_s());
     let per_path = std::time::Duration::from_secs_f64(du_path_timeout_s());
-    let mut sized: Vec<(String, u64)> = Vec::new();
+    let mut sized: Vec<Ranked> = Vec::new();
     // Two skip reasons, kept apart, because they need OPPOSITE responses: a
     // timeout is a budget story and an unreadable path is a permissions story,
     // and one message covering both sent readers at a knob that cannot help.
     let mut timed_out: Vec<String> = Vec::new();
     let mut unreadable: Vec<String> = Vec::new();
+    // A path we could not size THIS run still gets its last known figure, if we
+    // have one. NEVER a fabricated 0: `du_one`'s own doc records why (a silent
+    // zero sorts the biggest consumer last and aims the report at an innocent
+    // directory), and a path never successfully sized simply does not appear.
+    // A free fn rather than a closure: a closure capturing `cache` would hold an
+    // immutable borrow across the `cache.insert` below.
+    fn carry(
+        cache: &std::collections::HashMap<String, (u64, f64)>,
+        now: f64,
+        key: &str,
+        sized: &mut Vec<Ranked>,
+    ) {
+        if let Some((bytes, at)) = cache.get(key).copied() {
+            sized.push(Ranked { path: key.to_string(), bytes, stale_age_s: Some(now - at) });
+        }
+    }
     for p in paths.iter().filter(|p| p.exists()) {
+        let key = p.display().to_string();
         let remaining = total_budget.saturating_sub(started.elapsed());
         if remaining.is_zero() {
-            timed_out.push(p.display().to_string());
+            timed_out.push(key.clone());
+            carry(&cache, now, &key, &mut sized);
             continue;
         }
         let deadline = std::time::Instant::now() + per_path.min(remaining);
         match du_one(p, deadline) {
-            DuOutcome::Sized(bytes) => sized.push((p.display().to_string(), bytes)),
-            DuOutcome::TimedOut => timed_out.push(p.display().to_string()),
-            DuOutcome::Unreadable(code) => unreadable.push(match code {
-                Some(c) => format!("{} (du exit {c})", p.display()),
-                None => format!("{} (du could not run)", p.display()),
-            }),
+            DuOutcome::Sized(bytes) => {
+                cache.insert(key.clone(), (bytes, now));
+                sized.push(Ranked { path: key, bytes, stale_age_s: None });
+            }
+            DuOutcome::TimedOut => {
+                timed_out.push(key.clone());
+                carry(&cache, now, &key, &mut sized);
+            }
+            DuOutcome::Unreadable(code) => {
+                unreadable.push(match code {
+                    Some(c) => format!("{key} (du exit {c})"),
+                    None => format!("{key} (du could not run)"),
+                });
+                carry(&cache, now, &key, &mut sized);
+            }
         }
     }
+    du_cache_save(cache_path, &cache);
     // Rule 4: a truncated ranking that does not say it was truncated reads as a
     // complete one. Whoever acts on this report must see that paths are missing
     // — AND why, since the two reasons have different fixes.
@@ -1501,7 +1586,7 @@ fn du_top(paths: &[std::path::PathBuf], limit: usize) -> Vec<(String, u64)> {
              and no timeout increase will fix it"
         );
     }
-    sized.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
+    sized.sort_by_key(|r| std::cmp::Reverse(r.bytes));
     sized.truncate(limit);
     sized
 }
@@ -1594,10 +1679,23 @@ pub fn detect_disk(now: f64, home: &std::path::Path) -> (Vec<Finding>, Vec<Suppr
 
     // Only now pay for `du` — a directory walk on every tick would be a
     // detector whose cost lands on the resource it is watching.
-    let top = du_top(&disk_candidates(home), 8);
+    let du_cache = home.join(".amux").join("du-sizes.json");
+    let top = du_top(&disk_candidates(home), 8, Some(&du_cache));
+    // A carried-forward figure is LABELLED, never presented as a fresh
+    // measurement. The whole value of keeping it is that the reader can weigh
+    // it; passing it off as current would trade one wrong answer for another.
     let listing = top
         .iter()
-        .map(|(p, b)| format!("  {:>8.1} GB  {p}", *b as f64 / GB))
+        .map(|r| match r.stale_age_s {
+            None => format!("  {:>8.1} GB  {}", r.bytes as f64 / GB, r.path),
+            Some(age) => format!(
+                "  {:>8.1} GB  {}   [stale — last measured {:.1}h ago; du could not \
+                 finish it this run]",
+                r.bytes as f64 / GB,
+                r.path,
+                age / 3600.0
+            ),
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let snaps = local_snapshot_count();
@@ -3127,15 +3225,31 @@ mod tests {
     ///
     /// The slow path is `/` — a real directory whose walk cannot finish in the
     /// budget, rather than a fake one. A tempdir with a few files completes
+    /// The du budget lives in PROCESS-GLOBAL env vars, and cargo runs these tests
+    /// on parallel threads — so a case that sets a 1ms budget silently imposes it
+    /// on whatever else is mid-`du_top`. That was already latent here (three
+    /// cases shared these vars, two writing and one reading), and it only became
+    /// visible when a new case used a budget small enough to break a neighbour:
+    /// `du_top_still_measures_a_walkable_path` failed with nothing wrong in it.
+    ///
+    /// Every case that touches those vars takes this lock. A test suite whose
+    /// verdict depends on thread scheduling is not a check that can fail
+    /// reliably — it is one that fails randomly, which is worse.
+    fn du_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        L.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// instantly and would pass against the ORIGINAL unbounded code, which is
     /// exactly the "convenient case lacks the property that made the incident"
     /// trap; this asserts the bound by making the walk genuinely unfinishable.
     #[test]
     fn du_top_returns_within_budget_on_an_unwalkable_path() {
+        let _g = du_env_lock();
         std::env::set_var("AMUX_DISK_DU_PATH_TIMEOUT_S", "1");
         std::env::set_var("AMUX_DISK_DU_TOTAL_TIMEOUT_S", "2");
         let started = std::time::Instant::now();
-        let _ = du_top(&[std::path::PathBuf::from("/")], 8);
+        let _ = du_top(&[std::path::PathBuf::from("/")], 8, None);
         let elapsed = started.elapsed().as_secs_f64();
         std::env::remove_var("AMUX_DISK_DU_PATH_TIMEOUT_S");
         std::env::remove_var("AMUX_DISK_DU_TOTAL_TIMEOUT_S");
@@ -3151,13 +3265,14 @@ mod tests {
     /// innocent directory.
     #[test]
     fn du_top_omits_a_timed_out_path_rather_than_sizing_it_zero() {
+        let _g = du_env_lock();
         std::env::set_var("AMUX_DISK_DU_PATH_TIMEOUT_S", "1");
         std::env::set_var("AMUX_DISK_DU_TOTAL_TIMEOUT_S", "2");
-        let got = du_top(&[std::path::PathBuf::from("/")], 8);
+        let got = du_top(&[std::path::PathBuf::from("/")], 8, None);
         std::env::remove_var("AMUX_DISK_DU_PATH_TIMEOUT_S");
         std::env::remove_var("AMUX_DISK_DU_TOTAL_TIMEOUT_S");
         assert!(
-            !got.iter().any(|(_, bytes)| *bytes == 0),
+            !got.iter().any(|r| r.bytes == 0),
             "a skipped path was reported with a size instead of being omitted: {got:?}"
         );
     }
@@ -3167,11 +3282,106 @@ mod tests {
     /// nothing at all.
     #[test]
     fn du_top_still_measures_a_walkable_path() {
+        let _g = du_env_lock();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f"), vec![0u8; 64 * 1024]).unwrap();
-        let got = du_top(&[dir.path().to_path_buf()], 8);
+        let got = du_top(&[dir.path().to_path_buf()], 8, None);
         assert_eq!(got.len(), 1, "expected the tempdir to be measured: {got:?}");
-        assert!(got[0].1 > 0, "measured size should be non-zero: {got:?}");
+        assert!(got[0].bytes > 0, "measured size should be non-zero: {got:?}");
+        assert!(got[0].stale_age_s.is_none(), "a fresh walk must not be labelled stale: {got:?}");
+    }
+
+    // ── the carry-forward, both directions (AEAB-33) ───────────────────────
+
+    /// THE POINT OF THE CARD. A path that could not be sized this run must still
+    /// appear in the ranking, carrying its last known size and LABELLED stale —
+    /// otherwise the biggest consumers are exactly the ones the report omits,
+    /// which is what happened to ~/Library/Caches on 914 of 914 attempts in 24h
+    /// while free space fell to 3.7G.
+    ///
+    /// The unwalkable path is `/` under a 1ms budget, the same specimen the
+    /// existing budget tests use. An earlier draft measured a tempdir on run 1
+    /// and tried to force it to time out on run 2 — but `du` on a tiny directory
+    /// exits before the first poll, so it was SIZED both times and the test
+    /// failed for a reason that had nothing to do with the carry-forward. The
+    /// convenient case was convenient precisely because it lacked the property
+    /// under test.
+    #[test]
+    fn a_path_that_cannot_be_sized_keeps_its_last_known_size_and_is_marked_stale() {
+        let _g = du_env_lock();
+        let cache = tempfile::tempdir().unwrap();
+        let cf = cache.path().join("du-sizes.json");
+
+        // Seed the cache as a previous successful run would have left it.
+        let measured_at = crate::runtime_jobs::registry::unix_now() - 7200.0;
+        let seeded: std::collections::HashMap<String, (u64, f64)> =
+            [("/".to_string(), (9_900_000_000u64, measured_at))].into_iter().collect();
+        std::fs::write(&cf, serde_json::to_string(&seeded).unwrap()).unwrap();
+
+        std::env::set_var("AMUX_DISK_DU_PATH_TIMEOUT_S", "0.001");
+        std::env::set_var("AMUX_DISK_DU_TOTAL_TIMEOUT_S", "0.001");
+        let got = du_top(&[std::path::PathBuf::from("/")], 8, Some(&cf));
+        std::env::remove_var("AMUX_DISK_DU_PATH_TIMEOUT_S");
+        std::env::remove_var("AMUX_DISK_DU_TOTAL_TIMEOUT_S");
+
+        assert_eq!(got.len(), 1, "the unsizable path must NOT vanish from the ranking: {got:?}");
+        assert_eq!(got[0].bytes, 9_900_000_000, "it must carry the remembered size");
+        let age = got[0].stale_age_s.expect("a carried figure must be LABELLED stale, not passed off as fresh");
+        assert!((age - 7200.0).abs() < 60.0, "the age must be real, not a placeholder: {age}");
+    }
+
+    /// THE NEGATIVE HALF, and the one that keeps the fix honest. A path that has
+    /// NEVER been sized must be absent, not present at 0 — a silent zero sorts
+    /// the biggest consumer last and aims the report at an innocent directory,
+    /// which is the failure `du_one`'s own doc comment warns about. Without this
+    /// assertion, "always emit a row" would pass the test above.
+    #[test]
+    fn a_path_never_successfully_sized_is_absent_not_zero() {
+        let _g = du_env_lock();
+        let cache = tempfile::tempdir().unwrap();
+        let cf = cache.path().join("du-sizes.json");
+        std::env::set_var("AMUX_DISK_DU_PATH_TIMEOUT_S", "0.001");
+        std::env::set_var("AMUX_DISK_DU_TOTAL_TIMEOUT_S", "0.001");
+        let got = du_top(&[std::path::PathBuf::from("/")], 8, Some(&cf));
+        std::env::remove_var("AMUX_DISK_DU_PATH_TIMEOUT_S");
+        std::env::remove_var("AMUX_DISK_DU_TOTAL_TIMEOUT_S");
+        assert!(got.is_empty(), "nothing was ever measured, so nothing may be claimed: {got:?}");
+    }
+
+    /// The cache must survive a restart, because this process re-execs to adopt
+    /// new builds — in-memory state would be empty on exactly the first run
+    /// after every restart, which is when the report is most needed. Asserted
+    /// by reading the file a SEPARATE call wrote, not by trusting a global.
+    #[test]
+    fn the_size_cache_is_on_disk_so_it_survives_a_re_exec() {
+        let _g = du_env_lock();
+        let cache = tempfile::tempdir().unwrap();
+        let cf = cache.path().join("nested").join("du-sizes.json");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f"), vec![0u8; 64 * 1024]).unwrap();
+        let _ = du_top(&[dir.path().to_path_buf()], 8, Some(&cf));
+        assert!(cf.exists(), "the cache file was not written (parent dir not created?)");
+        let reloaded = du_cache_load(Some(&cf));
+        assert!(
+            reloaded.contains_key(&dir.path().display().to_string()),
+            "a fresh process must be able to read back what this one measured: {reloaded:?}"
+        );
+    }
+
+    /// A missing or corrupt cache must degrade to today's behaviour, silently.
+    /// A detector that panics on its own scratch file would take the server with
+    /// it over a cache it does not need to function.
+    #[test]
+    fn a_corrupt_cache_file_degrades_instead_of_failing() {
+        let _g = du_env_lock();
+        let cache = tempfile::tempdir().unwrap();
+        let cf = cache.path().join("du-sizes.json");
+        std::fs::write(&cf, "{not json").unwrap();
+        assert!(du_cache_load(Some(&cf)).is_empty());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f"), vec![0u8; 32 * 1024]).unwrap();
+        let got = du_top(&[dir.path().to_path_buf()], 8, Some(&cf));
+        assert_eq!(got.len(), 1, "a bad cache must not stop a live measurement: {got:?}");
     }
 
     /// AMUX-3014: autofix cards must default ON (local ops board) and turn OFF

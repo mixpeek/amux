@@ -3180,7 +3180,18 @@ FIX: `du_one` now returns a typed `DuOutcome` — `Sized` / `TimedOut` /
   with a `du` probe deciding whether the case is live so it can never pass by mistaking
   an absent directory for a permissions error, and mutation-checked: collapsing the two
   outcomes back into one fails it.
-  STILL OPEN on AEAB-33: the bias itself. The fix is to persist each path's last
-  successful size and carry it forward marked stale, so a path that blows the budget
-  still APPEARS in the ranking. A week-old 9.9G is far more use than absence when the
-  question is what is eating the disk, and absence is what it reports today.
+  The BIAS itself is fixed in the follow-up commit on the same card: each path's last
+  successful size is persisted to `~/.amux/du-sizes.json` and carried forward, LABELLED
+  with its age, so a path that blows the budget still appears in the ranking instead of
+  vanishing. A day-old 9.9G answers "what is eating my disk"; absence does not, and
+  absence is what it reported. On disk rather than in memory because this process
+  re-execs to adopt builds — in-memory state would be empty on exactly the first run
+  after every restart. A path never successfully sized still does NOT appear: a
+  fabricated 0 would sort the biggest consumer last, which is the failure `du_one`'s own
+  doc comment warns about, and there is a test asserting each direction.
+  That work also surfaced a LATENT TEST BUG worth naming on its own: the du budget lives
+  in process-global env vars and cargo runs these cases on parallel threads, so three
+  pre-existing cases were already racing (two writing the vars, one reading). It had
+  never been visible because the budgets in play were large enough not to break a
+  neighbour. A new case using a 1ms budget broke one, and the failure appeared in a test
+  with nothing wrong in it. All seven now take a shared lock.
