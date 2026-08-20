@@ -3426,3 +3426,30 @@ FIX: The preview is a PANE SCRAPE. `composer_state` builds it with
   This is the D1 terminal-scraping deviation showing through: a value computed for MACHINE
   COMPARISON was reused for HUMAN DISPLAY, where its lossy normalisation reads as
   corruption. Before quoting a scraped value in a log, ask what was normalised out of it.
+
+---
+## Every PR conflicts with every other, because the friction log is append-only and mandatory
+AREA: cli
+SEVERITY: slows
+STATUS: open
+DATE: 2026-08-20
+SESSION: amux-errors-and-bugs
+CARD: AEAB-40
+SYMPTOM: `.claude/rules/frustrations.md` mandates an entry for any amux friction and says
+  "Append at the bottom", so every branch doing real work ends by appending to the same last
+  line of the same file. Two branches in flight is a guaranteed textual conflict. Hit three
+  times today on PRs #132, #133 and #136.
+COST: ~20 minutes of CI per occurrence, three times, because GitHub does not run PR
+  workflows on a head it cannot merge — so the PR shows NO CHECKS AT ALL rather than a
+  failure. "no checks reported" and "all checks passed" are one glance apart in
+  `gh pr checks`; I nearly read the absence as green. All three branches were mine, so no
+  peer was blocked this time, but a peer would have been.
+FIX: Open, and it is a design call rather than a patch — carded as AEAB-40 and parked
+  needs:you. NOT `merge=union` in .gitattributes: this repo's own history records union-
+  merging this file splicing fragments of different entries together, leaving one entry
+  carrying another's `FIX:` line, which silently corrupts the `grep '^STATUS: open'` counts
+  the file exists for. A conflict that stops you beats a merge that lies. The candidate I
+  would pick is one file per entry (`frustrations/YYYY-MM-DD-slug.md`), which makes the
+  conflict structurally impossible, with the work being the greps in the rules, CLAUDE.md
+  and `scripts/frustrations_audit.py`. Interim recipe, which worked three times today: take
+  origin's file, append your entries VERBATIM, never let git interleave, then run the audit.
