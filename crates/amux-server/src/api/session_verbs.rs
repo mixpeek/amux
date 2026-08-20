@@ -544,17 +544,23 @@ fn iterm2_id(cfg: &EnvFile) -> String {
 // ---------------------------------------------------------------------------
 
 /// The store this server opened, by the SAME rule `ServerConfig::load` uses:
-/// `AMUX_DB` if set, else `<home>/amux.db`. `server.env` is exported into the
-/// process env at load, so the var is visible here.
+/// `AMUX_DB` if set, else `<home>/amux.db`, where `<home>` comes from
+/// `config::amux_home` — `AMUX_HOME`, legacy `CC_HOME`, `~/.amux`, `/.amux`.
+/// `server.env` is exported into the process env at load, so `AMUX_DB` is
+/// visible here.
 ///
-/// Not `<home>/amux.db` unconditionally: under `AMUX_DB` that path is a
-/// DIFFERENT file — usually absent, so every worker would look unknown and
-/// herdr peek/send would fail with "not addressable" on a correctly
-/// configured server.
-fn store_db_path() -> Option<std::path::PathBuf> {
+/// Both halves are deliberate. Ignoring `AMUX_DB` would point at a file that
+/// is usually absent, so every worker would look unknown and herdr peek/send
+/// would answer "not addressable" on a correctly configured server. And
+/// resolving the home locally is what config.rs's own history warns about:
+/// `CC_HOME` used to be honoured by one of ten copies, which is how one
+/// server came to read two data directories. There is one resolver; this uses
+/// it. (`home()` and `dirs_home()` in this file still predate it and skip
+/// `CC_HOME` — untouched here, but they are the same hazard.)
+fn store_db_path() -> PathBuf {
     match std::env::var("AMUX_DB") {
-        Ok(p) if !p.trim().is_empty() => Some(PathBuf::from(p.trim())),
-        _ => Some(dirs_home()?.join("amux.db")),
+        Ok(p) if !p.trim().is_empty() => PathBuf::from(p.trim()),
+        _ => crate::config::amux_home().join("amux.db"),
     }
 }
 
@@ -568,7 +574,7 @@ fn store_db_path() -> Option<std::path::PathBuf> {
 fn herdr_target(name: &str) -> Option<(Arc<dyn crate::backend::SessionBackend>, ProcessRef)> {
     let backend = crate::backend::process_backend("herdr")?;
     let conn = rusqlite::Connection::open_with_flags(
-        store_db_path()?,
+        store_db_path(),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .ok()?;
