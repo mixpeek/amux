@@ -3370,7 +3370,6 @@ FIX: Capture curl's OWN exit status at both sites instead of piping it, and on a
   every `sys.exit(0)` written to make a step non-fatal. Any `cmd | python3 -c '...exit(0)'`
   in this file has the same defect latent. Grep for the pattern before trusting that a step
   is really optional.
-
 ---
 ## The "oldest undeployed commit" age was the NEWEST one, so an overnight lag read as 3 minutes
 AREA: instruments
