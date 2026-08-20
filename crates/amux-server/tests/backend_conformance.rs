@@ -154,6 +154,19 @@ async fn mid_lifecycle(
         .await
         .map_err(|e| format!("capture errored: {e}"))?;
 
+    // send_text NEVER SILENTLY SUCCEEDS. The probe pane runs a plain command,
+    // not an agent, so no backend can accept a prompt for it: tmux has no
+    // delivery here at all (session_verbs owns its keystroke path) and herdr's
+    // `agent prompt` refuses a pane it has not recognized as an agent. `Ok`
+    // would mean the caller was told "delivered" about a message that went
+    // nowhere — the one outcome that costs a real message.
+    if let Ok(()) = backend.send_text(proc, "conformance probe").await {
+        return Err(format!(
+            "send_text reported success for {ref_}, whose pane hosts a plain command and \
+             cannot accept a prompt — a delivery claim nobody can honour"
+        ));
+    }
+
     let attach = backend
         .attach_info(proc)
         .await

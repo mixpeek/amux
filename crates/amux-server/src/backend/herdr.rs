@@ -50,6 +50,9 @@ use super::{
 const OP_TIMEOUT: Duration = Duration::from_secs(5);
 /// Capture can move more bytes over the socket API.
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Prompt submission walks the agent's composer, so it gets the same budget
+/// the retired agent-name path used rather than the bare op timeout.
+const PROMPT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Shell-readiness poll: 32 * 250ms = 8s budget (observed ~2s on this machine).
 const READY_POLLS: u32 = 32;
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -246,6 +249,33 @@ impl HerdrBackend {
             )));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Clear the composer, then submit `text` as a prompt to the pane's agent.
+    ///
+    /// Two verbs with different success shapes, so they cannot share a runner:
+    /// `pane send-keys` prints NOTHING on success (exit 0, empty stdout —
+    /// measured against herdr 0.8.0) and only emits an envelope when it fails,
+    /// while `agent prompt` answers with a normal `{"result":..}` envelope.
+    ///
+    /// The clear is best-effort: it is a hygiene step, and failing the send
+    /// because a keystroke was refused would turn a probably-deliverable
+    /// prompt into a hard error.
+    async fn do_pane_prompt(&self, pane: &str, text: &str) -> Result<()> {
+        let clear = self
+            .run_raw(&["pane", "send-keys", pane, "ctrl+u"], OP_TIMEOUT)
+            .await;
+        if let Ok(out) = &clear {
+            if !out.status.success() {
+                tracing::debug!(
+                    pane,
+                    "herdr pane send-keys ctrl+u did not clear the composer: {}",
+                    String::from_utf8_lossy(&out.stdout).trim()
+                );
+            }
+        }
+        self.run_json(&["agent", "prompt", pane, text], PROMPT_TIMEOUT).await?;
+        Ok(())
     }
 }
 
@@ -465,6 +495,35 @@ impl SessionBackend for HerdrBackend {
                 self.do_pane_read(&pane, lines).await
             }
             _ => result,
+        }
+    }
+
+    /// `agent prompt <pane> <text>` — herdr's own prompt-submission verb,
+    /// addressed by PANE ID (verified against herdr 0.8.0: `agent get w2:p1`
+    /// resolves, so a pane is a valid agent target).
+    ///
+    /// Not `pane send-text`: a `\n` inside that verb is delivered as Enter
+    /// (measured 2026-08-20 — `"echo AAA\necho BBB"` ran AAA and left BBB in
+    /// the composer), so a multi-line prompt would submit its first line and
+    /// strand the rest. `agent prompt` is the verb that knows how to hand a
+    /// whole prompt to a recognized agent.
+    ///
+    /// A pane whose process herdr does NOT recognize as an agent (a bare
+    /// shell — GAP-ATTACH) fails here rather than typing into it blind. That
+    /// is the honest answer: the provider is not accepting prompts.
+    ///
+    /// `ctrl+u` first, so a prompt never concatenates onto whatever was left
+    /// in the composer. Pane-not-found retries once cold like `capture` — the
+    /// pane id is cached and a restarted worker gets a new one.
+    async fn send_text(&self, proc: &ProcessRef, text: &str) -> Result<()> {
+        let pane = self.resolve_pane(&proc.backend_ref).await?;
+        match self.do_pane_prompt(&pane, text).await {
+            Err(BackendError::NotFound(_)) => {
+                self.evict_pane(&proc.backend_ref);
+                let pane = self.resolve_pane(&proc.backend_ref).await?;
+                self.do_pane_prompt(&pane, text).await
+            }
+            other => other,
         }
     }
 

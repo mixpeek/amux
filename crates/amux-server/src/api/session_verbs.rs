@@ -44,6 +44,8 @@ use super::AppState;
 use crate::api::fs::{body_str, parse_body, parse_qs, qs_get};
 use crate::api::sessions_legacy::strip_ansi;
 use crate::backend::tmux::{pane_target, session_target};
+use crate::backend::{BackendStatus, ProcessRef};
+use amux_core::ids::WorkerId;
 use amux_core::provider::ProviderCapabilities;
 use axum::extract::{Path as AxumPath, RawQuery, State};
 use axum::http::{HeaderMap, Method, StatusCode};
@@ -53,6 +55,7 @@ use axum::{Json, Router};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Compile-once regex at the use site: each expansion gets its own static.
@@ -523,88 +526,127 @@ fn iterm2_id(cfg: &EnvFile) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// herdr ops via the CLI (py:4700-5150). One named session (AMUX_HERDR_SESSION,
-// default "amux"); agent name from CC_HERDR_AGENT or the lowercase mapping.
+// herdr ops through the BACKEND (backend::herdr), not a second CLI client.
+//
+// ADDRESSING IS THE WHOLE POINT. A herdr-hosted worker is a herdr *workspace*
+// labelled `amux-{worker_id}` — `backend_ref` owns that derivation (Invariant
+// 43). The path retired here spoke to herdr directly and derived a herdr
+// *agent name* from the DISPLAY NAME instead, which nothing ever created:
+// measured 2026-08-20 against herdr 0.8.0, `agent get sphinx-frontend` answers
+// `agent_not_found` while `workspace list` shows the pane under
+// `amux-wrk_01M0EJKXQ8Q4P2FPKE0730GVP3`. So every herdr peek read BLANK and
+// every herdr send reported "not running" — the two symptoms this replaces.
+//
+// Delegating also means one herdr client in the process: the backend already
+// owns `--session` routing, the JSON envelope, timeouts, and a pane-id cache
+// with cold-retry on eviction. Duplicating that here is how the two copies
+// drifted into disagreeing about what a worker is called.
 // ---------------------------------------------------------------------------
 
-fn herdr_session() -> String {
-    let s = std::env::var("AMUX_HERDR_SESSION").unwrap_or_default();
-    let s = s.trim();
-    if s.is_empty() { "amux".into() } else { s.to_string() }
+/// The store this server opened, by the SAME rule `ServerConfig::load` uses:
+/// `AMUX_DB` if set, else `<home>/amux.db`. `server.env` is exported into the
+/// process env at load, so the var is visible here.
+///
+/// Not `<home>/amux.db` unconditionally: under `AMUX_DB` that path is a
+/// DIFFERENT file — usually absent, so every worker would look unknown and
+/// herdr peek/send would fail with "not addressable" on a correctly
+/// configured server.
+fn store_db_path() -> Option<std::path::PathBuf> {
+    match std::env::var("AMUX_DB") {
+        Ok(p) if !p.trim().is_empty() => Some(PathBuf::from(p.trim())),
+        _ => Some(dirs_home()?.join("amux.db")),
+    }
 }
 
-fn herdr_agent_name(name: &str) -> String {
-    let cfg = parse_env(name);
-    let existing = cfg.get_or("CC_HERDR_AGENT", "").trim().to_string();
-    if !existing.is_empty() {
-        return existing;
-    }
-    // Python persists the mapping back into the env file (py:4779); reading
-    // side only here — the write happens on herdr start, which stays a gap.
-    let re = cached_re!(r"[^a-z0-9_-]");
-    let mut mapped = re.replace_all(&name.to_lowercase(), "-").into_owned();
-    let re2 = cached_re!(r"-{2,}");
-    mapped = re2.replace_all(&mapped, "-").trim_matches('-').chars().take(32).collect();
-    mapped = mapped.trim_matches('-').to_string();
-    if mapped.is_empty() || !mapped.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false) {
-        mapped = format!("a-{mapped}").chars().take(32).collect::<String>().trim_end_matches('-').to_string();
-    }
-    mapped
-}
-
-async fn herdr_json(args: &[&str], timeout: Duration) -> Option<Value> {
-    let hs = herdr_session();
-    let mut full: Vec<&str> = vec!["--session", &hs];
-    full.extend_from_slice(args);
-    let out = run_cmd("herdr", &full, timeout).await?;
-    if !out.status.success() {
-        return None;
-    }
-    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
-    if !v.is_object() || v.get("error").map(|e| !e.is_null()).unwrap_or(false) {
-        return None;
-    }
-    Some(v)
+/// The herdr backend plus this worker's process ref, or `None` when herdr is
+/// not a configured backend, the backend set was never published (unit tests,
+/// migrate-only mode), or `name` is not a worker in the store.
+///
+/// `None` is "cannot address", never "not running": callers map it to a read
+/// failure rather than an empty terminal, so a misconfiguration cannot
+/// masquerade as a quiet session.
+fn herdr_target(name: &str) -> Option<(Arc<dyn crate::backend::SessionBackend>, ProcessRef)> {
+    let backend = crate::backend::process_backend("herdr")?;
+    let conn = rusqlite::Connection::open_with_flags(
+        store_db_path()?,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .ok()?;
+    // Resolves ids, display names, and post-rename aliases (Invariant 17) —
+    // the same lookup the worker API uses, so an alias that peeks also sends.
+    let row = crate::db::queries::get_worker(&conn, name).ok().flatten()?;
+    let id = WorkerId::parse(&row.id).ok()?;
+    Some((
+        backend,
+        ProcessRef { backend_ref: crate::backend::backend_ref(&id), pid: None },
+    ))
 }
 
 async fn herdr_agent_running(name: &str) -> bool {
-    let an = herdr_agent_name(name);
-    matches!(
-        herdr_json(&["agent", "get", &an], OP_TIMEOUT).await,
-        Some(v) if v["result"]["agent"].is_object()
-    )
+    let Some((backend, proc)) = herdr_target(name) else {
+        return false;
+    };
+    // Only a positive `Running` counts. An `Err` here is the herdr server
+    // being unreadable, which is NOT evidence the worker stopped (#84's rule,
+    // applied to a single worker instead of the fleet).
+    matches!(backend.status(&proc).await, Ok(BackendStatus::Running))
 }
 
 async fn herdr_capture(name: &str, lines: i64) -> String {
-    let an = herdr_agent_name(name);
-    let n = lines.max(1).to_string();
-    let hs = herdr_session();
-    let args = [
-        "--session", hs.as_str(), "agent", "read", an.as_str(),
-        "--source", "recent-unwrapped", "--lines", n.as_str(), "--format", "text",
-    ];
-    match run_cmd("herdr", &args, Duration::from_secs(8)).await {
-        Some(out) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
+    let Some((backend, proc)) = herdr_target(name) else {
+        return String::new();
+    };
+    let lines = lines.clamp(1, u32::MAX as i64) as u32;
+    match backend.capture(&proc, lines).await {
+        Ok(out) => out.trim().to_string(),
+        Err(e) => {
+            tracing::debug!(worker = name, "herdr capture failed: {e}");
+            String::new()
         }
-        _ => String::new(),
     }
 }
 
+/// A herdr-backed lane the backend cannot address: no herdr backend
+/// configured (`AMUX_HERDR_SESSION` unset), or no worker row to derive the
+/// workspace label from. A CAPABILITY GAP, not a failed delivery — classified
+/// 501 by `send_failure_status`, which reads this same constant so the
+/// producer and the classifier cannot drift apart.
+pub(crate) const HERDR_NOT_ADDRESSABLE: &str = "herdr lane is not addressable";
+
+/// Submit `text` to the worker's agent. Shared by `send` and by the `/exit`
+/// stop path, so both address the pane the same way.
+async fn herdr_prompt(name: &str, text: &str) -> Result<(), String> {
+    let Some((backend, proc)) = herdr_target(name) else {
+        return Err(HERDR_NOT_ADDRESSABLE.into());
+    };
+    backend.send_text(&proc, text).await.map_err(|e| e.to_string())
+}
+
 async fn herdr_send(name: &str, text: &str) -> (bool, String) {
-    if !herdr_agent_running(name).await {
-        return (false, "not running".into());
+    // ONE resolution for the whole send: the status probe, the picker read and
+    // the delivery all address the same pane, and a rename mid-send cannot
+    // land the text in a different worker than the one we checked.
+    let Some((backend, proc)) = herdr_target(name) else {
+        return (false, HERDR_NOT_ADDRESSABLE.into());
+    };
+    match backend.status(&proc).await {
+        Ok(BackendStatus::Running) => {}
+        Ok(_) => return (false, "not running".into()),
+        // A herdr server we cannot read is NOT a stopped worker (#84's rule).
+        // Reporting "not running" here would auto-wake a lane that is already
+        // up the moment herdr answers again.
+        Err(e) => return (false, format!("herdr status unreadable: {e}")),
     }
-    let cap = herdr_capture(name, 15).await;
-    if !cap.is_empty() && at_resume_picker(&cap) {
+    let cap = backend.capture(&proc, 15).await.unwrap_or_default();
+    if !cap.trim().is_empty() && at_resume_picker(cap.trim()) {
         return (false, "session is in resume picker".into());
     }
-    let an = herdr_agent_name(name);
-    let _ = herdr_json(&["agent", "send-keys", &an, "ctrl+u"], OP_TIMEOUT).await;
-    sleep_ms(100).await;
-    match herdr_json(&["agent", "prompt", &an, text], Duration::from_secs(15)).await {
-        Some(_) => (true, "sent".into()),
-        None => (false, "herdr prompt failed".into()),
+    match backend.send_text(&proc, text).await {
+        Ok(()) => (true, "sent".into()),
+        // NAME THE REASON. "herdr prompt failed" was one string for a closed
+        // workspace, a pane herdr does not recognize as an agent, and a dead
+        // herdr server — three different fixes for the human reading it.
+        Err(e) => (false, format!("herdr prompt failed: {e}")),
     }
 }
 
@@ -3476,6 +3518,12 @@ pub(crate) fn send_failure_status(msg: &str) -> (StatusCode, Option<&'static str
             Some("herdr session start is not ported to this origin — start the lane from herdr"),
         );
     }
+    if m.starts_with(HERDR_NOT_ADDRESSABLE) {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Some("this lane is herdr-backed but has no addressable workspace — check AMUX_HERDR_SESSION and that the worker exists"),
+        );
+    }
     if m.starts_with("iTerm2-backed sessions are not supported") {
         return (
             StatusCode::NOT_IMPLEMENTED,
@@ -5772,15 +5820,17 @@ async fn stop_session(name: &str) -> (bool, String) {
         if !herdr_agent_running(name).await {
             return (true, "not running".into());
         }
-        let an = herdr_agent_name(name);
         let mut meta = load_meta(name);
         if meta_str(&meta, "cc_session_name").is_empty() {
             meta.insert("cc_session_name".into(), json!(name));
             save_meta(name, &meta);
         }
-        let _ = herdr_json(&["agent", "send-keys", &an, "ctrl+u"], OP_TIMEOUT).await;
-        sleep_ms(100).await;
-        let _ = herdr_json(&["agent", "prompt", &an, "/exit"], Duration::from_secs(10)).await;
+        // Same addressing as `send` — a stop that typed /exit at the retired
+        // agent name reached nothing, then reported "stopped" after waiting
+        // 15s for the exit it never asked for.
+        if let Err(e) = herdr_prompt(name, "/exit").await {
+            return (false, format!("herdr /exit failed: {e}"));
+        }
         for _ in 0..30 {
             sleep_ms(500).await;
             if !herdr_agent_running(name).await {
@@ -8536,31 +8586,50 @@ async fn dispatch(
     q: Option<String>,
     body_bytes: axum::body::Bytes,
 ) -> Response {
-    // Rust-managed worker? Its verbs are the modern API's (kept from the
-    // retired proxy's guard — a legacy-path call gets a pointer, never a
-    // silent 404).
-    let is_rust_worker = state
-        .store
-        .read()
-        .ok()
-        .and_then(|conn| crate::db::queries::get_worker(&conn, &name).ok().flatten())
-        .is_some();
-    if is_rust_worker {
-        return jresp(
-            StatusCode::NOT_IMPLEMENTED,
-            json!({
-                "error": "rust-managed worker — use /api/workers",
-                "worker": name,
-                "hint": format!("/api/workers/{name}"),
-            }),
-        );
-    }
     // Python's route regex allows exactly action(/subid); deeper nesting 404s.
     let mut parts = verb.splitn(3, '/');
     let action = parts.next().unwrap_or("").to_string();
     let subid = parts.next().unwrap_or("").to_string();
     if parts.next().is_some() {
         return not_found();
+    }
+    // Rust-managed worker? Its LIFECYCLE verbs are the modern API's (kept from
+    // the retired proxy's guard — a legacy-path call gets a pointer, never a
+    // silent 404).
+    //
+    // But the pointer only helps when the modern API actually implements the
+    // verb, and for `peek`/`send` it did not: `/api/workers` mounts exactly
+    // `/`, `/{id}`, `/{id}/start`, `/{id}/stop`, `/{id}/peek`, so a send fell
+    // through to THIS dispatcher and answered 501 naming itself — a pointer at
+    // the path that just refused. The dashboard reaches every session verb by
+    // name through `/api/sessions/<name>/…`, so peek rendered blank and no
+    // prompt could be delivered to any worker in the store, herdr or tmux;
+    // `amux send` posts to `/api/workers/<name>/send` and hit the same wall,
+    // and its 501 carries an `error` field, so the CLI classified it as
+    // "server understood and refused" and did not retry.
+    //
+    // These two verbs are implemented HERE and nowhere else — origin stamping
+    // (AMUX-1768), cross-group scoping, msg_id idempotency, board capture and
+    // the delivery verdict all live in `send_post`. So they fall through, and
+    // everything else keeps the pointer until it has a modern home.
+    const NATIVE_ONLY_HERE: [&str; 2] = ["peek", "send"];
+    if !NATIVE_ONLY_HERE.contains(&action.as_str()) {
+        let is_rust_worker = state
+            .store
+            .read()
+            .ok()
+            .and_then(|conn| crate::db::queries::get_worker(&conn, &name).ok().flatten())
+            .is_some();
+        if is_rust_worker {
+            return jresp(
+                StatusCode::NOT_IMPLEMENTED,
+                json!({
+                    "error": "rust-managed worker — use /api/workers",
+                    "worker": name,
+                    "hint": format!("/api/workers/{name}"),
+                }),
+            );
+        }
     }
     let qs = parse_qs(q.as_deref().unwrap_or(""));
     let body: Value = match parse_body(&body_bytes) {
@@ -13729,6 +13798,80 @@ mod tests {
         );
         // And an explicit off is not yolo either.
         assert!(!yolo_enabled("--model opus", Some("0")));
+    }
+
+    /// A rust-managed worker keeps the modern pointer for every verb EXCEPT
+    /// `peek` and `send`, which are implemented here and nowhere else.
+    ///
+    /// The regression this pins: `/api/workers` mounts `/`, `/{id}`,
+    /// `/{id}/start`, `/{id}/stop`, `/{id}/peek` — no `send` — so the blanket
+    /// guard answered 501 "use /api/workers" for the only send implementation
+    /// there is, naming the path that had just refused. Everything the
+    /// dashboard does is `/api/sessions/<name>/<verb>`, so peek rendered blank
+    /// and no prompt reached any worker in the store; `amux send` posts to
+    /// `/api/workers/<name>/send`, hit the same wall, and treated the `error`
+    /// field as a considered refusal rather than retrying.
+    ///
+    /// Both spellings, because the two routes share this dispatcher and an
+    /// allow-list that covered one of them would be a coin flip for the CLI.
+    #[tokio::test]
+    async fn rust_worker_pointer_exempts_peek_and_send() {
+        use amux_core::provider::ProviderId;
+        use amux_core::session::BackendId;
+        use amux_core::worker::WorkerConfig;
+        use crate::db::queries::WorkerRow;
+        use crate::db::WriteOutcome;
+
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (state, _dir) = state();
+
+        let id = WorkerId::from_ulid(ulid::Ulid::new());
+        let config = WorkerConfig {
+            display_name: "hw".into(),
+            name_aliases: Vec::new(),
+            cwd: "/tmp".into(),
+            provider: ProviderId::new("claude"),
+            model: None,
+            backend: BackendId::from("herdr"),
+            environment: Default::default(),
+            permissions: Vec::new(),
+            group: None,
+        };
+        let row = WorkerRow::new(&id, &config, &chrono::Utc::now().to_rfc3339());
+        state
+            .store
+            .write(move |conn| {
+                crate::db::queries::insert_worker(conn, &row)?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .expect("worker insert");
+
+        let app: Router = routes().with_state(state);
+
+        // NO env file for `hw`: peek and send reach their real handler, which
+        // applies its OWN session check. 404 is the proof the guard let go —
+        // and it keeps the test from auto-waking a session and launching a
+        // terminal on the machine running it.
+        for (method, path) in [
+            ("GET", "/api/sessions/hw/peek"),
+            ("POST", "/api/sessions/hw/send"),
+            ("GET", "/api/workers/hw/peek"),
+            ("POST", "/api/workers/hw/send"),
+        ] {
+            let body = (method == "POST").then(|| json!({"text": "hi"}));
+            let (st, v) = call(&app, method, path, body).await;
+            assert_eq!(st, StatusCode::NOT_FOUND, "{method} {path} -> {v}");
+            assert_eq!(v["error"], json!("session 'hw' not found"), "{path}");
+        }
+
+        // Every other verb still points at the modern API.
+        for path in ["/api/sessions/hw/meta", "/api/sessions/hw/stats", "/api/sessions/hw"] {
+            let (st, v) = call(&app, "GET", path, None).await;
+            assert_eq!(st, StatusCode::NOT_IMPLEMENTED, "{path} -> {v}");
+            assert_eq!(v["hint"], json!("/api/workers/hw"), "{path}");
+        }
     }
 
     #[tokio::test]
