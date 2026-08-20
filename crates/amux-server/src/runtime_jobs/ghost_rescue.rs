@@ -195,13 +195,31 @@ pub async fn sweep<P: Pane>(sweeper: &Sweeper, pane: &P, state: Option<&AppState
         pane.key(&lane, "Escape").await;
         tokio::time::sleep(Duration::from_millis(60)).await;
         pane.key(&lane, "Enter").await;
+        // `ghost` is a PANE SCRAPE, and `composer_state` builds it with
+        // `plain.extend(p.split_whitespace())` — words concatenated with the
+        // whitespace DISCARDED. That is right for its real job (comparing two
+        // captures of a wrapped terminal line, where whitespace is an artifact of
+        // the wrap), and wrong for anything a human reads.
+        //
+        // AEAB-38: on 2026-08-20 this line logged a real 12:50AM message as
+        // "Canyoufightthisforme?Don'tsendbutdodraftandaddresstotherightperson",
+        // which reads as the user's prompt having been corrupted in delivery. It
+        // was not — the board card auto-captured from the same send has the text
+        // intact, and the rescue presses Enter on whatever is already in the
+        // composer rather than retyping it, so delivery cannot mangle anything.
+        //
+        // The storage stays as-is: changing it would alter the equality check
+        // above and `is_amux_ghost`, for a display problem. So the LINE says what
+        // the preview is instead of implying it is the message.
         let preview: String = ghost.chars().take(80).collect();
         // LOUD, because a rescue means the send path failed.
         tracing::warn!(
             session = %lane,
             preview = %preview,
-            "[ghost-rescue] session={lane} submitted stuck amux message: {preview:?} \
-             — the send path failed to submit it; this is a defect, not routine"
+            "[ghost-rescue] session={lane} submitted stuck amux message; the send path \
+             failed to submit it, which is a defect, not routine. Pane-scrape preview \
+             (WHITESPACE STRIPPED — this is not the literal message, and the message \
+             itself is unaltered): {preview:?}"
         );
         if let Some(st) = state {
             crate::api::session_verbs::emit_event(

@@ -150,7 +150,16 @@ if [ -r "$PROV" ]; then
         # Age of the OLDEST commit the running build is missing. A count alone
         # reads as bookkeeping; "and the oldest is 11 hours old" is the number
         # that says whether a fix has been sitting undeployed overnight.
-        oldest="$(git log -1 --format=%cr "${prov_sha}..origin/main" 2>/dev/null | tail -1)"
+        # `--reverse | head -1`, NOT `-1 ... | tail -1`. The `-1` limits git to ONE
+        # commit — the NEWEST — so `tail -1` never sees a second line and the
+        # "oldest" figure was always the newest. Measured 2026-08-20: it printed
+        # "3 minutes ago" while the oldest undeployed commit was 23 HOURS old.
+        # This line exists specifically to distinguish "just merged, builder is
+        # about to pick it up" from "a fix has been sitting undeployed overnight",
+        # and the second case is the one it could never show. A bare count reads
+        # as bookkeeping; the age is what makes it actionable, so an age that is
+        # always small makes the whole line reassuring noise.
+        oldest="$(git log --reverse --format=%cr "${prov_sha}..origin/main" 2>/dev/null | head -1)"
         out+="  - the RUNNING SERVER is ${built_behind} commit(s) behind origin/main"$'\n'
         out+="    built ${prov_sha:0:9}; oldest undeployed commit landed ${oldest:-?}"$'\n'
         out+=$'    merging does NOT deploy — the build source advances only when someone\n'

@@ -203,6 +203,51 @@ if setup_ok "lag0" "$out"; then
   lacks "$NEVERMARK" "$out"
 fi
 
+# (i2) AEAB-32 follow-up — the AGE must be the OLDEST undeployed commit, not the
+#      newest. Shipped as `git log -1 ... | tail -1`, where `-1` limits git to one
+#      commit so `tail` never sees a second line: it printed "3 minutes ago" while
+#      the oldest undeployed commit was 23 HOURS old. The line exists to separate
+#      "just merged, the builder is about to pick it up" from "a fix has sat
+#      undeployed overnight", and only the second is worth waking up for — so an
+#      age that is always small turns the whole line into reassuring noise.
+#
+#      Every case above passes with it broken; they assert the COUNT. This asserts
+#      the age, using commits with deliberately different dates.
+lag_age_run() {
+  local d="$TMP/lagage"; rm -rf "$d"
+  git init -q --bare -b main "$d/origin.git"
+  git clone -q "$d/origin.git" "$d/work" 2>/dev/null
+  local built=""
+  ( cd "$d/work"
+    git checkout -q -B main
+    mkdir -p .claude; cp "$HOOK" .claude/session-freshness.sh
+    echo seed > seed.txt; git add -A; git commit -qm seed
+    git push -q -u origin main ) >/dev/null 2>&1
+  built=$(cd "$d/work" && git rev-parse HEAD)
+  # OLD commit first, then a RECENT one. If the hook reports the newest, it will
+  # say "seconds/minutes"; if it reports the oldest it must say years.
+  ( cd "$d/work"
+    echo a > a.txt; git add -A
+    GIT_AUTHOR_DATE="2020-01-01T00:00:00" GIT_COMMITTER_DATE="2020-01-01T00:00:00" git commit -qm old
+    echo b > b.txt; git add -A; git commit -qm recent
+    git push -q origin main ) >/dev/null 2>&1
+  local pf="$d/prov.json"
+  printf '{"sha":"%s","ref":"main","on_main":"yes","built_at":"x"}\n' "$built" > "$pf"
+  ( cd "$d/work"
+    git fetch -q origin 2>/dev/null
+    n=$(git rev-list --count "${built}..origin/main" 2>/dev/null || echo x)
+    [ "$n" = "2" ] || { echo "SETUP BROKEN for lagage: wanted 2 behind, got $n"; exit 0; }
+    AMUX_RS_BUILD_PROVENANCE="$pf" bash .claude/session-freshness.sh 2>&1 )
+}
+out=$(lag_age_run)
+if setup_ok "lagage" "$out"; then
+  says "2 commit(s) behind" "$out"
+  # The oldest is dated 2020, so a correct reader says "years ago". A reader
+  # taking the newest says seconds/minutes — the failure this pins.
+  if printf '%s\n' "$out" | grep -qE "oldest undeployed commit landed [0-9]+ years ago"; then PASS=$((PASS+1));
+  else FAIL=$((FAIL+1)); echo "FAIL: (i2) the age must be the OLDEST undeployed commit, not the newest"; echo "  got: $out"; fi
+fi
+
 # (h) A sha this checkout has never heard of: the fleet is running something that
 #     never reached origin. That is informative, not a parse error to swallow —
 #     and it must NOT be reported as an ordinary lag, which would understate it.

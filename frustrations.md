@@ -3371,3 +3371,59 @@ FIX: Capture curl's OWN exit status at both sites instead of piping it, and on a
   every `sys.exit(0)` written to make a step non-fatal. Any `cmd | python3 -c '...exit(0)'`
   in this file has the same defect latent. Grep for the pattern before trusting that a step
   is really optional.
+
+---
+## The "oldest undeployed commit" age was the NEWEST one, so an overnight lag read as 3 minutes
+AREA: instruments
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-08-20
+SESSION: amux-errors-and-bugs
+CARD: AEAB-39
+SYMPTOM: The SessionStart hook printed "the RUNNING SERVER is 4 commit(s) behind
+  origin/main / built 9f92a631f; oldest undeployed commit landed 3 minutes ago". The oldest
+  undeployed commit was 23 HOURS old (7ac99632). The line computed
+  `git log -1 --format=%cr <range> | tail -1`, and `-1` limits git to one commit — the
+  newest — so `tail -1` never sees a second line.
+COST: The count was right; the number that makes it ACTIONABLE was always small. This line
+  exists to separate "just merged, the builder is about to pick it up" from "a fix has sat
+  undeployed overnight", and only the second is worth acting on — so the alarming case is
+  precisely the one it could never display. It would have read as reassuring every time,
+  forever. I shipped it yesterday in the same commit whose message argued that a bare count
+  "reads as bookkeeping" and the age is what makes it actionable.
+FIX: `git log --reverse --format=%cr <range> | head -1`. New case (i2) in
+  test-session-freshness.sh builds a repo with one commit dated 2020 and one dated now, so
+  taking the newest says "seconds ago" and taking the oldest says "years ago". The 25-case
+  suite passed with the bug present because every other case asserts the COUNT — a whole
+  suite around a line, none of it testing the field that carries the meaning.
+  Fourth instance this session of a check I wrote reporting something plausible but wrong
+  (LR-37 filter, LR-42 vantage, LR-43 proximity grep, this). The common shape is not
+  carelessness: each probe RAN and returned something usable, so nothing prompted a
+  recheck. What catches them is comparing the output against an independently-known value —
+  here, `git log` over the same range without `-1`.
+
+---
+## A ghost-rescue log quoted a pane scrape as the user's message, and it reads as corruption
+AREA: instruments
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-08-20
+SESSION: amux-errors-and-bugs
+CARD: AEAB-38
+SYMPTOM: At 00:50 EDT the owner sent a real message from their phone; the send path failed
+  to submit it and ghost-rescue recovered it. The WARN line quoted it as
+  "Canyoufightthisforme?Don'tsendbutdodraftandaddresstotherightperson" — every space gone.
+  That reads unmistakably as the prompt being corrupted somewhere in delivery.
+COST: Nearly a filed user-facing data-corruption bug, on the owner's own overnight message,
+  which is about the worst thing to be wrong about. Cost ~10 minutes to disprove.
+FIX: The preview is a PANE SCRAPE. `composer_state` builds it with
+  `plain.extend(p.split_whitespace())` — words concatenated, whitespace discarded — which
+  is CORRECT for its actual job (comparing two captures of a WRAPPED terminal line, where
+  whitespace is an artifact of the wrap) and wrong for anything a human reads. The
+  discriminator: the board card auto-captured from the same send (PP-7) has the text intact,
+  and the rescue presses Enter on what is already in the composer rather than retyping, so
+  delivery cannot alter it. Storage unchanged — altering it would change the equality check
+  and `is_amux_ghost` to fix a display problem — and the LINE now says what the preview is.
+  This is the D1 terminal-scraping deviation showing through: a value computed for MACHINE
+  COMPARISON was reused for HUMAN DISPLAY, where its lossy normalisation reads as
+  corruption. Before quoting a scraped value in a log, ask what was normalised out of it.
