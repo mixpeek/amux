@@ -30,6 +30,21 @@ CLI         amux-rs --url https://localhost:8824 health
 
 Open **https://localhost:8824**, accept the self-signed cert warning once, and add your first worker from the dashboard. Re-running `./install.sh` upgrades in place and never touches your data; `./uninstall.sh` removes the binaries and agents and leaves `~/.amux` alone.
 
+### After first install
+
+Once installed, day-to-day commands are short:
+
+```bash
+make run        # rebuild + reinstall; the running server self-adopts in ~5s
+make dev        # run against a scratch DB (safe for testing migrations)
+make status     # launchd + /health at a glance
+make restart    # kick the launchd-managed server
+make check      # cargo check + JS syntax (fast, no link)
+make test       # clippy + cargo test
+```
+
+`make run` is the command after `git pull` — it rebuilds release, installs the binary, and the launchd-managed server picks it up automatically. `make dev` is for working on migrations or features you don't want touching the live DB.
+
 **Requirements:** macOS (primary; on Linux the installer builds and installs the binaries and prints how to run the server), tmux 3.2+, and at least one of Claude Code, Codex CLI, or Gemini CLI. The Rust toolchain is installed via rustup if you don't have it (with your confirmation).
 
 > **License:** [MIT + Commons Clause](LICENSE) — free to use, modify, and self-host. Commercial resale requires a separate license.
