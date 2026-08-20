@@ -149,8 +149,8 @@ _use_cc() {
 }
 
 cmd_attach() {
-  require_config
-  # Flags may appear before or after the name; they override AMUX_CC / auto-detect.
+  # attach only needs SSH access (host + user), not the REST API token —
+  # _ssh_host validates that AMUX_SSH_HOST or AMUX_URL provides a host.
   local name=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
