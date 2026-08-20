@@ -3331,7 +3331,6 @@ WHY IT IS WORTH AN ENTRY EVEN THOUGH I FIXED IT: the ethos file records "a thres
   earlier two were also written down. The generalisable check: when adding an early exit,
   state the RANGE OF INPUTS under which it fires, and confirm the live system produces
   values in that range.
-
 ---
 ## `set -euo pipefail` turned a deliberately non-fatal board write into a silent abort
 AREA: cli
