@@ -65,10 +65,35 @@ def main():
             # blind, and then the one push that really does carry someone
             # else's work sails through. Bound the walk by what origin ALREADY
             # has, which is the question the guard actually means to ask.
-            if remote_sha == ZERO:
-                rng_args = [local_sha, "--not", "--remotes=origin"]
-            else:
-                rng_args = [remote_sha + ".." + local_sha]
+            #
+            # The SAME bound is needed when remote_sha is real, and for the same
+            # reason. `remote_sha..local_sha` reads as "what this push adds",
+            # and it is that only while the push fast-forwards. Rebase the
+            # branch onto current origin/main — which is the hygiene everyone is
+            # told to do before pushing — and the old tip stops being an
+            # ancestor, so that range widens to every commit rebased ONTO,
+            # all of them already on origin and shipping nothing. Measured
+            # 2026-08-22: a branch adding 2 commits was blocked as "22 commits
+            # authored by another session", and all 22 were provably ancestors
+            # of origin/main.
+            #
+            # So the guard punished exactly the practice it wants, and the
+            # paragraph above already says why that is the worse failure: an
+            # alarm that fires on a routine, correct action teaches the reflex
+            # of setting AMUX_ALLOW_FOREIGN=1 blind, and then the push that
+            # really does carry someone else's work sails through. The escape
+            # is worded "if the human explicitly asked you to ship everything",
+            # which is FALSE in this case — so the honest options were to lie or
+            # to stop. That is rule 3, and the fix is to make the question
+            # right rather than to widen the escape.
+            #
+            # One expression for both cases: everything reachable from what is
+            # being pushed, minus everything origin already has. remote_sha is
+            # listed explicitly as well, so a remote ref this checkout has not
+            # fetched still bounds the walk.
+            rng_args = [local_sha, "--not", "--remotes=origin"]
+            if remote_sha != ZERO:
+                rng_args.append(remote_sha)
             out = subprocess.run(
                 ["git", "log", "--format=%h%x1f%s%x1f%(trailers:key=Amux-Session,valueonly)"]
                 + rng_args,
