@@ -108,6 +108,7 @@ pub mod ids {
     pub const PANE_SIZE: &str = "pane_size";
     pub const STORAGE: &str = "storage";
     pub const HEARTBEAT: &str = "heartbeat";
+    pub const TAILNET_WATCH: &str = "tailnet-watch";
 }
 
 /// Every id above, enumerated. `mod ids` is a set of constants and Rust cannot
@@ -134,6 +135,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::PANE_SIZE,
     ids::STORAGE,
     ids::HEARTBEAT,
+    ids::TAILNET_WATCH,
 ];
 
 /// An env var this job reads at startup. It is a READOUT, never a switch: a
@@ -355,6 +357,14 @@ pub const CATALOG: &[Doc] = &[
         id: ids::SELF_ADOPT,
         name: "Self-adoption watch",
         purpose: "Exits 0 when the installed binary changes on disk so launchd relaunches the new build instead of serving stale code.",
+        env: NO_ENV,
+        pref: None,
+        detail: None,
+    },
+    Doc {
+        id: ids::TAILNET_WATCH,
+        name: "Tailnet watch",
+        purpose: "Samples `tailscale status` for node-key expiry and reachability, and caches the verdict for /health — so the tailnet going away is visible before the day it takes remote access with it.",
         env: NO_ENV,
         pref: None,
         detail: None,

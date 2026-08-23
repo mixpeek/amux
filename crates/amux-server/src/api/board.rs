@@ -2122,12 +2122,55 @@ fn gate_409(
     eff_gate: &[String],
     target_raw: &str,
     wb: &[amux_core::board::WhyBlocked],
+    gate_source: Option<&bs::GateSource>,
 ) -> Value {
     let checked_args = eff_gate
         .iter()
         .map(|g| format!("{:?}", g))
         .collect::<Vec<_>>()
         .join(" ");
+    // A HINT THAT CANNOT APPLY MUST NOT PRINT (AF-169).
+    //
+    // This body always said "set its type — the gate is DERIVED from the type",
+    // which is true only when the TYPE DEFAULT is what refused. For a card in a
+    // worker- or group-scoped gate, retyping changes nothing: the operator
+    // retypes, re-runs, and gets the identical refusal. AF-168's reporter did
+    // exactly that on TUBES-2053 (code -> research), watched the done gate not
+    // move, and concluded the gate was pinned per-card. The hint is what sent
+    // them there. It cost amux-frustrations a retry too, on a card that was not
+    // mistyped.
+    //
+    // `gate_source` comes from the resolver's own walk, so the advice and the
+    // enforcement cannot disagree — the same predicate, not a second reading of
+    // it. Where retyping DOES help the hint still prints; where it does not,
+    // the body names the scope the bar actually came from and points at
+    // /api/board/session-gates, which answers "does this scope have a custom
+    // gate" in one call and which nothing surfaces until you trip it.
+    let mut how_to_ack = serde_json::Map::new();
+    how_to_ack.insert("gate_ack".into(), json!(true));
+    how_to_ack.insert("or_gate_checked".into(), json!(eff_gate));
+    how_to_ack.insert(
+        "contract".into(),
+        json!(format!(
+            "GET /api/board/contract?card={} (the RESOLVED gate for this card — the bare \
+             contract lists only type defaults, AF-112)",
+            row.id
+        )),
+    );
+    match gate_source {
+        Some(src) if !src.retype_would_help() => {
+            how_to_ack.insert("gate_source".into(), json!(src.explain()));
+        }
+        _ => {
+            how_to_ack.insert(
+                "wrong_type?".into(),
+                json!("If this item has no code, set its type \
+                       (escalation/blocker/investigation/ops/research/chore/doc) — the gate \
+                       is DERIVED from the type. Never ack a merge that did not happen."),
+            );
+        }
+    }
+    let how_to_ack = Value::Object(how_to_ack);
     json!({
         "error": "gate not acknowledged",
         "ok": false,
@@ -2136,12 +2179,7 @@ fn gate_409(
         "attempted_status": target_raw,
         "item": row.id,
         "item_type": row.item_type,
-        "how_to_ack": {
-            "gate_ack": true,
-            "or_gate_checked": eff_gate,
-            "contract": format!("GET /api/board/contract?card={} (the RESOLVED gate for this card — the bare contract lists only type defaults, AF-112)", row.id),
-            "wrong_type?": "If this item has no code, set its type (escalation/blocker/investigation/ops/research/chore/doc) — the gate is DERIVED from the type. Never ack a merge that did not happen.",
-        },
+        "how_to_ack": how_to_ack,
         "cli": format!("amux board {target_raw} {} --checked {checked_args}", row.id),
         "valid_types": bs::KNOWN_TYPES,
         "kind": "gate_blocked",
@@ -2749,7 +2787,7 @@ pub async fn patch_item(
                                 &slot_w,
                                 PatchOut::Refused(
                                     StatusCode::CONFLICT,
-                                    gate_409(&next, &eff_gate, &target_raw, &[]),
+                                    gate_409(&next, &eff_gate, &target_raw, &[], None),
                                 ),
                                 no_write(),
                             );
@@ -2925,7 +2963,18 @@ pub async fn patch_item(
                             }
                         }
                     }
-                    let eff_gate = bs::effective_gate_configured(conn, &next, target);
+                    // Resolve the gate AND the tier that produced it in one walk
+                    // (AF-169): the refusal's advice must come from the same
+                    // predicate the enforcement used, not a second reading.
+                    let groups = next
+                        .session
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .map(crate::api::session_verbs::lane_groups)
+                        .unwrap_or_default();
+                    let (eff_gate, gate_source) =
+                        bs::effective_gate_with_source(conn, &next, target, &groups);
+                    let gate_src = Some(gate_source);
                     let gates = bs::core_gates(&eff_gate, target);
                     let target_raw = bs::status_to_db(target, &next.status);
 
@@ -3092,7 +3141,7 @@ pub async fn patch_item(
                                     &slot_w,
                                     PatchOut::Refused(
                                         StatusCode::CONFLICT,
-                                        gate_409(&next, &eff_gate, &target_raw, &wb),
+                                        gate_409(&next, &eff_gate, &target_raw, &wb, gate_src.as_ref()),
                                     ),
                                     no_write(),
                                 );
@@ -3204,7 +3253,7 @@ pub async fn patch_item(
                                 &slot_w,
                                 PatchOut::Refused(
                                     StatusCode::CONFLICT,
-                                    gate_409(&next, &eff_gate, &target_raw, &wb),
+                                    gate_409(&next, &eff_gate, &target_raw, &wb, gate_src.as_ref()),
                                 ),
                                 no_write(),
                             );
@@ -3267,7 +3316,7 @@ pub async fn patch_item(
                                 &slot_w,
                                 PatchOut::Refused(
                                     StatusCode::CONFLICT,
-                                    gate_409(&next, &eff_gate, &target_raw, &blocked),
+                                    gate_409(&next, &eff_gate, &target_raw, &blocked, gate_src.as_ref()),
                                 ),
                                 no_write(),
                             );

@@ -59,6 +59,7 @@ pub mod pane_size;
 pub mod registry;
 pub mod scheduler;
 pub mod storage;
+pub mod tailnet_watch;
 pub mod token_ledger;
 
 pub use scheduler::{

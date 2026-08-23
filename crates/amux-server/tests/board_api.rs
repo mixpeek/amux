@@ -2055,3 +2055,60 @@ async fn a_gate_without_a_named_peer_criterion_needs_no_reviewer() {
     assert_eq!(st, StatusCode::OK, "no reviewer required when nothing asks for one: {v}");
     assert_eq!(v["status"], json!("done"));
 }
+
+// ---- AF-169: a hint that cannot apply must not print ----------------------
+
+/// The 409 said "set its type — the gate is DERIVED from the type" on EVERY
+/// refusal. That is true only when the type default is what refused. For a card
+/// in a worker- or group-scoped gate, retyping changes nothing: AF-168's
+/// reporter retyped TUBES-2053 code -> research, watched the done gate not move,
+/// and concluded the override was pinned per-card. The hint sent them there.
+///
+/// Both branches are asserted. A fix that simply deleted `wrong_type?` would
+/// pass the scoped case and fail the type-default one, where the advice is
+/// correct and useful.
+#[tokio::test]
+async fn the_retype_hint_prints_only_when_retyping_would_actually_help() {
+    let (app, _dir) = app();
+
+    // (a) TYPE DEFAULT refused -> the hint is right, and must still appear.
+    // `artifact:` in the desc satisfies done_requires_asset_link, which fires
+    // BEFORE the ack gate — without it this test never reaches the hint at all.
+    let card = create(&app, json!({
+        "title": "plain code card", "status": "doing",
+        "desc": "artifact: crates/amux-server/src/api/board.rs",
+    })).await;
+    let id = card["id"].as_str().unwrap().to_string();
+    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({ "status": "done" }))).await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert!(
+        v["how_to_ack"]["wrong_type?"].is_string(),
+        "a type-derived gate is exactly when retyping helps: {v}"
+    );
+    assert!(v["how_to_ack"]["gate_source"].is_null());
+
+    // (b) A CARD-SCOPED gate refused -> retyping cannot clear it, so the hint
+    //     must be REPLACED by one that names where the bar came from.
+    let scoped = create(
+        &app,
+        json!({
+            "title": "card with its own gate",
+            "status": "doing",
+            "desc": "artifact: crates/amux-server/src/api/board.rs",
+            "gate": ["Something only this card demands"],
+        }),
+    )
+    .await;
+    let sid = scoped["id"].as_str().unwrap().to_string();
+    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{sid}"), Some(json!({ "status": "done" }))).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v["how_to_ack"]["wrong_type?"].is_null(),
+        "retyping cannot clear a card-scoped gate, so the hint must NOT print: {v}"
+    );
+    let src = v["how_to_ack"]["gate_source"].as_str().unwrap_or("");
+    assert!(
+        src.contains("gate` override") || src.contains("not what refused"),
+        "the refusal must say WHERE the bar came from instead: {v}"
+    );
+}

@@ -88,6 +88,14 @@ pub struct Health {
     /// (DESKT-21): the ENOSPC that took this machine to 741 MB free on
     /// 2026-08-10 was invisible to every amux instrument at the time.
     pub disk: DiskHealth,
+    /// Tailnet reachability and node-key expiry (DESKT-24). Absent until the
+    /// first `tailnet-watch` tick completes — deliberately distinct from a
+    /// present reading whose `state` is `unknown`, which means a tick RAN and
+    /// could not determine the answer. Read from a cache, never sampled here:
+    /// forking the tailscale CLI per /health request would be a probe whose
+    /// cost lands on the endpoint the whole fleet polls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tailnet: Option<crate::runtime_jobs::tailnet_watch::TailnetHealth>,
 }
 
 #[derive(Serialize)]
@@ -162,8 +170,32 @@ pub(crate) fn disk_state(free_gb: Option<f64>) -> &'static str {
     }
 }
 
-/// `(free_gb, total_gb)` for the filesystem containing `path`.
+/// `(free_gb, total_gb)` for the filesystem containing `path`, walking UP to the
+/// nearest existing ancestor.
+///
+/// The walk is not defensive padding: `statvfs` fails with ENOENT on a path that
+/// does not exist, and `~/.amux` does not exist until the server creates it — so
+/// without this, a fresh install reports `unknown` for the whole first run, and
+/// CI (which has no `~/.amux` at all) reported it always. The volume is the same
+/// one either way; the leaf's existence is irrelevant to the question being asked.
+///
+/// Found by CI going red on the test that was supposed to prove this reader
+/// works (DESKT-21). The test asserted "readable on THIS host" and encoded my
+/// host's layout as the premise — the failure was real and the assertion was
+/// right to fire.
 fn statvfs_free_total(path: &std::path::Path) -> Option<(f64, f64)> {
+    let mut cur = Some(path);
+    while let Some(p) = cur {
+        if let Some(v) = statvfs_exact(p) {
+            return Some(v);
+        }
+        cur = p.parent();
+    }
+    None
+}
+
+/// `statvfs` on exactly this path, no fallback.
+fn statvfs_exact(path: &std::path::Path) -> Option<(f64, f64)> {
     let cpath = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
     let mut st = std::mem::MaybeUninit::<libc::statvfs>::uninit();
     // SAFETY: cpath is a NUL-terminated path and st is a properly sized statvfs
@@ -325,6 +357,7 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>)
                 .map(|c| c.as_str()),
             mem: mem_health(),
             disk: disk_health(),
+            tailnet: crate::runtime_jobs::tailnet_watch::cached(),
         }),
     )
 }
@@ -534,19 +567,55 @@ mod disk_tests {
         assert_eq!(disk_state(Some(50.0)), "ok");
     }
 
-    /// The statvfs read must actually work HERE. A reader that compiles
-    /// everywhere and returns None on the host you ship to is theatre, and it
-    /// would render as `unknown` forever with nobody noticing.
+    /// The statvfs read must actually work. A reader that compiles everywhere
+    /// and returns None on the host you ship to is theatre, and would render as
+    /// `unknown` forever with nobody noticing.
+    ///
+    /// The first version of this asserted against `~/.amux` and turned CI red:
+    /// that directory does not exist on a fresh runner, `statvfs` returns
+    /// ENOENT, and the reading was `None`. The assertion was CORRECT to fire —
+    /// the defect was in the reader, which now walks up to an existing
+    /// ancestor. This version anchors on a path that exists everywhere so it
+    /// tests the READER rather than my home directory's layout.
     #[test]
-    fn the_volume_is_readable_on_this_host() {
-        let h = disk_health();
-        let free = h.free_gb.expect("statvfs must be readable for ~/.amux");
-        let total = h.total_gb.expect("total must be readable");
+    fn a_real_volume_is_readable() {
+        let (free, total) = statvfs_free_total(std::path::Path::new("/"))
+            .expect("statvfs on / must be readable on any host that can run this test");
         assert!(free > 0.0 && total > 0.0, "free {free} total {total}");
         assert!(free <= total, "free {free} cannot exceed total {total}");
-        assert_ne!(h.state, "unknown", "a readable volume must not report unknown");
         // Catches an f_frsize/f_bsize units mix-up, the failure that would
         // silently scale every reading by 8x or 512x.
         assert!(total < 1_000_000.0, "implausible volume size {total} GB — units wrong?");
+    }
+
+    /// The ancestor walk is the fix for the CI break, so it gets its own test
+    /// with a path that CANNOT exist — otherwise the fix is only exercised on
+    /// hosts that happen to be missing `~/.amux`, which is the opposite of
+    /// where it will be read.
+    #[test]
+    fn a_path_that_does_not_exist_yet_still_reports_its_volume() {
+        let missing = std::path::Path::new("/this-does-not-exist-9f3a/nor/does/this");
+        assert!(!missing.exists(), "fixture must actually be absent to test anything");
+        assert!(
+            statvfs_exact(missing).is_none(),
+            "the non-walking reader must fail here, or the walk below proves nothing"
+        );
+        let (free, total) = statvfs_free_total(missing)
+            .expect("the walk must reach / and report the volume anyway");
+        assert!(free > 0.0 && total > 0.0);
+        assert_ne!(disk_state(Some(free)), "unknown");
+    }
+
+    /// And the shipped entry point must be healthy here, whatever `~/.amux`'s
+    /// state is — this is the assertion that would have caught the original
+    /// bug from the consumer's side.
+    #[test]
+    fn disk_health_never_reports_unknown_on_a_working_host() {
+        let h = disk_health();
+        let free = h.free_gb.expect("disk_health must report free space on any host");
+        let total = h.total_gb.expect("disk_health must report total space");
+        assert!(free > 0.0 && total > 0.0, "free {free} total {total}");
+        assert!(free <= total, "free {free} cannot exceed total {total}");
+        assert_ne!(h.state, "unknown", "a readable volume must not report unknown");
     }
 }
