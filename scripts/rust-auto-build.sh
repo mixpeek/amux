@@ -122,9 +122,28 @@ built_sha=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo "$head")
 # not somewhere anyone looks — a tag in a store the reader never opens is the same
 # failure as no tag. The SessionStart freshness hook reads this and says it at the
 # one moment a session is about to build on it.
-printf '{"sha":"%s","ref":"%s","on_main":"%s","built_at":"%s"}\n' \
-  "$built_sha" "$head_ref" "$on_main" "$(date '+%F %T')" \
-  > "${AMUX_RS_BUILD_PROVENANCE:-$HOME/.amux/rust-build-provenance.json}" 2>/dev/null || true
+#
+# AEAB-50: COMPUTED here, WRITTEN after a successful install. It used to be written
+# right here, before the build, and nowhere else — so it recorded the sha this run
+# was ABOUT TO ATTEMPT, not the one running. Three consequences, and the third is
+# the one that matters:
+#   1. wrong for the whole duration of every build. Every build on this machine is
+#      cold right now (free space sits under the cache threshold), so that window
+#      is ~1.5-2 min out of every 60s tick.
+#   2. observed 2026-08-23: the file read {"sha":"9ef46b1f","on_main":"yes"} while
+#      both servers reported commit 23ddb8d1d91d, an unmerged branch, because the
+#      correcting build was still running. I read it as "the fleet is corrected"
+#      and it was not.
+#   3. a FAILED build left the file permanently asserting a deploy that never
+#      happened, with nothing to correct it. The failure branch below already says
+#      "running server keeps the last good build" — so the file must keep
+#      describing THAT build, and now it does: on failure it is not touched.
+# The freshness hook quotes this as "the RUNNING SERVER is N behind; built <sha>",
+# the line a session uses to decide whether its merge has deployed. That sentence
+# was false whenever the last build failed or was in flight.
+PROV_FILE="${AMUX_RS_BUILD_PROVENANCE:-$HOME/.amux/rust-build-provenance.json}"
+PROV_JSON=$(printf '{"sha":"%s","ref":"%s","on_main":"%s","built_at":"%s"}' \
+  "$built_sha" "$head_ref" "$on_main" "$(date '+%F %T')")
 
 # A seam so the predicate above is TESTABLE against real repos rather than
 # restated in a test that could not notice it changing. Everything before this
@@ -132,6 +151,10 @@ printf '{"sha":"%s","ref":"%s","on_main":"%s","built_at":"%s"}\n' \
 # scripts/test-build-provenance.sh stops here instead of asserting on a copy of
 # the logic.
 if [ "${AMUX_RS_BUILD_PROVENANCE_ONLY:-}" = "1" ]; then
+  # The seam still WRITES, because what it exists to test is the predicate that
+  # produces these fields, and a test that cannot read the output tests nothing.
+  # The real path deliberately does not write here — see AEAB-50 above.
+  printf '%s\n' "$PROV_JSON" > "$PROV_FILE" 2>/dev/null || true
   [ "$on_main" = "yes" ] || echo "OFF-MAIN $head_ref $built_sha"
   exit 0
 fi
@@ -259,6 +282,11 @@ fi
     tail -3 "$BUILD_OUT"
     install -m 0755 "$HOME/.amux/rust-build-target/release/amux-server" "$INSTALL"
     echo "$head" > "$STAMP"
+    # AEAB-50: only NOW is this true. Written after the install so the file means
+    # "what is installed" rather than "what was attempted". On the failure branch
+    # below it is left alone, so it keeps naming the last good build — which is
+    # exactly what that branch says is still running.
+    printf '%s\n' "$PROV_JSON" > "$PROV_FILE" 2>/dev/null || true
     echo "== installed; running server will self-adopt within 5s"
   else
     echo "== BUILD FAILED for $head — running server keeps the last good build"

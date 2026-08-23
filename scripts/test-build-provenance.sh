@@ -77,6 +77,46 @@ is "(d) detached at a main commit -> on_main" "$(field on_main "$p")" "yes"
 grep -q 'OFF-MAIN' "$TMP/feature/out" && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "FAIL: (e) off-main case printed no OFF-MAIN line"; }
 grep -q 'OFF-MAIN' "$TMP/onmain/out"  && { FAIL=$((FAIL+1)); echo "FAIL: (e) on-main case must stay quiet"; } || PASS=$((PASS+1))
 
+# ── AEAB-50: the file must describe what is INSTALLED, not what was attempted ──
+#
+# It used to be written before the build and nowhere else, so a FAILED build left
+# it permanently asserting a deploy that never happened — and the freshness hook
+# quotes it as "the RUNNING SERVER is N behind; built <sha>", which is the line a
+# session uses to decide whether its merge deployed.
+#
+# This runs the REAL failure path rather than restating it: a repo with no cargo
+# manifest, so `cargo build` fails instantly and cheaply. Every destructive seam
+# is pinned away from real paths (DRYRUN for the disk clear, temp INSTALL/STAMP/
+# LOG/PROVENANCE), which is also why this can run in CI.
+prov_failbuild() {
+  local d="$TMP/failbuild"; rm -rf "$d"; mkdir -p "$d"
+  git init -q -b main "$d/repo"
+  ( cd "$d/repo"
+    mkdir -p scripts crates
+    echo x > crates/keep.txt
+    git add -A; git commit -qm "no cargo manifest here" ) >/dev/null 2>&1
+  printf '%s\n' "$1" > "$d/prov.json"
+  AMUX_REPO="$d/repo" \
+  AMUX_RS_INSTALL="$d/install-bin" \
+  AMUX_RS_BUILD_STAMP="$d/stamp" \
+  AMUX_RS_BUILD_LOG="$d/build.log" \
+  AMUX_RS_BUILD_PROVENANCE="$d/prov.json" \
+  AMUX_RS_DISK_CLEAR_DRYRUN=1 \
+    timeout 120 bash "$BUILDER" >/dev/null 2>&1
+  cat "$d/prov.json"
+}
+
+SENTINEL='{"sha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","ref":"main","on_main":"yes","built_at":"LAST GOOD"}'
+got="$(prov_failbuild "$SENTINEL")"
+if [ "$got" = "$SENTINEL" ]; then
+  PASS=$((PASS+1)); echo "  ok   — a FAILED build leaves provenance naming the last good install"
+else
+  FAIL=$((FAIL+1))
+  echo "  FAIL — a failed build overwrote provenance; it now claims a deploy that never happened"
+  echo "         wanted: $SENTINEL"
+  echo "         got:    ${got:-<empty>}"
+fi
+
 echo
 echo "test-build-provenance: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
