@@ -84,6 +84,10 @@ pub struct Health {
     /// soon be unable to say so, so the useful move is publishing the
     /// approach continuously on the endpoint everyone already polls.
     pub mem: MemHealth,
+    /// Free space where amux keeps its DB and logs. Same rationale as `mem`
+    /// (DESKT-21): the ENOSPC that took this machine to 741 MB free on
+    /// 2026-08-10 was invisible to every amux instrument at the time.
+    pub disk: DiskHealth,
 }
 
 #[derive(Serialize)]
@@ -104,6 +108,79 @@ pub struct MemHealth {
     pub pressure: &'static str,
     pub swap_used_mb: Option<f64>,
     pub swap_total_mb: Option<f64>,
+}
+
+#[derive(Serialize)]
+pub struct DiskHealth {
+    pub free_gb: Option<f64>,
+    pub total_gb: Option<f64>,
+    /// "ok" | "warn" | "critical" | "unknown"
+    pub state: &'static str,
+}
+
+/// Free space on the volume holding `~/.amux`, published for the same reason as
+/// [`mem_health`]: a host about to fail writes will soon be unable to say so,
+/// so the useful move is putting the approach on the endpoint everyone polls.
+///
+/// # Why the threshold is ABSOLUTE GB and not a percentage
+///
+/// A percentage is the wrong unit here and would be a detector that fires on the
+/// healthy baseline (ethos rule 7). This volume is 1.8 TB and sits at 91% used
+/// while perfectly fine — a "90% used" alarm would be reporting that the disk
+/// exists. What actually breaks is absolute headroom against a fixed-size
+/// consumer: one debug cargo target tree is 10-15 GB, and on 2026-08-10 this
+/// machine reached 741 MB free with a 50-session fleet and writes failing with
+/// ENOSPC (the incident CLAUDE.md's shared-target-dir rule exists for).
+///
+/// So: critical below 10 GB (a single build cannot complete), warn below 50 GB
+/// (a few builds from trouble). At today's 170 GB free this reads `ok`, and it
+/// would have read `critical` throughout the 2026-08-10 incident. It can fail.
+pub fn disk_health() -> DiskHealth {
+    // statvfs is POSIX and present on both macOS and Linux, so unlike mem_health
+    // this needs no cfg split at all.
+    let free_total = statvfs_free_total(&crate::config::amux_home());
+    match free_total {
+        Some((free_gb, total_gb)) => DiskHealth {
+            free_gb: Some(free_gb),
+            total_gb: Some(total_gb),
+            state: disk_state(Some(free_gb)),
+        },
+        // "unknown" and "ok" must never collapse: an unreadable disk is not a
+        // healthy one, and reporting it as ok is how a silent probe gets trusted.
+        None => DiskHealth { free_gb: None, total_gb: None, state: disk_state(None) },
+    }
+}
+
+/// The threshold decision, split out so it is testable without a disk — the
+/// shipped path calls exactly this.
+pub(crate) fn disk_state(free_gb: Option<f64>) -> &'static str {
+    match free_gb {
+        Some(g) if g < 10.0 => "critical",
+        Some(g) if g < 50.0 => "warn",
+        Some(_) => "ok",
+        None => "unknown",
+    }
+}
+
+/// `(free_gb, total_gb)` for the filesystem containing `path`.
+fn statvfs_free_total(path: &std::path::Path) -> Option<(f64, f64)> {
+    let cpath = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
+    let mut st = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: cpath is a NUL-terminated path and st is a properly sized statvfs
+    // the kernel fills on success.
+    let rc = unsafe { libc::statvfs(cpath.as_ptr(), st.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+    let st = unsafe { st.assume_init() };
+    // f_frsize is the fragment size the f_* block counts are expressed in;
+    // f_bsize is the preferred IO size and is NOT always the same number.
+    // Using the wrong one silently scales every reading.
+    let unit = if st.f_frsize > 0 { st.f_frsize as f64 } else { st.f_bsize as f64 };
+    const GB: f64 = 1_073_741_824.0;
+    // f_bavail, not f_bfree: bfree counts root-reserved blocks that amux (which
+    // does not run as root) can never actually use.
+    Some((st.f_bavail as f64 * unit / GB, st.f_blocks as f64 * unit / GB))
 }
 
 /// One syscall per field on macOS (`sysctlbyname`), `/proc/meminfo` on Linux
@@ -247,6 +324,7 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>)
                 .and_then(|g| g.cause)
                 .map(|c| c.as_str()),
             mem: mem_health(),
+            disk: disk_health(),
         }),
     )
 }
@@ -416,4 +494,59 @@ pub async fn debug_downtime(State(state): State<AppState>) -> axum::Json<serde_j
         // history from an unreadable one.
         "error": query_error,
     }))
+}
+
+#[cfg(test)]
+mod disk_tests {
+    use super::*;
+
+    /// The NEGATIVE half: "could not read" must never render as healthy. An
+    /// unreadable disk reported as `ok` is the silent probe that gets trusted.
+    #[test]
+    fn unknown_is_not_ok() {
+        assert_eq!(disk_state(None), "unknown");
+        assert_ne!(disk_state(None), disk_state(Some(500.0)));
+    }
+
+    /// Rebuilt from the incident this exists for: 2026-08-10, ~37 abandoned
+    /// cargo target trees took this volume to 741 MB free and writes started
+    /// failing with ENOSPC while a 50-session fleet ran.
+    #[test]
+    fn the_2026_08_10_enospc_would_have_read_critical() {
+        assert_eq!(disk_state(Some(0.741)), "critical");
+    }
+
+    /// And the half that keeps it from being an alarm that is always on: this
+    /// volume is 1.8 TB at 91% used and perfectly fine. A percentage threshold
+    /// would fire here permanently, which is a detector reporting that the disk
+    /// exists (ethos rule 7).
+    #[test]
+    fn todays_170gb_free_at_91_percent_used_reads_ok() {
+        assert_eq!(disk_state(Some(170.0)), "ok");
+    }
+
+    /// Boundaries pinned so a later refactor cannot slide them silently.
+    #[test]
+    fn the_thresholds_discriminate_at_their_own_boundaries() {
+        assert_eq!(disk_state(Some(9.99)), "critical");
+        assert_eq!(disk_state(Some(10.0)), "warn", "one cargo target tree of headroom");
+        assert_eq!(disk_state(Some(49.99)), "warn");
+        assert_eq!(disk_state(Some(50.0)), "ok");
+    }
+
+    /// The statvfs read must actually work HERE. A reader that compiles
+    /// everywhere and returns None on the host you ship to is theatre, and it
+    /// would render as `unknown` forever with nobody noticing.
+    #[test]
+    fn the_volume_is_readable_on_this_host() {
+        let h = disk_health();
+        let free = h.free_gb.expect("statvfs must be readable for ~/.amux");
+        let total = h.total_gb.expect("total must be readable");
+        assert!(free > 0.0 && total > 0.0, "free {free} total {total}");
+        assert!(free <= total, "free {free} cannot exceed total {total}");
+        assert_ne!(h.state, "unknown", "a readable volume must not report unknown");
+        // Catches an f_frsize/f_bsize units mix-up, the failure that would
+        // silently scale every reading by 8x or 512x.
+        assert!(total < 1_000_000.0, "implausible volume size {total} GB — units wrong?");
+    }
 }

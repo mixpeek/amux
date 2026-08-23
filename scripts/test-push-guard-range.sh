@@ -233,6 +233,16 @@ fi
 # These two consult the LIVE server for isolation (fail-closed on any doubt), so
 # they use real lane names: `desktop` is isolated on this machine, `other-lane`
 # is not a lane at all and must therefore be refused.
+# The fixture the probe reads. HOME is already redirected to $TMP/fakehome by
+# run_hook_consent, so this is hermetic: no server, no real ~/.amux, and the
+# same file layout the server itself reads (~/.amux/sessions/<name>.env).
+# Test J used to depend on the LIVE server saying `desktop` is isolated, which
+# passed on a developer laptop and failed on every CI run — main went red at
+# 21:14 for exactly that reason.
+mkdir -p "$TMP/fakehome/.amux/sessions"
+printf 'CC_ISOLATED="1"\n' > "$TMP/fakehome/.amux/sessions/desktop.env"
+printf 'CC_TAGS="amux"\n'   > "$TMP/fakehome/.amux/sessions/other-lane.env"
+
 J="$TMP/j"; mkrepo "$J"
 git -C "$J/work" checkout -q -b feat
 commit_as "$J" "desktop" "isolated-lane-commit"

@@ -25,32 +25,37 @@ def _session_is_isolated(name):
     """Is `name` an ISOLATED raw-agent worker — one the harness will not let a
     peer send to, so its consent CANNOT be obtained?
 
-    Asks the server, which is the only thing that knows: isolation is
-    `CC_ISOLATED` in the lane's env file, and re-reading that file here would be
-    a second spelling of `session_is_isolated` to keep in step forever.
+    READS THE SAME FILE THE SERVER DOES: `~/.amux/sessions/<name>.env`, key
+    `CC_ISOLATED`. That is what `session_is_isolated` in session_verbs.rs reads,
+    so this consults the same input rather than re-deciding from a derived view.
 
-    FAILS CLOSED on every uncertainty — unreachable server, timeout, non-JSON,
-    missing field — because this gates an escape hatch. "I could not tell" must
-    mean "go ask them", never "assume they could not be asked".
+    IT USED TO ASK THE SERVER, AND THAT TURNED MAIN RED. CI has no amux server,
+    so the probe failed closed, `:owner` was refused, and test J failed on every
+    run while passing on my laptop — a test whose verdict depends on the host's
+    state, which is precisely what PR #145's author warned about in their own
+    harness three hours earlier. Reading the file also makes the guard work with
+    the server down, which a push-path decision should not depend on.
+
+    FAILS CLOSED on every uncertainty — missing file, unreadable, absent key.
+    "I could not tell" must mean "go ask them", never "assume they could not be
+    asked".
     """
-    base = os.environ.get("AMUX_URL", "").strip()
-    if not base:
-        try:
-            with open(os.path.expanduser("~/.amux/endpoint.json")) as fh:
-                base = (json.load(fh).get("url") or "").strip()
-        except Exception:
-            return False
-    if not base:
+    if not name or "/" in name or name.startswith("."):
         return False
+    path = os.path.join(
+        os.environ.get("HOME", ""), ".amux", "sessions", "%s.env" % name)
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        url = "%s/api/sessions/%s" % (base.rstrip("/"), urllib.parse.quote(name))
-        with urllib.request.urlopen(url, timeout=5, context=ctx) as r:
-            return json.loads(r.read().decode()).get("isolated") is True
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line.startswith("CC_ISOLATED"):
+                    continue
+                _, _, val = line.partition("=")
+                return val.strip().strip('"').strip("'").lower() in (
+                    "1", "true", "yes", "on")
     except Exception:
         return False
+    return False
 
 
 def _audit(kind, detail):
