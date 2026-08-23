@@ -210,15 +210,50 @@ fn collect_system_metrics() -> serde_json::Value {
             json!((free as f64 / 1_073_741_824.0 * 10.0).round() / 10.0),
         );
         sys.insert("disk_percent".into(), json!((pct * 10.0).round() / 10.0));
-        // Self-announcing: a disk filling up should be visible in a log sweep
-        // without anyone opening the dashboard. This is the signal that was
-        // missing while the volume went to 99%.
-        if pct >= 90.0 {
-            tracing::warn!(
+        // The comment that used to sit here claimed this was "self-announcing:
+        // visible in a log sweep without anyone opening the dashboard". It was
+        // not, on both counts, and the claim is why nobody re-checked it
+        // (DESKT-21):
+        //
+        //   1. `collect_system_metrics` runs ONLY when something requests
+        //      /api/metrics. Nothing polls it. Measured 2026-08-23: across
+        //      36 hours of server-rs.log the string "disk critically full"
+        //      appeared ZERO times, at 91.6% full the whole time — and appeared
+        //      exactly once, immediately, the moment a human curled the
+        //      endpoint. A signal that requires you to already be looking is
+        //      the thing this comment promised it was not.
+        //   2. `pct >= 90.0` is BELOW this machine's healthy baseline. The data
+        //      volume sits at 91.6% with 156 GB free and nothing wrong, so the
+        //      moment anything did start polling, this would fire on every
+        //      call forever — a detector reporting that the disk exists
+        //      (ethos rule 7).
+        //
+        // Fixing only the cadence would have converted a silent check into
+        // continuous noise, so the threshold had to move first. The verdict now
+        // comes from `health::disk_state`, which is thresholded on ABSOLUTE free
+        // space (one cargo target tree is 10-15 GB) rather than a percentage of
+        // a 1.8 TB volume. Sharing that one function is deliberate: a view must
+        // share the predicate of the mechanism it describes, or the two drift.
+        //
+        // The continuously-polled home for this is /health, which now carries
+        // `disk` beside `mem`. This stays as the metrics-surface mirror.
+        let free_gb = free as f64 / 1_073_741_824.0;
+        match crate::api::health::disk_state(Some(free_gb)) {
+            "critical" => tracing::warn!(
                 disk_percent = pct,
-                free_gb = free as f64 / 1_073_741_824.0,
-                "disk critically full"
-            );
+                free_gb,
+                state = "critical",
+                "disk critically full — under 10 GB free is less than one cargo target \
+                 tree; builds and DB writes will start failing (DESKT-21)"
+            ),
+            "warn" => tracing::warn!(
+                disk_percent = pct,
+                free_gb,
+                state = "warn",
+                "disk headroom low — under 50 GB free, a few builds from the 2026-08-10 \
+                 ENOSPC (DESKT-21)"
+            ),
+            _ => {}
         }
     }
 
