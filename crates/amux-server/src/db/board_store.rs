@@ -377,13 +377,42 @@ pub fn effective_gate_scoped(
     target: TaskStatus,
     groups: &std::collections::BTreeSet<String>,
 ) -> Vec<String> {
+    effective_gate_with_source(conn, row, target, groups).0
+}
+
+/// WHICH TIER PRODUCED THE GATE (AF-169).
+///
+/// The refusal body has always told operators "the gate is DERIVED from the
+/// type — set its type", and that is true only when the TYPE DEFAULT is what
+/// refused. For a card in a scope with a custom gate, retyping changes nothing
+/// and the operator gets a retyped card and the same refusal. AF-168's reporter
+/// retyped TUBES-2053 code -> research, watched the done gate not re-derive, and
+/// concluded the override was pinned per-card; the hint is what sent them there.
+///
+/// The precedence walk already knows which tier won — it returns the moment one
+/// matches — so the source costs nothing to report and is returned alongside
+/// rather than re-derived by a second walk. Two walks would be two spellings of
+/// the precedence to keep in step, which is the duplication this file's own
+/// `KNOWN_TYPES` comment warns about one type over.
+///
+/// It varies by TRANSITION, not just by scope: measured 2026-08-23,
+/// `group:amux` pins only `verified`, `tubescience` only `done`, `amux-cloud`
+/// both `review` and `verified`. So the same card can have a type-derived gate
+/// at one transition and a scope-derived one at the next, and a hint keyed on
+/// "does this scope have an override" would be wrong half the time.
+pub fn effective_gate_with_source(
+    conn: &rusqlite::Connection,
+    row: &IssueRow,
+    target: TaskStatus,
+    groups: &std::collections::BTreeSet<String>,
+) -> (Vec<String>, GateSource) {
     let over = row.gate_criteria();
     if !over.is_empty() {
-        return over;
+        return (over, GateSource::Card);
     }
     if let Some(session) = row.session.as_deref().filter(|s| !s.is_empty()) {
         if let Some(g) = scoped_gate(conn, session, target) {
-            return g;
+            return (g, GateSource::Worker(session.to_string()));
         }
         let mut merged: Vec<String> = Vec::new();
         for group in groups {
@@ -396,13 +425,61 @@ pub fn effective_gate_scoped(
             }
         }
         if !merged.is_empty() {
-            return merged;
+            return (merged, GateSource::Group(groups.iter().cloned().collect::<Vec<_>>().join(", ")));
         }
     }
     if let Some(cfg) = configured_gate(conn, target) {
-        return cfg;
+        return (cfg, GateSource::Column);
     }
-    effective_gate(row, target)
+    (effective_gate(row, target), GateSource::TypeDefault)
+}
+
+/// Which tier of the precedence produced a card's gate for one transition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateSource {
+    /// The card's own `gate` column — one card, deliberately special.
+    Card,
+    /// A `session_gates` row for the card's own worker.
+    Worker(String),
+    /// One or more `group:<name>` rows, unioned.
+    Group(String),
+    /// The operator-authored column gate (`statuses.gate_custom`).
+    Column,
+    /// The item type's default — the ONLY tier retyping can change.
+    TypeDefault,
+}
+
+impl GateSource {
+    /// Can the operator change this gate by retyping the card? Only the type
+    /// default derives from the type; every other tier ignores it, which is
+    /// exactly what makes the `wrong_type?` hint false elsewhere.
+    pub fn retype_would_help(&self) -> bool {
+        matches!(self, GateSource::TypeDefault)
+    }
+
+    /// A sentence for the refusal body, so the operator learns WHERE the bar
+    /// came from instead of being sent to change something irrelevant.
+    pub fn explain(&self) -> String {
+        match self {
+            GateSource::Card => "this card carries its own `gate` override, so the type is \
+                 not what refused; edit the card's gate or ack it honestly"
+                .to_string(),
+            GateSource::Worker(w) => format!(
+                "this gate comes from the `{w}` WORKER scope, not from the item type — \
+                 retyping will NOT change it. See GET /api/board/session-gates."
+            ),
+            GateSource::Group(g) => format!(
+                "this gate comes from the GROUP scope ({g}), not from the item type — \
+                 retyping will NOT change it. See GET /api/board/session-gates."
+            ),
+            GateSource::Column => "this gate comes from the operator-authored COLUMN gate, \
+                 not from the item type — retyping will NOT change it"
+                .to_string(),
+            GateSource::TypeDefault => "this gate is the item TYPE's default, so correcting \
+                 the type is the honest fix if the type is wrong"
+                .to_string(),
+        }
+    }
 }
 
 /// One scope's gate row from `session_gates` (scope key is a session name or

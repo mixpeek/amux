@@ -2600,8 +2600,12 @@ fn default_model_for_provider(provider: &str) -> String {
         "codex" => "gpt-5.5".into(),
         "gemini" => "auto".into(),
         // Ollama runs via `codex --oss --local-provider ollama --model <model>`.
-        // A launchable default is required (this box has qwen3.8:27b pulled).
-        "ollama" => "qwen3.8:27b".into(),
+        // Read from the ONE source rather than repeating the literal: this arm
+        // and `OllamaAdapter::default` were two spellings of the same fact, and
+        // the comment that used to sit here ("this box has qwen3.8:27b pulled")
+        // was a fact about one machine compiled into a public server. See
+        // `static_providers::ollama_default_model` (DESKT-6).
+        "ollama" => crate::provider::static_providers::ollama_default_model(),
         _ => get_default_model(),
     }
 }
