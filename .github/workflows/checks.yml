@@ -217,3 +217,8 @@ jobs:
           # foreign, unpushed work straight past. Both directions are pinned,
           # and both mutations were confirmed to fail before this was wired in.
           ./scripts/test-push-guard-range.sh
+          # AEAB-52: the e2e harness must SET the seam it depends on. The Rust
+          # half is unit-tested; this pins the half that rots silently — a seam
+          # nobody sets is decoration (ethos rule 1), and an export placed after
+          # serve-head.sh's `exec` would look correct in a diff and never run.
+          ./scripts/test-e2e-no-self-adopt.sh

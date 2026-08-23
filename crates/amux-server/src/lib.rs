@@ -9,6 +9,62 @@ pub mod backend;
 pub mod config;
 pub mod legacy_port;
 pub mod log_dedupe;
+
+/// Should this process exec itself when its binary changes on disk? (AEAB-52)
+///
+/// Opt-OUT: absent or empty means YES, so production keeps today's behaviour with
+/// no configuration and only a caller that KNOWS it pinned a build has to say so.
+/// The accepted spellings mirror the rest of amux's boolean env vars, and `0` /
+/// `false` / `off` / `no` explicitly re-ENABLE — a var that disabled on any value
+/// would make `AMUX_NO_SELF_ADOPT=0` mean the opposite of what it reads like,
+/// which is the kind of surprise that gets discovered during an incident.
+///
+/// A free function rather than an inline `env::var` so the predicate can be
+/// tested both ways. Inline, the only way to exercise it would be to boot a
+/// server and touch its binary.
+pub(crate) fn self_adopt_enabled() -> bool {
+    match std::env::var("AMUX_NO_SELF_ADOPT") {
+        Err(_) => true,
+        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "" | "0" | "false" | "off" | "no"),
+    }
+}
+
+#[cfg(test)]
+mod self_adopt_tests {
+    use super::self_adopt_enabled;
+
+    /// The env var is process-global and cargo runs tests in parallel, so this
+    /// takes a lock — the du-budget tests in autofix.rs were already bitten by
+    /// exactly that (AEAB-33).
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        L.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// BOTH directions. A seam that disabled self-adoption unconditionally would
+    /// pass any "does not exec" assertion perfectly while silently turning the
+    /// feature off for the whole fleet — the default case is the one that
+    /// protects production, so it is asserted first.
+    #[test]
+    fn self_adoption_is_on_by_default_and_off_only_when_asked() {
+        let _g = lock();
+        std::env::remove_var("AMUX_NO_SELF_ADOPT");
+        assert!(self_adopt_enabled(), "absent must mean ENABLED — production sets nothing");
+
+        for on in ["1", "true", "yes", "TRUE", " 1 "] {
+            std::env::set_var("AMUX_NO_SELF_ADOPT", on);
+            assert!(!self_adopt_enabled(), "AMUX_NO_SELF_ADOPT={on:?} must disable");
+        }
+        // The reading-comprehension case: `=0` must NOT disable. A var whose name
+        // is a negative and whose value is a negative is where an operator gets
+        // it backwards, so it is pinned rather than left to intuition.
+        for off in ["0", "false", "off", "no", ""] {
+            std::env::set_var("AMUX_NO_SELF_ADOPT", off);
+            assert!(self_adopt_enabled(), "AMUX_NO_SELF_ADOPT={off:?} must leave it ENABLED");
+        }
+        std::env::remove_var("AMUX_NO_SELF_ADOPT");
+    }
+}
 pub mod db;
 pub mod integrations;
 pub mod invariants;
@@ -540,30 +596,66 @@ async fn async_main() {
     // deliberate deploy should not. exit(0) stays as the fallback if exec
     // itself fails (missing/unreadable binary), because the old behavior is
     // strictly better than a server running stale code.
-    jobs::spawn_loop(jobs::ids::SELF_ADOPT, Some(secs(5)), async {
-        let Ok(exe) = std::env::current_exe() else { return };
-        let Ok(meta) = std::fs::metadata(&exe) else { return };
-        let initial = meta.modified().ok();
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-        loop {
-            interval.tick().await;
-            jobs::tick(jobs::ids::SELF_ADOPT);
-            let current = std::fs::metadata(&exe).ok().and_then(|m| m.modified().ok());
-            if current.is_some() && current != initial {
-                tracing::info!(
-                    "binary changed on disk — exec'ing the new build in place (self-adoption, \
-                     AMUX-3458: no exit means no launchd throttle window)"
-                );
-                let err = std::os::unix::process::CommandExt::exec(
-                    &mut std::process::Command::new(&exe),
-                );
-                // Only reachable when exec FAILED. Fall back to the old
-                // exit-for-relaunch path — slower (throttle) but correct.
-                tracing::warn!(%err, "exec failed — falling back to exit-for-relaunch");
-                std::process::exit(0);
+    // AEAB-52: self-adoption is right in PRODUCTION and wrong in a TEST HARNESS.
+    //
+    // `e2e/serve-head.sh` exists to pin a SPECIFIC build, and playwright.config.ts
+    // starts three servers from it (desktop 18823, mobile 18833, ios 18843). Each
+    // one builds, and every build rewrites the shared binary — so each server
+    // already running sees its own mtime move and exec's, refusing connections
+    // for ~1s. Whichever specs are mid-`page.goto` at that instant fail with
+    // ERR_CONNECTION_REFUSED, which is what three days of "flaky" desktop
+    // failures were: 3 failures, then 9 on a re-run of the SAME commit, then 2,
+    // then 2.
+    //
+    // The signature is why this is structural rather than random. Execs per port
+    // in run 32645871348, against server start order:
+    //     18823 desktop, started 1st -> 2 execs
+    //     18833 mobile,  started 2nd -> 1 exec
+    //     18843 ios,     started 3rd -> 0 execs
+    // Each server exec's once per server that starts AFTER it; the last never
+    // does, because nothing rebuilds after it. Only WHICH tests get caught is
+    // random.
+    //
+    // A server that hot-swaps itself mid-suite is also running a different binary
+    // from the one the suite chose, so this is a correctness problem for the
+    // RESULTS and not only noise.
+    //
+    // Opt-OUT, not opt-in: production keeps today's behaviour with no
+    // configuration, and only the harness that knows it pinned a build says so.
+    if !self_adopt_enabled() {
+        // NOT an early return: everything after this block is the rest of server
+        // startup (the port binds, the router). Skipping it would trade a flaky
+        // suite for a server that never listens.
+        tracing::info!(
+            "self-adoption DISABLED by AMUX_NO_SELF_ADOPT — this process will not exec on a \
+             binary change (AEAB-52: a test harness pins its build on purpose)"
+        );
+    } else {
+        jobs::spawn_loop(jobs::ids::SELF_ADOPT, Some(secs(5)), async {
+            let Ok(exe) = std::env::current_exe() else { return };
+            let Ok(meta) = std::fs::metadata(&exe) else { return };
+            let initial = meta.modified().ok();
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                jobs::tick(jobs::ids::SELF_ADOPT);
+                let current = std::fs::metadata(&exe).ok().and_then(|m| m.modified().ok());
+                if current.is_some() && current != initial {
+                    tracing::info!(
+                        "binary changed on disk — exec'ing the new build in place (self-adoption, \
+                         AMUX-3458: no exit means no launchd throttle window)"
+                    );
+                    let err = std::os::unix::process::CommandExt::exec(
+                        &mut std::process::Command::new(&exe),
+                    );
+                    // Only reachable when exec FAILED. Fall back to the old
+                    // exit-for-relaunch path — slower (throttle) but correct.
+                    tracing::warn!(%err, "exec failed — falling back to exit-for-relaunch");
+                    std::process::exit(0);
+                }
             }
-        }
-    });
+        });
+    }
 
     // THE LEGACY 8822 BIND IS GONE (Ethan, 2026-08-11: "no more 8822 just rust").
     //

@@ -29,6 +29,25 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # concurrent build WAIT and then find the work done, which is cheap.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.amux/rust-build-target}"
 
+# AEAB-52. THIS SCRIPT EXISTS TO PIN A SPECIFIC BUILD, so a server that hot-swaps
+# itself mid-suite is running a different binary from the one the suite chose.
+#
+# playwright.config.ts starts THREE of these (desktop 18823, mobile 18833,
+# ios-safari 18843). Each builds, every build rewrites the shared binary, and the
+# server's 5s SELF_ADOPT loop sees its own mtime move and exec's — refusing
+# connections for ~1s. Whichever specs are mid-`page.goto` fail with
+# ERR_CONNECTION_REFUSED. That was three days of "flaky" desktop failures: 3, then
+# 9 on a re-run of the SAME commit, then 2, then 2.
+#
+# The signature, execs per port against start order in run 32645871348:
+#     18823 desktop (1st) -> 2      18833 mobile (2nd) -> 1      18843 ios (3rd) -> 0
+# Each server exec's once per server started after it; the last never does.
+#
+# Set here rather than in playwright.config.ts because THIS is the script that
+# pins the build — anything else launching a pinned server gets it for free, and
+# the config cannot forget.
+export AMUX_NO_SELF_ADOPT=1
+
 dirty="$(git -C "$REPO" status --porcelain -- crates/ Cargo.toml Cargo.lock 2>/dev/null || true)"
 
 if [ "${AMUX_E2E_WORKING_TREE:-0}" = "1" ]; then
