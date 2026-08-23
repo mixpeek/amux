@@ -70,6 +70,17 @@ run_hook() {
     python3 "$HOOK" origin "$d/origin.git" ) > "$TMP/out" 2>&1
   echo $?
 }
+
+# Same, with AMUX_FOREIGN_CONSENT set (AMUX-3533).
+run_hook_consent() {
+  local d="$1" local_sha="$2" remote_sha="$3" ref="$4" consent="$5"
+  ( cd "$d/work" && \
+    echo "refs/heads/$ref $local_sha refs/heads/$ref $remote_sha" | \
+    AMUX_SESSION=mine AMUX_ALLOW_FOREIGN= AMUX_FOREIGN_CONSENT="$consent" \
+    HOME="$TMP/fakehome" \
+    python3 "$HOOK" origin "$d/origin.git" ) > "$TMP/out" 2>&1
+  echo $?
+}
 ZERO=0000000000000000000000000000000000000000
 
 # ── A. the reported bug: rebase onto an advanced origin/main ────────────────
@@ -138,5 +149,115 @@ else
 fi
 
 echo
+
+# ── E-H. AMUX_FOREIGN_CONSENT (AMUX-3533) ──────────────────────────────────
+# The guard modelled ONE consenting party: the human. On a shared checkout the
+# consenting party is routinely the AUTHOR, and none of the three offered exits
+# fit that — so two sessions reached for the blanket override on the same day,
+# one of them without noticing the wording did not cover them.
+#
+# These four cases are chosen so that no ONE of them can pass a broken
+# implementation: E proves consent WORKS, F/G/H prove it is STRICTER than
+# AMUX_ALLOW_FOREIGN rather than a second way around the guard. A version that
+# simply returned 0 whenever the variable was set would pass E and fail all
+# three others.
+E="$TMP/e"; mkrepo "$E"
+git -C "$E/work" checkout -q -b feat
+commit_as "$E" "other-lane" "theirs-unpushed"
+commit_as "$E" "mine" "mine-one"
+ETIP=$(git -C "$E/work" rev-parse feat)
+ESHA=$(git -C "$E/work" log --format=%h --all --grep="theirs-unpushed" | head -1)
+
+# E. correct consent clears the push.
+rc=$(run_hook_consent "$E" "$ETIP" "$ZERO" feat "$ESHA:other-lane")
+if [ "$rc" -eq 0 ]; then
+  ok "E: consent naming the REAL author clears the push"
+else
+  bad "E: correct author consent was still blocked"; sed 's/^/       /' "$TMP/out"
+fi
+
+# F. THE CONTROL THAT MATTERS. Consent naming the WRONG session must REFUSE —
+# a blanket override would have shipped this. If F passes only because the
+# guard refuses everything, E would have failed.
+rc=$(run_hook_consent "$E" "$ETIP" "$ZERO" feat "$ESHA:somebody-else")
+if [ "$rc" -ne 0 ] && grep -qi "does not match" "$TMP/out"; then
+  ok "F: consent naming the WRONG author is REFUSED, not waved through"
+else
+  bad "F: wrong-author consent was accepted — this is weaker than ALLOW_FOREIGN"; sed 's/^/       /' "$TMP/out"
+fi
+
+# G. PARTIAL consent still blocks, and names what is uncovered. Without this a
+# caller who granted 3 of 4 reads the refusal as the mechanism not working.
+G="$TMP/g"; mkrepo "$G"
+git -C "$G/work" checkout -q -b feat
+commit_as "$G" "lane-a" "a-commit"
+commit_as "$G" "lane-b" "b-commit"
+GTIP=$(git -C "$G/work" rev-parse feat)
+GSHA=$(git -C "$G/work" log --format=%h --all --grep="a-commit" | head -1)
+rc=$(run_hook_consent "$G" "$GTIP" "$ZERO" feat "$GSHA:lane-a")
+if [ "$rc" -ne 0 ] && grep -q "b-commit" "$TMP/out"; then
+  ok "G: partial consent still BLOCKS and names the uncovered commit"
+else
+  bad "G: partial consent was treated as full consent"; sed 's/^/       /' "$TMP/out"
+fi
+
+# H. A malformed entry is REFUSED, never silently skipped — skipping would let
+# a caller believe they granted a consent they did not.
+rc=$(run_hook_consent "$E" "$ETIP" "$ZERO" feat "just-a-sha-no-session")
+if [ "$rc" -ne 0 ] && grep -qi "malformed" "$TMP/out"; then
+  ok "H: a malformed consent entry is REFUSED, not skipped"
+else
+  bad "H: malformed consent did not refuse"; sed 's/^/       /' "$TMP/out"
+fi
+
+# I. And the escape must be DISCOVERABLE: an ordinary refusal has to name it,
+# or it is decoration (ethos rule 1). The refusal that sent two sessions to the
+# blanket override listed only exits that did not fit.
+rc=$(run_hook "$E" "$ETIP" "$ZERO" feat)
+if [ "$rc" -ne 0 ] && grep -q "AMUX_FOREIGN_CONSENT=" "$TMP/out"; then
+  ok "I: the refusal NAMES the author-consent exit, with the pairs filled in"
+else
+  bad "I: the refusal does not offer AMUX_FOREIGN_CONSENT — an escape nobody is handed"
+  sed 's/^/       /' "$TMP/out"
+fi
+
+
+# ── J/K. OWNER CONSENT for an ISOLATED worker (Ethan, 2026-08-23) ───────────
+# An isolated raw-agent worker has the harness stripped and refuses peer sends,
+# so its consent CANNOT be obtained: "ask that session to push" is unaskable and
+# the two-field consent form needs a yes nobody can give. `:owner` is the exit,
+# and the property that keeps it from being a second blanket override is that it
+# is REFUSED for a worker you could simply have asked. K is that control, and it
+# is the case that fails if the isolation check is dropped.
+#
+# These two consult the LIVE server for isolation (fail-closed on any doubt), so
+# they use real lane names: `desktop` is isolated on this machine, `other-lane`
+# is not a lane at all and must therefore be refused.
+J="$TMP/j"; mkrepo "$J"
+git -C "$J/work" checkout -q -b feat
+commit_as "$J" "desktop" "isolated-lane-commit"
+commit_as "$J" "mine" "mine-one"
+JTIP=$(git -C "$J/work" rev-parse feat)
+JSHA=$(git -C "$J/work" log --format=%h --all --grep="isolated-lane-commit" | head -1)
+
+rc=$(run_hook_consent "$J" "$JTIP" "$ZERO" feat "$JSHA:desktop:owner")
+if [ "$rc" -eq 0 ]; then
+  ok "J: owner consent clears a commit by an ISOLATED worker that cannot be asked"
+else
+  bad "J: owner consent was refused for an isolated worker — the exit is unwalkable again"
+  sed 's/^/       /' "$TMP/out"
+fi
+
+# K. THE CONTROL. `:owner` for a REACHABLE worker must REFUSE — otherwise it is
+# just AMUX_ALLOW_FOREIGN with extra typing, and the whole point is that you
+# must ask a peer you can reach.
+rc=$(run_hook_consent "$E" "$ETIP" "$ZERO" feat "$ESHA:other-lane:owner")
+if [ "$rc" -ne 0 ] && grep -qi "only for ISOLATED" "$TMP/out"; then
+  ok "K: ':owner' is REFUSED for a worker that is not isolated — ask them instead"
+else
+  bad "K: ':owner' cleared a reachable worker — that is a blanket override wearing a suffix"
+  sed 's/^/       /' "$TMP/out"
+fi
+
 echo "push-guard range: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

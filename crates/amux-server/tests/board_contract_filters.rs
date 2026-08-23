@@ -69,6 +69,24 @@ async fn the_contract_documents_every_real_list_filter() {
     let filters = list["filters"].as_object().expect("filters object");
     let refused = list["not_a_filter"].as_object().expect("refused params named too");
 
+    // Every entry in `filters` must be name -> DESCRIPTION. This is what keeps
+    // the two assertions below meaningful: they treat each key as a real query
+    // param, so a descriptive key smuggled in here fails them for a reason that
+    // reads like a missing field. AF-161's follow-up put `slim_omits` (an array
+    // of the fields slim drops) inside `filters` and turned main red with
+    // "ListParams has no such field" — which points at adding the field, the one
+    // fix that would be wrong. Fail here first, and say where such a key goes.
+    for (k, v) in filters.iter() {
+        assert!(
+            v.is_string(),
+            "contract filter `{k}` is not a description string ({v}) — `filters` is \
+             strictly query-param -> description. Metadata ABOUT a filter (what it \
+             omits, what it defaults to) belongs beside `filters`, not inside it; see \
+             `slim_omits`. Leaving it here makes the next assertion demand a \
+             `ListParams` field that must not exist."
+        );
+    }
+
     let documented: Vec<String> = filters
         .keys()
         .cloned()

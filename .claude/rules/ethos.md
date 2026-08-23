@@ -348,6 +348,31 @@ EXACTLY produced a success signal and no claim (AMUX-2140). When the instruction
 the failure are the same action, no amount of care catches it; only using the result
 does. Anything a notification or doc tells an agent to run must itself be exercised.
 
+**"Can it fail" is not the whole question. "Does it sit where the thing happens" is the
+other half, and this rule was missing it** (AF-161, 2026-08-23). The board's slim list
+payload dropped the `reviewer` column, so an audit of verified cards read 25 of 25 as
+unreviewed when the truth was 7 named and 18 absent — 100% wrong, in the direction that
+looks like a finding. There WAS a guard: `snapshot_slim_is_snapshot_minus_prose`, whose
+doc comment says the two snapshots "cannot drift" and pins it anyway. Both statements are
+true. It was green the entire time the bug was live, because the removal happens one layer
+UP, in `list_body`, and the guard pins the snapshot. **A check pinning the wrong layer is
+exactly as green as one pinning the right layer, and nothing about READING it reveals which
+you have.** That check could fail — on a real property, in a place the shipped path does
+not go through. So the question is two questions, and we only had a habit for the first.
+Ask where the defect would be INTRODUCED, and confirm your test's fixture flows through
+that code, not through an ancestor of it.
+
+**When you argue that a failure will be loud, NAME THE IDIOM that makes it loud, and check
+it is the one your callers write.** The same slimming was defended in its own comment as
+safe because `.desc` on a slim row is "a KeyError, which is loud, not silently empty". That
+is true for `row["desc"]` and false for `row.get("desc")`, which returns `None` and says
+nothing — and `.get` is what every consumer here actually writes. A safety property that
+holds only under a calling convention nobody uses is not a safety property, which is why
+this same discovery got made twice, one column at a time (c207339 fixed the caller for
+`desc`; AF-161 found `reviewer` weeks later). The fix that ends the class is to make the
+payload SELF-DESCRIBING about what it omits, so a consumer can refuse instead of reading
+absence as emptiness — rather than restoring one column and waiting for the next report.
+
 **A rule you have written down is not a rule you run, and the moment of highest
 risk is when the result matches what you expected** (amux + cold-outbound,
 2026-08-07). Two sessions, one morning, the same shape twice each. cold-outbound

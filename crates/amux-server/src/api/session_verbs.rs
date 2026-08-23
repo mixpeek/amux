@@ -2800,13 +2800,16 @@ impl Delivery {
     }
 }
 
-/// py:8676 _cmd_hist_record — Messages history, origin-tagged, pruned.
-async fn cmd_hist_record(state: &AppState, session: &str, text: &str, ctype: &str, origin: &str) {
-    // skip_board=false: this wrapper does not pre-strip `[no-board]`, so
-    // title_from_prompt still honours the marker when present (only the send
-    // handler strips it early and must thread the flag explicitly).
-    cmd_hist_record_full(state, session, text, ctype, origin, false, DeliveryMeta::direct()).await
-}
+// `cmd_hist_record` (py:8676 _cmd_hist_record) IS DELETED, not merely unused
+// (AF-159). It was a one-line wrapper hardcoding `DeliveryMeta::direct()`, and
+// its single caller was the STEER branch — so the only thing it ever did in
+// production was record a message that had just been enqueued as though it had
+// been delivered straight to the lane. Fixing that caller left the wrapper
+// with no users and every future caller the same trap, ready to be reached for
+// by name because it is the short one. The recorder that survives
+// (`cmd_hist_record_full`) makes you state the delivery kind, which is the
+// point: there is no longer a spelling of "record this" that quietly asserts
+// direct delivery.
 
 /// A scheduled command that was DELIVERED (py parity: origin = the schedule's
 /// title, so a peek shows scheduled commands distinctly from a human's). Only
@@ -2836,8 +2839,15 @@ pub(crate) struct DeliveryMeta<'a> {
     pub delivery: Option<Delivery>,
     pub queued_at_ms: Option<i64>,
     /// AMUX-2643. None means "not verified", NEVER "failed" — the queued path
-    /// has submitted nothing yet, and the deliverer stamps a verdict when it
-    /// lands. Inventing one here would be the mislabelling 0014 exists to end.
+    /// has submitted nothing yet. Inventing one here would be the mislabelling
+    /// 0014 exists to end.
+    ///
+    /// This used to end "and the deliverer stamps a verdict when it lands".
+    /// NOTHING DOES (AMUX-3541): `UPDATE cmd_history` appears twice in this
+    /// crate and both set `card_id`. The claim was made in four places and
+    /// implemented in none, so a queued row's verdict stays None forever. The
+    /// promise is removed rather than softened, because a docstring that
+    /// describes an unbuilt mechanism is what got `delivered_at` believed.
     pub submit_verdict: Option<&'a str>,
 }
 
@@ -2847,6 +2857,31 @@ impl DeliveryMeta<'_> {
         DeliveryMeta {
             delivery: Some(Delivery::Direct),
             ..Default::default()
+        }
+    }
+
+    /// A message put on the STEERING QUEUE, which has submitted nothing yet
+    /// (AF-159). `queued_at` is when the wait started; `submit_verdict` stays
+    /// None because that is the documented, correct value for a message that
+    /// has not been submitted — the whole point of the column.
+    ///
+    /// This exists because the steer branch used `direct()` for a message it
+    /// had just handed to `steer_enqueue`, so a third of `type='user'` traffic
+    /// was recorded as delivery='direct' with a blank verdict. Measured
+    /// 2026-08-23 over 7 days: 313 confirmed, 144 blank, 18 retried — and the
+    /// 144 were not a hole in the direct path, they were STEERING wearing the
+    /// wrong label. The card that found them concluded "none are steering or
+    /// queued: every one is delivery='direct'", which the label made true and
+    /// the code made false.
+    ///
+    /// That is why the mislabelling matters more than the blank: blank is
+    /// CORRECT for a queued message and WRONG for a direct one, so one label
+    /// made the same value mean two things and neither could be read.
+    pub(crate) fn queued(at_ms: i64) -> Self {
+        DeliveryMeta {
+            delivery: Some(Delivery::Queued),
+            queued_at_ms: Some(at_ms),
+            submit_verdict: None,
         }
     }
 }
@@ -3135,6 +3170,41 @@ pub(crate) async fn cmd_hist_record_full(
     let is_user = ctype == "user";
     // Carry the recorded row id out of the write so auto-capture can link the card.
     let msg_row_id = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+    // delivered_at IS NOT A COPY OF ts ANY MORE (AMUX-3541).
+    //
+    // Both columns were `now_ms`, unconditionally, on every row. Measured
+    // 2026-08-23 before this change: delivered_at == ts on 3854 of 3854 rows,
+    // max gap 0 — INCLUDING all 40 `delivery='queued'` rows, where a real
+    // delivery time must show a gap, because the entire point of queueing is
+    // waiting for a turn boundary. The column was the insert time wearing a
+    // delivery time's name, and being populated 100% of the time is exactly
+    // what made it believable: AF-159 reasoned "all 144 have delivered_at set,
+    // so these landed" — a correct inference from the name and the docstring,
+    // and false.
+    //
+    // A DIRECT send really was delivered when it was recorded, so `now_ms` is
+    // true there and stays. A QUEUED one has not been delivered, so the honest
+    // value is NULL — and NULL is what makes the missing deliverer COUNTABLE
+    // rather than invisible. Four comments in this file promise "the deliverer
+    // stamps delivered_at when it lands" and nothing does (`UPDATE cmd_history`
+    // appears twice, both setting card_id). Until that is built, queued rows
+    // accumulate with a NULL delivered_at, and
+    //
+    //     SELECT COUNT(*) FROM cmd_history WHERE delivery='queued' AND delivered_at IS NULL
+    //
+    // is a number somebody can watch. Before this change the same defect was
+    // unobservable, because the wrong answer and the right one were the same
+    // bytes.
+    //
+    // Safe to NULL: no client reads this column. app.js's only `delivered_at`
+    // (line 6661, "Sent <ago>") is fed by the steering-history endpoint, whose
+    // separate `steering_history` table IS stamped at real delivery by the
+    // deliverer — which is also where the timestamp for the eventual backfill
+    // will come from.
+    let delivered_at_ms = match meta.delivery {
+        Some(Delivery::Queued) => None,
+        _ => Some(now_ms),
+    };
     let msg_row_id_w = msg_row_id.clone();
     let cap_session = session.clone();
     let cap_text = text.clone();
@@ -3147,7 +3217,7 @@ pub(crate) async fn cmd_hist_record_full(
                  VALUES (?,?,?,?,?,?,?,?,?)",
                 rusqlite::params![
                     text, ctype, session, now_ms, origin,
-                    delivery, queued_at_ms, now_ms, submit_verdict
+                    delivery, queued_at_ms, delivered_at_ms, submit_verdict
                 ],
             )?;
             msg_row_id_w.store(conn.last_insert_rowid(), std::sync::atomic::Ordering::SeqCst);
@@ -3251,6 +3321,13 @@ pub(crate) async fn steer_enqueue_store(
 ) -> String {
     let msg_id = format!("steer-{}", (now_f64() * 1000.0) as i64);
     let id = msg_id.clone();
+    // The id we RETURN must be the row that actually exists. When a guarded
+    // re-enqueue updates the prior row in place (AMUX-3557) the freshly minted
+    // id is never inserted, and handing it back would give the caller a
+    // message id that matches nothing in the queue — a lookup that answers
+    // "not found" for a message that is sitting there.
+    let effective_id = std::sync::Arc::new(std::sync::Mutex::new(msg_id.clone()));
+    let effective_id_w = effective_id.clone();
     let session = name.to_string();
     let text_s = text.to_string();
     let guard_s = guard.to_string();
@@ -3258,21 +3335,60 @@ pub(crate) async fn steer_enqueue_store(
     let _ = store
         .write_async(move |conn| {
             ensure_fleet_tables(conn)?;
-            conn.execute(
-                "DELETE FROM steering_queue WHERE session=?1 AND (text=?2 OR (?3 != '' AND guard=?3))",
-                rusqlite::params![session, text_s, guard_s],
-            )?;
-            conn.execute(
-                "INSERT OR REPLACE INTO steering_queue(id, session, text, queued_at, guard, sender) VALUES(?,?,?,?,?,?)",
-                rusqlite::params![
-                    id,
-                    session,
-                    text_s,
-                    now_f64(),
-                    if guard_s.is_empty() { None } else { Some(guard_s.clone()) },
-                    sender_s
-                ],
-            )?;
+            // A GUARDED RE-ENQUEUE UPDATES IN PLACE AND KEEPS `queued_at`
+            // (AMUX-3557). This was DELETE-then-INSERT, which looks like the
+            // same thing and is not: the new row got `now_f64()`, so a guarded
+            // message RESET ITS OWN AGE on every re-enqueue. Delivery is
+            // `ORDER BY queued_at ASC` — oldest first — so a message that is
+            // re-queued faster than the queue drains can NEVER be the oldest,
+            // and loses to anything else in the queue forever. The guard
+            // written to protect the message is what starved it.
+            //
+            // Measured 2026-08-23 on `backend`: auto-compact re-enqueued 300
+            // times, consecutive gaps of 4 to 117 seconds, because the trigger
+            // re-evaluates on every state report and the condition (pct=7)
+            // cannot clear until the lane actually compacts. 78 of those landed
+            // in a single hour.
+            //
+            // Keeping `queued_at` is also the honest value: the message HAS
+            // been waiting since it was first queued. The newest TEXT wins
+            // because that is the guard's purpose (one pending answer, current
+            // content); the age is not part of the content.
+            let existing: Option<String> = if guard_s.is_empty() {
+                None
+            } else {
+                conn.query_row(
+                    "SELECT id FROM steering_queue WHERE session=?1 AND guard=?2 LIMIT 1",
+                    rusqlite::params![session, guard_s],
+                    |r| r.get(0),
+                )
+                .ok()
+            };
+            if let Some(prior) = existing {
+                conn.execute(
+                    "UPDATE steering_queue SET text=?1, sender=?2 WHERE id=?3",
+                    rusqlite::params![text_s, sender_s, prior],
+                )?;
+                if let Ok(mut g) = effective_id_w.lock() {
+                    *g = prior;
+                }
+            } else {
+                conn.execute(
+                    "DELETE FROM steering_queue WHERE session=?1 AND text=?2",
+                    rusqlite::params![session, text_s],
+                )?;
+                conn.execute(
+                    "INSERT OR REPLACE INTO steering_queue(id, session, text, queued_at, guard, sender) VALUES(?,?,?,?,?,?)",
+                    rusqlite::params![
+                        id,
+                        session,
+                        text_s,
+                        now_f64(),
+                        if guard_s.is_empty() { None } else { Some(guard_s.clone()) },
+                        sender_s
+                    ],
+                )?;
+            }
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         })
         .await;
@@ -3285,7 +3401,8 @@ pub(crate) async fn steer_enqueue_store(
         "steering",
     )
     .await;
-    msg_id
+    // The row that exists, not the one we minted (AMUX-3557).
+    effective_id.lock().map(|g| g.clone()).unwrap_or(msg_id)
 }
 
 /// py:25236 _send_dedup_seen — idempotency across client retries, persisted
@@ -3935,7 +4052,8 @@ pub(crate) fn submit_verdict_of(msg: &str) -> Option<&'static str> {
         return Some("confirmed");
     }
     // "queued (steering) — ..." and friends: nothing was submitted yet, so
-    // there is no verdict to record. The deliverer stamps one when it lands.
+    // there is no verdict to record. It stays None: no deliverer stamps one
+    // later, despite what this comment used to promise (AMUX-3541).
     None
 }
 
@@ -10343,7 +10461,17 @@ async fn steer_mutate(
         let msg_id = steer_enqueue(state, name, &text, guard, &hdr_worker(headers)).await;
         if body.get("record_history").map(py_truthy).unwrap_or(false) {
             let email = headers.get("x-amux-user-email").and_then(|v| v.to_str().ok()).unwrap_or("");
-            cmd_hist_record(state, name, &text, "user", email).await;
+            // QUEUED, not direct (AF-159). `steer_enqueue` above put this on the
+            // steering queue; nothing has been submitted to the lane. Recording
+            // it as `direct` with a blank verdict is what made 144 of 479
+            // `type='user'` rows over 7 days unreadable — blank is the CORRECT
+            // value for a queued message and a hole for a direct one, and one
+            // label made it mean both.
+            cmd_hist_record_full(
+                state, name, &text, "user", email, false,
+                DeliveryMeta::queued(now_i64() * 1000),
+            )
+            .await;
             // Autotask/labelling: Python's model-call feature — gap named in
             // the module doc.
         }
@@ -11085,8 +11213,10 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
         // (type=='steering') reported every QUEUED message as direct. That is
         // precisely the mislabelling this metadata exists to end.
         let deliv = if msg.starts_with("queued") { Delivery::Queued } else { Delivery::Direct };
-        // A queued message's wait starts now; the deliverer stamps
-        // delivered_at when it actually lands.
+        // A queued message's wait starts now. `delivered_at` stays NULL until
+        // something stamps it, and nothing does yet (AMUX-3541) — which is the
+        // point: a NULL that persists is countable, where the old unconditional
+        // copy of `ts` was not.
         let q_at = if deliv == Delivery::Queued { Some(now_i64() * 1000) } else { None };
         // Same source of truth as `deliv`: the send's own outcome, recorded
         // rather than re-inferred later. `verify_submitted` already computed
@@ -11722,9 +11852,46 @@ async fn report_post(state: &AppState, name: &str, headers: &HeaderMap, body: &V
                          left off.",
                         context_window()
                     );
+                    // HOW LONG HAS IT BEEN PENDING? (AMUX-3557) The trigger
+                    // re-evaluates on every state report and the condition
+                    // cannot clear until the lane actually compacts, so a lane
+                    // that is stuck mid-turn re-fires this forever — measured
+                    // 300 times on `backend`, 78 in one hour. Every one of
+                    // those logged an identical line, and the EVENT beside it
+                    // is deduped into 30-minute buckets, so the ledger showed
+                    // 11 where the truth was 300: a 27x under-report, which is
+                    // why nobody saw it.
+                    //
+                    // The age of the already-pending row is the discriminator
+                    // and it costs nothing: it is persistent (unlike a counter,
+                    // which this process's re-exec would reset — the mistake
+                    // the ethos file records against in-memory scan state), and
+                    // it separates "fired once, will deliver at the next
+                    // boundary" from "this lane has not reached a boundary in
+                    // an hour", which are different problems with different
+                    // owners.
+                    let pending_age_s = {
+                        let sess = name.to_string();
+                        state
+                            .store
+                            .read()
+                            .ok()
+                            .and_then(|c| {
+                                c.query_row(
+                                    "SELECT queued_at FROM steering_queue \
+                                     WHERE session=?1 AND guard='auto-compact' LIMIT 1",
+                                    rusqlite::params![sess],
+                                    |r| r.get::<_, f64>(0),
+                                )
+                                .ok()
+                            })
+                            .map(|q| (now_f64() - q).round() as i64)
+                    };
                     steer_enqueue(state, name, &msg, "auto-compact", "").await;
                     tracing::warn!(
                         session = %name, pct, used, ?action,
+                        pending_age_s = pending_age_s.unwrap_or(0),
+                        already_pending = pending_age_s.is_some(),
                         "auto-compact queued — context low"
                     );
                     emit_event(
@@ -13822,6 +13989,71 @@ mod tests {
         );
     }
 
+    /// AMUX-3557. A guarded re-enqueue must NOT reset the message's age.
+    ///
+    /// Delivery is `ORDER BY queued_at ASC`. The old DELETE-then-INSERT gave
+    /// the replacement row `now_f64()`, so a guarded message re-queued faster
+    /// than the queue drains could never be the oldest and lost to anything
+    /// else in the queue forever — the guard written to protect the message is
+    /// what starved it.
+    ///
+    /// Measured on `backend` the day this was fixed: auto-compact re-enqueued
+    /// 300 times, consecutive gaps of 4 to 117 seconds, because the trigger
+    /// re-evaluates on every state report and the condition cannot clear until
+    /// the lane actually compacts.
+    ///
+    /// The ORDERING assertion is the load-bearing one. Checking only that
+    /// `queued_at` is unchanged would pass against an implementation that keeps
+    /// the timestamp and still hands delivery the wrong row; what the incident
+    /// was actually about is which message comes out first.
+    #[tokio::test]
+    async fn a_guarded_re_enqueue_keeps_its_place_in_the_queue() {
+        let (st, _dir) = state();
+
+        // The guarded message is queued FIRST, so it is the oldest and must
+        // stay first no matter how often it is refreshed.
+        let first = steer_enqueue(&st, "lane", "/compact v1", "auto-compact", "").await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        steer_enqueue(&st, "lane", "a peer message", "", "peer").await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // Re-fire the guarded one, as the auto-compact trigger does every few
+        // seconds while the condition holds.
+        let again = steer_enqueue(&st, "lane", "/compact v2", "auto-compact", "").await;
+
+        assert_eq!(
+            again, first,
+            "a guarded re-enqueue must update the EXISTING row, so the id handed back names \
+             a message that is really in the queue"
+        );
+
+        let rows: Vec<(String, String)> = {
+            let conn = st.store.read().unwrap();
+            let mut q = conn
+                .prepare("SELECT id, text FROM steering_queue WHERE session='lane' ORDER BY queued_at ASC")
+                .unwrap();
+            let r = q
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .unwrap()
+                .flatten()
+                .collect();
+            r
+        };
+
+        assert_eq!(rows.len(), 2, "the guard must replace, not stack: {rows:?}");
+        assert_eq!(
+            rows[0].0, first,
+            "THE POINT: the refreshed guarded message must still be FIRST out. Resetting \
+             queued_at put it last, forever, behind anything else queued: {rows:?}"
+        );
+        assert_eq!(
+            rows[0].1, "/compact v2",
+            "the newest TEXT wins — the guard's purpose is one pending message with current \
+             content; only the AGE is preserved"
+        );
+        assert_eq!(rows[1].1, "a peer message");
+    }
+
     fn state() -> (AppState, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&dir.path().join("t.db")).unwrap();
@@ -13839,6 +14071,116 @@ mod tests {
     // The column ALIGNMENT, which submit_verdict_of's unit tests cannot catch:
     // the INSERT lists 9 columns and 9 placeholders, and getting that pairing
     // wrong writes the verdict into the wrong column silently. Round-trip a
+    /// AMUX-3541. `delivered_at` must not be a copy of the insert time.
+    ///
+    /// Both columns were `now_ms` unconditionally, so delivered_at == ts on
+    /// 3854 of 3854 rows with a max gap of 0 — including every `queued` row,
+    /// where a real delivery time MUST differ because queueing means waiting
+    /// for a turn boundary. A column populated 100% of the time reads as a
+    /// working instrument, which is why AF-159 rested "these 144 landed" on it.
+    ///
+    /// The queued assertion is the load-bearing one. A direct send genuinely
+    /// was delivered at insert, so `Some(ts)` there is true and must stay true
+    /// — asserting only the NULL half would pass against a version that
+    /// blanked the column for everything, which would destroy real information
+    /// rather than stop recording false information.
+    #[tokio::test]
+    async fn delivered_at_is_null_for_a_queued_send_and_set_for_a_direct_one() {
+        let (st, _dir) = state();
+
+        cmd_hist_record_full(&st, "lane-q", "queued one", "user", "", false,
+                             DeliveryMeta::queued(11)).await;
+        let (ts_q, del_q) = last_row(&st);
+        assert_eq!(
+            del_q, None,
+            "a QUEUED message has not been delivered — stamping delivered_at here is \
+             what made the column a copy of ts on every row"
+        );
+        assert!(ts_q > 0, "ts is still recorded; it is delivered_at that must be absent");
+
+        cmd_hist_record_full(&st, "lane-d", "direct one", "user", "", false,
+                             DeliveryMeta::direct()).await;
+        let (ts_d, del_d) = last_row(&st);
+        assert_eq!(
+            del_d, Some(ts_d),
+            "a DIRECT send really was delivered when it was recorded — blanking this too \
+             would throw away true information instead of removing false information"
+        );
+    }
+
+    fn last_row(st: &AppState) -> (i64, Option<i64>) {
+        st.store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT ts, delivered_at FROM cmd_history ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?)),
+            )
+            .unwrap()
+    }
+
+    /// AF-159. A message put on the steering queue must NOT be recorded as a
+    /// direct delivery.
+    ///
+    /// The steer branch called a `cmd_hist_record` wrapper that hardcoded
+    /// `DeliveryMeta::direct()` for a message it had just handed to
+    /// `steer_enqueue`. Measured over 7 days of `type='user'` rows: 313
+    /// confirmed, 144 blank, 18 retried — and the 144 blanks were not a hole in
+    /// the direct path, they were STEERING wearing the wrong label. That is
+    /// worse than a blank, because blank is the CORRECT value for a queued
+    /// message and a hole for a direct one, so one label made the same value
+    /// mean two things and the column could not be read for either.
+    ///
+    /// This pins the CONSTRUCTOR rather than the call site because the call
+    /// site is one line in a long handler and the constructor is what any
+    /// future caller reaches for. The wrapper that made the wrong thing easy is
+    /// deleted, so `direct()` can no longer be applied by default.
+    #[tokio::test]
+    async fn a_queued_send_is_never_recorded_as_a_direct_delivery() {
+        let m = DeliveryMeta::queued(4_242);
+        assert!(
+            matches!(m.delivery, Some(Delivery::Queued)),
+            "a queued send must say queued — recording it as direct is AF-159"
+        );
+        assert_eq!(m.queued_at_ms, Some(4_242), "the wait has to start somewhere");
+        assert_eq!(
+            m.submit_verdict, None,
+            "None is CORRECT here: nothing has been submitted yet. The defect was \
+             never the blank, it was the blank arriving under a `direct` label"
+        );
+
+        // And the contrast that makes the label load-bearing.
+        let d = DeliveryMeta::direct();
+        assert!(matches!(d.delivery, Some(Delivery::Direct)));
+        assert_eq!(d.queued_at_ms, None, "a direct send never waited");
+
+        // Round-trip through the real store, because a constructor that is
+        // right and a column that is wrong look identical from here.
+        let (st, _dir) = state();
+        cmd_hist_record_full(&st, "lane-q", "steer me", "user", "", false, DeliveryMeta::queued(7))
+            .await;
+        let (deliv, q_at, verdict) = st
+            .store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT delivery, queued_at, submit_verdict FROM cmd_history ORDER BY id DESC LIMIT 1",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, Option<i64>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(deliv.as_deref(), Some("queued"));
+        assert_eq!(q_at, Some(7));
+        assert_eq!(verdict, None);
+    }
+
     // real write through the real store (AMUX-2643).
     #[tokio::test]
     async fn a_recorded_send_round_trips_its_delivery_metadata() {
@@ -15799,7 +16141,8 @@ mod submission_gate_tests {
     fn a_queued_send_has_no_verdict_yet_rather_than_a_false_one() {
         // The queued path has submitted nothing at this point. Recording
         // "confirmed" here would be the exact mislabelling this metadata exists
-        // to end; NULL is the honest value until the deliverer stamps one.
+        // to end; NULL is the honest value, and currently the permanent one —
+        // no deliverer stamps a verdict (AMUX-3541).
         assert_eq!(submit_verdict_of("queued (steering) — will deliver at the next boundary"), None);
         assert_eq!(submit_verdict_of(""), None);
     }

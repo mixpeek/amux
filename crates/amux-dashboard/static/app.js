@@ -7890,7 +7890,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.709';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.711';   // bump together with the sw.js CACHE version
 
 // ── No silent failures (Ethan, 2026-08-09: "make sure every action has some
 // kind of response in the ui — i just deleted a worker and nothing happened").
@@ -27832,6 +27832,87 @@ async function loadUsage() {
     }).join('');
   } catch (e) {
     el.innerHTML = '<span style="color:var(--dim);">Could not load usage</span>';
+  }
+  // The bars say HOW MUCH is gone. This says WHAT SPENT IT (AMUX-3544/3550).
+  // Appended as its own node and loaded separately on purpose: if attribution
+  // fails, the meter above must still render.
+  let attr = document.getElementById('settings-spend-attr');
+  if (!attr) {
+    attr = document.createElement('div');
+    attr.id = 'settings-spend-attr';
+    attr.style.marginTop = '14px';
+    el.parentNode.insertBefore(attr, el.nextSibling);
+  }
+  loadSpendAttribution();
+}
+// WHAT SPENT THE PLAN, by why the turn happened.
+//
+// A customer on the $20 plan: "I sent 2-3 prompts today and my credits ran out
+// ... going to investigate what's using all the credits." They could not. The
+// usage bars above report the plan's own utilization and cannot attribute one
+// point of it, so the only signal was the credits being gone.
+//
+// The headline is the BACKGROUND SHARE rather than the total, because that is
+// the complaint: not that amux is expensive, but that it spent the window the
+// person was about to type into. Named origins follow, since "a schedule fired"
+// is actionable only when it says which schedule.
+async function loadSpendAttribution() {
+  const box = document.getElementById('settings-spend-attr');
+  if (!box) return;
+  try {
+    const r = await fetch(API + '/api/usage/attribution?hours=24');
+    const d = await r.json();
+    if (!d || d.error || !Array.isArray(d.by_source)) { box.innerHTML = ''; return; }
+    if (!d.by_source.length) {
+      box.innerHTML = '<div style="font-size:0.74rem;color:var(--dim);">No spend recorded in the last 24h.</div>';
+      return;
+    }
+    const usd = n => '$' + (n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(2));
+    const bgPct = Math.max(0, Math.min(100, Math.round(d.background_pct || 0)));
+    // Red when background dominates: that is the state that empties a small
+    // plan before its owner has typed anything.
+    const col = bgPct >= 70 ? 'var(--red)' : (bgPct >= 40 ? '#f0a020' : 'var(--green)');
+    const rows = d.by_source
+      .filter(x => (x.cost_usd || 0) > 0)
+      .map(x =>
+        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;padding:2px 0;">'
+        + '<span style="font-size:0.76rem;color:' + (x.is_background ? 'var(--dim)' : 'var(--fg)') + ';min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+        +   esc(x.label || x.source) + '</span>'
+        + '<span style="font-size:0.74rem;color:var(--dim);white-space:nowrap;">'
+        +   usd(x.cost_usd) + ' · ' + (x.turns || 0).toLocaleString() + ' turns</span>'
+        + '</div>').join('');
+    // `=== true`, NOT `!== false` (AMUX-3550). The loose form kept every row
+    // whose `is_background` was ABSENT — which was all of them, because the
+    // field shipped only on by_source. A filter that matches everything reads
+    // as a deliberate exclusion and returns a confident wrong answer; this one
+    // listed the human's own typing under "biggest background sources".
+    // The strict form fails CLOSED: against a server that does not send the
+    // field it shows nothing, which is safer than showing the wrong rows under
+    // a heading that asserts what they are.
+    const top = (d.top_origins || []).filter(x => x.is_background === true).slice(0, 4).map(x =>
+        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;padding:2px 0;">'
+        + '<span style="font-size:0.74rem;color:var(--dim);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+        +   esc(x.origin || x.session || '?') + '</span>'
+        + '<span style="font-size:0.72rem;color:var(--dim);white-space:nowrap;">' + usd(x.cost_usd) + '</span>'
+        + '</div>').join('');
+    box.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">'
+      +   '<span style="font-size:0.8rem;color:var(--fg);">What spent it (24h)</span>'
+      +   '<span style="font-size:0.74rem;color:var(--dim);">' + usd(d.total_cost_usd || 0) + '</span>'
+      + '</div>'
+      + '<div style="height:6px;border-radius:4px;background:var(--border);overflow:hidden;margin-bottom:6px;">'
+      +   '<div style="height:100%;width:' + bgPct + '%;background:' + col + ';"></div>'
+      + '</div>'
+      + '<div style="font-size:0.74rem;color:' + col + ';margin-bottom:6px;">'
+      +   bgPct + '% of spend was background work, not you'
+      + '</div>'
+      + rows
+      + (top ? '<div style="font-size:0.72rem;color:var(--dim);margin:8px 0 2px;">Biggest background sources</div>' + top : '');
+  } catch (e) {
+    // Silent by design: this is a supplementary panel and the meter above is
+    // the load-bearing one. A failure here must not replace a working meter
+    // with an error.
+    box.innerHTML = '';
   }
 }
 async function loadAlertConfig() {

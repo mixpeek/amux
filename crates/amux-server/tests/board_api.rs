@@ -1915,3 +1915,143 @@ async fn discarding_an_autofix_report_rearms_the_detector() {
     );
 }
 
+
+// ---- AF-160: a gate that says "name them" must collect the name -----------
+
+/// The gate's second criterion is `Peer-reviewed by a DIFFERENT worker in group
+/// `amux` (name them)`. Acking it asserted a peer reviewed the work and recorded
+/// WHO nowhere, so the assertion was unfalsifiable — measured 2026-08-23, 148 of
+/// 1632 live verified cards named a peer and 45 of 1381 archived ones. 91% of the
+/// board passed this gate with nothing machine-readable behind it.
+///
+/// The predicate is reviewer != the card's OWNER, never reviewer != whoever is
+/// typing. The first draft compared against the ACTING session and would have
+/// refused both real verifications made on this board within the hour (AF-161:
+/// owner amux, reviewer and actor amux-frustrations; AF-16: the mirror). The peer
+/// signing off IS the one acting — criterion 3 says they verify it themselves.
+#[tokio::test]
+async fn a_gate_that_asks_you_to_name_the_peer_refuses_until_a_peer_is_named() {
+    let (app, _dir) = app();
+    let gate = json!([
+        "Functionality change is live and exercised, not just merged",
+        "Peer-reviewed by a DIFFERENT worker in group `amux` (name them)",
+    ]);
+    let card = create(
+        &app,
+        json!({
+            "title": "named-peer gate",
+            "status": "review",
+            "session": "amux",
+            "desc": "artifact: crates/amux-server/src/api/board.rs",
+            "gate": gate,
+        }),
+    )
+    .await;
+    let id = card["id"].as_str().unwrap().to_string();
+    let ack = json!([
+        "Functionality change is live and exercised, not just merged",
+        "Peer-reviewed by a different worker in group amux (amux-frustrations)",
+    ]);
+
+    // 1. The ack NOW MATCHES — the name is filled into the parenthetical, the
+    //    case differs and the backticks are gone, all three of which used to
+    //    refuse. Getting past it to the named-peer check is itself the proof.
+    let (st, _, v) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "verified", "gate_checked": ack })),
+        &[("X-Amux-Session", "amux-frustrations")],
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert_ne!(
+        v["error"], json!("gate_checked does not match the gate"),
+        "the filled-in ack must be ACCEPTED as matching — refusing it here is the original bug"
+    );
+    assert_eq!(v["ok"], json!(false));
+    assert_eq!(v["blocked"], json!(true));
+    assert!(
+        v["error"].as_str().unwrap().contains("no reviewer is recorded"),
+        "the refusal must name the real reason: {v}"
+    );
+    // The remedy must be reachable with sanctioned tooling, or this gate
+    // manufactures the hand-rolled curls the audit trail depends on not existing.
+    assert!(v["how_to_fix"]["cli"].as_str().unwrap().starts_with("amux board reviewer "));
+
+    // 2. A SELF-REVIEW is refused: reviewer == the card's owner.
+    let (st, _, _) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "reviewer": "amux" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _, v) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "verified", "gate_checked": ack })),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("self-review"),
+        "owner reviewing their own card must be refused: {v}"
+    );
+
+    // 3. THE MIRROR CASE, which the first draft of this rule would have refused:
+    //    reviewer is a different session from the OWNER, and is also the one
+    //    acting. That is correct and must pass.
+    let (st, _, _) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "reviewer": "amux-frustrations" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _, v) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "verified", "gate_checked": ack })),
+        &[("X-Amux-Session", "amux-frustrations")],
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "the peer signing off themselves must pass: {v}");
+    assert_eq!(v["status"], json!("verified"));
+}
+
+/// A gate with NO named-peer criterion is untouched — the check must not leak
+/// onto every other card on the board.
+#[tokio::test]
+async fn a_gate_without_a_named_peer_criterion_needs_no_reviewer() {
+    let (app, _dir) = app();
+    let card = create(
+        &app,
+        json!({
+            "title": "ordinary code card",
+            "status": "doing",
+            "session": "amux",
+            "desc": "artifact: crates/amux-server/src/api/board.rs",
+        }),
+    )
+    .await;
+    let id = card["id"].as_str().unwrap().to_string();
+    let (st, _, v) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({
+            "status": "done",
+            "gate_checked": ["Implemented and merged", "Tests / lint pass"]
+        })),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "no reviewer required when nothing asks for one: {v}");
+    assert_eq!(v["status"], json!("done"));
+}

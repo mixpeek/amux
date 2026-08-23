@@ -196,13 +196,24 @@ async fn get_contract(
                 "limit": "page size, applied AFTER done_limit",
                 "offset": "page offset",
                 "slim": "1 = trimmed item bodies (desc_head/desc_len/log_n/folded_n instead of \
-                        prose) — the DEFAULT shape since AMUX-3496",
+                        prose) — the DEFAULT shape since AMUX-3496. Slim rows carry \
+                        \"slim\": 1 so a consumer can tell a dropped field from an empty one \
+                        (AF-161: a census read absence as emptiness and was 100% wrong)",
                 "full": "1 = full prose bodies (desc + log). The default list is slim; a \
                          reader that needs desc/log must ask (slim=0 also honored)",
                 "quota": "1 = per-status terminal quotas (verified floor 300; done/discarded \
                           share done_limit) instead of the lumped cap — the dashboard poll's \
                           shape (AMUX-3503)",
             },
+            // NOT a filter — descriptive metadata about what `slim` DROPS, so it
+            // lives outside `filters`. It sat inside `filters` from 64a9cb7d until
+            // this commit and turned `check` red on main: board_contract_filters
+            // asserts every key in `filters` is a real `ListParams` field, and a
+            // descriptive key can never be one. Adding it to `ListParams` would have
+            // gone green and been WRONG — it would document a query param that does
+            // not exist and that axum silently drops, which is the exact defect that
+            // test was written to catch. Keep `filters` strictly name -> description.
+            "slim_omits": ["desc", "log", "source_ref", "last_verified_at", "due_time", "gate"],
             "not_a_filter": {
                 "q / query / search": "REFUSED with 400 — /api/board does not search, it would \
                                        return the entire board. Use /api/search?q=",
@@ -1012,9 +1023,39 @@ pub fn list_body(row: &IssueRow, slim: bool, stale: bool) -> Value {
         // full card on demand when the detail panel opens, so these are
         // pure payload waste on the list/SSE path. Keeps depends_on
         // (is:blocked filter) and folded_n (is:folded filter).
-        for k in ["source_ref", "last_verified_at", "reviewer", "due_time", "gate"] {
+        //
+        // `reviewer` USED TO BE IN THIS LIST AND IS NOT ANY MORE (AF-161).
+        // The justification above reasons from ONE consumer — "the SPA never
+        // renders it" — which is true, and false for every other caller. It
+        // cost a real wrong answer on 2026-08-23: amux-frustrations audited
+        // their verified cards off this payload and reported 25 of 25 with no
+        // reviewer. The true figure was 7 named / 18 absent. `.get("reviewer")`
+        // returns None for an ABSENT key exactly as it does for an empty one,
+        // so a removal here is indistinguishable from a card with no reviewer,
+        // and the census was 100% wrong in the direction that looks like a
+        // finding. It is one short, usually-null string per row against a
+        // 4.5MB payload, and it is load-bearing for the one audit anybody runs
+        // over this table. The other four stay dropped: `gate` alone is four
+        // criteria strings per row.
+        //
+        // The prose drops were always SELF-DESCRIBING — desc_head/desc_len/
+        // log_n ship in their place, so a consumer can see the omission. These
+        // five were removed with nothing left behind, which is why the same
+        // discovery has now been made twice, one column at a time (c207339
+        // fixed the caller for `desc`). `slim: 1` below is the general remedy:
+        // a consumer can refuse a slim row instead of reading absence as
+        // emptiness, and `GET /api/board?describe` names exactly what is gone.
+        for k in ["source_ref", "last_verified_at", "due_time", "gate"] {
             obj.remove(k);
         }
+        // SAY THAT THIS ROW IS SLIM. Ten bytes against ~4.5MB, and it is the
+        // only thing that lets a caller tell "the server did not send this"
+        // from "the card does not have one" without knowing the drop list by
+        // heart. The AMUX-3496 comment argues the KeyError on `.desc` is
+        // "loud, not silently empty" — true in the idiom it assumes
+        // (`row["desc"]`) and false in the one every consumer actually
+        // writes (`row.get("desc")`), which returns None and says nothing.
+        obj.insert("slim".into(), json!(1));
     }
     if stale {
         obj.insert("stale".into(), json!(true));
@@ -2026,6 +2067,56 @@ fn ack_evidence(actor: &str, criteria: &[String], via: &str) -> Vec<Evidence> {
 /// `why_blocked`/`kind`: it cannot be merged flat because core spells the
 /// list `blocked` while the Python contract's `blocked` is the boolean the
 /// CLI-side incident (orch MO-2952) made load-bearing.
+/// Normalize a gate criterion for ACK MATCHING (AF-160 / AMUX-3532).
+///
+/// Acknowledgement was exact string containment, and one criterion in the
+/// `amux` group's `verified` gate reads:
+///
+/// ```text
+/// Peer-reviewed by a DIFFERENT worker in group `amux` (name them)
+/// ```
+///
+/// The parenthetical is an INSTRUCTION to the acking agent. Under exact
+/// matching the only ack that passes is the criterion verbatim, "(name them)"
+/// included — so following the instruction inside the criterion is what makes
+/// the ack fail. That is ethos rule 3 exactly, and its practical effect is to
+/// route the criterion carrying the most judgment in the gate toward the two
+/// mechanisms carrying the least: `gate_ack` (acknowledge everything at once,
+/// which per-criterion acks exist to prevent) and `force`.
+///
+/// Two more traps rode along, both of which cost a retry on AF-66: DIFFERENT is
+/// uppercase in the criterion and lowercase in ordinary prose, and `amux` is in
+/// BACKTICKS, so a shell ate them unless escaped and the sent string silently
+/// differed from the one the caller believed they sent.
+///
+/// So: case-fold, drop backticks, drop ONE trailing parenthetical, collapse
+/// whitespace. Exact matching is still tried FIRST at the call site, so nothing
+/// that passes today can stop passing; this only widens.
+///
+/// It cannot make two distinct criteria collide unless they differ ONLY by a
+/// trailing parenthetical or by case, in which case they were already
+/// indistinguishable to a human reading the 409.
+fn ack_norm(s: &str) -> String {
+    let mut t = s.trim().to_lowercase().replace('`', "");
+    if t.ends_with(')') {
+        if let Some(i) = t.rfind('(') {
+            t.truncate(i);
+        }
+    }
+    t.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Does this criterion ASK FOR A NAME? (AF-160)
+///
+/// The marker is the criterion's own words. A gate that says "name them" and
+/// then records no name is not collecting the fact it exists to collect —
+/// measured fleet-wide 2026-08-23: 148 of 1632 live verified cards named a
+/// peer, and 45 of 1381 archived ones. 91% of the board passed this gate with
+/// nothing machine-readable behind it.
+fn criterion_wants_a_name(c: &str) -> bool {
+    c.to_lowercase().contains("name them")
+}
+
 fn gate_409(
     row: &IssueRow,
     eff_gate: &[String],
@@ -2616,8 +2707,15 @@ pub async fn patch_item(
                                 .collect::<Vec<_>>()
                         });
                         if let Some(gc) = &gc {
-                            let missing: Vec<&String> =
-                                eff_gate.iter().filter(|c| !gc.contains(c)).collect();
+                            // Exact FIRST, normalized as a fallback (AF-160):
+                            // widening only, so no ack that passes today stops.
+                            let missing: Vec<&String> = eff_gate
+                                .iter()
+                                .filter(|c| {
+                                    !gc.contains(c)
+                                        && !gc.iter().any(|g| ack_norm(g) == ack_norm(c))
+                                })
+                                .collect();
                             if !missing.is_empty() {
                                 return finish(
                                     &slot_w,
@@ -2944,8 +3042,15 @@ pub async fn patch_item(
                                 .collect::<Vec<_>>()
                         });
                         if let Some(gc) = &gc {
-                            let missing: Vec<&String> =
-                                eff_gate.iter().filter(|c| !gc.contains(c)).collect();
+                            // Exact FIRST, normalized as a fallback (AF-160):
+                            // widening only, so no ack that passes today stops.
+                            let missing: Vec<&String> = eff_gate
+                                .iter()
+                                .filter(|c| {
+                                    !gc.contains(c)
+                                        && !gc.iter().any(|g| ack_norm(g) == ack_norm(c))
+                                })
+                                .collect();
                             if !missing.is_empty() {
                                 return finish(
                                     &slot_w,
@@ -2992,6 +3097,92 @@ pub async fn patch_item(
                                     no_write(),
                                 );
                             }
+                        }
+                    }
+
+                    // A GATE THAT SAYS "NAME THEM" MUST COLLECT THE NAME (AF-160).
+                    //
+                    // Acking the criterion asserts a peer reviewed it. Nothing
+                    // recorded WHO, so the assertion was unfalsifiable and the
+                    // field went unset on 91% of the board (148 of 1632 live
+                    // verified cards named a peer; 45 of 1381 archived). The
+                    // `reviewer` column and `amux board reviewer <id> <who>` /
+                    // `--reviewer` already exist — the gate simply never asked
+                    // for what it was demanding in prose.
+                    //
+                    // THE PREDICATE IS reviewer != THE CARD'S OWNER, NOT
+                    // reviewer != WHOEVER IS TYPING. The first draft of this
+                    // rule (amux-frustrations', corrected by its own author
+                    // before it shipped) compared against the ACTING session,
+                    // which would have refused both real verifications on this
+                    // board within the hour:
+                    //
+                    //   AF-161  owner=amux              reviewer=amux-frustrations  acting=amux-frustrations
+                    //   AF-16   owner=amux-frustrations reviewer=amux               acting=amux
+                    //
+                    // In both, reviewer == acting — and that is the CORRECT
+                    // shape, because criterion 3 says the peer verifies it
+                    // THEMSELVES, so the peer signing off IS the one acting.
+                    // The two cards are mirror images, and a rule derived from
+                    // either alone looks right until the first card pointing
+                    // the other way. Copy the predicate from the case that must
+                    // PASS, not from the case that must fail.
+                    //
+                    // Validated before shipping, against every verified card
+                    // rather than a constructed fixture: admits 147 of 148 live
+                    // (192 of 193 including archived) and refuses exactly one,
+                    // AMUX-2409, where owner and reviewer are both
+                    // amux-homepage. One refusal, and it is the self-review the
+                    // criterion exists to prevent — so the predicate is neither
+                    // uniformly permissive nor uniformly strict on real data.
+                    //
+                    // The escape is walkable with sanctioned tooling ONLY,
+                    // checked by walking it (AMUX-2325): `amux board reviewer
+                    // AF-66 amux` set it in one call, no raw curl, attribution
+                    // intact. Refusing on a gate whose remedy needs a
+                    // hand-rolled PATCH would manufacture the unattributed
+                    // writes this gate system depends on being attributed.
+                    if !force && eff_gate.iter().any(|c| criterion_wants_a_name(c)) {
+                        let reviewer = next.reviewer.as_deref().unwrap_or("").trim().to_string();
+                        let owner = next.session.as_deref().unwrap_or("").trim().to_string();
+                        let bad = if reviewer.is_empty() {
+                            Some("no reviewer is recorded on this card")
+                        } else if !owner.is_empty() && reviewer.eq_ignore_ascii_case(&owner) {
+                            Some("the reviewer is the card's own owner, which is a self-review")
+                        } else {
+                            None
+                        };
+                        if let Some(why) = bad {
+                            return finish(
+                                &slot_w,
+                                PatchOut::Refused(
+                                    StatusCode::CONFLICT,
+                                    json!({
+                                        "error": format!("gate asks you to name the peer, and {why}"),
+                                        "ok": false,
+                                        "blocked": true,
+                                        "item": row.id,
+                                        "attempted_status": target_raw,
+                                        "criterion": eff_gate.iter().find(|c| criterion_wants_a_name(c)),
+                                        "reviewer": next.reviewer,
+                                        "owner": next.session,
+                                        "why": "acking \"name them\" without a name is an \
+                                                unfalsifiable assertion — 91% of verified cards \
+                                                carry no peer name at all (AF-160)",
+                                        "how_to_fix": {
+                                            "cli": format!("amux board reviewer {} <peer-session>", row.id),
+                                            "or_in_the_same_call": format!(
+                                                "amux board {} {} --reviewer <peer-session> --checked ...",
+                                                target_raw, row.id
+                                            ),
+                                            "rule": "the reviewer must be a DIFFERENT session from \
+                                                     the card's owner; the peer doing the sign-off \
+                                                     acting on it themselves is correct and expected",
+                                        },
+                                    }),
+                                ),
+                                no_write(),
+                            );
                         }
                     }
 
@@ -4109,6 +4300,107 @@ mod slim_tests {
         // CONTENT, not the first line.
         let padded = IssueRow { desc: "\n\n  \nreal content here".into(), ..Default::default() };
         assert_eq!(list_body(&padded, true, false)["desc_head"], "real content here");
+    }
+
+    /// AF-160 / AMUX-3532. The criterion's OWN INSTRUCTION must be followable.
+    ///
+    /// `Peer-reviewed by a DIFFERENT worker in group `amux` (name them)` told the
+    /// acking agent to supply a name, and exact string matching then rejected any
+    /// ack that supplied one. Every case below is a real string that was sent and
+    /// refused, or a shell-mangled form of one.
+    #[test]
+    fn an_ack_that_follows_the_criterions_own_instruction_is_accepted() {
+        let crit = "Peer-reviewed by a DIFFERENT worker in group `amux` (name them)";
+
+        // The whole point: filling in the parenthetical must MATCH.
+        assert_eq!(ack_norm("Peer-reviewed by a different worker in group amux (amux)"), ack_norm(crit));
+        // Case, which differs between the criterion and ordinary prose.
+        assert_eq!(ack_norm("peer-reviewed by a different worker in group `amux` (name them)"), ack_norm(crit));
+        // Backticks, which a shell eats unless escaped — so the string sent
+        // silently differs from the one the caller believes they sent.
+        assert_eq!(ack_norm("Peer-reviewed by a DIFFERENT worker in group amux (name them)"), ack_norm(crit));
+        // Verbatim still matches, or this would be a migration rather than a widening.
+        assert_eq!(ack_norm(crit), ack_norm(crit));
+
+        // AND IT MUST STILL DISCRIMINATE. Normalization that collapsed distinct
+        // criteria would turn a per-criterion ack into `gate_ack` wearing a
+        // costume — the exact mechanism this gate exists to prevent.
+        let others = [
+            "Functionality change is live and exercised, not just merged",
+            "That peer verified it themselves rather than taking the author's word",
+            "No regression in what it touched",
+        ];
+        for o in others {
+            assert_ne!(ack_norm(o), ack_norm(crit), "{o} must not satisfy the peer criterion");
+        }
+        // Only a TRAILING parenthetical is dropped, never arbitrary text.
+        assert_ne!(ack_norm("Peer-reviewed by a DIFFERENT worker"), ack_norm(crit));
+
+        // And the detector fires on the criterion that asks, not on its neighbours.
+        assert!(criterion_wants_a_name(crit));
+        for o in others {
+            assert!(!criterion_wants_a_name(o));
+        }
+    }
+
+    /// AF-161. `reviewer` SURVIVES the slim list, and a slim row SAYS it is slim.
+    ///
+    /// This test exists at this layer on purpose. `snapshot_slim` already had a
+    /// guard — `snapshot_slim_is_snapshot_minus_prose` — and it passed the whole
+    /// time the bug was live, because the drop happens one layer UP in
+    /// `list_body`, not in the snapshot. A check that pins the wrong layer is
+    /// exactly as green as one that pins the right one, and it certified a
+    /// payload that was snapshot-minus-prose-minus-five-more for weeks.
+    ///
+    /// The cost of the absence was a census reported as 25 of 25 verified cards
+    /// with no reviewer, when the truth was 7 named and 18 absent. `.get()`
+    /// returns None for a removed key and for an empty value alike, so the
+    /// wrong answer arrived looking like a finding.
+    #[test]
+    fn a_slim_row_keeps_the_reviewer_and_declares_that_it_is_slim() {
+        let named = IssueRow {
+            reviewer: Some("amux-frustrations".into()),
+            source_ref: Some("ref".into()),
+            ..Default::default()
+        };
+        let slim = list_body(&named, true, false);
+
+        // The field the census needed, present and correct.
+        assert_eq!(
+            slim["reviewer"], "amux-frustrations",
+            "reviewer must survive the slim list — its absence is what made the audit wrong"
+        );
+        // A row with NO reviewer must still carry the key, or the caller is back
+        // to guessing: absent and null have to be distinguishable from each other
+        // only by the value, never by the key.
+        let anon = IssueRow::default();
+        let slim_anon = list_body(&anon, true, false);
+        assert!(
+            slim_anon.get("reviewer").is_some(),
+            "the key must be present even when null, or absence still reads as emptiness"
+        );
+        assert!(slim_anon["reviewer"].is_null());
+
+        // The self-description, which is the general remedy rather than the
+        // one-column one.
+        assert_eq!(slim["slim"], 1, "a slim row must say so");
+
+        // Still slim: the expensive drops stay dropped, or this test would be
+        // pinning the absence of the optimisation instead of the presence of
+        // the fix.
+        for gone in ["desc", "log", "gate", "source_ref", "last_verified_at", "due_time"] {
+            assert!(
+                slim.get(gone).is_none(),
+                "{gone} must stay out of the slim list — it is the payload diet's whole point"
+            );
+        }
+
+        // And the FULL body is unchanged by any of this: it carries everything,
+        // and it must not sprout a `slim` marker.
+        let full = list_body(&named, false, false);
+        assert_eq!(full["reviewer"], "amux-frustrations");
+        assert!(full.get("desc").is_some());
+        assert!(full.get("slim").is_none(), "a full row must not claim to be slim");
     }
 
     // ---- AMUX-3391: auto-fold the silent capture card into the worker's own ----

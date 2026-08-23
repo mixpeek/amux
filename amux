@@ -1345,6 +1345,54 @@ Usage: amux board <status> <ID> [--checked \"crit\" ...] [--ack] [--type T] [--r
   # A PATCH is atomic, so `{"desc":...,"status":"done"}` that trips the gate
   # discards the outcome text TOO — and the retry then has nothing to satisfy
   # "Outcome recorded in the item" with, so it fails again for a new reason.
+  # THE REVIEWER IS WRITTEN FIRST TOO, for the same reason (AMUX-3534).
+  #
+  # `amux board review <ID> --reviewer <peer>` on a GATED card refused the
+  # transition, correctly, and silently discarded the reviewer: the PATCH is
+  # atomic, so a gate 409 rolls back the whole body. Observed 2026-08-23 on
+  # AMUX-3527 — card stayed `doing`, reviewer never set, and the 409 body lists
+  # the criteria and the type escape while saying NOTHING about the flag that
+  # was passed. So half the command evaporated and nothing distinguished that
+  # from success.
+  #
+  # Naming the peer is a fact about the handoff and is independent of whether
+  # the move is permitted. A refusal should cost the transition, not the
+  # handoff — which is exactly the argument the outcome block below already
+  # makes, one field over. The failure is easy to miss in ordinary work: you
+  # fix the gate, re-run, it succeeds, and you never learn the first attempt
+  # left a card in review with nobody asked to look at it. That is the
+  # condition --reviewer was added to prevent.
+  #
+  # Sent in the STATUS body as well, deliberately. It is idempotent, and if
+  # this pre-write fails for a reason the transition survives, the second copy
+  # still lands.
+  if [[ -n "$reviewer" ]]; then
+    local _rvresp _rvcurl=0
+    _rvresp=$(curl -sk -X PATCH -H 'Content-Type: application/json' \
+      -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
+      -d "$(V="$reviewer" python3 -c 'import json,os;print(json.dumps({"reviewer":os.environ["V"]}))')" \
+      "${AMUX_API:-https://localhost:8824}/api/board/$id" 2>/dev/null) || _rvcurl=$?
+    if [[ "$_rvcurl" -ne 0 ]]; then
+      die "cannot reach the board at ${AMUX_API:-https://localhost:8824} (curl exit $_rvcurl).
+NOTHING was applied — not the reviewer, and not the '$status' transition.
+The card is unchanged."
+    fi
+    # Do NOT discard this response: a dropped reviewer that looks saved is the
+    # whole defect (AC-323's shape, now on a fourth field).
+    printf '%s' "$_rvresp" | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception:
+    sys.stderr.write("warning: reviewer NOT set — server sent no JSON. "
+                     "The transition below was still attempted; check its result.\n"); sys.exit(0)
+if d.get("error") or d.get("blocked"):
+    sys.stderr.write("warning: reviewer NOT set: %s\n" % (d.get("error") or "blocked")); sys.exit(0)
+ign = [f for f in (d.get("ignored_fields") or []) if f]
+if ign:
+    sys.stderr.write("warning: reviewer NOT set — server ignored %s\n" % ", ".join(ign))
+'
+  fi
+
   # mixpeek-orchestrator hit this three times on 2026-08-04 (MO-3076 x2,
   # MO-3077). Two writes, not one: the outcome survives a refused transition.
   if [[ -n "$outcome" ]]; then

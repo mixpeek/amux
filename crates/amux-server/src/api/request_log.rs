@@ -983,6 +983,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/reclaim/snapshots", methods: &["GET"] },
     RouteEntry { path: "/api/reclaim/skipped", methods: &["GET", "DELETE"] },
     RouteEntry { path: "/api/usage", methods: &["GET"] },
+    RouteEntry { path: "/api/usage/attribution", methods: &["GET"] },
     RouteEntry { path: "/api/alert/config", methods: &["GET", "PATCH"] },
     RouteEntry { path: "/api/alert/owner", methods: &["GET", "POST"] },
     RouteEntry { path: "/api/stats/daily", methods: &["GET"] },

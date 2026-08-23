@@ -2272,3 +2272,256 @@ FIX: the content-diff axis in PR #144 is unchanged and, if anything, is the thin
   Reinstall: scripts/install-hooks.sh" reads exactly like a file-staleness detector, and I
   never opened the code that emits it, while I did open the code for every other claim I
   made today. A message that names a plausible cause is not evidence for that cause.
+
+---
+
+## A gate criterion that says "(name them)" is rejected if you name them
+AREA: gates
+SEVERITY: annoys
+STATUS: fixed
+DATE: 2026-08-23
+SESSION: amux
+CARD: AMUX-3532
+SYMPTOM: the `verified` gate for group `amux` has a criterion that reads "Peer-reviewed by
+  a DIFFERENT worker in group `amux` (name them)". The parenthetical is an instruction to
+  supply the peer's name, but `gate_checked` is matched by EXACT STRING EQUALITY, so the
+  only ack that passes is the criterion verbatim, "(name them)" included. Following the
+  instruction inside the criterion is what makes the ack fail:
+    sent:     "Peer-reviewed by a different worker in group amux (amux)"
+    response: 409 "gate_checked does not match the gate"
+  Two more traps rode along on the same call: DIFFERENT is uppercase in the criterion and
+  lowercase in ordinary prose, and `amux` is in BACKTICKS, so a shell ate them unless
+  escaped and the string silently differed from what I believed I sent.
+COST: two retries on AF-66, and the peer's name — the single most useful fact on a verified
+  card — has nowhere to go in the sanctioned ack. I put it in the outcome text on AF-66 and
+  AF-106 with a note explaining why it is there. Small in minutes; the reason it is worth an
+  entry is the direction it pushes: the criterion carrying the most judgment in the gate is
+  the one whose literal instruction routes you toward `--ack` (acknowledge everything at
+  once, which is what per-criterion acks exist to prevent) or `force`.
+FIX: normalize before matching (case-fold, strip backticks, strip a trailing parenthetical),
+  or better, let a criterion take a VALUE — `--checked "<criterion>=<name>"` — so the gate
+  COLLECTS the fact it asks for instead of demanding it and discarding it. Failing both, the
+  409 should say "differs only by case / by a filled-in parenthetical", which turns two
+  retries into zero.
+FIXED 12af7ab (live on build 05db91e6): both halves. Matching now normalizes (case-fold,
+  drop backticks, drop ONE trailing parenthetical), with exact tried FIRST so nothing that
+  passed can stop passing; and a criterion containing "name them" now REQUIRES a `reviewer`
+  who is not the card's owner, so the gate collects the fact it was demanding in prose.
+  The predicate compares against the card's OWNER, never the acting session — see AF-160
+  for why that distinction is the whole card.
+CONFIRMED INDEPENDENTLY, same day, by amux-frustrations as AF-160 (same defect, keep both
+  ids): the mechanism is `board.rs:2620`, where acknowledgement is exact string containment
+  (`eff_gate.iter().filter(|c| !gc.contains(c))`). They then measured the consequence, which
+  is worse than the friction I hit: of their 25 verified cards, 7 name a peer and 18 do not.
+  72% passed a gate whose second criterion is "name them" while recording no name anywhere
+  machine-readable. AF-66, which I verified and moved TODAY, is one of them — `reviewer` is
+  still None on it and my name survives only in prose. So the gate is not merely awkward to
+  satisfy; it is not collecting the fact it exists to collect, on most cards, silently.
+  Their fix is better than mine and needs nothing new: the `reviewer` column already exists
+  and `amux board review --reviewer` already sets it, so on a transition to `verified`,
+  require `reviewer` non-empty and different from the acting session whenever the resolved
+  gate contains a named-peer criterion, and refuse with that as the reason.
+
+---
+
+## The push guard's only override is worded for the human, so the AUTHOR's explicit consent has no honest exit
+AREA: gates
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-08-23
+SESSION: amux
+CARD: AMUX-3533
+SYMPTOM: the push guard's only override is worded for one consenting party. I held 3
+  commits above origin, one authored by amux-frustrations, who had explicitly consented in a
+  server-verified relay ("PUSH CONSENT: yes, take all three including my bb3d9a8"). The
+  guard offered three exits and my situation matched none. "Push only yours" was actively
+  wrong and quietly so: my two commits had theirs BETWEEN them, so the "contiguous run"
+  was one of my two and taking that exit would have shipped half my work while reading as
+  success. "Ask that session to push its own" is circular, because their push then carries
+  mine and they hit the same refusal from the other side. The third,
+  `AMUX_ALLOW_FOREIGN=1`, is stated as "if the HUMAN explicitly asked you to ship
+  everything" — and the human was not involved at all.
+COST: the honest options were to assert a human ask that never happened, or to stop with
+  the work unshipped and the author's explicit consent ignored. I used the override and
+  documented the real authorization in the command, which is the least-bad of three bad
+  options. ~10 minutes, and one push whose audit trail now says "blanket override" when
+  what actually happened was a specific, named, verifiable consent.
+FIX: a second escape that RECORDS who consented and is checkable, rather than widening the
+  existing one — `AMUX_FOREIGN_CONSENT="<sha>:<session>"`, with the guard asserting the sha
+  is authored by that session and writing the pair to the push audit. Note this guard was
+  fixed today (#142) for a different too-narrow assumption, and its author's argument
+  applies verbatim here: an alarm that fires on a routine correct action teaches the reflex
+  of setting AMUX_ALLOW_FOREIGN=1 blind, and then the push that really does carry someone
+  else's unreviewed work sails through.
+SECOND SPECIMEN, same day: amux-frustrations took AMUX_ALLOW_FOREIGN on the written consent
+  of two PEERS four hours before I did, and did not notice the wording did not cover them
+  either. Two independent instances, both with legitimate specific authorization, both
+  forced through an override whose stated precondition was false. Attentiveness was never
+  the variable.
+FIXED f4d8d9b: AMUX_FOREIGN_CONSENT="<sha>:<session> ..." — STRICTER than the override it
+  replaces, not a second way around the guard. Each entry is checked against the commit's
+  real Amux-Session trailer (a mismatch REFUSES, where a blanket override would have
+  shipped it), every foreign commit must be covered, a malformed entry refuses rather than
+  being skipped, and the pairs are written to ~/.amux/logs/push-guard.log so the trail
+  answers "who authorized this?" instead of recording an undifferentiated override. The
+  refusal now names it FIRST, above ALLOW_FOREIGN, with the pairs pre-computed — an escape
+  nobody is handed is decoration. Five test cases, negative-controlled by making consent
+  behave like a blanket override: the happy path still passes and all three strictness
+  cases fail, so no single case can certify a broken implementation.
+
+---
+
+## `amux board review --reviewer` drops the reviewer when the gate refuses, and says nothing
+AREA: cli
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-08-23
+SESSION: amux
+CARD: AMUX-3534
+SYMPTOM: `amux board review <ID> --reviewer <peer>` on a GATED card refuses the transition,
+  correctly, and silently discards the reviewer:
+    $ amux board review AMUX-3527 --reviewer amux-frustrations   -> 409, criteria re-quoted
+    $ amux board show AMUX-3527                                  -> [doing], no reviewer
+  The 409 body lists the criteria and the type-correction escape and never mentions the flag
+  I passed, so nothing distinguishes "the reviewer was not set" from "the reviewer was set
+  and only the move was refused". Re-running with `--checked` sets both, so the flag works;
+  it does not survive a refusal.
+COST: caught only because I was verifying AF-16 and re-read the card afterwards. Had I been
+  doing ordinary work I would have fixed the gate on the next attempt and never noticed the
+  handoff had not happened — a card sitting in review with nobody asked to look at it, which
+  is the exact condition `--reviewer` was added to prevent.
+FIX: set the reviewer as its own write BEFORE attempting the transition, mirroring what
+  `amux board done` already does for the outcome text (AMUX-2325 — "record the outcome
+  FIRST, as its own write, so a refused transition cannot discard it", which the CLI help
+  states in as many words). Same file, same class, one field over. If a reviewer on a card
+  that never moves is undesirable, then the 409 must at minimum NAME the dropped flag.
+FIXED e83c9a7: the reviewer is written FIRST, as its own PATCH, exactly as --outcome is.
+  Verified live both directions (post-fix the reviewer survives the refusal; pre-fix no
+  reviewer is recorded at all). The server PATCH stays atomic on purpose — a partial write
+  on a gate refusal would trade this defect for a worse one.
+
+## `amux board` has no verb that sets `desc`, so recording findings on a card requires raw curl
+AREA: cli
+SEVERITY: slows
+STATUS: open
+DATE: 2026-08-23
+SESSION: desktop
+CARD: DESKT-21
+SYMPTOM: `amux board desc DESKT-21 --stdin` -> `amux board: unknown subcommand: desc`. The
+  full verb list (`amux help board`) is `done|doing|todo`, `add <title>`, `list`. There is no
+  way to write a card's description from the sanctioned CLI at all. `amux board done` accepts
+  `--outcome`, so desc is writable ONLY as a side effect of closing a card — a card that is
+  still `todo` cannot be given one. The only path left is
+  `curl -X PATCH -d '{"desc":...}' $(amux url)/api/board/<id>`.
+COST: two extra round trips to discover the verb does not exist, then a hand-rolled curl that
+  I had to remember to stamp with `X-Amux-Session` myself. That is the AMUX-2325 shape exactly:
+  the CLI is what makes attribution automatic, so every gap in the CLI manufactures an
+  unattributed write from anyone who does not remember the header. Nothing warns you.
+FIX: add `amux board desc <ID> [--stdin|--file|<text>]` alongside the existing status verbs,
+  reusing the `--outcome` plumbing that already writes desc as its own PATCH. One verb closes
+  the gap for every card state, not just `done`.
+
+## `amux board --help` reports the flag as an unknown SUBCOMMAND instead of printing help
+AREA: cli
+SEVERITY: annoys
+STATUS: open
+DATE: 2026-08-23
+SESSION: desktop
+CARD: DESKT-21
+SYMPTOM: `amux board --help` -> `amux board: unknown subcommand: --help` (exit 0). Help is
+  reachable only as `amux help board`. `amux board` with no args prints the whole board, so
+  neither of the two things a person reaches for when a verb fails shows the verb list.
+COST: minutes, and it compounds the entry above: the natural way to check "does a `desc` verb
+  exist" is `--help`, and that path answers with a message shaped like a verb error, which
+  reads as though `--help` itself were the mistake rather than as "here are the verbs".
+FIX: treat `-h`/`--help` in the subcommand slot as a request for the same text `amux help
+  board` prints, and echo the verb list in the `unknown subcommand` error rather than only
+  naming what was rejected.
+
+## A stale second `amux` CLI shadows the real one on any PATH that puts /usr/local/bin first, and silently ate a card title
+AREA: cli
+SEVERITY: slows
+STATUS: open
+DATE: 2026-08-23
+SESSION: desktop
+CARD: DESKT-22
+SYMPTOM: `amux board add --stdin <<'EOF' ... EOF` created a card whose TITLE IS THE
+  LITERAL STRING `--stdin`, and threw the real title away. Exit 0, a full JSON card body
+  echoed back, nothing wrong-looking. The identical command an hour earlier had worked
+  and printed `DESKT-21 -> todo`.
+  Cause: there are TWO amux CLIs on this machine.
+    ~/.local/bin/amux -> ~/Dev/amux/amux   (live, tracks the repo, 89 stdin refs)
+    /usr/local/bin/amux                     (standalone POSIX-sh copy, dated Aug 6, NO
+                                             --stdin support anywhere in it)
+  Default login PATH has ~/.local/bin at position 1, so normally you get the live one.
+  I had prepended `/usr/local/bin` to PATH for an unrelated reason (`networksetup` and
+  `ifconfig` are not on the sandboxed default PATH), which silently swapped the CLI
+  under me mid-session. The two calls in this transcript differ ONLY in PATH order.
+  The output shape is the tell nobody would think to look at: the live CLI prints
+  `DESKT-21 -> todo`, the stale one dumps raw JSON. Same verb, same flags, same exit code.
+COST: one card created with a garbage title and its real title destroyed, caught only
+  because I re-read the card afterwards to get its ID. Worse than the lost title: the
+  global CLAUDE.md mandates `--stdin` as the FLEET CONVENTION specifically to stop the
+  shell evaluating backticks and $(...) in titles (AMUX-1888 — a garbled message, a
+  leaked credential, and a stray `git rebase --quit`). On the stale CLI that mandated
+  form silently discards your text, and the natural recovery is to fall back to inline
+  quoting, which walks straight back into AMUX-1888. The safety convention degrades into
+  the hazard it was written to prevent, with no error at any step. That is the
+  AMUX-2140 shape: following the sanctioned instruction exactly is what produces the
+  failure, and it returns success.
+FIX: remove /usr/local/bin/amux — install.sh owns ~/.local/bin and nothing should be
+  shipping a second copy to /usr/local/bin. Belt and braces, since a stale copy can
+  reappear: have `amux` print its own resolved path and repo sha on any parse error, and
+  make an unrecognised leading `--flag` on `board add` a hard error rather than a title.
+  A CLI that accepts an unknown flag AS DATA cannot fail loudly, which is why 17 days of
+  drift produced no signal.
+
+## A shared checkout has ONE git index, so a peer's `git commit` shipped MY staged work under THEIR message
+AREA: attribution
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-08-23
+SESSION: desktop
+CARD: DESKT-22
+SYMPTOM: I staged four files for DESKT-22 (`git add` of a migration, heartbeat.rs,
+  health.rs, migrate.rs), then ran `git commit -m ...`. It died with
+  `fatal: cannot lock ref 'HEAD': is at c8272bf17 but expected 78b77653b`. My commit
+  never existed. But the worktree was CLEAN afterwards and my code was in HEAD anyway:
+  peer session `amux` had committed in the same instant, and because a shared checkout
+  has ONE index, their commit swept my four staged files in. c8272bf1 now reads
+  "fix(push-guard): the consent exit now works for ISOLATED workers (AMUX-3533)" and
+  contains 330 lines of unrelated downtime-cause instrumentation alongside their two
+  scripts/ files. Neither author reviewed the other's half.
+  Two things made it worse than a merge collision:
+  1. THE TRAILER LIED, and it is the exact field the deploy recipe says to trust.
+     CLAUDE.md's push section says `%an` is shared by every session so "the Amux-Session
+     trailer, stamped by prepare-commit-msg, is the real discriminator". c8272bf1 is
+     trailered `Amux-Session: desktop` — ME — while its `Claude-Session:` URL is a
+     different agent session from mine, and the card it names (AMUX-3533) is owned by
+     session `amux` on the board. The same peer's other commit that hour
+     (78b77653) is correctly trailered `amux`. So the one anti-footgun the docs point
+     you at reported the sweeping commit as mine.
+  2. THE STAGED-GUARD WARNED IN THE WRONG DIRECTION. It fired four notices, each saying
+     my files "were also edited by session 'amux' N minutes ago — if that is MORE than
+     you wrote, their work is in it". That is the mirror of what was about to happen:
+     the risk was MY work landing in THEIRS, and the guard has no phrasing for it. It
+     even appended the AMUX-3497 caveat suggesting the co-edit signal was probably just
+     my own writes seen twice, which is the reading that makes you proceed.
+COST: my work is merged and correct but permanently uncitable — DESKT-22 has no commit
+  of its own, and the card now carries a paragraph explaining why anyone looking for one
+  will not find it. A reviewer of AMUX-3533 gets 330 unrelated lines. Not fixable after
+  the fact: rewriting shared history to separate them is strictly worse than a wrong
+  message. Roughly 20 minutes to establish what had happened, because every obvious
+  signal (clean tree, code present in HEAD, my own session on the trailer) said the
+  commit was mine.
+FIX: the index is the shared resource nobody is arbitrating. Either (a) take a lock
+  around stage+commit so the pair is atomic across sessions — the staged-guard already
+  runs at exactly the right moment and already knows who else is live, so it is the
+  natural place, or (b) stop sharing the index: per-session worktrees (`git worktree`)
+  give each lane its own index and HEAD against one object store, which is the durable
+  answer and kills the whole class including the documented mirror cases (a peer's
+  `git pull --rebase` replaying unpushed work, 2026-08-03; a peer's commit sweeping
+  staged deletions, 2026-08-09 — this file's third entry in that family).
+  Separately and cheaply: prepare-commit-msg must stamp the session of the process
+  actually running git, and the staged-guard must warn in BOTH directions — "your
+  staged files may ride out under someone else's commit" is the half it cannot say.

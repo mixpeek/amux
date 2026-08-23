@@ -1,0 +1,32 @@
+-- WHY was amux absent? (DESKT-22)
+--
+-- 0021 named the outage and 0022 proved it was a real absence rather than a
+-- stopped heartbeat. Neither could say what KILLED it, and the two causes want
+-- opposite fixes:
+--
+--   the machine went down          -> UPS, power, panic, thermal
+--   the machine stayed up and amux -> amux's LaunchAgents live in gui/501, whose
+--   died anyway                       lifetime is the GUI LOGIN SESSION, so
+--                                     anything that kills that session kills
+--                                     amux regardless of KeepAlive
+--
+-- On 2026-08-22 09:32:24-09:34:31 amux was down 126.9s. The WARN said so and
+-- said nothing else. Establishing the cause took reading a 6 MB WindowServer
+-- .ips and an 11 MB spin report by hand to find that WindowServer had been
+-- watchdog-killed mid Screen-Recording TCC preflight, taking the login session
+-- and every gui/501 agent with it. The discriminator was one sysctl away the
+-- whole time: this boot's kernel boot instant either falls inside the gap or it
+-- does not.
+--
+-- This is the second occurrence of the same class. The first is in 0021's own
+-- header: 2026-08-18, a hardware fault at 14:03, machine back at 15:18, and
+-- amux still absent until a human logged in at the console at 18:28. That row
+-- reads as a single 4h26m outage when it is really 75 minutes of machine plus
+-- 190 minutes of "nothing starts a gui/501 agent without a console login".
+--
+--   NULL            -> not classified (rows predating this column; the boot
+--                      time could not be read; or an isolated/test server)
+--   'machine'       -> kernel boot instant is INSIDE the gap: the host restarted
+--   'process-only'  -> kernel boot predates the gap: the host stayed up and only
+--                      amux went away. This is the gui/501 signature.
+-- ADDCOL: server_downtime cause TEXT

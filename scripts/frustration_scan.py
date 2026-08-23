@@ -169,6 +169,18 @@ def main():
                 # bug is in send_dedup. Found on the first run: ids 30451/30452,
                 # identical, same second, consecutive ids.
                 if gap_s < 60 and sim > 0.98:
+                    # SAME SESSION OR IT IS NOT A DELIVERY DEFECT. Measured
+                    # 2026-08-23: ids 31157/31158 are the SAME text 12s apart to
+                    # nissan and autodesk — Ethan fanning one instruction to two
+                    # lanes, which is ordinary operation. This branch called it
+                    # "a DELIVERY defect, not frustration" and told the reader to
+                    # go check send_dedup, which is a confident wrong answer
+                    # about a bug that does not exist. A cross-session pair is
+                    # also NOT a `repeat` (he did not ask twice, he addressed two
+                    # workers), so it is skipped outright rather than falling
+                    # through to the repeat branch below.
+                    if a["session"] != b["session"]:
+                        continue
                     key = f"double-delivery:{a['id']}"
                     f = findings[key]
                     f["score"] = max(f["score"], 8)

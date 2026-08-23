@@ -16,9 +16,59 @@
 # Fail-open by design: any error lets the push proceed. Outside amux
 # ($AMUX_SESSION unset) it is a no-op — the human is always allowed to push.
 # Intentional cross-session push: AMUX_ALLOW_FOREIGN=1 git push ...
-import os, subprocess, sys
+import datetime, json, os, ssl, subprocess, sys, urllib.parse, urllib.request
 
 ZERO = "0" * 40
+
+
+def _session_is_isolated(name):
+    """Is `name` an ISOLATED raw-agent worker — one the harness will not let a
+    peer send to, so its consent CANNOT be obtained?
+
+    Asks the server, which is the only thing that knows: isolation is
+    `CC_ISOLATED` in the lane's env file, and re-reading that file here would be
+    a second spelling of `session_is_isolated` to keep in step forever.
+
+    FAILS CLOSED on every uncertainty — unreachable server, timeout, non-JSON,
+    missing field — because this gates an escape hatch. "I could not tell" must
+    mean "go ask them", never "assume they could not be asked".
+    """
+    base = os.environ.get("AMUX_URL", "").strip()
+    if not base:
+        try:
+            with open(os.path.expanduser("~/.amux/endpoint.json")) as fh:
+                base = (json.load(fh).get("url") or "").strip()
+        except Exception:
+            return False
+    if not base:
+        return False
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        url = "%s/api/sessions/%s" % (base.rstrip("/"), urllib.parse.quote(name))
+        with urllib.request.urlopen(url, timeout=5, context=ctx) as r:
+            return json.loads(r.read().decode()).get("isolated") is True
+    except Exception:
+        return False
+
+
+def _audit(kind, detail):
+    """Append to the push-guard audit log. Best-effort: logging must never
+    brick a push, and a guard that dies on a full disk is worse than one that
+    logs nothing. Shares a directory with append-only-guard.log so the two
+    halves of the push story sit side by side."""
+    try:
+        path = os.path.expanduser("~/.amux/logs/push-guard.log")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        repo = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True, timeout=5).stdout.strip() or "?"
+        with open(path, "a") as fh:
+            fh.write("%s %s repo=%s session=%s %s\n" % (
+                datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), kind, repo,
+                os.environ.get("AMUX_SESSION", "(human)"), detail))
+    except Exception:
+        pass
 
 
 def main():
@@ -115,6 +165,154 @@ def main():
         return 0  # fail open — the guard must never brick a push
     if not foreign:
         return 0
+
+    # AUTHOR CONSENT, RECORDED (AMUX-3533).
+    #
+    # Until this existed the guard modelled exactly ONE consenting party. Its
+    # three exits were: ship your contiguous prefix, ask the author to push
+    # their own, or `AMUX_ALLOW_FOREIGN=1` "if the human explicitly asked you to
+    # ship everything". On a shared checkout with ~50 lanes the consenting party
+    # is routinely the AUTHOR, not the human, and none of the three fit that:
+    #
+    #   - the prefix exit is WRONG when a foreign commit sits BETWEEN two of
+    #     yours. Measured 2026-08-23: it offered a "contiguous run" that was one
+    #     of my two commits, so taking it would have shipped half my work and
+    #     read as success.
+    #   - "ask that session to push its own" is circular — their push then
+    #     carries yours and they hit this same refusal from the other side.
+    #   - ALLOW_FOREIGN is the only exit that ships the real set, and its stated
+    #     precondition is false. The honest options were to lie about who asked,
+    #     or to stop with the work unshipped and the author's explicit consent
+    #     ignored.
+    #
+    # TWO INDEPENDENT INSTANCES THE SAME DAY, and the second is why this is a
+    # guard change rather than a doc change: amux-frustrations took
+    # ALLOW_FOREIGN on the written consent of two peers four hours earlier and
+    # did not notice the wording did not cover them. Attentiveness was never the
+    # variable. That is ethos rule 6 — a constraint whose sanctioned escape is
+    # unwalkable gets walked from somewhere else — and rule 3, since complying
+    # honestly was impossible.
+    #
+    # This is STRICTER than ALLOW_FOREIGN, not a second way around the guard:
+    #   - each entry names a SHA and the session that must have authored it,
+    #     and the guard checks that against the commit's real trailer. A
+    #     mismatch REFUSES, where a blanket override would have shipped it.
+    #   - every foreign commit must be covered. One uncovered commit and the
+    #     push is still blocked, naming what is missing.
+    #   - it is written to the audit log with the sha/session pairs, so the
+    #     trail answers "who authorized shipping this?" instead of recording an
+    #     undifferentiated override. Both of today's pushes are in that log as
+    #     blanket overrides, which is the fact this recovers.
+    consent_raw = os.environ.get("AMUX_FOREIGN_CONSENT", "").strip()
+    if consent_raw and not os.environ.get("AMUX_ALLOW_FOREIGN"):
+        pairs = []
+        malformed = []
+        for tok in consent_raw.replace(",", " ").split():
+            if ":" not in tok:
+                malformed.append(tok)
+                continue
+            # THREE FIELDS = OWNER CONSENT ON BEHALF OF AN UNREACHABLE WORKER
+            # (Ethan, 2026-08-23). An ISOLATED raw-agent worker has the amux
+            # harness stripped and is reachable only by the owner from the
+            # dashboard, so `amux send <them>` is REFUSED by construction. That
+            # made two of the guard's three exits unwalkable for their commits:
+            # "ask that session to push its own" cannot be asked, and
+            # AMUX_FOREIGN_CONSENT needed a yes that cannot be given. The only
+            # remaining exit was the blanket override — which is exactly the
+            # shape AMUX-3533 fixed one layer up, reappearing because the fix
+            # assumed every author is reachable.
+            #
+            # `:owner` is NOT a second blanket override. It is refused unless
+            # the named session is GENUINELY ISOLATED, verified against the
+            # server, so it cannot be used to wave through a peer you could
+            # simply have asked. And it is logged as CONSENT-OWNER, distinct
+            # from author consent, because "the owner authorized this on behalf
+            # of a worker that cannot speak" is a different fact from "the
+            # author said yes" and the audit should not blur them.
+            bits = [b.strip() for b in tok.split(":")]
+            if len(bits) == 3 and bits[2].lower() == "owner":
+                pairs.append((bits[0], bits[1], True))
+            elif len(bits) == 2:
+                pairs.append((bits[0], bits[1], False))
+            else:
+                malformed.append(tok)
+        # A malformed entry is REFUSED, never skipped. Silently ignoring one
+        # would leave the caller believing they granted a consent they did not,
+        # and the push would then fail for a reason that names the wrong commit.
+        if malformed:
+            sys.stderr.write(
+                "\namux push-guard: AMUX_FOREIGN_CONSENT is malformed: %s\n"
+                "  Expected space/comma separated <sha>:<session> pairs, e.g.\n"
+                "    AMUX_FOREIGN_CONSENT=\"bb3d9a8:amux-frustrations\" git push ...\n\n"
+                % ", ".join(malformed))
+            return 1
+        cleared, mismatched = [], []
+        for sha_in, who_in, owner_grant in pairs:
+            real = subprocess.run(
+                ["git", "log", "-1",
+                 "--format=%h%x1f%(trailers:key=Amux-Session,valueonly)", sha_in],
+                capture_output=True, text=True, timeout=15)
+            if real.returncode != 0 or not real.stdout.strip():
+                mismatched.append((sha_in, who_in, "no such commit"))
+                continue
+            bits = real.stdout.strip().split("\x1f")
+            real_who = (bits[1].strip() if len(bits) > 1 else "")
+            if real_who != who_in:
+                mismatched.append(
+                    (sha_in, who_in, "actually authored by %s" % (real_who or "(no trailer)")))
+                continue
+            if owner_grant and not _session_is_isolated(who_in):
+                # FAIL CLOSED. Unreachable-or-not-isolated both land here: if we
+                # cannot establish that the author is unaskable, the answer is
+                # ask them.
+                mismatched.append((
+                    sha_in, who_in,
+                    "':owner' is only for ISOLATED workers you cannot ask, and '%s' is not "
+                    "confirmed isolated (or the server could not be reached). Ask them, or "
+                    "use the two-field form if they consented" % who_in))
+                continue
+            cleared.append((bits[0], who_in, owner_grant))
+        if mismatched:
+            sys.stderr.write(
+                "\namux push-guard: AMUX_FOREIGN_CONSENT does not match the commits.\n"
+                "  Consent must name the sha AND the session that really authored it —\n"
+                "  this check is why author-consent is safer than a blanket override.\n\n")
+            for sha_in, who_in, why in mismatched:
+                sys.stderr.write("    %s:%s -> %s\n" % (sha_in, who_in, why))
+            sys.stderr.write("\n")
+            return 1
+        cleared_short = {c[0] for c in cleared}
+        remaining = {}
+        for who, rows in foreign.items():
+            keep = [r for r in rows if r[0] not in cleared_short]
+            if keep:
+                remaining[who] = keep
+        if not remaining:
+            _audit(
+                "CONSENT-OWNER" if any(c[2] for c in cleared) else "CONSENT",
+                "cleared=%s" % ",".join(
+                    "%s:%s%s" % (c[0], c[1], ":owner-granted" if c[2] else "") for c in cleared))
+            sys.stderr.write(
+                "\namux push-guard: %d foreign commit(s) cleared by recorded author consent:\n"
+                "  %s\n"
+                "  (logged to ~/.amux/logs/push-guard.log — this is an AUDITED exit, not a bypass)\n\n"
+                % (len(cleared), ", ".join(
+                    "%s (%s%s)" % (c[0], c[1], ", owner-granted: isolated worker" if c[2] else "")
+                    for c in cleared)))
+            return 0
+        # PARTIAL consent still blocks, and says exactly what is uncovered —
+        # otherwise a caller who granted three of four would read the refusal as
+        # the consent mechanism not working at all.
+        sys.stderr.write(
+            "\namux push-guard: AMUX_FOREIGN_CONSENT covers %d commit(s) but not all of them.\n"
+            "  Still uncovered:\n" % len(cleared))
+        for who in sorted(remaining):
+            for sha, subj in remaining[who][:6]:
+                sys.stderr.write("    %s  %s  (%s)\n" % (sha, subj, who))
+        sys.stderr.write("\n  Add each to AMUX_FOREIGN_CONSENT as <sha>:<session>, or ask "
+                         "those sessions to push.\n\n")
+        return 1
+
     w = sys.stderr.write
     n = sum(len(v) for v in foreign.values())
     w("\namux push-guard: PUSH BLOCKED — this would ship %d commit(s) authored by "
@@ -155,8 +353,24 @@ def main():
         w("  - the commit directly above the remote is not yours, so there is no\n"
           "    same-session prefix to ship — those sessions must push first, lower\n"
           "    owner first. Ask them, then push.\n")
-    w("  - or ask that session to push its own commits, or\n"
-      "  - if the human explicitly asked you to ship everything:\n"
+    w("  - or ask that session to push its own commits, or\n")
+    # NAME THE AUTHOR-CONSENT EXIT FIRST, and PRE-COMPUTE the exact string
+    # (AMUX-3533). An escape nobody is handed is decoration — ethos rule 1 —
+    # and this refusal previously offered only exits that did not fit the most
+    # common authorization on a shared checkout, which is why two sessions
+    # reached for the blanket override on the same day. It is listed ABOVE
+    # ALLOW_FOREIGN deliberately: it is the stricter of the two and it should be
+    # the one that comes to hand.
+    _consent = " ".join(
+        "%s:%s" % (sha, who if who != "(no Amux-Session trailer)" else "<unknown>")
+        for who in sorted(foreign) for sha, _s in foreign[who])
+    w("  - if THE AUTHOR of those commits told you to ship them (the usual case\n"
+      "    here — a peer saying \"take my commit\" is not the human asking), record\n"
+      "    that consent instead of overriding blind. It is CHECKED against each\n"
+      "    commit's real author and written to the audit log:\n"
+      "      AMUX_FOREIGN_CONSENT=\"%s\" git push ...\n" % _consent)
+    w("  - or, if the HUMAN explicitly asked you to ship everything regardless of\n"
+      "    who wrote it:\n"
       "      AMUX_ALLOW_FOREIGN=1 git push ...\n\n")
     # NAME THE BLOCKING RUN AND ITS LANE'S LIVE STATUS (gtm-videos +
     # creative-dna, 2026-08-08: 55 commits, 28 interleaved runs, four owners —

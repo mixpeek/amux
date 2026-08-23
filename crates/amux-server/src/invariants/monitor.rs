@@ -165,6 +165,7 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
     // reports invisible to auto-pickup's session-keyed predicate, both
     // halves reporting success for 11 days).
     out.extend(autofix_dispatchable_check(state));
+    out.extend(card_type_vocabulary_check(state));
 
     // -- 6e. is the invariant system's OWN evaluation log bounded? (AMUX-3489:
     // 8M rows / ~2GB from a flat 7-day retention on ~13 green rows/sec — the
@@ -693,6 +694,39 @@ fn result_log_bounded_check(state: &AppState) -> Vec<InvariantResult> {
     match super::store::result_log_stats(&state.store) {
         Ok((rows, oldest_age_s)) => checks::result_log_bounded(rows, budget, oldest_age_s),
         Err(e) => vec![InvariantResult::unknown(ID, format!("could not count the log: {e}"))],
+    }
+}
+
+fn card_type_vocabulary_check(state: &AppState) -> Vec<InvariantResult> {
+    const ID: &str = "board.card_types_are_in_vocabulary";
+    let Ok(conn) = state.store.read() else {
+        return vec![InvariantResult::unknown(ID, "store unreadable")];
+    };
+    // The vocabulary comes from KNOWN_TYPES, not from a literal here: a second
+    // copy of the list is the drift this check exists to catch, one layer up.
+    let placeholders = crate::db::board_store::KNOWN_TYPES
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT id, type FROM issues WHERE deleted IS NULL AND COALESCE(archived,0)=0 \
+         AND status NOT IN ('done','verified','discarded') \
+         AND COALESCE(type,'') NOT IN ({placeholders}) ORDER BY created"
+    );
+    let params: Vec<&dyn rusqlite::types::ToSql> = crate::db::board_store::KNOWN_TYPES
+        .iter()
+        .map(|t| t as &dyn rusqlite::types::ToSql)
+        .collect();
+    let rows: Result<Vec<(String, String)>, _> = conn.prepare(&sql).and_then(|mut st| {
+        st.query_map(params.as_slice(), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1).unwrap_or_default()))
+        })
+        .map(|it| it.flatten().collect())
+    });
+    match rows {
+        Ok(offenders) => checks::card_types_are_in_vocabulary(&offenders),
+        Err(e) => vec![InvariantResult::unknown(ID, format!("could not read card types: {e}"))],
     }
 }
 

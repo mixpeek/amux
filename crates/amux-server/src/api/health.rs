@@ -69,6 +69,14 @@ pub struct Health {
     /// stamped (which logs a WARN of its own rather than reporting health).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub downtime_before_boot_s: Option<f64>,
+    /// WHY that downtime happened: `machine` (the host restarted inside the
+    /// window) or `process-only` (the host stayed up and only amux went away —
+    /// the gui/501 signature). Absent when there was no downtime OR when the
+    /// kernel boot instant could not be read; those are different, and the WARN
+    /// in `heartbeat::record_boot` distinguishes them in prose. Published here
+    /// because /health is where consumers already look (DESKT-22).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub downtime_before_boot_cause: Option<&'static str>,
     /// Host memory state (AMUX-3397). The 2026-08-19 kernel panic
     /// (memory/swap exhaustion, AMUX-3396) killed the whole fleet and was
     /// invisible to every amux instrument before, during, and after. Same
@@ -235,6 +243,9 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>)
             confidence_age_s: conf_age,
             downtime_before_boot_s: crate::runtime_jobs::heartbeat::boot_gap()
                 .map(|g| g.seconds),
+            downtime_before_boot_cause: crate::runtime_jobs::heartbeat::boot_gap()
+                .and_then(|g| g.cause)
+                .map(|c| c.as_str()),
             mem: mem_health(),
         }),
     )
