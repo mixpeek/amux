@@ -221,5 +221,43 @@ else
   sed 's/^/       /' "$TMP/out"
 fi
 
+
+# ── J/K. OWNER CONSENT for an ISOLATED worker (Ethan, 2026-08-23) ───────────
+# An isolated raw-agent worker has the harness stripped and refuses peer sends,
+# so its consent CANNOT be obtained: "ask that session to push" is unaskable and
+# the two-field consent form needs a yes nobody can give. `:owner` is the exit,
+# and the property that keeps it from being a second blanket override is that it
+# is REFUSED for a worker you could simply have asked. K is that control, and it
+# is the case that fails if the isolation check is dropped.
+#
+# These two consult the LIVE server for isolation (fail-closed on any doubt), so
+# they use real lane names: `desktop` is isolated on this machine, `other-lane`
+# is not a lane at all and must therefore be refused.
+J="$TMP/j"; mkrepo "$J"
+git -C "$J/work" checkout -q -b feat
+commit_as "$J" "desktop" "isolated-lane-commit"
+commit_as "$J" "mine" "mine-one"
+JTIP=$(git -C "$J/work" rev-parse feat)
+JSHA=$(git -C "$J/work" log --format=%h --all --grep="isolated-lane-commit" | head -1)
+
+rc=$(run_hook_consent "$J" "$JTIP" "$ZERO" feat "$JSHA:desktop:owner")
+if [ "$rc" -eq 0 ]; then
+  ok "J: owner consent clears a commit by an ISOLATED worker that cannot be asked"
+else
+  bad "J: owner consent was refused for an isolated worker — the exit is unwalkable again"
+  sed 's/^/       /' "$TMP/out"
+fi
+
+# K. THE CONTROL. `:owner` for a REACHABLE worker must REFUSE — otherwise it is
+# just AMUX_ALLOW_FOREIGN with extra typing, and the whole point is that you
+# must ask a peer you can reach.
+rc=$(run_hook_consent "$E" "$ETIP" "$ZERO" feat "$ESHA:other-lane:owner")
+if [ "$rc" -ne 0 ] && grep -qi "only for ISOLATED" "$TMP/out"; then
+  ok "K: ':owner' is REFUSED for a worker that is not isolated — ask them instead"
+else
+  bad "K: ':owner' cleared a reachable worker — that is a blanket override wearing a suffix"
+  sed 's/^/       /' "$TMP/out"
+fi
+
 echo "push-guard range: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

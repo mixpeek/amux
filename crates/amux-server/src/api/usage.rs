@@ -43,6 +43,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json, Router};
 use serde_json::{json, Value};
@@ -113,6 +115,7 @@ pub fn routes() -> Router<AppState> {
 pub fn routes_with(probe: ProbeFn) -> Router<AppState> {
     Router::new()
         .route("/", axum::routing::get(get_usage))
+        .route("/attribution", axum::routing::get(get_attribution))
         .layer(Extension(probe))
         .layer(Extension(Arc::new(tokio::sync::Mutex::new(
             UsageCache::default(),
@@ -241,6 +244,212 @@ fn degraded(cause: &str, reason: String) -> Value {
     json!({ "available": false, "cause": cause, "reason": reason })
 }
 
+/// GET /api/usage/attribution — WHAT SPENT THE PLAN, in dollars, by why the
+/// turn happened (AMUX-3544).
+///
+/// # The complaint this answers
+///
+/// A customer on the $20 plan, 2026-08-23: "I sent 2-3 prompts today and my
+/// credits ran out ... going to investigate what's using all the credits."
+/// They could not, and neither could we. `/api/usage` reports the plan's own
+/// utilization and cannot attribute one point of it, so the only signal
+/// available was the credits being gone. Ethos rule 4: a diagnosis being
+/// impossible from the data we keep IS the bug.
+///
+/// Both halves already existed and nothing joined them. `token_ledger` has the
+/// real cost per turn (from the Claude Code transcripts, priced per model) but
+/// knows only WHICH SESSION spent it. `cmd_history` knows WHY each turn
+/// happened — a human typed it, a schedule fired, a peer lane sent a message —
+/// but nothing about cost. Attribution is the correlated lookup between them:
+/// for each ledger row, the most recent prompt to that session at or before it.
+///
+/// Measured on this machine the day it was written, last 24h:
+///
+/// ```text
+///   a peer lane messaged   $2413.83   5977 turns
+///   you typed it           $1430.26   2471 turns
+///   a schedule fired       $1028.29   2481 turns
+///   -> 71% of spend is background
+/// ```
+///
+/// # Why a separate endpoint rather than a field on /api/usage
+///
+/// This module's contract is that `/api/usage` returns Anthropic's body
+/// VERBATIM plus `available` — the SPA's `loadUsage()` sees byte-identical
+/// fields to the Python server. Adding keys there would erode the one property
+/// that makes the passthrough safe to reason about.
+///
+/// # The millisecond trap, stated because it already bit
+///
+/// `token_ledger.ts` is in SECONDS and `cmd_history.ts` is in MILLISECONDS.
+/// Comparing them without the divide silently matches every row and returns a
+/// clean, confident, wrong answer — it caught me on this exact query while
+/// writing this, and ethos rule 7 records the same trap for
+/// `interaction_log.ts`. The response therefore carries `rows_considered` and
+/// `rows_excluded_by_window`, so a caller can confirm the window EXCLUDED
+/// something rather than inferring correctness from plausible-looking output.
+async fn get_attribution(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<AttributionQuery>,
+) -> Response {
+    let hours = q.hours.unwrap_or(24).clamp(1, 24 * 30);
+    let store = state.store.clone();
+    let out = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        let conn = store.read()?;
+        let cutoff: i64 = chrono::Utc::now().timestamp() - hours * 3600;
+
+        // The control, not decoration: an unbounded match and a correct match
+        // look identical from the rows alone.
+        let total_rows: i64 =
+            conn.query_row("SELECT COUNT(*) FROM token_ledger", [], |r| r.get(0))?;
+        let in_window: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM token_ledger WHERE ts > ?1",
+            [cutoff],
+            |r| r.get(0),
+        )?;
+
+        let mut stmt = conn.prepare(
+            "WITH lg AS (SELECT ts, session, cost_usd, input, output FROM token_ledger WHERE ts > ?1) \
+             SELECT COALESCE((SELECT h.type FROM cmd_history h \
+                                WHERE h.session = lg.session AND h.ts/1000 <= lg.ts \
+                                ORDER BY h.ts DESC LIMIT 1), '') AS trig, \
+                    SUM(cost_usd), COUNT(*), SUM(input), SUM(output) \
+             FROM lg GROUP BY 1 ORDER BY 2 DESC",
+        )?;
+        let rows = stmt.query_map([cutoff], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        })?;
+
+        let mut sources = Vec::new();
+        let (mut total_usd, mut bg_usd) = (0.0f64, 0.0f64);
+        for row in rows {
+            let (trig, usd, turns, inp, outp) = row?;
+            total_usd += usd;
+            let human = trig == "user";
+            if !human {
+                bg_usd += usd;
+            }
+            sources.push(json!({
+                "source": if trig.is_empty() { "unattributed" } else { trig.as_str() },
+                "label": trigger_label(&trig),
+                "is_background": !human,
+                "cost_usd": (usd * 100.0).round() / 100.0,
+                "turns": turns,
+                "input_tokens": inp,
+                "output_tokens": outp,
+            }));
+        }
+
+        // "A schedule fired" is actionable only when it names WHICH schedule,
+        // and "a peer messaged" only when it names the lane. One schedule
+        // accounted for 134 turns in 24h here and was invisible without this.
+        let mut top = stmt_top(&conn, cutoff)?;
+        top.truncate(10);
+
+        Ok(json!({
+            "window_hours": hours,
+            "total_cost_usd": (total_usd * 100.0).round() / 100.0,
+            "background_cost_usd": (bg_usd * 100.0).round() / 100.0,
+            "background_pct": if total_usd > 0.0 {
+                (bg_usd / total_usd * 1000.0).round() / 10.0
+            } else { 0.0 },
+            "by_source": sources,
+            "top_origins": top,
+            // Proof the window filtered. Equal counts mean the cutoff matched
+            // everything and the numbers below are the whole table, not a window.
+            "rows_considered": in_window,
+            "rows_excluded_by_window": total_rows - in_window,
+        }))
+    })
+    .await;
+
+    match out {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+struct AttributionQuery {
+    hours: Option<i64>,
+}
+
+/// Plain English, because the audience is a person wondering where their
+/// credits went, not someone who knows what `cmd_history.type` is.
+fn trigger_label(t: &str) -> &'static str {
+    match t {
+        "user" => "you typed it",
+        "schedule" => "a schedule fired",
+        "session" => "a peer lane messaged",
+        "system" => "an amux nudge",
+        "direct" | "steering" => "a steering message",
+        "" => "no prompt matched — the turn predates this lane's history",
+        _ => "other",
+    }
+}
+
+/// The named offenders inside the background bucket.
+fn stmt_top(conn: &rusqlite::Connection, cutoff: i64) -> anyhow::Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "WITH lg AS (SELECT ts, session, cost_usd FROM token_ledger WHERE ts > ?1) \
+         SELECT COALESCE((SELECT h.type FROM cmd_history h \
+                            WHERE h.session = lg.session AND h.ts/1000 <= lg.ts \
+                            ORDER BY h.ts DESC LIMIT 1), ''), \
+                COALESCE((SELECT h.origin FROM cmd_history h \
+                            WHERE h.session = lg.session AND h.ts/1000 <= lg.ts \
+                            ORDER BY h.ts DESC LIMIT 1), ''), \
+                lg.session, SUM(cost_usd), COUNT(*) \
+         FROM lg GROUP BY 1,2,3 ORDER BY 4 DESC LIMIT 10",
+    )?;
+    let rows = stmt.query_map([cutoff], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, f64>(3)?,
+            r.get::<_, i64>(4)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (trig, origin, session, usd, turns) = row?;
+        out.push(json!({
+            "source": if trig.is_empty() { "unattributed" } else { trig.as_str() },
+            "label": trigger_label(&trig),
+            // `is_background` SHIPS HERE TOO (AMUX-3550). The client filtered
+            // these rows on it and it existed only on `by_source`, so the
+            // predicate `x.is_background !== false` kept 10 of 10 — a filter
+            // that reads as a deliberate exclusion and excludes nothing. Three
+            // of those ten were the human's own typing, listed under "biggest
+            // background sources" on the panel built to tell a customer what
+            // spent their credits BESIDES them. Fixed by making the field the
+            // client already reaches for exist, rather than by teaching the
+            // client a second spelling of it.
+            "is_background": trig != "user",
+            "origin": origin,
+            "session": session,
+            "cost_usd": (usd * 100.0).round() / 100.0,
+            "turns": turns,
+        }));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +457,141 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tower::ServiceExt;
+
+    /// AMUX-3544. Spend is attributed to WHY the turn happened, and the window
+    /// proves it filtered.
+    ///
+    /// The customer complaint this endpoint exists for was "I sent 2-3 prompts
+    /// and my credits ran out", with no way to see what spent them. So the
+    /// assertions are the two things a person in that position needs: which
+    /// bucket the money is in, and whether the number they are reading covers
+    /// the window they think it does.
+    ///
+    /// THE UNIT MISMATCH IS THE POINT OF THE THIRD ASSERTION. `token_ledger.ts`
+    /// is in SECONDS and `cmd_history.ts` is in MILLISECONDS. A join that
+    /// forgets the divide matches every prompt and still returns a tidy-looking
+    /// answer — it did exactly that to me while I was writing this query. The
+    /// fixture puts an OLD ledger row outside the window, so
+    /// `rows_excluded_by_window` must be non-zero: an unbounded match and a
+    /// correct one are indistinguishable from the totals alone.
+    #[tokio::test]
+    async fn spend_is_attributed_to_what_triggered_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("attr.db")).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        store
+            .write(move |conn| {
+            // Three prompts into one lane: a human, a schedule, a peer.
+                for (t, origin, at) in [
+                    ("user", "", now - 300),
+                    ("schedule", "poll the inbox", now - 200),
+                    ("session", "peer-lane", now - 100),
+                ] {
+                    conn.execute(
+                        "INSERT INTO cmd_history (text, type, session, ts, origin) VALUES (?,?,?,?,?)",
+                        rusqlite::params!["p", t, "lane", at * 1000, origin],
+                    )?;
+                }
+                // A turn after each prompt, plus one far outside the window.
+                for (at, cost) in [
+                    (now - 290, 1.0),
+                    (now - 190, 5.0),
+                    (now - 90, 20.0),
+                    (now - 86_400 * 30, 999.0),
+                ] {
+                    conn.execute(
+                        "INSERT INTO token_ledger (ts, session, conversation, model, input, cache_read, \
+                         cache_write, output, cost_usd, task) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        rusqlite::params![at, "lane", "c", "opus", 10, 0, 0, 5, cost, ""],
+                    )?;
+                }
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .unwrap();
+        let state = AppState {
+            store: Arc::new(store),
+            started: Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+        };
+        let app = axum::Router::new()
+            .nest("/api/usage", routes_with(probe_fn(UsageProbe::Ok(json!({})), Arc::new(AtomicUsize::new(0)))))
+            .with_state(state);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/usage/attribution?hours=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+
+        // 1. The money is in the right buckets, and the labels are for a human.
+        let by: std::collections::HashMap<String, f64> = v["by_source"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["source"].as_str().unwrap().to_string(), r["cost_usd"].as_f64().unwrap()))
+            .collect();
+        assert_eq!(by.get("user"), Some(&1.0), "the human's turn: {v}");
+        assert_eq!(by.get("schedule"), Some(&5.0), "the schedule's turn: {v}");
+        assert_eq!(by.get("session"), Some(&20.0), "the peer's turn: {v}");
+
+        // 2. Background share is the headline the complaint was about.
+        assert_eq!(v["total_cost_usd"], json!(26.0));
+        assert_eq!(v["background_cost_usd"], json!(25.0));
+        assert_eq!(v["background_pct"], json!(96.2));
+
+        // 3. THE CONTROL. The 30-day-old row must be OUTSIDE a 1-hour window.
+        //    If this is 0 the join matched everything and every number above is
+        //    the whole table wearing a window's label.
+        assert_eq!(v["rows_considered"], json!(3));
+        assert!(
+            v["rows_excluded_by_window"].as_i64().unwrap() >= 1,
+            "the window excluded nothing — an unbounded match returns a confident wrong \
+             answer and looks exactly like this one: {v}"
+        );
+
+        // 4. Named offenders, or "a schedule fired" is not actionable.
+        let top = v["top_origins"].as_array().unwrap();
+        assert!(
+            top.iter().any(|r| r["origin"] == "poll the inbox"),
+            "the expensive schedule must be NAMED: {v}"
+        );
+
+        // 5. EVERY top_origins row carries `is_background`, and it is correct.
+        //
+        //    AMUX-3550: the client filtered these rows on this field and the
+        //    field existed only on `by_source`, so `x.is_background !== false`
+        //    kept 10 of 10 — a filter that reads as a deliberate exclusion and
+        //    excludes nothing. The panel headed "biggest background sources"
+        //    then listed the human's own typing, on the very screen built to
+        //    tell a customer what spent their credits BESIDES them.
+        //
+        //    Asserting PRESENCE is the load-bearing half. A test that only
+        //    checked the values of rows that happen to have the key would pass
+        //    against the version where no row has it at all.
+        for r in top {
+            assert!(
+                r.get("is_background").map(|b| b.is_boolean()).unwrap_or(false),
+                "every top_origins row must carry a boolean is_background — its ABSENCE is \
+                 what made the client's filter match everything: {r}"
+            );
+        }
+        assert!(
+            top.iter().any(|r| r["source"] == "user" && r["is_background"] == json!(false)),
+            "the human's own row must be present AND flagged not-background, so a consumer \
+             can exclude it: {v}"
+        );
+        assert!(
+            top.iter().any(|r| r["source"] == "schedule" && r["is_background"] == json!(true)),
+            "a schedule's row must be flagged background: {v}"
+        );
+    }
 
     /// A fixture probe that counts how many times it was called.
     fn probe_fn(outcome: UsageProbe, calls: Arc<AtomicUsize>) -> ProbeFn {

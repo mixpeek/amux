@@ -16,9 +16,41 @@
 # Fail-open by design: any error lets the push proceed. Outside amux
 # ($AMUX_SESSION unset) it is a no-op — the human is always allowed to push.
 # Intentional cross-session push: AMUX_ALLOW_FOREIGN=1 git push ...
-import os, subprocess, sys
+import datetime, json, os, ssl, subprocess, sys, urllib.parse, urllib.request
 
 ZERO = "0" * 40
+
+
+def _session_is_isolated(name):
+    """Is `name` an ISOLATED raw-agent worker — one the harness will not let a
+    peer send to, so its consent CANNOT be obtained?
+
+    Asks the server, which is the only thing that knows: isolation is
+    `CC_ISOLATED` in the lane's env file, and re-reading that file here would be
+    a second spelling of `session_is_isolated` to keep in step forever.
+
+    FAILS CLOSED on every uncertainty — unreachable server, timeout, non-JSON,
+    missing field — because this gates an escape hatch. "I could not tell" must
+    mean "go ask them", never "assume they could not be asked".
+    """
+    base = os.environ.get("AMUX_URL", "").strip()
+    if not base:
+        try:
+            with open(os.path.expanduser("~/.amux/endpoint.json")) as fh:
+                base = (json.load(fh).get("url") or "").strip()
+        except Exception:
+            return False
+    if not base:
+        return False
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        url = "%s/api/sessions/%s" % (base.rstrip("/"), urllib.parse.quote(name))
+        with urllib.request.urlopen(url, timeout=5, context=ctx) as r:
+            return json.loads(r.read().decode()).get("isolated") is True
+    except Exception:
+        return False
 
 
 def _audit(kind, detail):
@@ -179,8 +211,31 @@ def main():
             if ":" not in tok:
                 malformed.append(tok)
                 continue
-            sha_in, who_in = tok.split(":", 1)
-            pairs.append((sha_in.strip(), who_in.strip()))
+            # THREE FIELDS = OWNER CONSENT ON BEHALF OF AN UNREACHABLE WORKER
+            # (Ethan, 2026-08-23). An ISOLATED raw-agent worker has the amux
+            # harness stripped and is reachable only by the owner from the
+            # dashboard, so `amux send <them>` is REFUSED by construction. That
+            # made two of the guard's three exits unwalkable for their commits:
+            # "ask that session to push its own" cannot be asked, and
+            # AMUX_FOREIGN_CONSENT needed a yes that cannot be given. The only
+            # remaining exit was the blanket override — which is exactly the
+            # shape AMUX-3533 fixed one layer up, reappearing because the fix
+            # assumed every author is reachable.
+            #
+            # `:owner` is NOT a second blanket override. It is refused unless
+            # the named session is GENUINELY ISOLATED, verified against the
+            # server, so it cannot be used to wave through a peer you could
+            # simply have asked. And it is logged as CONSENT-OWNER, distinct
+            # from author consent, because "the owner authorized this on behalf
+            # of a worker that cannot speak" is a different fact from "the
+            # author said yes" and the audit should not blur them.
+            bits = [b.strip() for b in tok.split(":")]
+            if len(bits) == 3 and bits[2].lower() == "owner":
+                pairs.append((bits[0], bits[1], True))
+            elif len(bits) == 2:
+                pairs.append((bits[0], bits[1], False))
+            else:
+                malformed.append(tok)
         # A malformed entry is REFUSED, never skipped. Silently ignoring one
         # would leave the caller believing they granted a consent they did not,
         # and the push would then fail for a reason that names the wrong commit.
@@ -192,7 +247,7 @@ def main():
                 % ", ".join(malformed))
             return 1
         cleared, mismatched = [], []
-        for sha_in, who_in in pairs:
+        for sha_in, who_in, owner_grant in pairs:
             real = subprocess.run(
                 ["git", "log", "-1",
                  "--format=%h%x1f%(trailers:key=Amux-Session,valueonly)", sha_in],
@@ -206,7 +261,17 @@ def main():
                 mismatched.append(
                     (sha_in, who_in, "actually authored by %s" % (real_who or "(no trailer)")))
                 continue
-            cleared.append((bits[0], who_in))
+            if owner_grant and not _session_is_isolated(who_in):
+                # FAIL CLOSED. Unreachable-or-not-isolated both land here: if we
+                # cannot establish that the author is unaskable, the answer is
+                # ask them.
+                mismatched.append((
+                    sha_in, who_in,
+                    "':owner' is only for ISOLATED workers you cannot ask, and '%s' is not "
+                    "confirmed isolated (or the server could not be reached). Ask them, or "
+                    "use the two-field form if they consented" % who_in))
+                continue
+            cleared.append((bits[0], who_in, owner_grant))
         if mismatched:
             sys.stderr.write(
                 "\namux push-guard: AMUX_FOREIGN_CONSENT does not match the commits.\n"
@@ -223,12 +288,17 @@ def main():
             if keep:
                 remaining[who] = keep
         if not remaining:
-            _audit("CONSENT", "cleared=%s" % ",".join("%s:%s" % c for c in cleared))
+            _audit(
+                "CONSENT-OWNER" if any(c[2] for c in cleared) else "CONSENT",
+                "cleared=%s" % ",".join(
+                    "%s:%s%s" % (c[0], c[1], ":owner-granted" if c[2] else "") for c in cleared))
             sys.stderr.write(
                 "\namux push-guard: %d foreign commit(s) cleared by recorded author consent:\n"
                 "  %s\n"
                 "  (logged to ~/.amux/logs/push-guard.log — this is an AUDITED exit, not a bypass)\n\n"
-                % (len(cleared), ", ".join("%s (%s)" % (c[0], c[1]) for c in cleared)))
+                % (len(cleared), ", ".join(
+                    "%s (%s%s)" % (c[0], c[1], ", owner-granted: isolated worker" if c[2] else "")
+                    for c in cleared)))
             return 0
         # PARTIAL consent still blocks, and says exactly what is uncovered —
         # otherwise a caller who granted three of four would read the refusal as

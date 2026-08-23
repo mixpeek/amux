@@ -73,6 +73,109 @@ pub fn min_gap_s() -> f64 {
         .max(1.0)
 }
 
+/// WHY amux was absent for a [`Gap`].
+///
+/// 0021 named the outage; 0022 proved it was a real absence and not a stopped
+/// heartbeat. Neither could say what killed it, and the two causes want
+/// opposite fixes: a host that went down is a UPS/power/panic problem, while a
+/// host that stayed up while amux vanished is the **gui/501 signature** — every
+/// amux LaunchAgent's lifetime is the GUI LOGIN SESSION, so anything that kills
+/// that session kills amux no matter what `KeepAlive` says.
+///
+/// The discriminator is one sysctl: this boot's kernel boot instant either
+/// falls inside the gap or it does not. It was available the whole time.
+/// Establishing it by hand for the 2026-08-22 outage meant reading a 6 MB
+/// WindowServer `.ips` and an 11 MB spin report to find a watchdog kill during
+/// a Screen-Recording TCC preflight (DESKT-20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DowntimeCause {
+    /// Kernel boot instant is INSIDE the gap: the HOST restarted.
+    Machine,
+    /// Kernel boot instant PREDATES the gap: the host stayed up and only amux
+    /// went away. Process death, a kill, or the login session dying.
+    ProcessOnly,
+}
+
+impl DowntimeCause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DowntimeCause::Machine => "machine",
+            DowntimeCause::ProcessOnly => "process-only",
+        }
+    }
+
+    fn from_str(v: &str) -> Option<Self> {
+        match v {
+            "machine" => Some(DowntimeCause::Machine),
+            "process-only" => Some(DowntimeCause::ProcessOnly),
+            _ => None,
+        }
+    }
+}
+
+/// Classify a gap from the kernel's boot instant.
+///
+/// Split out from [`boot_tx`] and taking plain numbers so the decision itself is
+/// testable without a kernel: the shipped path calls exactly this function.
+///
+/// `None` in, `None` out — a boot time we could not read must not be laundered
+/// into a confident `process-only`, which is the claim that would send someone
+/// to rebuild the launchd setup over a power cut.
+fn classify(down_from: f64, machine_boot_at: Option<f64>) -> Option<DowntimeCause> {
+    machine_boot_at.map(|boot| {
+        if boot > down_from {
+            // The kernel booted after amux's last confirmed beat, so the host
+            // went down somewhere inside the gap.
+            DowntimeCause::Machine
+        } else {
+            DowntimeCause::ProcessOnly
+        }
+    })
+}
+
+/// The kernel's boot instant, as unix seconds.
+///
+/// The `cfg` here is a PLATFORM difference, not a deployment branch: macOS has
+/// no `/proc`, Linux has no `KERN_BOOTTIME` sysctl. The same binary ships to
+/// both and takes whichever arm its kernel provides, so the single-codebase
+/// rule is intact — there is no `if IS_CLOUD` hiding in this.
+#[cfg(target_os = "macos")]
+fn machine_boot_at() -> Option<f64> {
+    let mut tv = libc::timeval { tv_sec: 0, tv_usec: 0 };
+    let mut len = std::mem::size_of::<libc::timeval>();
+    let mut mib = [libc::CTL_KERN, libc::KERN_BOOTTIME];
+    // SAFETY: mib is a 2-element CTL_KERN/KERN_BOOTTIME query and the output
+    // buffer is exactly the `timeval` the kernel writes for it.
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as u32,
+            &mut tv as *mut libc::timeval as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || tv.tv_sec <= 0 {
+        return None;
+    }
+    Some(tv.tv_sec as f64 + tv.tv_usec as f64 / 1_000_000.0)
+}
+
+/// Linux (the cloud image) reads `btime` from `/proc/stat`, which is the
+/// ABSOLUTE boot instant. `/proc/uptime` would need `now - uptime`, and that
+/// subtraction drifts with every clock adjustment — the wrong property for a
+/// value being compared against a stored wall-clock timestamp.
+#[cfg(not(target_os = "macos"))]
+fn machine_boot_at() -> Option<f64> {
+    let stat = std::fs::read_to_string("/proc/stat").ok()?;
+    stat.lines()
+        .find_map(|l| l.strip_prefix("btime "))
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|b| *b > 0.0)
+}
+
 /// A stretch with no live amux, bracketed by the last confirmed beat and this boot.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct Gap {
@@ -89,6 +192,11 @@ pub struct Gap {
     /// the HEARTBEAT stopped, which is a different fault wearing the same shape.
     /// `None` could not be measured, so neither claim is made.
     pub requests_during: Option<i64>,
+    /// WHY amux was absent — see [`DowntimeCause`]. `None` means the kernel boot
+    /// instant could not be read, which is deliberately distinct from
+    /// `ProcessOnly`: "we could not look" and "the host never rebooted" send a
+    /// reader to completely different subsystems.
+    pub cause: Option<DowntimeCause>,
 }
 
 impl Gap {
@@ -152,6 +260,7 @@ fn boot_tx(
     now: f64,
     min_gap: f64,
     port: u16,
+    machine_boot_at: Option<f64>,
 ) -> rusqlite::Result<Option<Gap>> {
     let prev = stamp(conn, now)?;
     let gap = match prev {
@@ -162,6 +271,9 @@ fn boot_tx(
             // Asked BEFORE the row is filed, in the same transaction, so the row
             // can never exist without the fact that qualifies it (AF-99).
             requests_during: requests_between(conn, p, now),
+            // Same discipline for the cause: classified here, stored with the
+            // row, so the row can never exist without saying why (DESKT-22).
+            cause: classify(p, machine_boot_at),
         }),
         _ => None,
     };
@@ -171,9 +283,16 @@ fn boot_tx(
         // mistake — an absence is not a signal. The column is what keeps it from
         // being SUBTRACTED as downtime.
         conn.execute(
-            "INSERT INTO server_downtime (down_from, up_at, seconds, port, requests_during) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![g.down_from, g.up_at, g.seconds, port as i64, g.requests_during],
+            "INSERT INTO server_downtime (down_from, up_at, seconds, port, requests_during, cause) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                g.down_from,
+                g.up_at,
+                g.seconds,
+                port as i64,
+                g.requests_during,
+                g.cause.map(|c| c.as_str()),
+            ],
         )?;
     }
     Ok(gap)
@@ -201,8 +320,12 @@ pub fn record_boot(store: &Store, port: u16) -> Option<Gap> {
     }
     let now = crate::runtime_jobs::registry::unix_now();
     let min_gap = min_gap_s();
+    // Read ONCE, out here, and pass it in: the write closure runs on the writer
+    // thread under BEGIN IMMEDIATE, and a syscall inside that critical section
+    // would hold the cross-process lock for no reason.
+    let booted_at = machine_boot_at();
     let res = store.write(move |conn| {
-        boot_tx(conn, now, min_gap, port)?;
+        boot_tx(conn, now, min_gap, port, booted_at)?;
         // `applied: false` is LOAD-BEARING, not laziness. `applied` bumps the
         // global revision, and the global revision is what SSE delta-sync hangs
         // off — so a heartbeat that "applied" would make every connected
@@ -230,7 +353,7 @@ pub fn record_boot(store: &Store, port: u16) -> Option<Gap> {
         .ok()
         .and_then(|c| {
             c.query_row(
-                "SELECT down_from, up_at, seconds, requests_during FROM server_downtime \
+                "SELECT down_from, up_at, seconds, requests_during, cause FROM server_downtime \
                  WHERE up_at = ?1 ORDER BY id DESC LIMIT 1",
                 [now],
                 |r| {
@@ -239,6 +362,10 @@ pub fn record_boot(store: &Store, port: u16) -> Option<Gap> {
                         up_at: r.get(1)?,
                         seconds: r.get(2)?,
                         requests_during: r.get(3)?,
+                        cause: r
+                            .get::<_, Option<String>>(4)?
+                            .as_deref()
+                            .and_then(DowntimeCause::from_str),
                     })
                 },
             )
@@ -256,6 +383,24 @@ pub fn record_boot(store: &Store, port: u16) -> Option<Gap> {
             up_at = %crate::api::request_log::local_when(g.up_at),
             seconds = g.seconds,
             minutes = (g.seconds / 60.0).round(),
+            cause = g.cause.map(|c| c.as_str()).unwrap_or("unknown"),
+            // The cause is spelled out in prose as well as in the field, because
+            // the field is only useful to someone who already knows the
+            // vocabulary. Whoever reads this line is usually reading it for the
+            // first time, at 2am, wondering why the fleet stopped.
+            explain = %match g.cause {
+                Some(DowntimeCause::Machine) =>
+                    "the HOST restarted inside this window (kernel boot instant falls in \
+                     the gap) — look at power, UPS, panics and thermals, not at amux",
+                Some(DowntimeCause::ProcessOnly) =>
+                    "the host STAYED UP and only amux went away (kernel boot predates the \
+                     gap). amux's launchd jobs are LaunchAgents in gui/501, whose lifetime \
+                     is the GUI LOGIN SESSION — a WindowServer crash, a logout or a session \
+                     kill takes them all down regardless of KeepAlive (DESKT-22)",
+                None =>
+                    "cause NOT classified — the kernel boot instant could not be read, so \
+                     host-restart and process-death cannot be told apart for this row",
+            },
             "amux was DOWN — no server was running for this stretch. Durations reported \
              across it (steer queue age, rot timers, missed schedules) include time with \
              no amux, not just a stalled lane (AEAB-29)"
@@ -353,6 +498,7 @@ mod tests {
             include_str!("../../migrations/0010_request_log.sql"),
             include_str!("../../migrations/0021_heartbeat.sql"),
             include_str!("../../migrations/0022_downtime_requests_during.sql"),
+            include_str!("../../migrations/0028_downtime_cause.sql"),
         ] {
             crate::db::migrate::apply_one(&c, sql).unwrap();
         }
@@ -389,7 +535,7 @@ mod tests {
     #[test]
     fn a_first_ever_boot_is_not_an_outage() {
         let c = db();
-        let gap = boot_tx(&c, 1_000.0, 120.0, 8824).unwrap();
+        let gap = boot_tx(&c, 1_000.0, 120.0, 8824, None).unwrap();
         assert!(gap.is_none(), "an empty heartbeat table means no history, not a four-hour outage");
         assert!(outages(&c).is_empty());
     }
@@ -400,9 +546,9 @@ mod tests {
     #[test]
     fn a_quick_restart_is_not_an_outage() {
         let c = db();
-        boot_tx(&c, 1_000.0, 120.0, 8824).unwrap();
+        boot_tx(&c, 1_000.0, 120.0, 8824, None).unwrap();
         // 5s later: a self-adopt restart, well inside the 120s floor.
-        let gap = boot_tx(&c, 1_005.0, 120.0, 8824).unwrap();
+        let gap = boot_tx(&c, 1_005.0, 120.0, 8824, None).unwrap();
         assert!(gap.is_none(), "a 5s restart must not read as downtime");
         assert!(outages(&c).is_empty());
     }
@@ -417,7 +563,7 @@ mod tests {
         let back_up = last_beat + (4.0 * 3600.0 + 26.0 * 60.0);
         // Seed the heartbeat as the dead server left it.
         stamp(&c, last_beat).unwrap();
-        let gap = boot_tx(&c, back_up, 120.0, 8824).unwrap().expect("4h26m must register");
+        let gap = boot_tx(&c, back_up, 120.0, 8824, None).unwrap().expect("4h26m must register");
         assert_eq!(gap.down_from, last_beat);
         assert_eq!(gap.up_at, back_up);
         assert!((gap.seconds - 15_960.0).abs() < 0.001, "seconds = {}", gap.seconds);
@@ -432,9 +578,9 @@ mod tests {
     fn the_threshold_discriminates_at_its_own_boundary() {
         let c = db();
         stamp(&c, 0.0).unwrap();
-        assert!(boot_tx(&c, 120.0, 120.0, 1).unwrap().is_none(), "exactly at the floor is not an outage");
+        assert!(boot_tx(&c, 120.0, 120.0, 1, None).unwrap().is_none(), "exactly at the floor is not an outage");
         stamp(&c, 0.0).unwrap();
-        assert!(boot_tx(&c, 120.5, 120.0, 1).unwrap().is_some(), "past the floor is");
+        assert!(boot_tx(&c, 120.5, 120.0, 1, None).unwrap().is_some(), "past the floor is");
     }
 
     /// The two-process dedupe. 8823 and 8824 share one DB and boot together;
@@ -445,8 +591,8 @@ mod tests {
     fn only_the_process_that_wins_the_race_files_the_outage() {
         let c = db();
         stamp(&c, 0.0).unwrap();
-        let first = boot_tx(&c, 10_000.0, 120.0, 8824).unwrap();
-        let second = boot_tx(&c, 10_000.1, 120.0, 8823).unwrap();
+        let first = boot_tx(&c, 10_000.0, 120.0, 8824, None).unwrap();
+        let second = boot_tx(&c, 10_000.1, 120.0, 8823, None).unwrap();
         assert!(first.is_some(), "the first process through sees the stale stamp");
         assert!(second.is_none(), "the second sees a stamp 0.1s old — no second row");
         assert_eq!(outages(&c).len(), 1);
@@ -457,11 +603,11 @@ mod tests {
     #[test]
     fn beats_keep_the_stamp_warm_so_uptime_is_never_read_as_downtime() {
         let c = db();
-        boot_tx(&c, 0.0, 120.0, 1).unwrap();
+        boot_tx(&c, 0.0, 120.0, 1, None).unwrap();
         for t in 1..=400 {
             stamp(&c, t as f64 * 15.0).unwrap();   // 100 minutes of 15s beats
         }
-        let gap = boot_tx(&c, 400.0 * 15.0 + 5.0, 120.0, 1).unwrap();
+        let gap = boot_tx(&c, 400.0 * 15.0 + 5.0, 120.0, 1, None).unwrap();
         assert!(gap.is_none(), "a served 100 minutes must not be filed as a 100-minute outage");
         assert!(outages(&c).is_empty());
     }
@@ -470,7 +616,7 @@ mod tests {
     fn downtime_within_reports_only_the_overlap() {
         let c = db();
         stamp(&c, 0.0).unwrap();
-        boot_tx(&c, 1_000.0, 120.0, 1).unwrap();   // outage [0, 1000]
+        boot_tx(&c, 1_000.0, 120.0, 1, None).unwrap();   // outage [0, 1000]
 
         // Fully inside the window.
         assert!((downtime_within(&c, 0.0, 2_000.0) - 1_000.0).abs() < 0.001);
@@ -505,7 +651,7 @@ mod tests {
             .unwrap();
         serve(&c, down_from, up_at, 40);
 
-        let gap = boot_tx(&c, up_at, 120.0, 8824).unwrap().expect("a gap is still recorded");
+        let gap = boot_tx(&c, up_at, 120.0, 8824, None).unwrap().expect("a gap is still recorded");
         assert_eq!(gap.requests_during, Some(40));
         assert!(
             !gap.is_real_downtime(),
@@ -530,7 +676,7 @@ mod tests {
         serve(&c, 100.0, 900.0, 5);
         serve(&c, 20_100.0, 20_900.0, 5);
 
-        let gap = boot_tx(&c, up_at, 120.0, 8824).unwrap().expect("gap");
+        let gap = boot_tx(&c, up_at, 120.0, 8824, None).unwrap().expect("gap");
         assert_eq!(gap.requests_during, Some(0), "traffic outside the bracket is not inside it");
         assert!(gap.is_real_downtime());
         assert_eq!(downtime_within(&c, down_from, up_at), 19_000.0);
@@ -583,4 +729,104 @@ mod tests {
         assert_eq!(downtime_within(&c, down_from, up_at), 0.0);
     }
 
+
+    // ---- DESKT-22: WHY was amux absent? ----
+
+    /// The NEGATIVE half, and the one that matters most: an unreadable boot time
+    /// must NOT be laundered into a confident `process-only`. That claim sends
+    /// someone to rebuild the launchd setup over what may have been a power cut.
+    #[test]
+    fn an_unreadable_boot_time_classifies_as_nothing() {
+        assert_eq!(classify(1_000.0, None), None);
+    }
+
+    /// Rebuilt from the incident this column was added for (DESKT-20):
+    /// the host booted 2026-08-19 20:37 and was still up on 2026-08-22 when
+    /// WindowServer was watchdog-killed mid Screen-Recording TCC preflight,
+    /// taking the GUI login session and every gui/501 agent with it.
+    /// amux was absent 09:32:24 -> 09:34:31, 126.88s.
+    #[test]
+    fn the_2026_08_22_windowserver_kill_reads_as_process_only() {
+        let boot = 1_787_186_259.0; // Aug 19 20:37:39, from kern.boottime
+        let down_from = 1_787_405_544.0; // Aug 22 09:32:24
+        let up_at = down_from + 126.88;
+
+        assert_eq!(
+            classify(down_from, Some(boot)),
+            Some(DowntimeCause::ProcessOnly),
+            "the host never rebooted — the login session died, which is the gui/501 signature"
+        );
+
+        // And it must survive the round trip through the row, because the WARN
+        // is read live while the ROW is what anyone asks weeks later.
+        let c = db();
+        stamp(&c, down_from).unwrap();
+        let gap = boot_tx(&c, up_at, 120.0, 8824, Some(boot)).unwrap().expect("126.88s is an outage");
+        assert_eq!(gap.cause, Some(DowntimeCause::ProcessOnly));
+        let stored: Option<String> = c
+            .query_row("SELECT cause FROM server_downtime ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some("process-only"));
+    }
+
+    /// The other real incident, from 0021's own header: 2026-08-18, a hardware
+    /// undervoltage fault killed the machine at 14:03, it came back at 15:18,
+    /// and amux stayed absent until a human logged in at the console at 18:28.
+    ///
+    /// The cause is `machine` even though MOST of the 4h26m was the gui/501
+    /// delay — the host is what went down, and the login-session dependency is
+    /// what made the outage four times longer than the hardware fault. Both
+    /// facts are true and the column reports the first one; conflating them is
+    /// what this test pins.
+    #[test]
+    fn the_2026_08_18_hardware_fault_reads_as_machine() {
+        let down_from = 1_000_000.0; // 14:03, last confirmed beat
+        let machine_back = down_from + 75.0 * 60.0; // 15:18, kernel boots
+        let up_at = down_from + (4.0 * 3600.0 + 26.0 * 60.0); // 18:29, console login
+
+        assert_eq!(
+            classify(down_from, Some(machine_back)),
+            Some(DowntimeCause::Machine),
+            "the kernel boot instant falls INSIDE the gap, so the host restarted"
+        );
+
+        let c = db();
+        stamp(&c, down_from).unwrap();
+        let gap = boot_tx(&c, up_at, 120.0, 8824, Some(machine_back)).unwrap().expect("4h26m");
+        assert_eq!(gap.cause, Some(DowntimeCause::Machine));
+    }
+
+    /// The boundary, stated explicitly so a later refactor cannot slide it:
+    /// a kernel that booted at exactly the last confirmed beat did not reboot
+    /// during the gap.
+    #[test]
+    fn the_boundary_between_machine_and_process_only_is_the_last_beat() {
+        assert_eq!(classify(1_000.0, Some(1_000.0)), Some(DowntimeCause::ProcessOnly));
+        assert_eq!(classify(1_000.0, Some(1_000.1)), Some(DowntimeCause::Machine));
+    }
+
+    /// The two causes must not collapse to the same string — the whole point is
+    /// that they route a reader to different subsystems.
+    #[test]
+    fn the_causes_are_distinguishable_on_the_wire() {
+        assert_ne!(DowntimeCause::Machine.as_str(), DowntimeCause::ProcessOnly.as_str());
+        for c in [DowntimeCause::Machine, DowntimeCause::ProcessOnly] {
+            assert_eq!(DowntimeCause::from_str(c.as_str()), Some(c), "round trip");
+        }
+        assert_eq!(DowntimeCause::from_str("wat"), None);
+    }
+
+    /// This machine must be able to answer the question at all. A classifier
+    /// whose only input is unreadable in production is theatre — and the
+    /// platform read is exactly the kind of thing that compiles everywhere and
+    /// returns None on the host you actually ship to.
+    #[test]
+    fn the_kernel_boot_instant_is_readable_on_this_host() {
+        let b = machine_boot_at().expect("kern.boottime / proc btime must be readable");
+        let now = crate::runtime_jobs::registry::unix_now();
+        assert!(b > 0.0 && b < now, "boot instant {b} must be a past unix time (now {now})");
+        // Sanity: nobody's uptime is 20 years. Catches a units mix-up, which is
+        // the failure mode that would silently make every gap read as `machine`.
+        assert!(now - b < 20.0 * 365.0 * 86_400.0, "implausible uptime — units wrong?");
+    }
 }

@@ -1057,6 +1057,60 @@ pub fn autofix_cards_are_dispatchable(open_unowned: i64, examples: &[String]) ->
     .evidence(json!({"open_unowned": open_unowned, "examples": examples}))]
 }
 
+/// Every open card's type is IN THE VOCABULARY (AMUX-3552).
+///
+/// An unknown type is not inert: `core_item_type` maps anything it does not
+/// recognise to `Code`, the STRICTEST gate. So a card typed `bug` silently
+/// demands "Implemented and merged" and "Tests / lint pass", and its owner —
+/// who believes they set something meaningful — has only a false ack, `force`,
+/// or rot as exits. That is ethos rule 3 arriving without anybody choosing it.
+///
+/// WHY THIS EXISTS AS A CHECK RATHER THAN A FIX. Both write paths already
+/// validate: `POST /api/board` and `PATCH .../type` each return 400 with the
+/// vocabulary and the reason. I assumed CREATE was the hole and TESTED it — it
+/// refuses. The 14 live offenders (`bug` x12, `decision`, `docs`, across eight
+/// lanes) were all created between 2026-07-30 and 2026-08-08, and validation
+/// landed 2026-08-09 in b538866. They are PRE-VALIDATION RESIDUE, and zero have
+/// been created since.
+///
+/// Which makes the real defect a migration one, and the reason it needs a
+/// standing check rather than a one-off cleanup: validation started refusing new
+/// bad writes and said nothing about the rows already holding bad values. They
+/// sat for two weeks in the strictest gate with nothing pointing at them. Any
+/// future addition to `KNOWN_TYPES` has exactly the same shape.
+///
+/// It reads `KNOWN_TYPES` rather than restating the list, so a type added there
+/// cannot make this check wrong — the two-spellings problem that `KNOWN_TYPES`
+/// own doc already flags against `ItemType::ALL`.
+///
+/// It does NOT propose a bulk retype. The 14 belong to eight other lanes and
+/// reclassifying someone else's work is ethos rule 8; the message names them so
+/// their owners can decide.
+pub fn card_types_are_in_vocabulary(offenders: &[(String, String)]) -> Vec<InvariantResult> {
+    const ID: &str = "board.card_types_are_in_vocabulary";
+    if offenders.is_empty() {
+        return vec![InvariantResult::pass(ID)];
+    }
+    let shown: Vec<String> =
+        offenders.iter().take(5).map(|(id, t)| format!("{id}({t})")).collect();
+    vec![InvariantResult::fail(
+        ID,
+        "every open card's type is one of the known types, so its gate is the one its          owner chose"
+            .to_string(),
+        format!(
+            "{} open card(s) carry a type outside the vocabulary ({}). An unknown type              falls through to the STRICTEST (code) gate, so these demand a merge their              owners never claimed and cannot exit honestly. Known types: {}. Do NOT bulk              retype — they belong to other lanes; surface each to its owner (AMUX-3552).",
+            offenders.len(),
+            shown.join(", "),
+            crate::db::board_store::KNOWN_TYPES.join(" | "),
+        ),
+    )
+    .evidence(json!({
+        "count": offenders.len(),
+        "offenders": offenders.iter().map(|(i, t)| json!({"id": i, "type": t})).collect::<Vec<_>>(),
+        "known_types": crate::db::board_store::KNOWN_TYPES,
+    }))]
+}
+
 // ---------------------------------------------------------------------------
 // 10. Host memory + kernel-panic tripwire (AMUX-3397)
 // ---------------------------------------------------------------------------

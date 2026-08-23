@@ -199,13 +199,21 @@ async fn get_contract(
                         prose) — the DEFAULT shape since AMUX-3496. Slim rows carry \
                         \"slim\": 1 so a consumer can tell a dropped field from an empty one \
                         (AF-161: a census read absence as emptiness and was 100% wrong)",
-                "slim_omits": ["desc", "log", "source_ref", "last_verified_at", "due_time", "gate"],
                 "full": "1 = full prose bodies (desc + log). The default list is slim; a \
                          reader that needs desc/log must ask (slim=0 also honored)",
                 "quota": "1 = per-status terminal quotas (verified floor 300; done/discarded \
                           share done_limit) instead of the lumped cap — the dashboard poll's \
                           shape (AMUX-3503)",
             },
+            // NOT a filter — descriptive metadata about what `slim` DROPS, so it
+            // lives outside `filters`. It sat inside `filters` from 64a9cb7d until
+            // this commit and turned `check` red on main: board_contract_filters
+            // asserts every key in `filters` is a real `ListParams` field, and a
+            // descriptive key can never be one. Adding it to `ListParams` would have
+            // gone green and been WRONG — it would document a query param that does
+            // not exist and that axum silently drops, which is the exact defect that
+            // test was written to catch. Keep `filters` strictly name -> description.
+            "slim_omits": ["desc", "log", "source_ref", "last_verified_at", "due_time", "gate"],
             "not_a_filter": {
                 "q / query / search": "REFUSED with 400 — /api/board does not search, it would \
                                        return the entire board. Use /api/search?q=",
@@ -2064,7 +2072,9 @@ fn ack_evidence(actor: &str, criteria: &[String], via: &str) -> Vec<Evidence> {
 /// Acknowledgement was exact string containment, and one criterion in the
 /// `amux` group's `verified` gate reads:
 ///
-///     Peer-reviewed by a DIFFERENT worker in group `amux` (name them)
+/// ```text
+/// Peer-reviewed by a DIFFERENT worker in group `amux` (name them)
+/// ```
 ///
 /// The parenthetical is an INSTRUCTION to the acking agent. Under exact
 /// matching the only ack that passes is the criterion verbatim, "(name them)"
