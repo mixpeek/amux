@@ -211,3 +211,9 @@ jobs:
           # reach the board" at every error would pass the failure cases while
           # destroying the retry/do-not-retry distinction.
           ./scripts/test-board-transport-failure.sh
+          # AEAB-48: the push-guard must count what a push ACTUALLY ships. Its
+          # case B is the load-bearing one — a guard hollowed out to walk
+          # nothing would sail through the rebase case and let genuinely
+          # foreign, unpushed work straight past. Both directions are pinned,
+          # and both mutations were confirmed to fail before this was wired in.
+          ./scripts/test-push-guard-range.sh

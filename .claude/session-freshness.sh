@@ -231,20 +231,30 @@ fi
 # guard added to stop a stale republish silently reverting pushed entries in
 # frustrations.md (MG-1483, 10 entry-lines lost) had never run here.
 #
-# amux ALREADY KNEW. The server logged
-# "[staged-guard] OUTDATED HOOK: <session> in <repo> sent no guard_version — that
-# hook swallows server errors (`except Exception: return 0`) and printed nothing
-# for the whole 405 window. Reinstall: scripts/install-hooks.sh" — 128 times over
-# 8 days, naming 9 distinct session/repo pairs. Correctly, with the remedy. Into
-# server-rs.log, which nobody tails. That is ethos rule 4's second layer: a tag
-# in a store the reader never opens is the same failure as no tag. This axis
-# moves it to where a session actually looks.
+# NOTHING WAS WATCHING FOR THIS, which is the point of the axis and is worth
+# stating precisely, because I first got it wrong. The server does log
+# "[staged-guard] OUTDATED HOOK: <session> in <repo> sent no guard_version ...
+# Reinstall: scripts/install-hooks.sh" — 128 times over 8 days here — and it
+# reads exactly like a file-staleness detector. It is not one. git_guard.rs sets
+# it from the REQUEST BODY:
 #
-# CONTENT diff, not `guard_version`, on purpose. The server's detector fires only
-# for hooks too old to send a version at all; a hook that sends one and is
-# otherwise stale is invisible to it. Comparing bytes catches any drift, so this
-# axis is strictly wider than the thing that motivated it rather than a second
-# spelling of it.
+#     let guard_version = obj.get("guard_version").as_i64().unwrap_or(0);
+#     let hook_outdated = guard_version < 2;
+#
+# so any caller that omits the field is "outdated" by construction, and
+# git-shared-guard.py omits it on most of its posts. It discriminates the CALLER,
+# not the file (amux-frustrations, AF-156, who found this and were right). Its
+# remedy is also unwalkable — reinstalling installs the same source that omits
+# the field, so the warning returns immediately, which is AMUX-2140's shape.
+#
+# So a CONTENT diff is not a second spelling of that flag; it is the check that
+# did not exist. Bytes are the only thing that can distinguish "this file is not
+# the one in the checkout" from "this caller did not say who it was", and only
+# the first is what a session needs to know at start. I cited that log line as
+# evidence for file staleness before reading the code that emits it — the
+# staleness was real and independently measured (mtimes, and
+# append-only-push-guard absent entirely), but the flag was never evidence for
+# it. A message that names a plausible cause is not a measurement of it.
 #
 # `git rev-parse --git-path hooks` rather than "$REPO/.git/hooks": in a git
 # WORKTREE `.git` is a file, not a directory, and the naive path does not exist —

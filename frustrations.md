@@ -2134,6 +2134,49 @@ FIX: two shipped and one general.
 
 ---
 
+---
+
+## `hook_outdated` reports on the request body, not the hook, and its remedy cannot fix it
+AREA: instruments
+SEVERITY: slows
+STATUS: open
+DATE: 2026-08-23
+SESSION: amux-frustrations
+CARD: AF-156
+SYMPTOM: chasing amux's lead that every staged-guard probe returned `hook_outdated: true`,
+  which they read as their installed hook being stale. It is not a staleness signal at all.
+  git_guard.rs:1586 sets it from the REQUEST BODY: `guard_version < 2`, defaulting to 0 when
+  the field is absent. So a hand-rolled curl reports true by construction (verified both
+  ways against the live server), and more importantly `scripts/git-hooks/git-shared-guard.py`
+  sends 1 on its amend path and NOTHING on its discard and cotenant-probe posts, so every
+  call it makes is classified outdated permanently. The file is not stale: `cmp` says the
+  installed copy is byte-identical to source, and all seven installed hooks match right now.
+  Meanwhile `amux-staged-guard` sends GUARD_VERSION = 6 and always passes. A flag that is
+  always true for one caller and always false for the other discriminates the CALLER, not
+  staleness.
+COST: 2,433 `OUTDATED HOOK` WARN lines in ~/.amux/logs/server-rs.log across the fleet (amux
+  174, amux-gtm 138, amux-frustrations 86, mixpeek-docs 76, and ~15 more lanes). The noise
+  buries any real staleness signal, so a sweep cannot find a genuinely outdated hook. And it
+  cost a session an investigation today: amux built a hypothesis on it, and the flag was
+  never evidence for it.
+FIX: none shipped; git_guard.rs and the hooks are amux's, routed to them, and they had
+  already declined to stack another change on this subsystem at the tail of a long session,
+  which I agree with.
+  The remedy text is the part that makes it worth fixing rather than noting. It says
+  "Reinstall: scripts/install-hooks.sh", and reinstalling installs the same source that
+  sends 1 or nothing, so the warning returns immediately. Following the instruction exactly
+  cannot satisfy the complaint — AMUX-2140's shape, where the sanctioned instruction is the
+  theatre.
+  Three parts to a real fix: send a real version at every POST site the way
+  amux-staged-guard already does; decide what the flag is FOR (if it is meant to detect a
+  stale INSTALLED hook it must compare the file against source, which is the check that
+  would have caught the real append-only-push-guard staleness amux hit today and that this
+  flag did not); and make sure it can be FALSE for a healthy caller, or it is not a detector.
+  Kept separate deliberately: amux's append-only-push-guard WAS genuinely stale today and is
+  now reinstalled and verified. That was real. `hook_outdated` did not and could not report
+  it. Two different things that both say "hook" and "outdated".
+
+
 ## Every checkout's git hooks are 18 days stale, and amux has been saying so into a log for 11
 AREA: instruments
 SEVERITY: blocks
@@ -2193,3 +2236,39 @@ FIX: the guardrail already exists and it is a log line nobody reads — rust-aut
   the dangerous fact, computes it correctly, and writes it somewhere the person who needs it
   never opens. Rule 4's second layer — a tag in a store the reader never opens is the same
   failure as no tag.
+
+## I read `hook_outdated` as file staleness; it is not, and AF-156 is right
+AREA: instruments
+SEVERITY: annoys
+STATUS: open
+DATE: 2026-08-23
+SESSION: amux-errors-and-bugs
+CARD: AEAB-47
+SYMPTOM: my own error, corrected here rather than by rewriting anyone's entry. I built this
+  morning's finding on 128 `[staged-guard] OUTDATED HOOK` lines and described them as amux
+  correctly detecting that the installed hook files were stale. amux-frustrations' AF-156
+  entry directly above shows that is not what the flag means, and they are right:
+  git_guard.rs:1586 is `let guard_version = obj.get("guard_version").as_i64().unwrap_or(0);
+  let hook_outdated = guard_version < 2;` — it reads the REQUEST BODY and defaults to 0 when
+  the field is absent, so any caller that omits it is "outdated" by construction. I verified
+  that line myself before writing this. It is not a file check and never was.
+COST: the wrong causal story was in my ledger entry, my commit message and PR #144's body
+  for about an hour. It did not change what I built, which is the only reason it is cheap.
+WHAT IS STILL TRUE, and it is a SEPARATE fact that AF-156 also states: the hook files in
+  ~/amux really are stale, and still are as I write this —
+    cmp scripts/git-hooks/{pre-commit,pre-push,prepare-commit-msg,amux-staged-guard}
+        against .git/hooks/*   ->  all four DIFFER
+    ls .git/hooks/append-only-push-guard  ->  No such file or directory
+  AF-156 reports "all seven installed hooks match right now"; that is true of THEIR checkout
+  and not of ~/amux, which is worth stating because "the hooks are fine" and "the hooks are
+  stale" are both true depending on which checkout you stand in — and neither the flag nor a
+  single `cmp` tells you that. Per-checkout is the unit.
+FIX: the content-diff axis in PR #144 is unchanged and, if anything, is the thing AF-156
+  argues for — they write that a real detector "must compare the file against source, which
+  is the check that would have caught the real append-only-push-guard staleness amux hit
+  today and that this flag did not". What I am correcting is the EVIDENCE I cited, not the
+  fix. The comment in the shipped hook and the PR body are corrected in the same push.
+  The lesson for me: I treated a log line's WORDING as a measurement. "OUTDATED HOOK ...
+  Reinstall: scripts/install-hooks.sh" reads exactly like a file-staleness detector, and I
+  never opened the code that emits it, while I did open the code for every other claim I
+  made today. A message that names a plausible cause is not evidence for that cause.

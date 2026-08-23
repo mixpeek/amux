@@ -20,7 +20,19 @@ Usage: frustrations_retire.py "<exact heading substring>" [--dry-run]
 import json, re, subprocess, sys, urllib.parse
 
 FILE = 'frustrations.md'
-API = 'https://localhost:8824'
+def _api():
+    # Read the server-written endpoint so a port move cannot silently point this at a
+    # dead port — where the pre-2026-08-23 failure mode was a SILENT DELETE.
+    try:
+        u = subprocess.run(['amux', 'url'], capture_output=True, text=True, timeout=10).stdout.strip()
+        if u.startswith('http'):
+            return u.split()[0]
+    except Exception:
+        pass
+    return 'https://localhost:8824'
+
+
+API = _api()
 SESSION = 'amux-frustrations'
 
 def field(block, key):
@@ -55,11 +67,37 @@ def main():
     print(f"card={card}  heading={re.search(chr(10)+'## (.+)', blk).group(1)[:70]}")
     if dry:
         print("--dry-run: not writing"); return 0
-    r = subprocess.run(['curl', '-sk', '-X', 'PATCH', '-H', 'Content-Type: application/json',
+    r = subprocess.run(['curl', '-sk', '--connect-timeout', '5', '-X', 'PATCH',
+                        '-H', 'Content-Type: application/json',
                         '-H', f'X-Amux-Session: {SESSION}', '-d', json.dumps({"desc_append": note}),
                         f'{API}/api/board/{card}'], capture_output=True, text=True)
+    # DO NOT INFER SUCCESS FROM THE ABSENCE OF AN ERROR STRING. Measured 2026-08-23:
+    # with the server unreachable curl exits 7 and prints NOTHING, so neither '"error"'
+    # nor '"blocked":true' matched, this returned 0, and the entry was deleted while its
+    # text never reached the card — destroying the one thing this script exists to
+    # preserve, silently. That is the silent-partial shape (AF-150) living inside the
+    # tool whose whole job is to prevent the loss.
+    if r.returncode != 0 or not r.stdout.strip():
+        print(f"REFUSING to delete: card write did not complete "
+              f"(curl exit {r.returncode}, {len(r.stdout)} bytes). Entry left in place.")
+        return 1
     if '"error"' in r.stdout or '"blocked":true' in r.stdout:
         print(f"REFUSING to delete: card write failed -> {r.stdout[:160]}")
+        return 1
+    # VERIFY THE OPERAND, not the response. A 200 says the request was accepted; it does
+    # not say the text is on the card. Re-read it and require the marker plus a real
+    # slice of the symptom, because this deletion is irreversible from here.
+    v = subprocess.run(['curl', '-sk', '--connect-timeout', '5', f'{API}/api/board/{card}'],
+                       capture_output=True, text=True)
+    try:
+        desc = (json.loads(v.stdout) or {}).get('desc') or ''
+    except Exception:
+        desc = ''
+    probe = (sym or '').strip()[:60]
+    if 'DELETED-ENTRY TEXT PRESERVED' not in desc or (probe and probe not in desc):
+        print(f"REFUSING to delete: card {card} does not read back with the carried text "
+              f"(marker={'yes' if 'DELETED-ENTRY TEXT PRESERVED' in desc else 'NO'}, "
+              f"symptom={'yes' if probe and probe in desc else 'NO'}). Entry left in place.")
         return 1
     del parts[hits[0]]
     open(FILE, 'w').write(head + sep + "".join(parts))

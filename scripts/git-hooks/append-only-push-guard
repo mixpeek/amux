@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# guard-features: resurrection
+# guard-features: resurrection retirement-guidance
 # (Feature tokens for install-hooks.sh: a repo with core.hooksPath tracks its
 #  own vendored copy, which may deliberately diverge. The installer greps that
 #  copy for each token to tell STALE — dark in the repo where it runs, the
@@ -84,6 +84,35 @@ guarded_files() {
   else
     printf '%s\n' "${DEFAULT_FILES[@]}"
   fi
+}
+
+# archive_for <commit-ish> <file> — echo the companion archive path, or "none".
+#
+# Why this is in the LOG LINE (AMUX-3528). The union rule's whole discriminator is
+# the companion archive: an archived line still exists in the pushed union and
+# passes, a clobbered line exists nowhere and refuses. A guarded file with NO
+# archive companion therefore has no way to express a legitimate removal to this
+# guard at all — every honest retirement reads as total loss and refuses. amux is
+# exactly that repo (`git ls-files | grep -i archive` is empty; our archive is the
+# board card, written by scripts/frustrations_retire.py). Until the check learns to
+# read that, `archive=none` on a REFUSED line is the marker that says "this refusal
+# had no way to be anything else", which is what makes the false-positive rate
+# measurable in a log sweep instead of anecdotal. Without it, a real graft catch and
+# a blocked retirement round write byte-identical lines.
+archive_for() {
+  local commitish="$1" f="$2" dirn bn stem ext cand
+  case "$f" in *ARCHIVE*|*archive*) echo "self"; return 0 ;; esac
+  dirn=$(dirname "$f"); bn=$(basename "$f")
+  stem="${bn%.*}"; ext=""
+  [ "$stem" != "$bn" ] && ext=".${bn##*.}"
+  for cand in "${stem}_ARCHIVE${ext}" "${stem}_archive${ext}"; do
+    [ "$dirn" != "." ] && cand="$dirn/$cand"
+    if git rev-parse --verify --quiet "$commitish:$cand" >/dev/null 2>&1; then
+      echo "$cand"
+      return 0
+    fi
+  done
+  echo "none"
 }
 
 # check_pair <base-ish> <head-ish> [file...] — 0 clean, 1 loss (prints), 2 error
@@ -211,14 +240,36 @@ if edited:
       printf '%s\n' "$missing" | head -"$MAX_SHOWN" | sed 's/^/    | /'
       [ "$n" -gt "$MAX_SHOWN" ] && echo "    ... and $((n - MAX_SHOWN)) more"
       echo ""
-      echo "Fix: bring $f current before pushing — union-merge per"
-      echo ".claude/rules/frustrations.md (take origin's copy, re-append yours):"
+      echo "FIRST, decide WHICH of the two causes this is. They need opposite actions and"
+      echo "the wrong one is destructive, so do not skip to the fix below (AMUX-3528,"
+      echo "2026-08-23: this refusal's old text prescribed the checkout unconditionally and"
+      echo "would have resurrected 11 deliberately-retired entries as live open ones — the"
+      echo "round's whole output, undone by following the instruction exactly)."
+      echo ""
+      echo "  RETIREMENT — the lines were deleted ON PURPOSE, by a named author, and each"
+      echo "  one's text was preserved somewhere first. Enumerate the headings above and"
+      echo "  name where each one went. If you can do that for ALL of them, the deletion is"
+      echo "  legitimate and the checkout below WOULD UNDO IT. Take the scoped override."
+      echo "  In amux the preserved copy is the BOARD CARD, written by"
+      echo "  scripts/frustrations_retire.py (it refuses to delete if the card write fails),"
+      echo "  which is why this guard cannot see it: the union rule looks for a companion"
+      echo "  ARCHIVE FILE and this repo has none."
+      echo ""
+      echo "  STALE REPUBLISH — nobody deleted these lines; they are simply absent from an"
+      echo "  old tree being published (MG-1483). The tell is that NO author claims them and"
+      echo "  they exist nowhere else. This is the case the checkout fixes."
+      echo ""
+      echo "Do NOT use commit ancestry to decide: a commit-tree graft parented on the"
+      echo "current remote tip carries a stale tree, so 'origin/main is an ancestor' is TRUE"
+      echo "during MG-1483 itself. Attribution discriminates; history shape does not."
+      echo ""
+      echo "If STALE — bring $f current, union-merge per .claude/rules/frustrations.md:"
       echo "    git checkout origin/main -- $f    # then re-apply YOUR additions on top"
-      echo "If this rewrite is genuinely intentional, say so out loud (logged), scoped"
-      echo "to the file so the acknowledgment does not blanket the whole push:"
+      echo "If RETIREMENT (or any intentional rewrite) — say so out loud (logged), scoped to"
+      echo "the file so the acknowledgment does not blanket the whole push:"
       echo "    AMUX_ALLOW_SHARED_REWRITE=$f git push ...    # or =1 for all guarded files"
     } >&2
-    log_line "REFUSED" "file=$f missing_lines=$n"
+    log_line "REFUSED" "file=$f missing_lines=$n archive=$(archive_for "$head" "$f")"
   done
 
   # ---- RESURRECTION (MG-1485): the union rule's blind half. -----------------
