@@ -2941,3 +2941,53 @@ NOTE: The generalisable part is not "index your subqueries". It is that CORRECTN
   only after watching the outage begin. For any migration that touches the live board,
   the cheap precondition is: how many rows does this scan, and is there an index for the
   predicate it scans on.
+
+## `amux board done` printed nothing for two minutes: an unreachable server HANGS the CLI instead of failing it
+AREA: cli
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-08-23
+SESSION: tsukimiya (WSL2)
+CARD: AMUX-40
+SYMPTOM: verifying that the freshly-installed bash CLI carried AEAB-36's fix, I ran
+  `AMUX_API=https://localhost:1 amux board done <id> --outcome "probe"` — the exact recipe
+  AEAB-36's own comment names as its deterministic reproduction ("Reproduced deterministically
+  with AMUX_API pointed at a dead port: one warning line, exit 7, no transition"). It printed
+  no warning and no error. It printed nothing at all, for the full 2 minutes until the calling
+  harness SIGTERMed it (exit 143). `bash -x` put it on the connect: `curl -sk -X PATCH ...
+  https://localhost:1/api/board/<id>` and no further trace. Re-run against an unresolvable
+  HOST (`https://amux-probe.invalid`, curl exit 6) the AEAB-36 die() fired perfectly, naming
+  both lost facts. Two shapes of "server unreachable", and the CLI could only report the one
+  that fails fast: on this machine a dead localhost port DROPS the SYN rather than refusing it
+  (`curl --max-time 5` → exit 28 on both :1 and :8899), and not one of the CLI's 41 curl call
+  sites had a `--connect-timeout` — 33 carried no timeout at all and 8 carried only `-m`, which
+  still hung for its whole budget because `-m` caps the transfer and is not the connect knob.
+COST: ~15 minutes chasing a "the fix did not install" theory against a CLI that was byte-identical
+  to the checkout, and the wrong conclusion was one step away: the probe AEAB-36 documents as its
+  own reproduction was the probe that silently failed to reproduce it. The general shape is worse
+  than the minutes — the failure mode this hides is exactly the one AEAB-36 was written for
+  ("the server happened to be restarting to adopt a new build"), i.e. every lane in the fleet
+  during every builder swap, and what they see is not an error but a wedged terminal.
+FIX: shipped on this branch. Two halves, because a fast failure that nothing records is still
+  invisible fleet-wide:
+  1. One `_curl` wrapper injects `--connect-timeout` (default 5s, `AMUX_CURL_CONNECT_TIMEOUT`)
+     and every call site routes through it. Not 41 edits: 41 of 41 sites forgot the flag, so the
+     rule has to be structural, and `tests/cli_curl_timeout_guard.rs` fails the build when a
+     curl invocation neither goes through `_curl` nor names the flag itself. The guard was run
+     against the UNFIXED file first and listed all 41 invocation sites — a guard that has never
+     failed is a guard nobody has checked.
+  2. On a transport failure `_curl` writes a breadcrumb (curl exit, method, and the URL with its
+     query string stripped — scheme, host and path, never the body, never the headers) and the
+     next invocation that CAN reach the server POSTs the backlog
+     to `/api/client-debug?kind=cli-transport-failure`. This is the only way the class becomes
+     sweepable: a request that never arrives cannot appear in the request log, so
+     `/api/logs/analyze` sees a hang and "nobody ran anything" as the same silence. Verified
+     end-to-end — 4.7s failure with AEAB-36's message, breadcrumb written, flushed on the next
+     command, readable back from `GET /api/client-debug` and durable as the INFO line in
+     server-rs.log. The flush ROTATES the file (`mv`) and deletes the snapshot only on a 2xx, so
+     what it deletes is exactly what it delivered. The first cut of it did not: it posted the
+     newest 200 lines and then cleared the whole file, so a backlog of 250 lost rows 1-50 unsent
+     while the truncate reported success — this same class one layer down, caught in review by
+     esteininger. Measured both ways against a local collector: old = server saw 200 of 250 and
+     the file was emptied; new = server saw 250 of 250, and on a non-2xx the snapshot goes back
+     with nothing delivered and nothing lost.
