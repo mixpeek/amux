@@ -64,6 +64,57 @@ fn floor_bytes() -> u64 {
     env_u64("AMUX_DISK_WATCH_FLOOR_GB", 25) * 1024 * 1024 * 1024
 }
 
+/// Free space below which the volume is worth LOOKING AT now rather than at the
+/// next weekly wake (AEAB-59 / LR-70).
+///
+/// The module doc argues against a threshold and is right about the thing it
+/// argues about: "a threshold that auto-deletes" is a bad trade. This job
+/// deletes nothing — the commit that added it says so in its title — so a
+/// threshold that REPORTS is a different object and that reasoning does not
+/// reach it. Recorded here because otherwise this looks like it contradicts a
+/// decision already taken.
+///
+/// Measured 2026-08-25: the volume was at 0.94 GB free and the next watcher scan
+/// was due 2026-08-29, four days out, because the trigger was a pure 7-day
+/// interval with no free-space condition anywhere in it. Nothing in amux was
+/// going to look.
+fn low_free_bytes() -> u64 {
+    env_u64("AMUX_DISK_WATCH_LOW_FREE_GB", 5) * 1024 * 1024 * 1024
+}
+
+/// Minimum gap between LOW-SPACE scans. Without it a volume parked under the
+/// floor starts a walk every hour forever — the scan-storm the whole feature is
+/// built to avoid, and self-inflicted load on the resource being investigated
+/// (the amux-cloud spin-catcher, ethos rule 7: what does the detector COST, and
+/// is the cost paid in the same resource as the fault).
+fn low_free_every_secs() -> u64 {
+    env_u64("AMUX_DISK_WATCH_LOW_FREE_EVERY_SECS", 6 * 3600)
+}
+
+/// Should a scan start now? Split out from `tick` so BOTH triggers are testable
+/// without a store, a walker or a clock — the interval one never was.
+///
+/// `free` is None when statfs failed: fall back to the interval alone rather
+/// than treating an unreadable volume as full, which would start a scan every
+/// grace window on a machine that cannot even measure itself.
+pub(crate) fn should_scan(
+    now: i64,
+    newest_finished: Option<i64>,
+    free: Option<u64>,
+    low_free: u64,
+    every: i64,
+    low_every: i64,
+) -> bool {
+    let age = newest_finished.map(|fin| now - fin);
+    // No completed scan ever: the interval rule already says yes, and it must
+    // keep saying yes independently of the disk reading.
+    let Some(age) = age else { return true };
+    if age > every {
+        return true;
+    }
+    matches!(free, Some(f) if f < low_free) && age > low_every
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Growth {
     pub path: String,
@@ -215,12 +266,25 @@ async fn tick(state: AppState) {
 
     let now = crate::api::reclaim::now_secs();
     let newest = scans.first().cloned();
-    let stale = newest
-        .as_ref()
-        .map(|(_, fin)| now - fin > scan_every_secs() as i64)
-        .unwrap_or(true);
+    // AEAB-59: TWO triggers now — the weekly cadence, and a low-free-space one
+    // with its own shorter grace window. Read the volume from statfs rather than
+    // from the last scan's stored df_free, which is a number from up to seven
+    // days ago and is exactly the staleness this is fixing.
+    let free_now = crate::api::reclaim::df_bytes(std::path::Path::new(
+        &std::env::var("HOME").unwrap_or_else(|_| "/".into()),
+    ))
+    .map(|(free, _total)| free);
+    let stale = should_scan(
+        now,
+        newest.as_ref().map(|(_, fin)| *fin),
+        free_now,
+        low_free_bytes(),
+        scan_every_secs() as i64,
+        low_free_every_secs() as i64,
+    );
 
-    // Kick a scan when the newest completed one has aged out. Never two at
+    // Kick a scan when the newest completed one has aged out, or when the volume
+    // is low and the last look is older than the short grace window. Never two at
     // once: the reclaim API refuses that anyway, and a walker competing with
     // another walker is the disruption this whole feature avoids.
     if stale && running == 0 {
@@ -328,6 +392,94 @@ pub fn spawn(state: AppState) -> super::PeriodicTask {
 
 #[cfg(test)]
 mod tests {
+
+    // ── AEAB-59: the low-space trigger, and the cells that keep it honest ──
+    //
+    // WEEK/LOW/GRACE are named so a reader can see which rule each case is
+    // about. The pairs matter more than the individual cases: every "fires"
+    // has a neighbour that must NOT fire, because a trigger that is always
+    // true is the same defect as one that never is (ethos rule 7 — a threshold
+    // below the baseline is reporting that the machine is ON).
+    const WEEK: i64 = 7 * 86_400;
+    const GRACE: i64 = 6 * 3_600;
+    const LOW: u64 = 5 * 1024 * 1024 * 1024;
+    const PLENTY: u64 = 40 * 1024 * 1024 * 1024;
+
+    /// The bug this card is about: 0.94 GB free, last scan 3 days ago, and the
+    /// old rule said "not for another 4 days". The interval alone cannot
+    /// express urgency.
+    #[test]
+    fn a_low_volume_is_looked_at_without_waiting_for_the_weekly_wake() {
+        let now = 1_000_000;
+        let three_days_ago = now - 3 * 86_400;
+        assert!(
+            super::should_scan(now, Some(three_days_ago), Some(LOW - 1), LOW, WEEK, GRACE),
+            "under the floor and 3 days since the last look must scan"
+        );
+        // THE CONTROL. Same age, healthy volume: the weekly rule still governs
+        // and must say no, or the low-space path has simply removed the cadence.
+        assert!(
+            !super::should_scan(now, Some(three_days_ago), Some(PLENTY), LOW, WEEK, GRACE),
+            "plenty of space at 3 days must still wait for the weekly wake"
+        );
+    }
+
+    /// THE SCAN-STORM CELL. A volume parked under the floor must not start a
+    /// walk every hour: that is self-inflicted load aimed at the resource being
+    /// investigated, which is the amux-cloud spin-catcher's exact failure.
+    #[test]
+    fn a_low_volume_still_respects_its_own_grace_window() {
+        let now = 1_000_000;
+        assert!(
+            !super::should_scan(now, Some(now - 60), Some(LOW - 1), LOW, WEEK, GRACE),
+            "a scan a minute ago must not be repeated just because space is low"
+        );
+        assert!(
+            super::should_scan(now, Some(now - GRACE - 1), Some(LOW - 1), LOW, WEEK, GRACE),
+            "past the grace window it may look again"
+        );
+    }
+
+    /// The weekly cadence is untouched — this is additive, and a regression
+    /// here would trade one blind spot for another.
+    #[test]
+    fn the_weekly_cadence_still_governs_a_healthy_volume() {
+        let now = 10 * 86_400;
+        assert!(
+            super::should_scan(now, Some(now - WEEK - 1), Some(PLENTY), LOW, WEEK, GRACE),
+            "aged past a week must scan regardless of free space"
+        );
+        assert!(
+            !super::should_scan(now, Some(now - WEEK + 1), Some(PLENTY), LOW, WEEK, GRACE),
+            "inside the week with space to spare must not"
+        );
+    }
+
+    /// statfs FAILED. An unreadable volume must fall back to the interval, not
+    /// read as full — otherwise a machine that cannot measure itself starts a
+    /// walk every grace window forever, and `unwrap_or_default()` on a disk
+    /// reading is how a fallback becomes a fault.
+    #[test]
+    fn an_unreadable_volume_falls_back_to_the_interval_rather_than_reading_as_full() {
+        let now = 1_000_000;
+        assert!(
+            !super::should_scan(now, Some(now - GRACE - 1), None, LOW, WEEK, GRACE),
+            "no reading must NOT be treated as low"
+        );
+        assert!(
+            super::should_scan(now, Some(now - WEEK - 1), None, LOW, WEEK, GRACE),
+            "no reading still honours the weekly cadence"
+        );
+    }
+
+    /// Never scanned at all: the interval rule already answered yes and must
+    /// keep doing so independently of the disk reading, including when statfs
+    /// fails on a first boot.
+    #[test]
+    fn a_volume_never_scanned_is_scanned_whatever_the_disk_says() {
+        assert!(super::should_scan(1_000_000, None, Some(PLENTY), LOW, WEEK, GRACE));
+        assert!(super::should_scan(1_000_000, None, None, LOW, WEEK, GRACE));
+    }
     use super::*;
     use std::sync::Arc;
 

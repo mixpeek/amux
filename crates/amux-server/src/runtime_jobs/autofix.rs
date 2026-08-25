@@ -3714,6 +3714,59 @@ fn invariant_signature_parts(sig: &str) -> Option<(String, String)> {
     }
 }
 
+/// AEAB-59. A suppressed re-finding whose TITLE has changed is NOT a duplicate —
+/// it is news about the same condition, and dropping it is how an alarm becomes
+/// a stopped clock.
+///
+/// Measured 2026-08-25: AMUX-30 still read "disk: 4.2 GB free, below the 50 GB
+/// floor" while the volume was at 0.94 GB. The detector had found the condition
+/// every two minutes for five days and every one of those findings was
+/// discarded, because the idem index says one card per condition forever. That
+/// is right for avoiding duplicate cards and wrong for a card whose CONTENT is a
+/// measurement: the condition had not changed, the number had, by 4.5x, and the
+/// number is the whole point. A stopped clock reading "fine" is worse than no
+/// clock, because the board is read first and trusted.
+///
+/// Two gates, and they are what keep this from becoming the OTHER failure —
+/// rule 5, a card that accumulates until nothing about it is done or not-done:
+///   * the TITLE must have changed. These detectors put the measurement in the
+///     title, so an unchanged title means the number has not moved enough to
+///     render differently. A static condition writes nothing, forever.
+///   * and not more often than `AMUX_AUTOFIX_REFRESH_MIN_SECS` (default 6h),
+///     so a value oscillating around a rounding boundary cannot turn the card
+///     into a journal.
+///
+/// The desc block is REPLACED, never appended, for the same reason: the card
+/// stays one page however long the condition lasts.
+fn refresh_min_secs() -> i64 {
+    std::env::var("AMUX_AUTOFIX_REFRESH_MIN_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(6 * 3600)
+}
+
+const REFRESH_MARK: &str = "\n\n<!-- autofix:current -->\n";
+
+/// Strip any previous refresh block, so the replacement cannot stack.
+pub(crate) fn desc_without_refresh(desc: &str) -> &str {
+    match desc.find(REFRESH_MARK) {
+        Some(i) => &desc[..i],
+        None => desc,
+    }
+}
+
+/// Should the existing card be refreshed? Split out so both gates are testable
+/// without a store or a clock — the whole defect was a decision nobody could see.
+pub(crate) fn should_refresh(
+    old_title: &str,
+    new_title: &str,
+    updated_at: i64,
+    now: i64,
+    min_secs: i64,
+) -> bool {
+    old_title != new_title && now - updated_at >= min_secs
+}
+
 async fn file_finding(state: &AppState, f: &Finding) -> anyhow::Result<Option<String>> {
     // PER-TENANT CLOUD: do not drop the server's own health/ops findings onto a
     // customer's board (AMUX-3014). Off by env in the cloud image; on locally
@@ -3726,6 +3779,45 @@ async fn file_finding(state: &AppState, f: &Finding) -> anyhow::Result<Option<St
     {
         let conn = state.store.read()?;
         if already_filed(&conn, &f.signature) {
+            // AEAB-59: do not just drop it — if the MEASUREMENT moved, say so on
+            // the card that already exists. Read-only here; the write is below.
+            let fresh_title = truncate(&f.title, 160);
+            let existing: Option<(String, String, String, i64)> = conn
+                .query_row(
+                    "SELECT id, title, COALESCE(desc,''), COALESCE(updated_at, created_at) \
+                       FROM issues WHERE source_ref = ?1 AND archived = 0 LIMIT 1",
+                    rusqlite::params![format!("autofix:{}", f.signature)],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .ok();
+            let now_s = crate::api::reclaim::now_secs();
+            let Some((card_id, old_title, old_desc, updated_at)) = existing else {
+                return Ok(None);
+            };
+            if !should_refresh(&old_title, &fresh_title, updated_at, now_s, refresh_min_secs()) {
+                return Ok(None);
+            }
+            drop(conn);
+            let body = format!(
+                "{}{}The measurement moved. Re-read {} — previously titled:\n  {}\n\n{}",
+                desc_without_refresh(&old_desc),
+                REFRESH_MARK,
+                chrono::Utc::now().format("%Y-%m-%d %H:%M UTC"),
+                old_title,
+                render_desc(f)
+            );
+            let (cid, ttl) = (card_id.clone(), fresh_title.clone());
+            let _ = state.store.write(move |c| {
+                c.execute(
+                    "UPDATE issues SET title = ?2, desc = ?3, updated_at = ?4 WHERE id = ?1",
+                    rusqlite::params![cid, ttl, body, now_s],
+                )?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            });
+            tracing::info!(
+                card = %card_id, detector = %f.signature,
+                "autofix refreshed a standing card — the measurement moved (AEAB-59)"
+            );
             return Ok(None);
         }
     }
@@ -4201,6 +4293,62 @@ fn parse_ts(s: &str) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+
+    // ── AEAB-59: a standing card must re-measure, and must not become a journal ──
+    //
+    // Every "refreshes" below has a neighbour that must NOT, because the two
+    // failures are opposite and both real: a card frozen at a five-day-old
+    // number, and a card rewritten every tick until nothing on it is
+    // done-or-not-done (ethos rule 5).
+
+    /// THE BUG. AMUX-30 read "4.2 GB free" for five days while the volume fell
+    /// to 0.94 GB. Same condition, same signature, different number — and the
+    /// number is the whole point of the card.
+    #[test]
+    fn a_moved_measurement_refreshes_the_standing_card() {
+        let day = 86_400;
+        assert!(super::should_refresh(
+            "disk: 4.2 GB free, below the 50 GB floor",
+            "disk: 0.9 GB free, below the 50 GB floor",
+            0, 5 * day, 6 * 3600,
+        ));
+    }
+
+    /// THE CONTROL, and the one that stops this becoming rule 5's journal: an
+    /// unchanged title writes nothing, however long the condition stands. A
+    /// refresh that fired on a static condition would rewrite the card every
+    /// tick forever.
+    #[test]
+    fn an_unchanged_measurement_writes_nothing_however_old() {
+        let t = "disk: 4.2 GB free, below the 50 GB floor";
+        assert!(!super::should_refresh(t, t, 0, 365 * 86_400, 6 * 3600));
+    }
+
+    /// The rate gate. A value oscillating across a rounding boundary would
+    /// otherwise rewrite the card on every tick — the same journal, arrived at
+    /// from the other direction.
+    #[test]
+    fn a_moved_measurement_still_waits_out_the_rate_gate() {
+        let now = 1_000_000;
+        assert!(!super::should_refresh("a", "b", now - 60, now, 6 * 3600));
+        assert!(super::should_refresh("a", "b", now - 6 * 3600, now, 6 * 3600));
+    }
+
+    /// The refresh block is REPLACED, never appended, or the card grows without
+    /// bound for as long as the condition lasts — which for a disk alarm is
+    /// exactly the case where somebody eventually has to read it.
+    #[test]
+    fn the_refresh_block_replaces_and_never_stacks() {
+        let base = "original body";
+        let once = format!("{base}{}first", super::REFRESH_MARK);
+        assert_eq!(super::desc_without_refresh(&once), base);
+        let twice = format!("{once}{}second", super::REFRESH_MARK);
+        assert_eq!(
+            super::desc_without_refresh(&twice), base,
+            "a second refresh must still strip back to the original body"
+        );
+        assert_eq!(super::desc_without_refresh(base), base, "no block is a no-op");
+    }
 
     // ── connector-auth: token rot files one card per ACCOUNT ────────────────
 
