@@ -1144,6 +1144,53 @@ mod tests {
 
     // ---- RR-0034 test list ----------------------------------------------
 
+    /// A stored `display_name` cannot walk out of the sessions directory.
+    ///
+    /// `create_worker` only checks that `display_name` is non-empty, so the
+    /// store can hold `../escaped`. This route is the first thing that turns a
+    /// stored name into a filesystem path, and the paths are built by
+    /// concatenation (`sessions_dir().join(format!("{name}.env"))`), so without
+    /// the name check the existence gate stats outside `sessions/` — and a
+    /// `/compact` send goes further and `create_dir_all`s under
+    /// `transcripts_dir().join(name)`.
+    ///
+    /// The planted file is what makes this test bite: with it, the traversed
+    /// path EXISTS, so an existence-first ordering sails past the gate and the
+    /// send proceeds under a name that is a path.
+    ///
+    /// What is pinned here is the ORDER — the refusal names the name, before
+    /// anything builds a path from it. The `create_dir_all` itself does not
+    /// happen in this fixture (`claude_home()` holds no project matching the
+    /// planted `CC_DIR`, so the backup returns before writing), which is why
+    /// this asserts on the refusal rather than on an absent directory: an
+    /// assertion that cannot fail would pin nothing.
+    #[tokio::test]
+    async fn a_stored_display_name_cannot_escape_the_sessions_dir() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("escaped.env"), "CC_DIR=/tmp\n").unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (app, _dir) = app();
+        let id = create(&app, "../escaped").await;
+
+        let (st, _, v) = send(
+            &app,
+            "POST",
+            &format!("/api/workers/{id}/send"),
+            Some(json!({ "text": "/compact" })),
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::BAD_REQUEST,
+            "a name with a path separator must be refused before it is used as one: {v}"
+        );
+        // The DISTINGUISHING assertion: refused on the name. Without the check
+        // this is the late `auto-wake failed: invalid session name` shape,
+        // which arrives only after the name has already been used as a path.
+        assert_eq!(v["error"], json!("invalid session name"), "{v}");
+    }
+
     /// A worker ID addressed at the modern send route reaches that worker.
     ///
     /// THE DEFECT THIS FAILS ON: before `/{id}/send` was a route, this path

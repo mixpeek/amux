@@ -11385,6 +11385,20 @@ pub(crate) async fn send_verb(
     headers: &HeaderMap,
     body: &Value,
 ) -> Response {
+    // NAME FIRST, THEN EXISTENCE — the order `start_block_reason` uses, and
+    // here it is load-bearing rather than tidy. This route resolves its target
+    // from the STORE, and a stored `display_name` is only checked for
+    // emptiness when the worker is created, so a value carrying `/` can reach
+    // this function in a way the dispatcher's single URL path segment could
+    // not. Checking existence first would `stat` outside `sessions/`, and a
+    // `/compact` send goes on to `create_dir_all` under
+    // `transcripts_dir().join(name)` before anything validates the name.
+    if !valid_session_name(name) {
+        return jresp(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "invalid session name", "name": name}),
+        );
+    }
     if !env_path(name).exists() {
         return jresp(
             StatusCode::NOT_FOUND,
