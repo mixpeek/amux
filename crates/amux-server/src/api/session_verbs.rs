@@ -9430,7 +9430,7 @@ async fn dispatch(
     // silent 404).
     //
     // But the pointer only helps when the modern API actually implements the
-    // verb, and for `peek`/`send` it did not: `/api/workers` mounts exactly
+    // verb, and for `peek`/`send` it did not: `/api/workers` mounted exactly
     // `/`, `/{id}`, `/{id}/start`, `/{id}/stop`, `/{id}/peek`, so a send fell
     // through to THIS dispatcher and answered 501 naming itself — a pointer at
     // the path that just refused. The dashboard reaches every session verb by
@@ -9444,6 +9444,15 @@ async fn dispatch(
     // (AMUX-1768), cross-group scoping, msg_id idempotency, board capture and
     // the delivery verdict all live in `send_post`. So they fall through, and
     // everything else keeps the pointer until it has a modern home.
+    //
+    // `send` now HAS a canonical route (`POST /api/workers/{id}/send`), and the
+    // sentence above still holds: that route resolves its target and calls
+    // `send_post`, so promoting the spelling did not add an implementation. The
+    // exemption is what keeps the OTHER spelling working — the SPA sends from
+    // ~16 call sites, all of them `/api/sessions/<name>/send` — and removing
+    // `send` from this list would hand every one of them the pointer instead.
+    // The list shrinks when a verb's legacy spelling has no callers left, not
+    // when it gains a modern route.
     const NATIVE_ONLY_HERE: [&str; 2] = ["peek", "send"];
     if !NATIVE_ONLY_HERE.contains(&action.as_str()) {
         let is_rust_worker = state
@@ -11354,6 +11363,35 @@ fn send_response_id(name: &str, msg_id: &str) -> String {
     } else {
         format!("msg-{name}-{msg_id}")
     }
+}
+
+/// `send` reached from the MODERN route (`POST /api/workers/{id}/send`) rather
+/// than through `session_verb_handler`.
+///
+/// An ALIAS, in the same sense as the DELETE-on-the-resource spelling above: it
+/// calls `send_post`, the same function the catch-all reaches, so the two
+/// spellings cannot drift. The origin stamp (AMUX-1768), cross-group scoping,
+/// msg_id idempotency, board capture and the delivery verdict stay in exactly
+/// one place.
+///
+/// The only thing repeated here is the existence gate the dispatcher applies to
+/// every verb before it dispatches. The modern route does not pass through that
+/// dispatcher, and a send to a name with no env file must not reach `send_text`
+/// — `send_post` addresses the session by NAME (env file, meta.json, tmux), so
+/// without one it would have nothing to deliver to and no place to record it.
+pub(crate) async fn send_verb(
+    state: &AppState,
+    name: &str,
+    headers: &HeaderMap,
+    body: &Value,
+) -> Response {
+    if !env_path(name).exists() {
+        return jresp(
+            StatusCode::NOT_FOUND,
+            json!({"error": format!("session '{name}' not found")}),
+        );
+    }
+    send_post(state, name, headers, body).await
 }
 
 async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Value) -> Response {
