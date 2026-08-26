@@ -303,199 +303,341 @@ fn every_directly_routed_api_path_is_in_the_table() {
             missing.push(path.to_string());
         }
     }
-    // AND FOLLOW `.nest()` INTO THE SUB-ROUTER. The scan above only sees
-    // `.route()` calls written in api/mod.rs itself, so an entire family
-    // mounted as `.nest("/api/crm", crm::routes())` was invisible: its routes
-    // live in crm.rs. That is the same blind spot as the multi-line one above,
-    // one level up — and it cost exactly what the docstring predicts. The CRM
-    // port (AMUX-2929) shipped five routes that answered 200 while
-    // `/api/debug/routes` and `route.callers_have_routes` both called them
-    // unrouted, and this test stayed green through all of it.
+    // AND FOLLOW THE COMPOSITION — `.nest()` INTO THE SUB-ROUTER, `.merge()`
+    // INTO THE MERGED ONE, AND `.merge()` WRITTEN *INSIDE* A NEST.
+    //
+    // The scan above only sees `.route()` calls written in api/mod.rs itself,
+    // so an entire family mounted as `.nest("/api/crm", crm::routes())` was
+    // invisible: its routes live in crm.rs. That is the same blind spot as the
+    // multi-line one above, one level up — and it cost exactly what the
+    // docstring predicts. The CRM port (AMUX-2929) shipped five routes that
+    // answered 200 while `/api/debug/routes` and `route.callers_have_routes`
+    // both called them unrouted, and this test stayed green through all of it.
     //
     // Found by the CLI caller scan (AMUX-2917) reporting `POST /api/crm/contacts`
     // as having no route — a NEW instrument catching the gap an older one was
     // structurally unable to see.
+    //
+    // A merged router carries ABSOLUTE paths (merge adds no prefix), which is
+    // exactly why modules use it — the public gmail callback must not sit under
+    // a nest wildcard. Following only `.nest()` hid a whole merged family: the
+    // gmail mailbox port (AMUX-2883) shipped four routes with none of them
+    // tabled, found only because the graph port a day earlier used `.nest` and
+    // DID trip it, and the asymmetry begged the question.
+    //
+    // THE THIRD SHAPE, and the reason this is now ONE walk instead of two
+    // (2026-08-26, the general fix @esteininger asked for on #155). A merge can
+    // be written INSIDE a nest argument:
+    //
+    //     .nest("/api/workers", workers::routes().merge(workers_deadletters::routes()))
+    //
+    // Both previous scanners saw it and neither could report it. The nest
+    // scanner took only the FIRST `module::fn` before the `(` and never looked
+    // at the rest of the expression, so `workers_deadletters` was not followed
+    // at all. The merge scanner DID find it — it scanned the whole file for
+    // `.merge(` — but merged paths are absolute *only when the merge is at the
+    // top level*, and this one is relative to the enclosing nest, so its own
+    // `if !sub.starts_with("/api/") { continue }` threw the route away as
+    // out-of-scope. Two scanners, one route, invisible to both.
+    //
+    // Measured before the fix, on `a78ed225`: deleting the
+    // `/api/workers/{id}/dead-letters` row from ROUTE_TABLE left this test AND
+    // `every_absolute_route_literal_is_in_route_table` green, while deleting
+    // the `/api/workers/{id}/peek` row next to it turned this test red. The
+    // control is what makes that a measurement rather than a story: the two
+    // rows are adjacent, describe sibling routes, and differ only in that one
+    // arrives through `.merge()`.
     let api_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api");
-    let mut rest = src;
-    while let Some(i) = rest.find(".nest(") {
-        rest = &rest[i + ".nest(".len()..];
-        let after = rest.trim_start();
-        let Some(stripped) = after.strip_prefix('"') else { continue };
-        let Some(end) = stripped.find('"') else { continue };
-        let prefix = &stripped[..end];
-        if !prefix.starts_with("/api/") {
-            continue;
+
+    /// The index of the `)` closing the `(` at `open`, respecting nesting and
+    /// string literals. Needed because a nest ARGUMENT is an expression that
+    /// itself contains parens — `workers::routes().merge(x::routes())` — so
+    /// "the next `)`" ends in the middle of it.
+    fn matching_paren(s: &str, open: usize) -> Option<usize> {
+        let b = s.as_bytes();
+        let mut depth = 0i32;
+        let mut in_str = false;
+        let mut i = open;
+        while i < b.len() {
+            match b[i] {
+                b'\\' if in_str => i += 1,
+                b'"' => in_str = !in_str,
+                b'(' if !in_str => depth += 1,
+                b')' if !in_str => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
         }
-        // `.nest("/api/crm", crm::routes())` and
-        // `.nest("/api/push", crate::push::routes())` — take the LAST module
-        // segment before `::fn()`, so a `crate::` prefix does not become a
-        // module named "crate" (it did, and reported an unreadable crate.rs).
-        let tail = &stripped[end..];
-        let Some(comma) = tail.find(',') else { continue };
-        let Some(open) = tail[comma..].find('(') else { continue };
-        let callee: String = tail[comma + 1..comma + open].trim().to_string();
+        None
+    }
+
+    /// Every `module::fn` CALLED in an expression, in source order.
+    ///
+    /// Taking only the first is what hid `workers_deadletters`. Rust's own
+    /// casing is the only filter: modules and fns are snake_case while types are
+    /// CamelCase, so `Router::new()` is excluded by the shape of the name rather
+    /// than by a hand-kept list — a list is the thing that goes stale silently
+    /// here.
+    ///
+    /// DELIBERATELY NOT FILTERED ON THE FN NAME. An earlier version also required
+    /// the fn to be named `*routes*`, which passes today (every router fn in this
+    /// crate is `routes`, `routes_with`, `tags_routes`, `serve_routes` or
+    /// `callback_routes`) and would silently stop following the first one called
+    /// anything else — the same off-not-red failure the canaries below exist to
+    /// catch. Measured with the filter removed: no false failures. The residual
+    /// risk is the opposite sign, a non-router `snake::snake()` call written
+    /// inside a nest/merge argument being followed and reported as unreadable,
+    /// and that is the direction to prefer: it is loud, it names the callee, and
+    /// it is fixed in one line, whereas the miss is invisible.
+    fn callees_of(expr: &str) -> Vec<String> {
+        let b = expr.as_bytes();
+        let mut out: Vec<String> = Vec::new();
+        for (i, c) in expr.char_indices() {
+            if c != '(' {
+                continue;
+            }
+            let mut s = i;
+            while s > 0 {
+                let ch = b[s - 1];
+                if ch.is_ascii_alphanumeric() || ch == b'_' || ch == b':' {
+                    s -= 1;
+                } else {
+                    break;
+                }
+            }
+            let cand = expr[s..i].trim();
+            let segs: Vec<&str> = cand.split("::").collect();
+            if segs.len() < 2 {
+                continue;
+            }
+            let module = segs[segs.len() - 2];
+            let func = segs[segs.len() - 1];
+            // A router-producing call is `snake_module::snake_fn`. This also
+            // drops `axum::routing::get` (module `routing`, but it is a handler
+            // wrapper, not a router) — harmless, because a module we do follow
+            // and cannot read is reported, and one we skip that mounts nothing
+            // costs nothing.
+            if module.is_empty()
+                || module == "crate"
+                || module.starts_with(|c: char| c.is_ascii_uppercase())
+                || func.starts_with(|c: char| c.is_ascii_uppercase())
+            {
+                continue;
+            }
+            if !out.iter().any(|o| o == cand) {
+                out.push(cand.to_string());
+            }
+        }
+        out
+    }
+
+    /// `crate::runtime_jobs::autofix::routes` -> the source that defines it.
+    ///
+    /// Resolves the FULL module path, not just the last segment: the first cut
+    /// of the merge scanner looked only under src/api/ and reported four
+    /// perfectly readable runtime_jobs modules as unreadable.
+    fn module_source(api_dir: &std::path::Path, callee: &str) -> Option<String> {
         let segs: Vec<&str> = callee.split("::").map(str::trim).collect();
-        if segs.len() < 2 {
-            continue;
-        }
-        let func = segs[segs.len() - 1];
         let module = segs[segs.len() - 2];
-        if module.is_empty() || module == "crate" {
-            continue;
-        }
+        let src_dir = api_dir.parent().expect("src/api has a parent");
+        let joined: String = segs[..segs.len() - 1]
+            .iter()
+            .copied()
+            .filter(|s| *s != "crate")
+            .collect::<Vec<_>>()
+            .join("/");
         // `push` is a DIRECTORY module (src/push/mod.rs), so try both layouts
         // before declaring it unreadable.
-        let msrc = std::fs::read_to_string(api_dir.join(format!("{module}.rs")))
+        std::fs::read_to_string(api_dir.join(format!("{module}.rs")))
             .or_else(|_| std::fs::read_to_string(api_dir.join(module).join("mod.rs")))
-            .or_else(|_| {
-                std::fs::read_to_string(
-                    api_dir.parent().unwrap().join(module).join("mod.rs"),
-                )
-            });
-        let Ok(msrc) = msrc else {
-            // A module we cannot read is NOT a pass — a silently skipped nest
-            // is the failure this block exists to fix.
-            missing.push(format!("<unreadable {module}.rs for nest {prefix}>"));
-            continue;
-        };
-        // ONLY THE NAMED FUNCTION'S BODY. Scanning the whole file was the first
-        // version and it was wrong in two ways at once: a module may define
-        // SEVERAL routers (groups.rs has routes() and tags_routes()), and any
-        // `.route("/api/...")` belonging to a non-nested one got the nest
-        // prefix glued on — producing "/api/cal-events/api/calendar.ics" and
-        // "/api/logs/api/board", paths that exist nowhere. A check that invents
-        // paths is worse than the blindness it replaced.
-        let Some(fstart) = msrc.find(&format!("fn {func}(")) else { continue };
-        let Some(brace) = msrc[fstart..].find('{') else { continue };
+            .or_else(|_| std::fs::read_to_string(src_dir.join(format!("{joined}.rs"))))
+            .or_else(|_| std::fs::read_to_string(src_dir.join(&joined).join("mod.rs")))
+            .ok()
+    }
+
+    /// The body of `fn <func>(`, braces balanced.
+    fn fn_body<'a>(msrc: &'a str, func: &str) -> Option<&'a str> {
+        let fstart = msrc.find(&format!("fn {func}("))?;
+        let start = fstart + msrc[fstart..].find('{')?;
         let mut depth = 0i32;
-        let mut fend = fstart + brace;
-        for (k, c) in msrc[fstart + brace..].char_indices() {
+        for (k, c) in msrc[start..].char_indices() {
             match c {
                 '{' => depth += 1,
                 '}' => {
                     depth -= 1;
                     if depth == 0 {
-                        fend = fstart + brace + k;
-                        break;
+                        return Some(&msrc[start..start + k]);
                     }
                 }
                 _ => {}
             }
         }
-        let body = &msrc[fstart + brace..fend];
-        let mut mrest = body;
-        while let Some(j) = mrest.find(".route(") {
-            mrest = &mrest[j + ".route(".len()..];
-            let a = mrest.trim_start();
+        None
+    }
+
+    /// Every `.route("<literal>", <handler-ish text>)` in `body`.
+    fn route_literals(body: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut rest = body;
+        while let Some(j) = rest.find(".route(") {
+            rest = &rest[j + ".route(".len()..];
+            let a = rest.trim_start();
             let Some(st) = a.strip_prefix('"') else { continue };
             let Some(e) = st.find('"') else { continue };
-            let sub = &st[..e];
-            // A nested router's paths are RELATIVE. An absolute /api/ literal
-            // here means the scan wandered outside the nested router, so
-            // gluing the prefix on would fabricate a path.
-            if sub.starts_with("/api/") {
-                continue;
-            }
-            // HONOUR THE TABLE'S OWN DOCUMENTED EXCLUSION. request_log.rs says
-            // plainly what is deliberately NOT a row: "module-internal
-            // catch-alls whose only job is answering a JSON 404 … they are 'no
-            // such route' answerers, not capabilities", and it names
-            // /api/fs/{*rest}, /api/browser/{*rest} and four more.
-            //
-            // My first version reported all six as gaps, which is the same
-            // mistake I made filing AMUX-2917 against /api/stripe: read a
-            // missing row, call it an omission, never read the policy sitting
-            // above the list. A test that contradicts the documented design of
-            // the thing it checks trains people to allowlist their way past it.
-            //
-            // Detected from the HANDLER, not the path shape, because the two
-            // diverge: /api/groups/{*rest} is a real capability and IS tabled,
-            // while /api/fs/{*rest} answers 404. Whatever the policy is, the
-            // handler is where it is true.
             let handler_end = st[e..].find(')').map(|k| e + k).unwrap_or(st.len());
-            let handler = &st[e..handler_end];
-            // Matched on the NAMING CONVENTION, not one spelling: browser.rs
-            // calls its answerer `catalog_404`, fs.rs calls it `not_found`,
-            // dictation.rs inlines `route_not_found()`. A check keyed to a
-            // single name passes on the module that happens to use it and
-            // silently reports the others as gaps — which is exactly what the
-            // first version did.
-            if handler.contains("not_found") || handler.contains("_404") {
+            out.push((st[..e].to_string(), st[e..handler_end].to_string()));
+        }
+        out
+    }
+
+    // HONOUR THE TABLE'S OWN DOCUMENTED EXCLUSION. request_log.rs says plainly
+    // what is deliberately NOT a row: "module-internal catch-alls whose only job
+    // is answering a JSON 404 … they are 'no such route' answerers, not
+    // capabilities", and it names /api/fs/{*rest}, /api/browser/{*rest} and four
+    // more.
+    //
+    // My first version reported all six as gaps, which is the same mistake I
+    // made filing AMUX-2917 against /api/stripe: read a missing row, call it an
+    // omission, never read the policy sitting above the list. A test that
+    // contradicts the documented design of the thing it checks trains people to
+    // allowlist their way past it.
+    //
+    // Detected from the HANDLER, not the path shape, because the two diverge:
+    // /api/groups/{*rest} is a real capability and IS tabled, while
+    // /api/fs/{*rest} answers 404. Whatever the policy is, the handler is where
+    // it is true. Matched on the NAMING CONVENTION, not one spelling: browser.rs
+    // calls its answerer `catalog_404`, fs.rs calls it `not_found`, dictation.rs
+    // inlines `route_not_found()`.
+    fn is_404_answerer(handler: &str) -> bool {
+        handler.contains("not_found") || handler.contains("_404")
+    }
+
+    // ---- the walk ---------------------------------------------------------
+    //
+    // Nest spans are recorded FIRST so the top-level merge pass can tell a
+    // `.merge()` that adds no prefix from one that inherits a nest's. That
+    // distinction is the entire fix; without it the same call site is either
+    // skipped (relative paths dropped) or fabricated (prefix glued onto an
+    // absolute path).
+    // EVERY path the walk RESOLVES, tabled or not. `missing` alone cannot say
+    // whether the walk still reaches a given shape, so a scanner that quietly
+    // stopped following one would stay green for as long as the table happened
+    // to be complete — the check would be off, not red. This is the positive
+    // control asserted at the bottom.
+    let mut mounted: Vec<String> = Vec::new();
+    let mut nest_spans: Vec<(usize, usize)> = Vec::new();
+    let mut pos = 0usize;
+    while let Some(i) = src[pos..].find(".nest(") {
+        let open = pos + i + ".nest(".len() - 1;
+        pos = open + 1;
+        let Some(close) = matching_paren(src, open) else { continue };
+        nest_spans.push((open, close));
+        let arg = &src[open + 1..close];
+        let a = arg.trim_start();
+        let Some(stripped) = a.strip_prefix('"') else { continue };
+        let Some(end) = stripped.find('"') else { continue };
+        let prefix = &stripped[..end];
+        if !prefix.starts_with("/api/") {
+            continue;
+        }
+        for callee in callees_of(&stripped[end..]) {
+            let func = callee.rsplit("::").next().unwrap_or_default();
+            let Some(msrc) = module_source(&api_dir, &callee) else {
+                // A module we cannot read is NOT a pass — a silently skipped
+                // nest is the failure this block exists to fix.
+                missing.push(format!("<unreadable module for nest {prefix} -> {callee}>"));
                 continue;
-            }
-            let full =
-                if sub == "/" { prefix.to_string() } else { format!("{}{}", prefix, sub) };
-            if !tabled.contains(full.as_str()) {
-                missing.push(full);
+            };
+            // ONLY THE NAMED FUNCTION'S BODY. Scanning the whole file was the
+            // first version and it was wrong in two ways at once: a module may
+            // define SEVERAL routers (groups.rs has routes() and tags_routes()),
+            // and any `.route("/api/...")` belonging to a non-nested one got the
+            // nest prefix glued on — producing "/api/cal-events/api/calendar.ics"
+            // and "/api/logs/api/board", paths that exist nowhere. A check that
+            // invents paths is worse than the blindness it replaced.
+            let Some(body) = fn_body(&msrc, func) else {
+                // Previously a silent `continue`, which is the same silence the
+                // whole test exists to remove: a renamed router fn would have
+                // turned the check off rather than red.
+                missing.push(format!("<no fn {func}() found for nest {prefix} -> {callee}>"));
+                continue;
+            };
+            for (sub, handler) in route_literals(body) {
+                // A nested router's paths are RELATIVE. An absolute /api/
+                // literal here means the scan wandered outside the nested
+                // router, so gluing the prefix on would fabricate a path.
+                if sub.starts_with("/api/") || is_404_answerer(&handler) {
+                    continue;
+                }
+                let full =
+                    if sub == "/" { prefix.to_string() } else { format!("{}{}", prefix, sub) };
+                if !tabled.contains(full.as_str()) {
+                    missing.push(full.clone());
+                }
+                mounted.push(full);
             }
         }
     }
 
-    // AND FOLLOW `.merge()` THE SAME WAY. A merged router carries ABSOLUTE
-    // paths (merge adds no prefix), which is exactly why modules use it — the
-    // public gmail callback must not sit under a nest wildcard. But this
-    // scanner only followed `.nest()`, so a whole merged family was invisible:
-    // the gmail mailbox port (AMUX-2883) shipped four routes and this test
-    // stayed green with none of them tabled — found only because the graph
-    // port a day earlier used `.nest` and DID trip it, and the asymmetry
-    // begged the question. gmail_auth's rows exist because someone added them
-    // by hand, which is the discipline this test exists to replace.
-    let mut rest = src;
-    while let Some(i) = rest.find(".merge(") {
-        rest = &rest[i + ".merge(".len()..];
-        let Some(close) = rest.find(')') else { continue };
-        let callee: String = rest[..close].trim().to_string();
-        let segs: Vec<&str> = callee.split("::").map(str::trim).collect();
-        if segs.len() < 2 {
+    // TOP-LEVEL `.merge()` ONLY — anything inside a nest span was resolved
+    // above, with the prefix it actually inherits.
+    let mut pos = 0usize;
+    while let Some(i) = src[pos..].find(".merge(") {
+        let open = pos + i + ".merge(".len() - 1;
+        pos = open + 1;
+        if nest_spans.iter().any(|(s, e)| open > *s && open < *e) {
             continue;
         }
-        let module = segs[segs.len() - 2];
-        if module.is_empty() || module == "crate" {
-            continue;
-        }
-        // Resolve the FULL module path — `crate::runtime_jobs::autofix::routes()`
-        // lives at src/runtime_jobs/autofix.rs, and the first cut of this
-        // block looked only under src/api/, reporting four readable modules
-        // as unreadable.
-        let mod_segs: Vec<&str> =
-            segs[..segs.len() - 1].iter().copied().filter(|s| *s != "crate").collect();
-        let src_dir = api_dir.parent().unwrap();
-        let joined = mod_segs.join("/");
-        let msrc = std::fs::read_to_string(api_dir.join(format!("{module}.rs")))
-            .or_else(|_| std::fs::read_to_string(api_dir.join(module).join("mod.rs")))
-            .or_else(|_| std::fs::read_to_string(src_dir.join(format!("{joined}.rs"))))
-            .or_else(|_| std::fs::read_to_string(src_dir.join(&joined).join("mod.rs")));
-        let Ok(msrc) = msrc else {
-            missing.push(format!("<unreadable {module}.rs for merge {callee}>"));
-            continue;
-        };
-        // The WHOLE FILE, not the named fn's body — deliberately different
-        // from the nest scanner above. Merged paths carry no prefix, so an
-        // absolute `/api/` literal anywhere in a merged module is a real
-        // route, and fn-body scoping is what let this family hide:
-        // `routes()` delegating to `routes_with(ctx)` has no `.route()` calls
-        // of its own, which is exactly the gmail_auth/gmail shape.
-        let mut mrest = msrc.as_str();
-        while let Some(j) = mrest.find(".route(") {
-            mrest = &mrest[j + ".route(".len()..];
-            let a = mrest.trim_start();
-            let Some(st) = a.strip_prefix('"') else { continue };
-            let Some(e) = st.find('"') else { continue };
-            let sub = &st[..e];
-            // Merged paths are absolute-as-written; anything not under /api/
-            // is not this table's business.
-            if !sub.starts_with("/api/") {
+        let Some(close) = matching_paren(src, open) else { continue };
+        for callee in callees_of(&src[open + 1..close]) {
+            let Some(msrc) = module_source(&api_dir, &callee) else {
+                missing.push(format!("<unreadable module for merge {callee}>"));
                 continue;
-            }
-            let handler_end = st[e..].find(')').map(|k| e + k).unwrap_or(st.len());
-            let handler = &st[e..handler_end];
-            if handler.contains("not_found") || handler.contains("_404") {
-                continue;
-            }
-            if !tabled.contains(sub) {
-                missing.push(sub.to_string());
+            };
+            // The WHOLE FILE, not the named fn's body — deliberately different
+            // from the nest walk above. Merged paths carry no prefix, so an
+            // absolute `/api/` literal anywhere in a merged module is a real
+            // route, and fn-body scoping is what let this family hide:
+            // `routes()` delegating to `routes_with(ctx)` has no `.route()`
+            // calls of its own, which is exactly the gmail_auth/gmail shape.
+            for (sub, handler) in route_literals(&msrc) {
+                // Merged paths are absolute-as-written; anything not under
+                // /api/ is not this table's business.
+                if !sub.starts_with("/api/") || is_404_answerer(&handler) {
+                    continue;
+                }
+                if !tabled.contains(sub.as_str()) {
+                    missing.push(sub.clone());
+                }
+                mounted.push(sub);
             }
         }
+    }
+    // THE POSITIVE CONTROL — one canary per composition shape this walk claims
+    // to follow. Without these the test can only fail when the TABLE is wrong,
+    // never when the WALK is; a scanner rewritten back to "first callee only"
+    // drops a whole family and every assertion below still passes.
+    //
+    // If one of these routes is legitimately deleted, do NOT just delete the
+    // line: move the canary to another route of the SAME SHAPE, or the shape
+    // goes unwatched again. The shape is named next to each one.
+    for (shape, canary) in [
+        ("`.nest()` into a sub-router", "/api/workers/{id}/peek"),
+        ("`.merge()` INSIDE a `.nest()`", "/api/workers/{id}/dead-letters"),
+        ("top-level `.merge()` of a module outside src/api", "/api/debug/storage"),
+    ] {
+        assert!(
+            mounted.iter().any(|m| m == canary),
+            "the walk no longer resolves {shape} — it did not find {canary}, so every \
+             route reached that way is now unchecked and this test would stay green \
+             while they went untabled. Fix the walk, or move the canary to another \
+             route of the same shape if this one was deliberately removed."
+        );
     }
 
     missing.sort();
