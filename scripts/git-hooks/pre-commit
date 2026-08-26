@@ -202,6 +202,31 @@ if [ -n "$STAGED_RS" ]; then
 fi
 
 if echo "$STAGED" | grep -qE '^(crates/.*\.rs|Cargo\.(toml|lock))$'; then
+  # ONE SHARED TARGET DIR — and until now this hook was the single biggest
+  # violator of the rule CLAUDE.md states for everyone else.
+  #
+  # That rule exists because the opposite instruction filled the disk: a debug
+  # target tree is 10-15GB, ~37 of them accumulated under /private/tmp, and on
+  # 2026-08-10 the volume hit 741MB free with a 50-session fleet running and
+  # writes failing with ENOSPC. Every session is told to export
+  # CARGO_TARGET_DIR=~/.amux/rust-build-target so the fleet shares one warm
+  # cache instead of paying 15GB and a full rebuild each.
+  #
+  # This hook inherited whatever the committing shell happened to have, which
+  # for a git GUI, an editor, a cron job, or any session that did not export it
+  # is NOTHING — so it built into a repo-local ./target. Measured 2026-08-26 in
+  # a fresh worktree with no CARGO_TARGET_DIR exported: 631MB of ./target in the
+  # 2 minutes before the commit was killed, on its way to a second full tree,
+  # for a check that completes in seconds against the shared one. Nothing said
+  # so; the hook just looked slow, which is the shape people wait on rather than
+  # investigate.
+  #
+  # SETDEFAULT, NOT OVERRIDE (same discipline as server.env): a shell that has
+  # already chosen a target dir keeps it, and the flag CI passes is untouched.
+  # The builder's own spelling is copied rather than re-derived
+  # (scripts/rust-auto-build.sh:301) so the two cannot drift into two dirs.
+  : "${CARGO_TARGET_DIR:=$HOME/.amux/rust-build-target}"
+  export CARGO_TARGET_DIR
   echo "Checking Rust (cargo check --workspace --all-targets)..."
   # --all-targets IS THE POINT, not a flourish (AMUX-2807).
   #
