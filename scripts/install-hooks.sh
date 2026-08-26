@@ -245,12 +245,30 @@ check_tracked_guard_mode || true
 
 ROOT="$SRC"
 
-install -m 0755 "$ROOT/scripts/git-hooks/pre-commit" "$ROOT/.git/hooks/pre-commit"
-install -m 0755 "$ROOT/scripts/git-hooks/amux-staged-guard" "$ROOT/.git/hooks/amux-staged-guard"
-install -m 0755 "$ROOT/scripts/git-hooks/prepare-commit-msg" "$ROOT/.git/hooks/prepare-commit-msg"
-install -m 0755 "$ROOT/scripts/git-hooks/pre-push" "$ROOT/.git/hooks/pre-push"
-install -m 0755 "$ROOT/scripts/git-hooks/append-only-push-guard" "$ROOT/.git/hooks/append-only-push-guard"
-install -m 0755 "$ROOT/scripts/git-hooks/post-commit" "$ROOT/.git/hooks/post-commit"
+# WHERE THE HOOKS ACTUALLY LIVE — `git rev-parse --git-path hooks`, never
+# "$ROOT/.git/hooks" (2026-08-26). In a linked WORKTREE `.git` is a FILE, not a
+# directory, so the hardcoded path is not a directory at all and every install
+# below died with `install: cannot stat ... Not a directory` after the script had
+# already printed its first `ok` line — a half-run that leaves the checkout with
+# NO guards while looking like it started fine.
+#
+# This script already knew: line ~85 skips a linked worktree by name, and the
+# WARN at ~182 tells OTHER hooks to resolve guards this exact way. Only its own
+# install path still spelled the path by hand.
+#
+# The resolved dir is the git COMMON dir, shared by the main checkout and every
+# worktree — which is correct and is why the `--all` sweep skips worktrees: one
+# install covers them all.
+HOOKS="$(git -C "$ROOT" rev-parse --git-path hooks 2>/dev/null)"
+case "$HOOKS" in /*) : ;; ?*) HOOKS="$ROOT/$HOOKS" ;; *) HOOKS="$ROOT/.git/hooks" ;; esac
+mkdir -p "$HOOKS"
+
+install -m 0755 "$ROOT/scripts/git-hooks/pre-commit" "$HOOKS/pre-commit"
+install -m 0755 "$ROOT/scripts/git-hooks/amux-staged-guard" "$HOOKS/amux-staged-guard"
+install -m 0755 "$ROOT/scripts/git-hooks/prepare-commit-msg" "$HOOKS/prepare-commit-msg"
+install -m 0755 "$ROOT/scripts/git-hooks/pre-push" "$HOOKS/pre-push"
+install -m 0755 "$ROOT/scripts/git-hooks/append-only-push-guard" "$HOOKS/append-only-push-guard"
+install -m 0755 "$ROOT/scripts/git-hooks/post-commit" "$HOOKS/post-commit"
 
 # Verify rather than announce (ethos #7): compare what landed against its source,
 # so a stale installed copy cannot hide behind a success message. That drift was
@@ -260,10 +278,10 @@ install -m 0755 "$ROOT/scripts/git-hooks/post-commit" "$ROOT/.git/hooks/post-com
 # them.
 fail=0
 for h in pre-commit amux-staged-guard prepare-commit-msg pre-push post-commit append-only-push-guard; do
-  if cmp -s "$ROOT/scripts/git-hooks/$h" "$ROOT/.git/hooks/$h"; then
-    echo "  ok   .git/hooks/$h matches scripts/git-hooks/$h"
+  if cmp -s "$ROOT/scripts/git-hooks/$h" "$HOOKS/$h"; then
+    echo "  ok   $HOOKS/$h matches scripts/git-hooks/$h"
   else
-    echo "  FAIL .git/hooks/$h differs from scripts/git-hooks/$h" >&2
+    echo "  FAIL $HOOKS/$h differs from scripts/git-hooks/$h" >&2
     fail=1
   fi
 done
@@ -271,8 +289,8 @@ done
 # The shim is the whole chain: an installed guard that pre-commit never calls is
 # a file, not a guard. Check the LINK, not just the two files — this is exactly
 # the failure that shipped when pre-commit was overwritten without it.
-if grep -q 'amux-staged-guard' "$ROOT/.git/hooks/pre-commit" \
-   && grep -q '"\$g" || exit 1' "$ROOT/.git/hooks/pre-commit"; then
+if grep -q 'amux-staged-guard' "$HOOKS/pre-commit" \
+   && grep -q '"\$g" || exit 1' "$HOOKS/pre-commit"; then
   echo "  ok   pre-commit calls amux-staged-guard"
 else
   echo "  FAIL pre-commit does NOT call amux-staged-guard — sweep protection is OFF" >&2

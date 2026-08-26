@@ -222,3 +222,11 @@ jobs:
           # nobody sets is decoration (ethos rule 1), and an export placed after
           # serve-head.sh's `exec` would look correct in a diff and never run.
           ./scripts/test-e2e-no-self-adopt.sh
+          # install-hooks.sh must work FROM A LINKED WORKTREE — CLAUDE.md tells
+          # every session to develop in one, and `.git` is a FILE there, so the
+          # hardcoded "$ROOT/.git/hooks" died mid-run and left the checkout with
+          # NO guards. Its case B is the load-bearing half: a test that only
+          # asserts "installing works" passes against the pre-fix script from a
+          # normal checkout, which is exactly how this went unnoticed. Both
+          # directions confirmed to fail before wiring in.
+          ./scripts/test-install-hooks-worktree.sh
