@@ -1104,8 +1104,34 @@ fn issue_from_row(r: &Row<'_>) -> rusqlite::Result<IssueRow> {
         // crashing on startup.
         last_verified_at: match r.get::<_, rusqlite::types::Value>(24)? {
             rusqlite::types::Value::Integer(n) => Some(n),
-            rusqlite::types::Value::Text(s) => s.trim().parse::<i64>().ok(),
-            _ => None,
+            rusqlite::types::Value::Text(s) => match s.trim().parse::<i64>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    // SAY THAT A VALUE WAS THERE AND COULD NOT BE READ. None
+                    // here renders as "never verified", which is a claim about
+                    // the card rather than about the read, and it is
+                    // indistinguishable from the honest NULL below. Any output
+                    // that can read empty has to publish whether the
+                    // measurement ran (.claude/rules/ethos.md rule 4).
+                    tracing::warn!(
+                        raw = %s,
+                        "last_verified_at holds text that is not an integer — reporting the \
+                         card as never verified, which may be wrong; this is legacy data, \
+                         not a live schema bug"
+                    );
+                    None
+                }
+            },
+            // Null is genuine absence: the card really has never been verified,
+            // and warning on it would fire for most of the board.
+            rusqlite::types::Value::Null => None,
+            other => {
+                tracing::warn!(
+                    kind = ?std::mem::discriminant(&other),
+                    "last_verified_at holds neither an integer, text nor null"
+                );
+                None
+            }
         },
         version: r.get(25)?,
         epic: r.get(26)?,
@@ -1796,6 +1822,79 @@ pub fn depends_on_cycle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `last_verified_at` must read back from BOTH storage shapes.
+    ///
+    /// The naive fix for the legacy-TEXT crash is `Option<i64>`, and it is
+    /// wrong in a way that passes a legacy-only test: rusqlite's `FromSql` is
+    /// strict per stored type, so it handles the TEXT rows and breaks every
+    /// INTEGER one, which is the majority of installs. `Option<String>` fails
+    /// the mirror image. So a cell that only covers the legacy shape is GREEN
+    /// against the fix that breaks everyone else, which is why both directions
+    /// are here and why the integer cell is not decoration.
+    #[test]
+    fn last_verified_at_reads_back_from_both_integer_and_legacy_text_storage() {
+        let conn = Connection::open_in_memory().expect("memdb");
+        conn.execute_batch(
+            "CREATE TABLE issues (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', desc TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'todo', session TEXT, creator TEXT NOT NULL DEFAULT '',
+                due TEXT, created INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0,
+                owner_type TEXT NOT NULL DEFAULT 'agent', due_time TEXT, pinned INTEGER DEFAULT 0,
+                gcal_event_id TEXT, pos REAL DEFAULT 0, notified INTEGER DEFAULT 0, gate TEXT,
+                shepherd TEXT, type TEXT NOT NULL DEFAULT 'code', archived INTEGER DEFAULT 0,
+                depends_on TEXT, reviewer TEXT, log TEXT, rev INTEGER DEFAULT 0,
+                source_ref TEXT, last_verified_at INTEGER, version INTEGER DEFAULT 0,
+                epic TEXT, closed_at INTEGER, deleted INTEGER);
+             CREATE TABLE issue_tags (issue_id TEXT, tag TEXT, added_at REAL,
+                PRIMARY KEY (issue_id, tag));",
+        )
+        .expect("schema");
+
+        // SQLite is dynamically typed: binding an i64 stores INTEGER, binding a
+        // &str stores TEXT, in the same column. That is how the legacy rows
+        // exist at all, and it is what lets one table hold both here.
+        for (id, bind) in [
+            ("INT-1", &1787840686i64 as &dyn rusqlite::ToSql),
+            ("TXT-1", &"1787840686" as &dyn rusqlite::ToSql),
+            ("TXT-2", &" 1787840686 " as &dyn rusqlite::ToSql), // whitespace, trimmed
+        ] {
+            conn.execute(
+                "INSERT INTO issues (id, last_verified_at) VALUES (?1, ?2)",
+                params![id, bind],
+            )
+            .expect("insert");
+        }
+        // Genuine absence, and the unreadable case that must not be mistaken for it.
+        conn.execute("INSERT INTO issues (id) VALUES ('NUL-1')", []).expect("insert");
+        conn.execute(
+            "INSERT INTO issues (id, last_verified_at) VALUES ('BAD-1', 'yesterday')",
+            [],
+        )
+        .expect("insert");
+
+        // FIXTURE GUARD: prove the two storage shapes really are different in
+        // the table. Without this, a binding that quietly coerced everything to
+        // one type would make the whole test pass for the wrong reason.
+        let kinds: Vec<String> = conn
+            .prepare("SELECT typeof(last_verified_at) FROM issues ORDER BY id")
+            .and_then(|mut st| {
+                st.query_map([], |r| r.get::<_, String>(0))
+                    .map(|it| it.flatten().collect())
+            })
+            .expect("typeof");
+        assert!(
+            kinds.contains(&"integer".to_string()) && kinds.contains(&"text".to_string()),
+            "the fixture must actually hold both storage shapes, got {kinds:?}"
+        );
+
+        let at = |id: &str| get_issue(&conn, id).expect("read").expect("row").last_verified_at;
+        assert_eq!(at("INT-1"), Some(1787840686), "the normal INTEGER case");
+        assert_eq!(at("TXT-1"), Some(1787840686), "legacy TEXT must not crash or drop");
+        assert_eq!(at("TXT-2"), Some(1787840686), "legacy TEXT is trimmed");
+        assert_eq!(at("NUL-1"), None, "NULL is genuine absence");
+        assert_eq!(at("BAD-1"), None, "unreadable text degrades to None (and warns)");
+    }
 
     #[test]
     fn asset_link_detector_can_fail_and_accepts_real_pointers() {

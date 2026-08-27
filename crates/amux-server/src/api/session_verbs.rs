@@ -9480,7 +9480,16 @@ async fn dispatch(
                 session = %name,
                 method = %method.as_str(),
                 action = %action,
-                body_sample = %String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(100)]),
+                // REDACTED, because this is the one body most likely to hold a
+                // credential. A malformed POST to /send carries message text,
+                // and every other path in this file runs that text through
+                // redact_secrets before it reaches a log, a history row or an
+                // event preview. An unredacted sample here would be the one
+                // hole in that convention, and it would be written by the
+                // failure path nobody reads until something has gone wrong.
+                body_sample = %redact_secrets(
+                    &String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(100)])
+                ),
                 parse_error = %e,
                 "malformed_request_body: JSON parsing failed"
             );
