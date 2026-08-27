@@ -63,8 +63,18 @@ wt="$TMP/wt"
 git -C "$repo" worktree add -q -b feature "$wt"
 # The precondition the whole defect rests on. If this ever stops being true the
 # test is measuring nothing, so assert it rather than assume it.
-if [ -d "$wt/.git" ]; then
-  bad "fixture worktree has a .git DIRECTORY — precondition gone, this test is vacuous"
+#
+# TEST FOR THE PROPERTY, NOT FOR ITS NEGATION (Copilot, #158). This was written
+# as `[ -d "$wt/.git" ] && fail`, which is a DIFFERENT claim from the `ok` line
+# it guards: a `.git` that is missing entirely — a fixture whose `worktree add`
+# half-failed, or a path typo — is also "not a directory", so the check printed
+# "whose .git is a file" about a path with nothing at it, and every case below
+# would then fail for a reason that has nothing to do with the defect. Require
+# the regular file the linked-worktree shape actually produces, and name what
+# was found instead, so a broken fixture reads as a broken fixture.
+if [ ! -f "$wt/.git" ]; then
+  bad "fixture worktree's .git is not a regular FILE — precondition gone, this test is vacuous"
+  note "  found instead: $(ls -ld "$wt/.git" 2>&1)"
   exit 1
 fi
 ok "fixture: linked worktree whose .git is a file"
