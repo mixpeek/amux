@@ -342,7 +342,9 @@ fn every_directly_routed_api_path_is_in_the_table() {
     //
     // Measured before the fix, on `a78ed225`: deleting the
     // `/api/workers/{id}/dead-letters` row from ROUTE_TABLE left this test AND
-    // `every_absolute_route_literal_is_in_route_table` green, while deleting
+    // `absolute_route_literals_in_api_files_are_tabled_even_if_never_mounted`
+    // (request_log.rs, renamed from `every_absolute_route_literal_is_in_route_table`
+    // for claiming coverage it does not have) green, while deleting
     // the `/api/workers/{id}/peek` row next to it turned this test red. The
     // control is what makes that a measurement rather than a story: the two
     // rows are adjacent, describe sibling routes, and differ only in that one

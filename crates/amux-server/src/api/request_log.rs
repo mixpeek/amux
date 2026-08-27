@@ -2110,13 +2110,41 @@ mod tests {
     /// route.callers_have_routes filed a FALSE failure against a live route,
     /// which trains readers to skim past the 8 real ones next to it.
     ///
-    /// This is the source→table direction: every absolute `/api/...` literal
-    /// passed to `.route(` anywhere under src/api must appear in ROUTE_TABLE.
-    /// Nested routers mounting relative paths ("/{id}" under a nest) are out
-    /// of scope by the /api prefix, and that boundary is deliberate — the
-    /// absolute literals are where this class actually bit.
+    /// WHAT THIS COVERS THAT THE WALK DOES NOT, which is the only reason to
+    /// keep it now that `every_directly_routed_api_path_is_in_the_table`
+    /// (tests/route_table.rs) follows `.nest()`/`.merge()` and is strictly the
+    /// better instrument for anything mounted. That walk starts at
+    /// `api/mod.rs` and follows composition, so it can only reach a module the
+    /// composition names. This one READS THE FILES — every `.rs` in src/api,
+    /// mounted or not — so it still speaks for a module the walk cannot arrive
+    /// at, and for a mount shape nobody has taught the walk to follow yet.
+    /// Keeping both is deliberate: two instruments on different axes
+    /// disagreeing is how the gmail asymmetry (AMUX-2883) was found at all.
+    ///
+    /// WHAT IT DOES NOT COVER — the name used to claim "every absolute route
+    /// literal" and this list is why that was too much:
+    ///
+    /// - **Only a literal spelled at the call site.** The regex wants
+    ///   `.route("` followed by a `"/api/..."` string. A path built from a
+    ///   const, a `format!`, or a variable is invisible, and so is any mount
+    ///   that is not spelled `.route(`.
+    /// - **Only absolute `/api/` paths.** A nested router mounting `"/{id}"`
+    ///   is out of scope by the prefix. Deliberate — the absolute literals are
+    ///   where this class bit — but it means the walk is the ONLY check on a
+    ///   relative literal.
+    /// - **Only source→table.** A ROUTE_TABLE row with no mount behind it is
+    ///   not this test's business; `route_table_matches_the_real_router_both_directions`
+    ///   holds that direction.
+    /// - **Only the shipped half of each file** (`#[cfg(test)]` onward is cut,
+    ///   because test modules mount fixture paths like `/api/echo`).
+    /// - **Only the top level of src/api.** The scan is a flat `read_dir`, so
+    ///   if anyone ever adds a SUBDIRECTORY there its routes are skipped in
+    ///   silence — `found_any` below cannot see that, since the 81 files
+    ///   beside it keep the probe looking alive. There are no subdirectories
+    ///   today, which is exactly why this is written down rather than fixed:
+    ///   the day one appears, this is the sentence that says so.
     #[test]
-    fn every_absolute_route_literal_is_in_route_table() {
+    fn absolute_route_literals_in_api_files_are_tabled_even_if_never_mounted() {
         let api_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api");
         let re = regex::Regex::new(r#"\.route\(\s*"(/api/[^"]+)""#).unwrap();
         let table: std::collections::BTreeSet<&str> =
