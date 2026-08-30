@@ -31,6 +31,15 @@ set -euo pipefail
 SOAK_MINUTES="${SOAK_MINUTES:-5}"
 SOAK_SAMPLE_S="${SOAK_SAMPLE_S:-15}"
 SOAK_RSS_GROWTH="${SOAK_RSS_GROWTH:-0.20}"
+# Absolute floor on RSS growth (AMUX-2872): a ratio alone failed a 36MB
+# process for growing 8MB of allocator/warmup settling — 22% of a tiny
+# baseline, with the trailing samples FLAT (a plateau, not a leak slope).
+# The same 20% on a 200MB process is 40MB and matters. Both must exceed
+# for a FAIL: relative catches proportional leaks on big processes, the
+# floor stops fast-vs-faster arithmetic on small ones — the third
+# ratio-without-floor instrument this week (latency 2ms, /api/prefs; and
+# the mdai cap), same cure each time.
+SOAK_RSS_ABS_KB="${SOAK_RSS_ABS_KB:-24576}"
 SOAK_FD_GROWTH="${SOAK_FD_GROWTH:-50}"
 SOAK_CONCURRENCY="${SOAK_CONCURRENCY:-4}"
 PORT="${SOAK_PORT:-18933}"
@@ -143,10 +152,15 @@ if [ "$SAMPLES" -lt 2 ]; then
   echo "FAIL: only $SAMPLES sample(s) — a leak check needs at least 2; raise SOAK_MINUTES or lower SOAK_SAMPLE_S"
   fail=1
 fi
-python3 -c "import sys; sys.exit(0 if $RSS_GROWTH <= $SOAK_RSS_GROWTH else 1)" || {
-  echo "FAIL: RSS grew $RSS_GROWTH from the post-warmup baseline (threshold $SOAK_RSS_GROWTH) — ${BASE_RSS}KB -> ${MAX_RSS}KB"
+RSS_ABS_KB=$((MAX_RSS - BASE_RSS))
+python3 -c "import sys; sys.exit(0 if $RSS_GROWTH <= $SOAK_RSS_GROWTH or $RSS_ABS_KB <= $SOAK_RSS_ABS_KB else 1)" || {
+  echo "FAIL: RSS grew $RSS_GROWTH (threshold $SOAK_RSS_GROWTH) AND ${RSS_ABS_KB}KB absolute (floor ${SOAK_RSS_ABS_KB}KB) — ${BASE_RSS}KB -> ${MAX_RSS}KB"
   fail=1
 }
+python3 -c "import sys; sys.exit(1 if $RSS_GROWTH > $SOAK_RSS_GROWTH and $RSS_ABS_KB <= $SOAK_RSS_ABS_KB else 0)" || true
+if python3 -c "import sys; sys.exit(0 if $RSS_GROWTH > $SOAK_RSS_GROWTH and $RSS_ABS_KB <= $SOAK_RSS_ABS_KB else 1)"; then
+  echo "NOTE: relative RSS growth $RSS_GROWTH exceeds $SOAK_RSS_GROWTH but only ${RSS_ABS_KB}KB absolute (floor ${SOAK_RSS_ABS_KB}KB) — small-baseline settling, not failed (AMUX-2872)"
+fi
 if [ "$MAX_FD" -ge 0 ] && [ "$FD_GROWTH" -gt "$SOAK_FD_GROWTH" ]; then
   echo "FAIL: open file descriptors grew by $FD_GROWTH (threshold $SOAK_FD_GROWTH) — $BASE_FD -> $MAX_FD"
   fail=1

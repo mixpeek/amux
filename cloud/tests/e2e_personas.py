@@ -79,16 +79,29 @@ def load_plans(only=None):
     return plans
 
 
+# Known provisioned customer/demo orgs, keyed by plan stem. A fallback for when the
+# admin/orgs API is slow or projects fields differently — the orgs table's `name`
+# column equals the plan's org.name, but the API response shape has drifted before,
+# so pin the confirmed ids (from the gateway orgs DB, 2026-08-18).
+KNOWN_ORGS = {
+    "capital-express": "org_37aa24eb89c1d97a",
+    "elliot-wexus": "org_18f676d91310d02f",
+    "rothco": "org_8e89a846b6f5be7d",
+}
+
+
 def resolve_org_id(plan, orgs):
-    """Match a plan to its provisioned org_id via the admin org list (by email, else name)."""
+    """Match a plan to its provisioned org_id: admin-list by email/name, else the
+    known-org pin. Returns None only when the plan is genuinely not provisioned."""
     for o in orgs:
         oe = (o.get("email") or o.get("owner_email") or "").lower()
         if oe and oe == plan["email"]:
             return o.get("id")
+    pn = plan["name"].strip().lower()
     for o in orgs:
-        if (o.get("name") or "").strip().lower() == plan["name"].strip().lower():
+        if (o.get("name") or "").strip().lower() == pn:
             return o.get("id")
-    return None
+    return KNOWN_ORGS.get(plan["stem"])
 
 
 def _evidence_for(cookie, org, worker):
@@ -173,9 +186,14 @@ def check_env(cookie, plan, org_id, send_probe):
         res["board"] = {"issues": len(issues), "raw_capture_titles": len(shells)}
 
     missing = [p["name"] for p in res["personas"] if not p["present"]]
+    # A persona shows evidence of work if it has a transcript, tool calls, OR files.
+    # tool_calls alone is proof the worker ran (peek may omit history_lines yet still
+    # show the ⏺ tool markers), so a worker with tool_calls is NOT "no evidence".
     no_evidence = [p["name"] for p in res["personas"]
                    if p["present"] and p["evidence"]
-                   and p["evidence"]["history_lines"] == 0 and p["evidence"]["files"] == 0]
+                   and p["evidence"]["history_lines"] == 0
+                   and p["evidence"]["files"] == 0
+                   and p["evidence"]["tool_calls"] == 0]
     probe_fail = [p["name"] for p in res["personas"]
                   if p.get("probe") and not p["probe"].get("replied")]
     if missing:
@@ -234,8 +252,15 @@ def main():
         sys.exit(1)
 
     # Sign in. If auth breaks after the gateway is up, that is also a real failure.
+    # gm.sign_in() prints progress to stdout; in --json mode that pollutes the JSON,
+    # so redirect it to stderr for a clean machine-readable document.
+    import contextlib
     try:
-        cookie = gm.sign_in()
+        if as_json:
+            with contextlib.redirect_stdout(sys.stderr):
+                cookie = gm.sign_in()
+        else:
+            cookie = gm.sign_in()
     except (SystemExit, Exception) as e:
         out = {"cloud_reachable": True, "signin_ok": False, "error": str(e)[:200], "results": []}
         (print(json.dumps(out, indent=2)) if as_json else
@@ -250,7 +275,14 @@ def main():
     results = []
     for plan in plans:
         org_id = resolve_org_id(plan, orgs)
-        r = check_env(cookie, plan, org_id, send_probe)
+        try:
+            r = check_env(cookie, plan, org_id, send_probe)
+        except Exception as e:
+            # A single env erroring (a sluggish cloud, a timeout) must not sink the
+            # whole run — record it as a FAIL and keep going so the JSON always emits.
+            r = {"env": plan["name"], "stem": plan["stem"], "org_id": org_id,
+                 "is_demo": plan["is_demo"], "personas": [], "board": None,
+                 "status": "FAIL", "reachable": False, "reasons": ["check errored: %s" % str(e)[:120]]}
         results.append(r)
         icon = {"PASS": "✓", "WARN": "!", "FAIL": "✗", "NOT_PROVISIONED": "·"}.get(r["status"], "?")
         log(f"{icon} {r['status']:16s} {r['env']}  ({plan['stem']}, {'demo' if plan['is_demo'] else 'REAL customer'})")

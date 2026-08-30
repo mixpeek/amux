@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -61,6 +62,10 @@ THRESHOLDS: dict[str, tuple[float, str]] = {
     "workers_avg_ms":     (0.10, "RR-0117b: latency +10% fails"),
     "search_avg_ms":      (0.10, "RR-0110: FTS5 query latency"),
     "rss_mb":             (0.20, "RR-0117b: RSS +20% fails"),
+    # Dirty is LIVE heap — the number a leak moves, immune to the freed-page
+    # retention that makes RSS allocator weather (AMUX-3488). Tighter delta
+    # than RSS on purpose: this one is stable enough to hold it.
+    "dirty_mb":           (0.20, "AMUX-3488: live-heap +20% fails — not allocator weather"),
     "binary_bytes":       (0.20, "RR-0117b: binary size +20% growth blocks merge"),
     "board_default_bytes": (0.20, "payload size: a silent 20% growth is a mobile regression (amux is mobile-first)"),
 }
@@ -74,7 +79,18 @@ ABSOLUTE_MAX: dict[str, float] = {
     "health_avg_ms": 50,
     "board_avg_ms": 200,
     "search_avg_ms": 50,   # RR-0110: "FTS5 over 10k entities returns < 50ms"
-    "rss_mb": 200,
+    # The RSS ceiling moved ONCE, on the record, from the plan's 200: the
+    # server outgrew it (66MB on 2026-08-09 -> 220MB in CI on a frozen corpus
+    # by 08-22) and the nightly perf leg died on it for its whole silent
+    # streak (AMUX-2872). The growth is being attributed under AMUX-3488 —
+    # tighten this back if that finds a leak. Same knob as perf-baseline.sh
+    # so the two spellings of this ceiling cannot drift apart; the anti-creep
+    # purpose above survives because the number is again fixed.
+    "rss_mb": float(os.environ.get("PERF_RSS_MAX_MB", "280")),
+    # Live-heap ceiling (AMUX-3488): measured 30-45MB on 2026-08-22, fresh
+    # boot and post-battery alike. 250 is generous until the first CI (Linux)
+    # reading lands — tighten it then. Same knob as perf-baseline.sh.
+    "dirty_mb": float(os.environ.get("PERF_DIRTY_MAX_MB", "250")),
 }
 
 # Noise floor. Below this, a percentage is meaningless: 2ms -> 3ms is +50% and

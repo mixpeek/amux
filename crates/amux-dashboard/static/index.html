@@ -166,6 +166,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button onclick="_dismissOrgBanner()" style="background:none;border:none;color:#bbf7d0;cursor:pointer;font-size:1rem;line-height:1;opacity:0.7;padding:0 2px;" title="Dismiss">&#x2715;</button>
 </div>
 
+<!-- AMUX-3514: held external emails awaiting the human's per-message approval
+     (AMUX-3510). Global strip so a pending approval is visible on every tab;
+     the approve POST comes from this browser (no worker origin), which is
+     exactly what the gate defines as the human context. -->
+<div id="email-approvals-banner" style="display:none;background:#7c2d12;border-bottom:1px solid #f97316;color:#ffedd5;padding:8px 16px;font-size:0.84rem;z-index:200;position:relative;"></div>
 <div id="chrome-tabs-bar" class="chrome-tabs-bar"></div>
 <div id="chrome-tab-frames" class="chrome-tab-frames"></div>
 <div class="header-row">
@@ -190,7 +195,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
   <div style="display:flex;gap:8px;align-items:center;">
     <div id="org-switcher-wrap" style="display:none;"></div>
-    <button class="btn-rate-limit" id="rate-limit-pill" title="" onclick="event.stopPropagation();_scrollToFirstRateLimited()">
+    <button class="btn-rate-limit" id="rate-limit-pill" title="Continue all limited workers" onclick="event.stopPropagation();openBulkActions()">
       <span id="rate-limit-pill-text">0 limited</span>
     </button>
     <div class="active-wrap">
@@ -278,6 +283,14 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             </label>
           </div>
           <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Send /compact when context &lt; 50%</div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
+            <span style="font-size:0.85rem;">YOLO by default for new workers</span>
+            <label class="theme-toggle">
+              <input type="checkbox" id="yolo-default-checkbox" onchange="toggleYoloDefault(this.checked)">
+              <span class="theme-track"><span class="theme-thumb"></span></span>
+            </label>
+          </div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;">Every new worker starts in YOLO mode (skips permission prompts). Default OFF. You can still toggle YOLO per worker from its &#x22EF; menu.</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
             <span style="font-size:0.85rem;">Auto-answer resume dialog</span>
             <label class="theme-toggle">
@@ -514,6 +527,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-files" onclick="switchView('files')"><span class="tab-ico">🗂</span><span class="tab-lbl">Files</span></button>
   <button id="tab-mdai" onclick="switchView('mdai')"><span class="tab-ico">&#x2726;</span><span class="tab-lbl">MDAI</span></button>
   <button id="tab-proxies" onclick="switchView('proxies')"><span class="tab-ico">⇄</span><span class="tab-lbl">Proxies</span></button>
+  <button id="tab-connectors" onclick="switchView('connectors')"><span class="tab-ico">🔌</span><span class="tab-lbl">Connectors</span></button>
   <button id="tab-logs" onclick="switchView('logs')"><span class="tab-ico">≡</span><span class="tab-lbl">Logs</span></button>
   <button id="tab-grid" onclick="enterGridMode()"><span class="tab-ico">▣</span><span class="tab-lbl">Workspace</span></button>
   <button id="tab-messages" onclick="switchView('messages')"><span class="tab-ico">✉</span><span class="tab-lbl">Messages</span></button>
@@ -863,6 +877,21 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+<div id="connectors-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
+  <div style="max-width:760px;width:100%;margin:0 auto;padding:16px 16px 40px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;">
+      <div style="font-size:1.05rem;font-weight:700;">Connectors</div>
+      <button class="btn" onclick="_connectorsTabLoad()">Refresh</button>
+    </div>
+    <div style="font-size:0.78rem;color:var(--dim);line-height:1.5;margin-bottom:14px;">
+      Third-party integrations scoped across global, group, and worker. Paste each connector's key or OAuth client credentials below;
+      values are written to <code>~/.amux/server.env</code> and never shown again. Adding a new connector is one registry row.
+    </div>
+    <div id="connectors-accounts"></div>
+    <div id="connectors-list"></div>
   </div>
 </div>
 
@@ -1792,9 +1821,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="board-detail-tab" id="bd-tab-edit" onclick="boardDetailTab('edit')">Edit</button>
       <button class="board-detail-tab active" id="bd-tab-preview" onclick="boardDetailTab('preview')">Preview</button>
       <button class="board-detail-tab" id="bd-tab-history" onclick="boardDetailTab('history')">History<span id="bd-hist-n" class="bd-hist-n"></span></button>
+      <button class="board-detail-tab" id="bd-tab-lineage" onclick="boardDetailTab('lineage')">Lineage</button>
     </div>
     <textarea id="bd-desc" class="board-detail-desc-input" placeholder="Add notes, description, or context... (supports Markdown)"></textarea>
     <div id="bd-log" class="board-detail-log" style="display:none"></div>
+    <div id="bd-lineage" class="board-detail-lineage" style="display:none"></div>
     <div id="bd-preview" class="board-detail-preview md-content" style="display:none;"></div>
     <div class="board-detail-meta" id="bd-meta"></div>
   </div>
@@ -1936,6 +1967,17 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         Creates a git worktree with its own working directory and branch. The worker works on an isolated copy &mdash; changes are merged back when done.
       </div>
     </div>
+    <div class="field-group">
+      <label class="field-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="create-isolated" onchange="_toggleIsolated(this.checked)" style="width:auto;margin:0;">
+        Isolated <span class="field-optional">(no amux harness &mdash; runs alone)</span>
+      </label>
+      <div id="create-isolated-info" style="display:none;margin-top:6px;font-size:0.78rem;color:var(--dim);background:rgba(240,136,62,0.08);border-radius:6px;padding:8px 10px;line-height:1.5;">
+        No auto-pickup, no board nudges, no MCP tools, and peers cannot discover or message it.
+        You can still peek and send to it yourself. Set at creation because an isolated worker must
+        start that way &mdash; a worker isolated later has already launched with the harness attached.
+      </div>
+    </div>
     <div class="edit-actions">
       <button class="btn" onclick="closeCreate()">Cancel</button>
       <button class="btn primary" onclick="submitCreate()">Create</button>
@@ -2048,7 +2090,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <!-- Tab bar -->
   <div class="peek-tabs" onwheel="_peekTabsWheel(event)">
     <button class="peek-tab active" id="peek-tab-terminal" onclick="setPeekTab('terminal')"><span class="tab-ico">⮞</span><span class="tab-lbl">Terminal</span></button>
-    <button class="peek-tab" id="peek-tab-simple" onclick="setPeekTab('simple')" title="Plain-English summary of what this worker just did"><span class="tab-ico">◍</span><span class="tab-lbl">Simple</span></button>
+    <button class="peek-tab" id="peek-tab-simple" onclick="setPeekTab('simple')" title="Translate this worker's output — plain English by default, or your own prompt"><span class="tab-ico">◍</span><span class="tab-lbl">Translate</span></button>
     <button class="peek-tab" id="peek-tab-steering" onclick="setPeekTab('steering')"><span class="tab-ico">⇉</span><span class="tab-lbl">Steering</span><span class="peek-tab-count" id="peek-tab-steering-count"></span></button>
     <button class="peek-tab" id="peek-tab-schedules" onclick="setPeekTab('schedules')"><span class="tab-ico">⏱</span><span class="tab-lbl">Schedules</span><span class="peek-tab-count" id="peek-tab-schedules-count"></span></button>
     <button class="peek-tab" id="peek-tab-scope" onclick="setPeekTab('scope')" title="What this worker operates under, and which scope layer set it"><span class="tab-ico">&#9707;</span><span class="tab-lbl">Scope</span></button>
@@ -2317,8 +2359,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div id="peek-simple-panel" class="peek-tasks-panel" style="padding:0;gap:0;overflow-y:auto;-webkit-overflow-scrolling:touch;">
     <div class="peek-tasks-add" style="gap:8px;padding:8px 10px;align-items:center;position:relative;">
       <span style="flex:1;font-size:0.78rem;color:var(--dim);">Plain-English summaries of this worker's work since your last message.</span>
-      <button class="btn" id="peek-simple-cfg-btn" onclick="_simpleCfgToggle(event)" title="Display settings">&#x2699;</button>
-      <button class="btn" id="peek-simple-gen" onclick="_simpleRender(true)" title="Generate a new summary for the latest work">Generate</button>
+      <button class="btn" id="peek-simple-cfg-btn" onclick="_simpleCfgToggle(event)" title="Translation prompt &amp; display settings">&#x2699;</button>
+      <button class="btn" id="peek-simple-gen" onclick="_simpleRender(true)" title="Translate the latest work again">Generate</button>
       <div id="peek-simple-cfg" class="tab-customizer-menu" style="display:none;right:8px;top:calc(100% + 2px);min-width:240px;padding:12px 14px;"></div>
     </div>
     <div id="peek-simple-body" style="padding:16px;line-height:1.6;color:var(--text);"></div>
@@ -2835,6 +2877,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="file-actions">
       <button id="mdai-run-btn" class="file-view-tab" onclick="_mdaiRun()" title="Run the DAG chain">Run</button>
       <button id="mdai-raw-btn" class="file-view-tab" onclick="_mdaiOpenRaw()" title="Open the raw .mdai file">Raw</button>
+      <button id="mdai-menu-btn" class="file-view-tab" onclick="event.stopPropagation();_mdaiMenu(this)" title="Download, copy, read aloud">&#x22EF;</button>
     </div>
     <button class="btn" onclick="closeMdaiNode()" style="flex-shrink:0;">&#x2715;</button>
   </div>
@@ -2867,6 +2910,8 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/quilljs-markdown@latest/dist/quilljs-markdown.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<!-- SheetJS (xlsx): the standard library for reading Excel/ODS in the browser (AMUX-3343) -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/motion@11.11.17/dist/motion.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/gridstack@7/dist/gridstack-all.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>

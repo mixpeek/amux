@@ -315,9 +315,22 @@ pub async fn dictate(
             )?;
             let id = conn.last_insert_rowid();
             *slot_w.lock().expect("slot") = Some(id);
+            // Also record the transcript in cmd_history so a dictation shows up
+            // in the Messages list like a typed message (Ethan, 2026-08-17).
+            // ts is milliseconds (the cmd_history convention); origin='dictation'
+            // marks how it arrived.
+            conn.execute(
+                "INSERT INTO cmd_history (text, type, session, ts, origin) \
+                 VALUES (?1, 'user', ?2, ?3, 'dictation')",
+                rusqlite::params![text_w, session_w, ts],
+            )?;
+            let mid = conn.last_insert_rowid();
             Ok(WriteOutcome {
                 applied: true,
-                events: vec![ev("dictation_history", &id.to_string(), MutationKind::Created)],
+                events: vec![
+                    ev("dictation_history", &id.to_string(), MutationKind::Created),
+                    ev("cmd_history", &mid.to_string(), MutationKind::Created),
+                ],
             })
         })
         .await;

@@ -26,7 +26,7 @@
 //! being able to notice, which is the bug this file exists to end.
 
 use crate::db::{SharedStore, WriteOutcome};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -112,11 +112,29 @@ fn turn_cost_usd(table: &[(String, [f64; 4])], model: &str, t: [i64; 4]) -> f64 
 /// name on line 0 forever, and reading it here charged every token the `amux`
 /// lane spent to `amux-rust`, a session that no longer exists. Rows indexed
 /// before 2026-08-11 may still carry the dead name; the fix is forward.
-fn jsonl_owner_title(path: &Path) -> String {
-    crate::api::session_verbs::conversation_owner(
-        path,
-        &crate::api::session_verbs::conversation_claims(),
-    )
+/// `claims` IS A PARAMETER, and that is the whole point (AF-209).
+///
+/// It used to call `conversation_claims()` itself, which takes no arguments and
+/// reads `~/.amux` on the live machine. `conversation_owner` already accepted
+/// `claims`; this function was the one place that closed the seam back off, so
+/// no caller below it could isolate the map — including a test.
+///
+/// WHAT THAT COST: `subagent_turns_are_charged_to_the_parent_conversation_owner`
+/// hardcoded a real conversation id and therefore asserted WHO CURRENTLY OWNS A
+/// REAL CONVERSATION ON THIS BOX. It passed as `gtm-videos` when written and
+/// failed as `mixpeek-cicd` when a lane re-claimed that conversation, with no
+/// commit to this file in between. Everything the fixture explicitly controlled
+/// was already isolated — home tempdir, projects tempdir, its own store. The
+/// one input it could not reach was the one the assertion rested on.
+///
+/// And it was invisible to CI in the worst possible direction: a runner has no
+/// `~/.amux`, so `conversation_claims()` returns empty, the code falls through
+/// to the title record, and the test passes. Green where nobody works, red on
+/// every machine the fleet runs on. CI can never report this class, so the
+/// parameter is the fix and the synthetic id alone would not have been —
+/// that avoids one collision and leaves the hole open for the next fixture.
+fn jsonl_owner_title(path: &Path, claims: &BTreeMap<String, String>) -> String {
+    crate::api::session_verbs::conversation_owner(path, claims)
 }
 
 struct Turn {
@@ -218,7 +236,13 @@ fn claude_projects_dir() -> PathBuf {
 /// One indexing pass. Returns rows inserted. Cheap on a fully-indexed tree —
 /// a stat per file and nothing else.
 pub async fn index_once(store: &SharedStore, home: &Path) -> anyhow::Result<usize> {
-    index_once_at(store, home, &claude_projects_dir()).await
+    index_once_at(
+        store,
+        home,
+        &claude_projects_dir(),
+        &crate::api::session_verbs::conversation_claims(),
+    )
+    .await
 }
 
 /// The pass, with the projects root injected. Split out so tests drive a temp
@@ -228,6 +252,7 @@ pub async fn index_once_at(
     store: &SharedStore,
     home: &Path,
     projects: &Path,
+    claims: &BTreeMap<String, String>,
 ) -> anyhow::Result<usize> {
     if !projects.is_dir() {
         return Ok(0);
@@ -322,10 +347,10 @@ pub async fn index_once_at(
                 // cursor permanently beyond the data and index nothing forever.
                 let start = if off > size { 0 } else { off };
                 let owner = match &parent {
-                    None => jsonl_owner_title(&jf),
+                    None => jsonl_owner_title(&jf, claims),
                     Some(pp) => owner_cache
                         .entry(pp.clone())
-                        .or_insert_with(|| jsonl_owner_title(pp))
+                        .or_insert_with(|| jsonl_owner_title(pp, claims))
                         .clone(),
                 };
                 let (new_off, turns) = parse_from(&jf, start, mtime, &owner, &table);
@@ -571,7 +596,13 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let projects = tempfile::tempdir().unwrap();
         let proj = projects.path().join("-Users-ethan-Dev-amux");
-        let conv = "f427b1c9-7c16-48cd-96d2-c9b59a8a6b1a";
+        // SYNTHETIC, and it must stay synthetic (AF-209). This was a REAL
+        // conversation id, so with the claims map unreachable the assertion
+        // below asserted who currently owns that conversation on the developer's
+        // machine. It read `gtm-videos` when written and `mixpeek-cicd` once a
+        // lane re-claimed it, months later, with no commit to this file. A uuid
+        // that cannot exist collides with nothing.
+        let conv = "00000000-af20-9000-0000-000000000001";
         std::fs::create_dir_all(proj.join(conv).join("subagents")).unwrap();
 
         // Parent conversation: carries the owning session.
@@ -590,7 +621,11 @@ mod tests {
         .unwrap();
 
         let st = store();
-        let n = index_once_at(&st, home.path(), projects.path()).await.unwrap();
+        // The claims map is now an ARGUMENT, so this cell states which one it
+        // is testing under instead of inheriting whatever is on the machine.
+        // Empty = no meta claim, so the owner resolves from the title record.
+        let claims = BTreeMap::new();
+        let n = index_once_at(&st, home.path(), projects.path(), &claims).await.unwrap();
         assert_eq!(n, 2, "one parent turn + one delegated turn");
 
         let rows = ledger(&st).await;
@@ -625,8 +660,50 @@ mod tests {
         .unwrap();
 
         let st = store();
-        assert_eq!(index_once_at(&st, home.path(), projects.path()).await.unwrap(), 1);
+        // No claim for this conversation: the owner must come from the
+        // transcript, which is what this cell is about.
+        let claims = BTreeMap::new();
+        assert_eq!(index_once_at(&st, home.path(), projects.path(), &claims).await.unwrap(), 1);
         assert_eq!(ledger(&st).await, vec![(String::new(), "agent-zzz".into(), 5)]);
+    }
+
+    /// THE CLAIMS MAP MUST REACH THE INDEXER (AF-209).
+    ///
+    /// Without this cell, threading `claims` through is decoration: every other
+    /// test passes an EMPTY map, so a future edit could drop the parameter and
+    /// go back to reading the live machine with the whole module still green.
+    /// That is exactly how the seam closed the first time.
+    ///
+    /// It is also the positive control for the synthetic-uuid fix. Making the
+    /// fixture synthetic stops one collision; proving the map is an argument is
+    /// what stops the next fixture repeating it silently.
+    ///
+    /// The property: a meta CLAIM outranks the transcript's own title record
+    /// (`conversation_owner` resolves claim first, then the last title). So a
+    /// transcript that says `gtm-videos` must be charged to the claimant.
+    #[tokio::test]
+    async fn a_meta_claim_outranks_the_transcript_title_and_reaches_the_ledger() {
+        let home = tempfile::tempdir().unwrap();
+        let projects = tempfile::tempdir().unwrap();
+        let proj = projects.path().join("-proj");
+        let conv = "00000000-af20-9000-0000-000000000002";
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(
+            proj.join(format!("{conv}.jsonl")),
+            format!("{}\n{}\n", r#"{"customTitle":"gtm-videos"}"#,
+                    line("sonnet", "2026-08-11T10:00:00Z", 7, 0, 0, 1)),
+        )
+        .unwrap();
+
+        let st = store();
+        let mut claims = BTreeMap::new();
+        claims.insert(conv.to_string(), "claiming-lane".to_string());
+        assert_eq!(index_once_at(&st, home.path(), projects.path(), &claims).await.unwrap(), 1);
+        assert_eq!(
+            ledger(&st).await,
+            vec![("claiming-lane".to_string(), conv.to_string(), 7)],
+            "the claim must win over the title record, and it must arrive via the ARGUMENT"
+        );
     }
 
     /// A second pass over an unchanged tree must insert NOTHING. Without this
@@ -652,9 +729,12 @@ mod tests {
         .unwrap();
 
         let st = store();
-        assert_eq!(index_once_at(&st, home.path(), projects.path()).await.unwrap(), 2);
+        // No claim for this conversation: the owner must come from the
+        // transcript, which is what this cell is about.
+        let claims = BTreeMap::new();
+        assert_eq!(index_once_at(&st, home.path(), projects.path(), &claims).await.unwrap(), 2);
         assert_eq!(
-            index_once_at(&st, home.path(), projects.path()).await.unwrap(),
+            index_once_at(&st, home.path(), projects.path(), &claims).await.unwrap(),
             0,
             "an unchanged tree must be a no-op"
         );
@@ -672,13 +752,13 @@ mod tests {
         let named = dir.path().join("a.jsonl");
         std::fs::write(&named, "{\"customTitle\":\"amux-rust\"}\n{\"customTitle\":\"amux\"}\n")
             .unwrap();
-        assert_eq!(jsonl_owner_title(&named), "amux");
+        assert_eq!(jsonl_owner_title(&named, &BTreeMap::new()), "amux");
 
         let anon = dir.path().join("b.jsonl");
         std::fs::write(&anon, "{\"type\":\"user\"}\n").unwrap();
-        assert_eq!(jsonl_owner_title(&anon), "");
+        assert_eq!(jsonl_owner_title(&anon, &BTreeMap::new()), "");
 
         let missing = dir.path().join("nope.jsonl");
-        assert_eq!(jsonl_owner_title(&missing), "");
+        assert_eq!(jsonl_owner_title(&missing, &BTreeMap::new()), "");
     }
 }

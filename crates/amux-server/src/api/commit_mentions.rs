@@ -58,7 +58,7 @@ const MAX_COMMITS: usize = 400;
 /// the arg limit. Ids are chunked and the chunks unioned.
 const IDS_PER_QUERY: usize = 120;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct Params {
     /// Restrict to one session's cards.
     pub session: Option<String>,
@@ -192,17 +192,38 @@ async fn scan_repo(
     (hits, truncated)
 }
 
+/// The HTTP shell. The body is [`mentions_payload`] so a JOB can ask the same
+/// question the endpoint answers, without going through the router (AMUX-3579).
+/// The endpoint had zero consumers for months; giving it a callable form is
+/// what let it reach anything at all.
 pub async fn commit_mentions(
     State(state): State<AppState>,
     Query(p): Query<Params>,
 ) -> (StatusCode, Json<Value>) {
+    let (code, body) = mentions_payload_with(&state, p).await;
+    (code, Json(body))
+}
+
+/// Default params — what a job wants.
+/// Returns an EMPTY payload on error rather than an error body: a job asking
+/// this question wants "nothing to note", and the endpoint keeps its 500 so a
+/// human caller still learns the store was unreadable. Same computation, two
+/// honest presentations.
+pub async fn mentions_payload(state: &AppState) -> Value {
+    match mentions_payload_with(state, Params::default()).await {
+        (StatusCode::OK, v) => v,
+        _ => json!({ "candidates": [] }),
+    }
+}
+
+async fn mentions_payload_with(state: &AppState, p: Params) -> (StatusCode, Value) {
     let cards = {
         let conn = match state.store.read() {
             Ok(c) => c,
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": format!("store unreadable: {e}") })),
+                    json!({ "error": format!("store unreadable: {e}") }),
                 )
             }
         };
@@ -211,7 +232,7 @@ pub async fn commit_mentions(
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": format!("board unreadable: {e}") })),
+                    json!({ "error": format!("board unreadable: {e}") }),
                 )
             }
         }
@@ -220,10 +241,10 @@ pub async fn commit_mentions(
     if cards.is_empty() {
         return (
             StatusCode::OK,
-            Json(json!({
+            json!({
                 "candidates": [], "open_cards_scanned": 0, "repos": [],
                 "verdict": "no open cards to check",
-            })),
+            }),
         );
     }
 
@@ -233,7 +254,7 @@ pub async fn commit_mentions(
         let conn = match state.store.read() {
             Ok(c) => c,
             Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "store unreadable" }))),
+                json!({ "error": "store unreadable" })),
         };
         match super::sessions_legacy::build_array(&conn) {
             Ok(arr) => arr
@@ -312,14 +333,14 @@ pub async fn commit_mentions(
 
     (
         StatusCode::OK,
-        Json(json!({
-            "candidates": candidates,
-            "open_cards_scanned": cards.len(),
-            "repos": repos.iter().collect::<Vec<_>>(),
-            "truncated": truncated_any,
-            "verdict": verdict,
-            "note": "read-only: this endpoint never changes a card's status",
-        })),
+        json!({
+        "candidates": candidates,
+        "open_cards_scanned": cards.len(),
+        "repos": repos.iter().collect::<Vec<_>>(),
+        "truncated": truncated_any,
+        "verdict": verdict,
+        "note": "read-only: this endpoint never changes a card's status",
+        }),
     )
 }
 

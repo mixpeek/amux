@@ -1175,6 +1175,64 @@ pub fn title_from_prompt(text: &str) -> Option<String> {
     Some(out)
 }
 
+/// A pure status / information query about existing work: "status on MSG-29602?",
+/// "any update on the deploy?". These are answered inline and produce no
+/// deliverable, yet capture minted them as type=code/doing — which a question can
+/// never take through the `code` gate (ethos rule 3) and which held the WIP slot
+/// until a manual discard (three times in one session before this: AMUX-3330).
+/// Returning true here means "do not mint a board WORK card"; the prompt still
+/// lands in `cmd_history`, so the Messages ledger keeps every prompt.
+///
+/// Deliberately TIGHT. The two errors are asymmetric: a FALSE POSITIVE silences a
+/// real task (silent work, the worst failure), a FALSE NEGATIVE just leaves
+/// today's minor manual-discard friction. So a match needs BOTH a status-query
+/// opener AND a trailing `?`, which a request carrying a real imperative
+/// ("is it done? if not, add a retry") does not have. A work request phrased as a
+/// question ("can you fix X?", "does this build?") does not start with a status
+/// opener and is left to card as normal.
+pub fn is_status_query(text: &str) -> bool {
+    let mut t = text.trim();
+    // Drop the same leading "[03:47 PM] " / "[amux-origin: ...]" stamps
+    // title_from_prompt strips, so a stamped status query still matches.
+    while t.starts_with('[') {
+        match t.find(']') {
+            Some(i) => t = t[i + 1..].trim_start(),
+            None => break,
+        }
+    }
+    let collapsed = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    // A long prompt is not a bare query, whatever it opens with.
+    if collapsed.chars().count() > 100 {
+        return false;
+    }
+    let lower = collapsed.to_lowercase();
+    // Bare "status" (with optional trailing punctuation) is the whole prompt.
+    if lower.trim_end_matches(['.', '!', '?', ' ']) == "status" {
+        return true;
+    }
+    // Otherwise it must be an actual QUESTION: requiring the trailing `?` keeps a
+    // trailing imperative from reading as a pure query and silencing real work.
+    if !collapsed.trim_end().ends_with('?') {
+        return false;
+    }
+    const STATUS_OPENERS: &[&str] = &[
+        "status on ", "status of ", "status for ", "status update", "status report",
+        "what's the status", "whats the status", "what is the status",
+        "how's the status", "hows the status",
+        "any update on", "any updates on", "any news on", "any progress on",
+        "update on ", "where are we on", "where are we with", "where do we stand",
+        "is it done", "are we done", "did you finish",
+        // Pure explanation-seeking questions (AMUX-3408: "why is the photo
+        // analysis worker downloading qwen if i'm using gemini?" carded as
+        // code/doing and held a WIP slot). The ≤100-char cap and mandatory
+        // trailing `?` above already exclude compound ask-then-fix prompts;
+        // a why-question whose ANSWER spawns work gets its card from the
+        // follow-up prompt that asks for the work.
+        "why is ", "why are ", "why does ", "why did ", "why was ", "why were ",
+    ];
+    STATUS_OPENERS.iter().any(|o| lower.starts_with(o))
+}
+
 /// Bare demonstratives/pronouns: words whose referent lives OUTSIDE the title.
 const DEICTIC: [&str; 9] = ["this", "that", "these", "those", "it", "they", "them", "here", "there"];
 
@@ -1341,6 +1399,44 @@ mod capture_tests {
             None,
             "explicit opt-out"
         );
+    }
+
+    #[test]
+    fn status_queries_are_detected_but_real_work_is_not() {
+        // The recurring shapes that were mis-carded (AMUX-3330).
+        for s in [
+            "status on MSG-29602?",
+            "whats the status of MSG-29588?",
+            "[09:04 PM] what's the status of AMUX-3?",
+            "any update on the deploy?",
+            "where are we on the connectors work?",
+            "status",
+            "status?",
+            "is it done?",
+            // The live specimen that minted AMUX-3408 (a pure why-question,
+            // answered in-conversation, no unit of work).
+            "[08:29 AM] why is the photo analysis worker downloading qwen if i'm using gemini?",
+        ] {
+            assert!(is_status_query(s), "{s:?} should read as a status query");
+        }
+        // Real work MUST still card — a false positive here silences a task.
+        for s in [
+            "build the connectors shit",
+            "can you fix the OAuth redirect?",
+            "does this build?",
+            "is it done? if not, add a retry to the fetch",
+            "let me paste keys in the connectors tab and define scope",
+            "MSG-29602 and MSG-29588 too",
+            "make sure dictation goes into the messages list as well",
+            "status page is broken, rebuild it with the new layout and ship?",
+            // A why-question with a trailing IMPERATIVE is work, and the
+            // mandatory `?` gate keeps it carded (no trailing question mark).
+            "why is the build red — fix it",
+            // Over-100-chars is not a bare query whatever it opens with.
+            "why is the deploy pipeline failing on the third stage after the cache restore step when the lockfile has not changed at all?",
+        ] {
+            assert!(!is_status_query(s), "{s:?} is real work, must still card");
+        }
     }
 
     #[test]

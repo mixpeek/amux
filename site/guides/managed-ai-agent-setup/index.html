@@ -24,7 +24,7 @@
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Managed AI Agent Setup Service","item":"https://amux.io/guides/managed-ai-agent-setup/"}]}</script>
 
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Managed AI Agent Setup Service — Done-For-You AI Engineering","description":"What a managed AI agent setup service includes, when done-for-you AI engineering makes sense, and how to evaluate a provider.","url":"https://amux.io/guides/managed-ai-agent-setup/","datePublished":"2026-07-06","dateModified":"2026-07-06","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Managed AI Agent Setup Service — Done-For-You AI Engineering","description":"What a managed AI agent setup service includes, when done-for-you AI engineering makes sense, and how to evaluate a provider.","url":"https://amux.io/guides/managed-ai-agent-setup/","datePublished":"2026-07-06","dateModified":"2026-08-18","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Service","name":"amux Concierge","description":"Done-for-you AI engineering team setup and ongoing management. amux Concierge sets up your agent workflows, integrates your business systems, and maintains your AI stack on an ongoing basis.","provider":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"serviceType":"Managed AI Engineering","url":"https://amux.io/concierge/"}</script>
 
@@ -47,7 +47,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>Managed AI Agent Setup Service</span></div>
 
     <h1>Managed AI Agent Setup Service — Done-For-You AI Engineering</h1>
-    <p class="subtitle">What a managed AI agent setup includes, when done-for-you makes sense, and what to look for in a provider.</p>
+    <p class="subtitle">What a managed AI agent setup includes, when done-for-you makes sense, and what to look for in a provider. <span style="font-size:0.85em;color:var(--text-muted)">Updated August 2026.</span></p>
 
     <p>Most businesses that want to use AI agents face the same problem: the tools exist, the use cases are obvious, but there's no one in the building who knows how to set them up. Buying a pre-built SaaS tool is easy — but pre-built tools are pre-constrained. They do what they were built to do, and adapting them to your specific workflows requires either engineering effort or a lot of workarounds.</p>
 
@@ -148,6 +148,19 @@
     <p><a href="/concierge/">amux Concierge</a> is a done-for-you AI engineering service built around the amux platform. The model is deliberately selective: we work with a small number of business owners at a time, each with a genuine interest in learning AI — not buying software, but building capability.</p>
 
     <p>The onboarding session is where we teach amux your business: your systems, your workflows, your exact terminology and approval thresholds. After that, you direct it from your phone in plain English — "automate my accounts receivable, connect to QuickBooks, flag anything 30+ days overdue" — and the agent handles the implementation. The monthly retainer covers monitoring, maintenance, and workflow expansion as your needs evolve.</p>
+
+    <h3>What the Concierge onboarding now includes: Connectors setup</h3>
+
+    <p>As of August 2026, Concierge onboarding includes a dedicated Connectors configuration session. The Connectors tab in the amux dashboard lets you paste API credentials for any external service (Google, Granola, Stripe, Twilio, HubSpot, and any custom API) and scope them to the right agents at global, group, or per-worker level. During onboarding:</p>
+
+    <ul>
+      <li>We inventory every external service your workflows need to touch.</li>
+      <li>We create named connectors for each one, with the minimum required scope (read-only keys at global; write keys per-worker).</li>
+      <li>We click Test on each connector to verify the credential is live before any agent relies on it.</li>
+      <li>We document the rotation schedule for each key so maintenance stays on track without hunting through CLAUDE.md files.</li>
+    </ul>
+
+    <p>The result: your agents start with all their external access pre-configured, verified, and scoped. When a key rotates, you update one record in the Connectors tab rather than finding and editing N files across N agents. See the <a href="/guides/ai-agent-connectors/">AI agent connectors guide</a> for the full configuration flow.</p>
 
     <p>Concierge is not for every business. It works best when the owner is ready to delegate genuinely and has workflows with enough volume that automation delivers clear ROI. If you're evaluating fit, the conversation starts with <a href="/concierge/#schedule">an application call</a>.</p>
 

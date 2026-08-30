@@ -50,6 +50,9 @@ use super::{
 const OP_TIMEOUT: Duration = Duration::from_secs(5);
 /// Capture can move more bytes over the socket API.
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Prompt submission walks the agent's composer, so it gets the same budget
+/// the retired agent-name path used rather than the bare op timeout.
+const PROMPT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Shell-readiness poll: 32 * 250ms = 8s budget (observed ~2s on this machine).
 const READY_POLLS: u32 = 32;
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -65,6 +68,22 @@ pub struct HerdrBackend {
     /// so caching skips the workspace-list + pane-list round-trips (~180ms)
     /// on every capture. Invalidated on NotFound (workspace was closed).
     pane_cache: Mutex<HashMap<String, String>>,
+}
+
+/// Parse herdr's JSON envelope from whichever stream carries it (AF-102).
+///
+/// herdr writes its envelope to STDOUT on success and to STDERR when the server
+/// is not running — stdout is empty in that case. Both call sites parsed stdout
+/// alone, so the `server_not_running` arm below, written precisely to treat a
+/// down herdr as an empty host rather than an error, could never be reached: the
+/// parse failed first and returned "unparseable output:" with an empty string
+/// interpolated. Measured 2026-08-20 on the live tail: 77 of 95 ERROR/WARN lines
+/// (81%) were that one message, ~30 per minute, carrying no diagnostic detail —
+/// an instrument drowning the log it is read from.
+fn parse_envelope(stdout: &str, stderr: &str) -> Option<Value> {
+    serde_json::from_str(stdout.trim())
+        .ok()
+        .or_else(|| serde_json::from_str(stderr.trim()).ok())
 }
 
 impl HerdrBackend {
@@ -107,13 +126,14 @@ impl HerdrBackend {
     async fn run_json(&self, args: &[&str], timeout: Duration) -> Result<Value> {
         let out = self.run_raw(args, timeout).await?;
         let stdout = String::from_utf8_lossy(&out.stdout);
-        let v: Value = serde_json::from_str(stdout.trim()).map_err(|_| {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let v: Value = parse_envelope(&stdout, &stderr).ok_or_else(|| {
             BackendError::CommandFailed(format!(
                 "herdr {}: unparseable output (exit {:?}): {} {}",
                 args.join(" "),
                 out.status.code(),
                 stdout.trim(),
-                String::from_utf8_lossy(&out.stderr).trim(),
+                stderr.trim(),
             ))
         })?;
         if let Some((code, message)) = envelope_error(&v) {
@@ -246,6 +266,33 @@ impl HerdrBackend {
             )));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Clear the composer, then submit `text` as a prompt to the pane's agent.
+    ///
+    /// Two verbs with different success shapes, so they cannot share a runner:
+    /// `pane send-keys` prints NOTHING on success (exit 0, empty stdout —
+    /// measured against herdr 0.8.0) and only emits an envelope when it fails,
+    /// while `agent prompt` answers with a normal `{"result":..}` envelope.
+    ///
+    /// The clear is best-effort: it is a hygiene step, and failing the send
+    /// because a keystroke was refused would turn a probably-deliverable
+    /// prompt into a hard error.
+    async fn do_pane_prompt(&self, pane: &str, text: &str) -> Result<()> {
+        let clear = self
+            .run_raw(&["pane", "send-keys", pane, "ctrl+u"], OP_TIMEOUT)
+            .await;
+        if let Ok(out) = &clear {
+            if !out.status.success() {
+                tracing::debug!(
+                    pane,
+                    "herdr pane send-keys ctrl+u did not clear the composer: {}",
+                    String::from_utf8_lossy(&out.stdout).trim()
+                );
+            }
+        }
+        self.run_json(&["agent", "prompt", pane, text], PROMPT_TIMEOUT).await?;
+        Ok(())
     }
 }
 
@@ -427,10 +474,16 @@ impl SessionBackend for HerdrBackend {
     async fn reconcile(&self) -> Result<Vec<BackendSession>> {
         let out = self.run_raw(&["workspace", "list"], OP_TIMEOUT).await?;
         let stdout = String::from_utf8_lossy(&out.stdout);
-        let v: Value = serde_json::from_str(stdout.trim()).map_err(|_| {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // Both streams, and BOTH streams in the failure message — the old text
+        // interpolated only stdout, which is empty in exactly the case that fires,
+        // so the log line ended in a colon and told the reader nothing (AF-102).
+        let v: Value = parse_envelope(&stdout, &stderr).ok_or_else(|| {
             BackendError::CommandFailed(format!(
-                "herdr workspace list: unparseable output: {}",
-                stdout.trim()
+                "herdr workspace list: unparseable output (exit {:?}): stdout={:?} stderr={:?}",
+                out.status.code(),
+                stdout.trim(),
+                stderr.trim()
             ))
         })?;
         if let Some((code, message)) = envelope_error(&v) {
@@ -465,6 +518,35 @@ impl SessionBackend for HerdrBackend {
                 self.do_pane_read(&pane, lines).await
             }
             _ => result,
+        }
+    }
+
+    /// `agent prompt <pane> <text>` — herdr's own prompt-submission verb,
+    /// addressed by PANE ID (verified against herdr 0.8.0: `agent get w2:p1`
+    /// resolves, so a pane is a valid agent target).
+    ///
+    /// Not `pane send-text`: a `\n` inside that verb is delivered as Enter
+    /// (measured 2026-08-20 — `"echo AAA\necho BBB"` ran AAA and left BBB in
+    /// the composer), so a multi-line prompt would submit its first line and
+    /// strand the rest. `agent prompt` is the verb that knows how to hand a
+    /// whole prompt to a recognized agent.
+    ///
+    /// A pane whose process herdr does NOT recognize as an agent (a bare
+    /// shell — GAP-ATTACH) fails here rather than typing into it blind. That
+    /// is the honest answer: the provider is not accepting prompts.
+    ///
+    /// `ctrl+u` first, so a prompt never concatenates onto whatever was left
+    /// in the composer. Pane-not-found retries once cold like `capture` — the
+    /// pane id is cached and a restarted worker gets a new one.
+    async fn send_text(&self, proc: &ProcessRef, text: &str) -> Result<()> {
+        let pane = self.resolve_pane(&proc.backend_ref).await?;
+        match self.do_pane_prompt(&pane, text).await {
+            Err(BackendError::NotFound(_)) => {
+                self.evict_pane(&proc.backend_ref);
+                let pane = self.resolve_pane(&proc.backend_ref).await?;
+                self.do_pane_prompt(&pane, text).await
+            }
+            other => other,
         }
     }
 
@@ -546,6 +628,39 @@ fn sh_quote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// AF-102. The exact bytes `herdr workspace list` produced on this machine on
+    /// 2026-08-20 with no herdr server running: envelope on STDERR, stdout EMPTY,
+    /// exit 1. Captured from the real CLI, not composed — the old code parsed
+    /// stdout alone, so this specimen is what made the `server_not_running` arm
+    /// in `reconcile` unreachable and put 77 of 95 ERROR/WARN lines in the log.
+    const REAL_STDERR_WHEN_SERVER_DOWN: &str = r#"{"id":"cli:workspace:list","error":{"code":"server_not_running","message":"no herdr server is running at /Users/ethan/.config/herdr/herdr.sock; run `herdr` to start or attach it"}}"#;
+
+    #[test]
+    fn the_envelope_is_found_on_stderr_when_stdout_is_empty() {
+        let v = super::parse_envelope("", REAL_STDERR_WHEN_SERVER_DOWN)
+            .expect("the real down-server specimen must parse");
+        let (code, _msg) = super::envelope_error(&v).expect("it is an error envelope");
+        assert_eq!(code, "server_not_running",
+            "reconcile keys its empty-host arm on this exact code; if it does not \
+             surface, that arm stays unreachable and the WARN storm returns");
+    }
+
+    #[test]
+    fn stdout_still_wins_when_it_carries_the_envelope() {
+        let v = super::parse_envelope(r#"{"id":"x","workspaces":[]}"#, "ignored noise")
+            .expect("normal success path");
+        assert!(v.get("workspaces").is_some(), "stdout must take precedence over stderr");
+    }
+
+    /// The control. Without it, a `parse_envelope` that returned Some(Null) for
+    /// anything would pass both tests above and silently swallow real breakage.
+    #[test]
+    fn genuinely_unparseable_output_is_still_none() {
+        assert!(super::parse_envelope("", "").is_none());
+        assert!(super::parse_envelope("not json", "also not json").is_none());
+    }
+
     use super::*;
 
     #[test]

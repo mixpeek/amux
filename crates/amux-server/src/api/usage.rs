@@ -43,12 +43,165 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json, Router};
 use serde_json::{json, Value};
 
 use super::AppState;
 use crate::provider::claude::{probe_usage_raw, UsageProbe};
+
+// ---------------------------------------------------------------------------
+// BACKGROUND RESERVE (AMUX-3545) — a share of the plan window background work
+// may not consume.
+// ---------------------------------------------------------------------------
+
+/// The share of the plan window reserved for the human, as a percent.
+///
+/// Ethan's call, 2026-08-25: **30**. Background work pauses once the session
+/// window is 70% used, so roughly a third of every window is still there when he
+/// sits down.
+///
+/// The measurement behind the question: in the 5-hour window that day, 2,270
+/// turns and 82.1% background — 1,059 peer-message turns, 552 schedule, 50
+/// pickup, against 505 of his own. A person on a $20 plan typing 2-3 prompts was
+/// competing with all of that inside the window their plan meters.
+///
+/// A PREF, NOT A CONSTANT. D4 is this repo's record of what a compiled-in
+/// context policy costs: it becomes the ceiling silently. `0` disables the
+/// reserve entirely, which is the honest off switch.
+pub fn background_reserve_pct() -> i64 {
+    std::env::var("AMUX_BACKGROUND_RESERVE_PCT")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|n| (0..=95).contains(n))
+        .unwrap_or(30)
+}
+
+/// Should background work pause right now?
+///
+/// PURE, so the decision is testable without a plan window — and so the one
+/// property that matters can be pinned: **it fails OPEN.**
+///
+/// `window_pct == None` means the reading is missing or stale, and the answer is
+/// then "do not pause". Pausing on an unknown would stop every schedule and
+/// every pickup across the fleet the moment the usage probe rate-limits or the
+/// OAuth token expires — turning a credit guard into a fleet outage triggered by
+/// a third party. Under-protecting for one window is recoverable; the inverse is
+/// not, and it would be blamed on anything but the probe.
+pub fn background_should_pause(window_pct: Option<i64>, reserve_pct: i64) -> bool {
+    if reserve_pct <= 0 {
+        return false;
+    }
+    match window_pct {
+        Some(p) => p >= 100 - reserve_pct,
+        None => false,
+    }
+}
+
+/// Last observed session-window utilisation, and when it was observed.
+///
+/// Written by `get_usage` as a side effect of serving a request, so on a box
+/// with an open dashboard this stays fresh for free. `window_pct_fresh` is the
+/// only reader and it enforces the age bound, because a percentage from an hour
+/// ago is not a reading of the current window.
+static WINDOW_PCT: std::sync::Mutex<Option<(Instant, i64)>> = std::sync::Mutex::new(None);
+
+/// Record a fresh session-window reading. Idempotent, cheap, never fails.
+pub fn note_window_pct(pct: i64) {
+    if let Ok(mut g) = WINDOW_PCT.lock() {
+        *g = Some((Instant::now(), pct));
+    }
+}
+
+/// The reading, if it is younger than `max_age`. `None` is a real answer and
+/// the caller must treat it as "unknown", never as zero.
+pub fn window_pct_fresh(max_age: Duration) -> Option<i64> {
+    let g = WINDOW_PCT.lock().ok()?;
+    let (at, pct) = (*g)?;
+    (at.elapsed() < max_age).then_some(pct)
+}
+
+/// How stale a window reading may be and still bound a decision.
+///
+/// A 5-hour window moves slowly, but a percentage from an hour ago is not a
+/// reading of the CURRENT one. Deliberately longer than the probe TTL so a
+/// dashboard that is merely idle does not tip the fleet into fail-open.
+const RESERVE_MAX_AGE: Duration = Duration::from_secs(600);
+
+/// Minimum gap between reserve-driven probes, so the background consumers
+/// cannot amplify a rate limit by asking harder when the answer is missing —
+/// the failure the usage cache's own comment already records for the HTTP path.
+const RESERVE_PROBE_EVERY: Duration = Duration::from_secs(120);
+
+static LAST_RESERVE_PROBE: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+/// Should background work pause right now, probing at most once per
+/// [`RESERVE_PROBE_EVERY`] if no fresh reading is on hand (AMUX-3545).
+///
+/// THE CONSUMER REFRESHES WHAT IT CONSUMES. `get_usage` notes a reading as a
+/// side effect of serving the dashboard, which keeps this free on a box someone
+/// is looking at; a headless box has nobody polling, and a reserve that silently
+/// never engages there would be the ethos-1 failure — capability that exists and
+/// reaches nobody. So the schedulers top it up themselves, rate-limited.
+///
+/// Fails OPEN at every step: no reading, a failed probe, a probe we declined to
+/// make because one was recent — all of them mean "do not pause".
+pub async fn background_should_pause_now() -> bool {
+    let reserve = background_reserve_pct();
+    if reserve <= 0 {
+        return false;
+    }
+    if let Some(p) = window_pct_fresh(RESERVE_MAX_AGE) {
+        return background_should_pause(Some(p), reserve);
+    }
+    // No fresh reading. Probe, but only if we have not just tried.
+    {
+        let mut g = match LAST_RESERVE_PROBE.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        if let Some(at) = *g {
+            if at.elapsed() < RESERVE_PROBE_EVERY {
+                return false;
+            }
+        }
+        *g = Some(Instant::now());
+    }
+    let probe = crate::provider::claude::probe_usage_raw().await;
+    if let UsageProbe::Ok(body) = probe {
+        if let Some(pct) = session_pct_of(&shape_probe(UsageProbe::Ok(body))) {
+            note_window_pct(pct);
+            return background_should_pause(Some(pct), reserve);
+        }
+    }
+    false
+}
+
+/// The sentence a paused consumer prints, so a skipped fire is never silent.
+pub fn reserve_pause_note(kind: &str) -> String {
+    let reserve = background_reserve_pct();
+    let pct = window_pct_fresh(RESERVE_MAX_AGE).unwrap_or(-1);
+    format!(
+        "{kind} PAUSED: the plan window is {pct}% used and {reserve}% is reserved for the human \
+         (AMUX_BACKGROUND_RESERVE_PCT). Background work stops here so a prompt you type still \
+          has room; direct sends are never gated. Set the pref to 0 to disable the reserve."
+    )
+}
+
+/// Pull the `session` window's percent out of a shaped usage body.
+///
+/// The `limits` array is the shape `/api/usage` already returns; `kind` is the
+/// discriminator and `session` is the 5-hour window the plan meters.
+pub fn session_pct_of(body: &Value) -> Option<i64> {
+    body.get("limits")?
+        .as_array()?
+        .iter()
+        .find(|l| l.get("kind").and_then(Value::as_str) == Some("session"))
+        .and_then(|l| l.get("percent"))
+        .and_then(Value::as_i64)
+}
 
 /// Default cache TTL. Python used 30s; this defaults to 60 because the probe
 /// is a NETWORK call made on a settings render, and the endpoint is
@@ -113,6 +266,7 @@ pub fn routes() -> Router<AppState> {
 pub fn routes_with(probe: ProbeFn) -> Router<AppState> {
     Router::new()
         .route("/", axum::routing::get(get_usage))
+        .route("/attribution", axum::routing::get(get_attribution))
         .layer(Extension(probe))
         .layer(Extension(Arc::new(tokio::sync::Mutex::new(
             UsageCache::default(),
@@ -241,13 +395,438 @@ fn degraded(cause: &str, reason: String) -> Value {
     json!({ "available": false, "cause": cause, "reason": reason })
 }
 
+/// GET /api/usage/attribution — WHAT SPENT THE PLAN, in dollars, by why the
+/// turn happened (AMUX-3544).
+///
+/// # The complaint this answers
+///
+/// A customer on the $20 plan, 2026-08-23: "I sent 2-3 prompts today and my
+/// credits ran out ... going to investigate what's using all the credits."
+/// They could not, and neither could we. `/api/usage` reports the plan's own
+/// utilization and cannot attribute one point of it, so the only signal
+/// available was the credits being gone. Ethos rule 4: a diagnosis being
+/// impossible from the data we keep IS the bug.
+///
+/// Both halves already existed and nothing joined them. `token_ledger` has the
+/// real cost per turn (from the Claude Code transcripts, priced per model) but
+/// knows only WHICH SESSION spent it. `cmd_history` knows WHY each turn
+/// happened — a human typed it, a schedule fired, a peer lane sent a message —
+/// but nothing about cost. Attribution is the correlated lookup between them:
+/// for each ledger row, the most recent prompt to that session at or before it.
+///
+/// Measured on this machine the day it was written, last 24h:
+///
+/// ```text
+///   a peer lane messaged   $2413.83   5977 turns
+///   you typed it           $1430.26   2471 turns
+///   a schedule fired       $1028.29   2481 turns
+///   -> 71% of spend is background
+/// ```
+///
+/// # Why a separate endpoint rather than a field on /api/usage
+///
+/// This module's contract is that `/api/usage` returns Anthropic's body
+/// VERBATIM plus `available` — the SPA's `loadUsage()` sees byte-identical
+/// fields to the Python server. Adding keys there would erode the one property
+/// that makes the passthrough safe to reason about.
+///
+/// # The millisecond trap, stated because it already bit
+///
+/// `token_ledger.ts` is in SECONDS and `cmd_history.ts` is in MILLISECONDS.
+/// Comparing them without the divide silently matches every row and returns a
+/// clean, confident, wrong answer — it caught me on this exact query while
+/// writing this, and ethos rule 7 records the same trap for
+/// `interaction_log.ts`. The response therefore carries `rows_considered` and
+/// `rows_excluded_by_window`, so a caller can confirm the window EXCLUDED
+/// something rather than inferring correctness from plausible-looking output.
+async fn get_attribution(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<AttributionQuery>,
+) -> Response {
+    let hours = q.hours.unwrap_or(24).clamp(1, 24 * 30);
+    let store = state.store.clone();
+    let out = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        let conn = store.read()?;
+        let cutoff: i64 = chrono::Utc::now().timestamp() - hours * 3600;
+
+        // The control, not decoration: an unbounded match and a correct match
+        // look identical from the rows alone.
+        let total_rows: i64 =
+            conn.query_row("SELECT COUNT(*) FROM token_ledger", [], |r| r.get(0))?;
+        let in_window: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM token_ledger WHERE ts > ?1",
+            [cutoff],
+            |r| r.get(0),
+        )?;
+
+        let mut stmt = conn.prepare(
+            "WITH lg AS (SELECT ts, session, cost_usd, input, output FROM token_ledger WHERE ts > ?1) \
+             SELECT COALESCE((SELECT h.type FROM cmd_history h \
+                                WHERE h.session = lg.session AND h.ts/1000 <= lg.ts \
+                                ORDER BY h.ts DESC LIMIT 1), '') AS trig, \
+                    SUM(cost_usd), COUNT(*), SUM(input), SUM(output) \
+             FROM lg GROUP BY 1 ORDER BY 2 DESC",
+        )?;
+        let rows = stmt.query_map([cutoff], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        })?;
+
+        let mut sources = Vec::new();
+        let (mut total_usd, mut bg_usd) = (0.0f64, 0.0f64);
+        for row in rows {
+            let (trig, usd, turns, inp, outp) = row?;
+            total_usd += usd;
+            let human = trig == "user";
+            if !human {
+                bg_usd += usd;
+            }
+            sources.push(json!({
+                "source": if trig.is_empty() { "unattributed" } else { trig.as_str() },
+                "label": trigger_label(&trig),
+                "is_background": !human,
+                "cost_usd": (usd * 100.0).round() / 100.0,
+                "turns": turns,
+                "input_tokens": inp,
+                "output_tokens": outp,
+            }));
+        }
+
+        // "A schedule fired" is actionable only when it names WHICH schedule,
+        // and "a peer messaged" only when it names the lane. One schedule
+        // accounted for 134 turns in 24h here and was invisible without this.
+        let mut top = stmt_top(&conn, cutoff)?;
+        top.truncate(10);
+
+        Ok(json!({
+            "window_hours": hours,
+            "total_cost_usd": (total_usd * 100.0).round() / 100.0,
+            "background_cost_usd": (bg_usd * 100.0).round() / 100.0,
+            "background_pct": if total_usd > 0.0 {
+                (bg_usd / total_usd * 1000.0).round() / 10.0
+            } else { 0.0 },
+            "by_source": sources,
+            "top_origins": top,
+            // Proof the window filtered. Equal counts mean the cutoff matched
+            // everything and the numbers below are the whole table, not a window.
+            "rows_considered": in_window,
+            "rows_excluded_by_window": total_rows - in_window,
+        }))
+    })
+    .await;
+
+    match out {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+struct AttributionQuery {
+    hours: Option<i64>,
+}
+
+/// Plain English, because the audience is a person wondering where their
+/// credits went, not someone who knows what `cmd_history.type` is.
+fn trigger_label(t: &str) -> &'static str {
+    match t {
+        "user" => "you typed it",
+        "schedule" => "a schedule fired",
+        "session" => "a peer lane messaged",
+        // AMUX-3547. Its own cell because "did amux hand me this, or did I ask
+        // for it?" is the question this whole view exists to answer, and until
+        // board_drive::record_prompt shipped, pickup turns had no row and were
+        // credited to whatever prompt preceded them — including the human's.
+        "pickup" => "amux handed this lane a board card",
+        "system" => "an amux nudge",
+        "direct" | "steering" => "a steering message",
+        "" => "no prompt matched — the turn predates this lane's history",
+        _ => "other",
+    }
+}
+
+/// The named offenders inside the background bucket.
+fn stmt_top(conn: &rusqlite::Connection, cutoff: i64) -> anyhow::Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "WITH lg AS (SELECT ts, session, cost_usd FROM token_ledger WHERE ts > ?1) \
+         SELECT COALESCE((SELECT h.type FROM cmd_history h \
+                            WHERE h.session = lg.session AND h.ts/1000 <= lg.ts \
+                            ORDER BY h.ts DESC LIMIT 1), ''), \
+                COALESCE((SELECT h.origin FROM cmd_history h \
+                            WHERE h.session = lg.session AND h.ts/1000 <= lg.ts \
+                            ORDER BY h.ts DESC LIMIT 1), ''), \
+                lg.session, SUM(cost_usd), COUNT(*) \
+         FROM lg GROUP BY 1,2,3 ORDER BY 4 DESC LIMIT 10",
+    )?;
+    let rows = stmt.query_map([cutoff], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, f64>(3)?,
+            r.get::<_, i64>(4)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (trig, origin, session, usd, turns) = row?;
+        out.push(json!({
+            "source": if trig.is_empty() { "unattributed" } else { trig.as_str() },
+            "label": trigger_label(&trig),
+            // `is_background` SHIPS HERE TOO (AMUX-3550). The client filtered
+            // these rows on it and it existed only on `by_source`, so the
+            // predicate `x.is_background !== false` kept 10 of 10 — a filter
+            // that reads as a deliberate exclusion and excludes nothing. Three
+            // of those ten were the human's own typing, listed under "biggest
+            // background sources" on the panel built to tell a customer what
+            // spent their credits BESIDES them. Fixed by making the field the
+            // client already reaches for exist, rather than by teaching the
+            // client a second spelling of it.
+            "is_background": trig != "user",
+            "origin": origin,
+            "session": session,
+            "cost_usd": (usd * 100.0).round() / 100.0,
+            "turns": turns,
+        }));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
+    /// AMUX-3545: the reserve decision, and the property that matters most is
+    /// that it FAILS OPEN.
+    ///
+    /// Ethan's call, 2026-08-25: 30%, so background pauses at 70% window use.
+    /// The measurement behind the question, from the 5h window that day: 2,270
+    /// turns, 82.1% background — 1,059 peer-message, 552 schedule, 50 pickup,
+    /// against 505 of his own.
+    #[test]
+    fn the_reserve_pauses_at_the_threshold_and_fails_open_on_an_unknown() {
+        // Ethan's 30: pause at 70 and above, run below it.
+        assert!(!super::background_should_pause(Some(69), 30));
+        assert!(super::background_should_pause(Some(70), 30), "the boundary is inclusive");
+        assert!(super::background_should_pause(Some(99), 30));
+
+        // THE CELL THAT MATTERS. An unknown reading must NOT pause. The usage
+        // probe is a network call to a third party; if a rate limit or an
+        // expired token made `None` mean "pause", every schedule and every
+        // pickup across the fleet would stop, and the outage would be blamed on
+        // anything but the probe. Under-protecting for one window is
+        // recoverable; that is not.
+        assert!(
+            !super::background_should_pause(None, 30),
+            "an unknown window must never pause background work"
+        );
+
+        // 0 is the honest off switch, and it must beat even a maxed window —
+        // otherwise "disabled" would still gate at 100%.
+        assert!(!super::background_should_pause(Some(100), 0));
+        assert!(!super::background_should_pause(None, 0));
+
+        // A larger reserve bites earlier; a smaller one later. Pinned so the
+        // arithmetic cannot invert without a red test — the direction is the
+        // whole meaning of the number.
+        assert!(super::background_should_pause(Some(51), 50), "50% reserve pauses at 50");
+        assert!(!super::background_should_pause(Some(51), 20), "20% reserve does not");
+    }
+
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tower::ServiceExt;
+
+    /// AMUX-3544. Spend is attributed to WHY the turn happened, and the window
+    /// proves it filtered.
+    ///
+    /// The customer complaint this endpoint exists for was "I sent 2-3 prompts
+    /// and my credits ran out", with no way to see what spent them. So the
+    /// assertions are the two things a person in that position needs: which
+    /// bucket the money is in, and whether the number they are reading covers
+    /// the window they think it does.
+    ///
+    /// THE UNIT MISMATCH IS THE POINT OF THE THIRD ASSERTION. `token_ledger.ts`
+    /// is in SECONDS and `cmd_history.ts` is in MILLISECONDS. A join that
+    /// forgets the divide matches every prompt and still returns a tidy-looking
+    /// answer — it did exactly that to me while I was writing this query. The
+    /// fixture puts an OLD ledger row outside the window, so
+    /// `rows_excluded_by_window` must be non-zero: an unbounded match and a
+    /// correct one are indistinguishable from the totals alone.
+    #[tokio::test]
+    async fn spend_is_attributed_to_what_triggered_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("attr.db")).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        store
+            .write(move |conn| {
+            // Three prompts into one lane: a human, a schedule, a peer.
+                for (t, origin, at) in [
+                    ("user", "", now - 300),
+                    // AMUX-3547: a pickup lands right after the human's prompt.
+                    // Before board_drive::record_prompt existed this row was
+                    // never written, so the turn below was matched to the
+                    // HUMAN's row and counted as foreground.
+                    ("pickup", "board-drive", now - 250),
+                    ("schedule", "poll the inbox", now - 200),
+                    ("session", "peer-lane", now - 100),
+                ] {
+                    conn.execute(
+                        "INSERT INTO cmd_history (text, type, session, ts, origin) VALUES (?,?,?,?,?)",
+                        rusqlite::params!["p", t, "lane", at * 1000, origin],
+                    )?;
+                }
+                // A turn after each prompt, plus one far outside the window.
+                for (at, cost) in [
+                    (now - 290, 1.0),
+                    (now - 240, 7.0), // the pickup's turn
+                    (now - 190, 5.0),
+                    (now - 90, 20.0),
+                    (now - 86_400 * 30, 999.0),
+                ] {
+                    conn.execute(
+                        "INSERT INTO token_ledger (ts, session, conversation, model, input, cache_read, \
+                         cache_write, output, cost_usd, task) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        rusqlite::params![at, "lane", "c", "opus", 10, 0, 0, 5, cost, ""],
+                    )?;
+                }
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .unwrap();
+        let state = AppState {
+            store: Arc::new(store),
+            started: Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+        };
+        let app = axum::Router::new()
+            .nest("/api/usage", routes_with(probe_fn(UsageProbe::Ok(json!({})), Arc::new(AtomicUsize::new(0)))))
+            .with_state(state);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/usage/attribution?hours=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+
+        // 1. The money is in the right buckets, and the labels are for a human.
+        let by: std::collections::HashMap<String, f64> = v["by_source"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["source"].as_str().unwrap().to_string(), r["cost_usd"].as_f64().unwrap()))
+            .collect();
+        assert_eq!(by.get("user"), Some(&1.0), "the human's turn: {v}");
+        assert_eq!(by.get("schedule"), Some(&5.0), "the schedule's turn: {v}");
+        assert_eq!(by.get("session"), Some(&20.0), "the peer's turn: {v}");
+
+        // AMUX-3547. A PICKUP IS ITS OWN BUCKET AND IT IS BACKGROUND.
+        //
+        // Measured on the live fleet before the fix: 247 auto-pickup deliveries
+        // in `steering_history` over 24h and TWO in `cmd_history`. Pickup went
+        // through `steer_enqueue`, which writes the steering tables; only the
+        // send path wrote `cmd_history`. So a pickup's turns were matched to
+        // whatever prompt preceded them — here the human's — and counted as
+        // FOREGROUND.
+        //
+        // The bias ran toward under-reporting background, which is the one
+        // direction that matters: AMUX-3542 is a customer whose plan window was
+        // eaten by background work, and the instrument built to prove it was
+        // crediting some of that work to their own typing.
+        assert_eq!(by.get("pickup"), Some(&7.0), "the pickup's turn is its own bucket: {v}");
+        let pickup_row = v["by_source"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["source"] == "pickup")
+            .expect("pickup row");
+        assert_eq!(
+            pickup_row["is_background"],
+            json!(true),
+            "amux handing a lane a card is not the human typing: {pickup_row}"
+        );
+        assert!(
+            pickup_row["label"].as_str().unwrap().contains("amux handed"),
+            "the label is read by someone wondering where their credits went: {pickup_row}"
+        );
+        assert_eq!(
+            by.get("user"),
+            Some(&1.0),
+            "AND THE HUMAN'S BUCKET MUST NOT HAVE ABSORBED IT — 8.0 here is the pre-fix \
+             behaviour, and it is the whole defect: {v}"
+        );
+
+        // 2. Background share is the headline the complaint was about.
+        assert_eq!(v["total_cost_usd"], json!(33.0));
+        assert_eq!(v["background_cost_usd"], json!(32.0));
+        assert_eq!(v["background_pct"], json!(97.0));
+
+        // 3. THE CONTROL. The 30-day-old row must be OUTSIDE a 1-hour window.
+        //    If this is 0 the join matched everything and every number above is
+        //    the whole table wearing a window's label.
+        assert_eq!(v["rows_considered"], json!(4));
+        assert!(
+            v["rows_excluded_by_window"].as_i64().unwrap() >= 1,
+            "the window excluded nothing — an unbounded match returns a confident wrong \
+             answer and looks exactly like this one: {v}"
+        );
+
+        // 4. Named offenders, or "a schedule fired" is not actionable.
+        let top = v["top_origins"].as_array().unwrap();
+        assert!(
+            top.iter().any(|r| r["origin"] == "poll the inbox"),
+            "the expensive schedule must be NAMED: {v}"
+        );
+
+        // 5. EVERY top_origins row carries `is_background`, and it is correct.
+        //
+        //    AMUX-3550: the client filtered these rows on this field and the
+        //    field existed only on `by_source`, so `x.is_background !== false`
+        //    kept 10 of 10 — a filter that reads as a deliberate exclusion and
+        //    excludes nothing. The panel headed "biggest background sources"
+        //    then listed the human's own typing, on the very screen built to
+        //    tell a customer what spent their credits BESIDES them.
+        //
+        //    Asserting PRESENCE is the load-bearing half. A test that only
+        //    checked the values of rows that happen to have the key would pass
+        //    against the version where no row has it at all.
+        for r in top {
+            assert!(
+                r.get("is_background").map(|b| b.is_boolean()).unwrap_or(false),
+                "every top_origins row must carry a boolean is_background — its ABSENCE is \
+                 what made the client's filter match everything: {r}"
+            );
+        }
+        assert!(
+            top.iter().any(|r| r["source"] == "user" && r["is_background"] == json!(false)),
+            "the human's own row must be present AND flagged not-background, so a consumer \
+             can exclude it: {v}"
+        );
+        assert!(
+            top.iter().any(|r| r["source"] == "schedule" && r["is_background"] == json!(true)),
+            "a schedule's row must be flagged background: {v}"
+        );
+    }
 
     /// A fixture probe that counts how many times it was called.
     fn probe_fn(outcome: UsageProbe, calls: Arc<AtomicUsize>) -> ProbeFn {

@@ -214,7 +214,14 @@ for (const page of pages) {
   });
 
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'index.html'), html);
+  try {
+    fs.writeFileSync(path.join(dir, 'index.html'), html);
+  } catch (err) {
+    // mkdirSync succeeded but writeFileSync failed — remove the empty dir so
+    // we don't leave orphan directories in the tree.
+    try { fs.rmdirSync(dir); } catch (_) { /* already non-empty or gone */ }
+    throw new Error(`Failed to write ${canonical}: ${err.message}`);
+  }
   sitemapEntries.push(`https://amux.io${canonical}`);
   generated++;
 }

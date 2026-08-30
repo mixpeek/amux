@@ -45,7 +45,7 @@
     "description": "n8n connects SaaS APIs and webhooks in a visual node editor. amux orchestrates AI coding agents (Claude Code, Codex, Gemini CLI) that write, test, and ship software. They serve different jobs — here is when to use each, and how to compose them.",
     "url": "https://amux.io/compare/amux-vs-n8n/",
     "datePublished": "2026-07-13",
-    "dateModified": "2026-07-13",
+    "dateModified": "2026-08-19",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
     "image": "https://amux.io/og-image.png"
@@ -118,7 +118,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs n8n</span></div>
 
     <h1>amux vs n8n</h1>
-    <p class="subtitle">n8n is the leading open-source workflow automation platform — connect SaaS APIs, webhooks, and data pipelines in a visual editor. amux is an open-source control plane for AI coding agents — run and monitor dozens of Claude Code, Codex, and Gemini CLI sessions from your phone. These tools serve different jobs. Here is the honest comparison. <em>Updated July 2026.</em></p>
+    <p class="subtitle">n8n is the leading open-source workflow automation platform — connect SaaS APIs, webhooks, and data pipelines in a visual editor. amux is an open-source control plane for AI coding agents — run and monitor dozens of Claude Code, Codex, and Gemini CLI sessions from your phone. These tools serve different jobs. Here is the honest comparison. <em>Updated August 2026.</em></p>
 
     <!-- EXP-007: compare pages GitHub CTA -->
     <div style="display:flex;align-items:center;gap:1rem;background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:0.875rem 1.125rem;margin:1.5rem 0;flex-wrap:wrap">
@@ -196,8 +196,18 @@
             <td style="padding:10px 16px;text-align:center;">Yes — cron trigger node, interval, webhook triggers</td>
           </tr>
           <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;"><strong>Email with attachments</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Yes — send/reply with file attachments via Gmail API (Aug 2026)</td>
+            <td style="padding:10px 16px;text-align:center;">Yes — via Gmail node, but no agent-generated attachment support</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;"><strong>API credential management</strong></td>
+            <td style="padding:10px 16px;text-align:center;">Yes — Connectors tab: paste once, scope to group/worker, injected as env vars (Aug 2026)</td>
+            <td style="padding:10px 16px;text-align:center;">Yes — credential manager per node, scoped per workflow</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
             <td style="padding:10px 16px;"><strong>SaaS integrations</strong></td>
-            <td style="padding:10px 16px;text-align:center;">Limited — Gmail API (email), browser automation, REST webhooks</td>
+            <td style="padding:10px 16px;text-align:center;">Limited — Gmail API (email + attachments), browser automation, REST webhooks, Connectors for any API key service</td>
             <td style="padding:10px 16px;text-align:center;">500+ integrations — Slack, Stripe, HubSpot, Airtable, Notion, etc.</td>
           </tr>
           <tr style="border-bottom:1px solid var(--border);">
@@ -239,7 +249,8 @@ GET https://localhost:8824/api/board?status=done&amp;since=yesterday
       <li>You want to run Claude Code, Codex CLI, or Gemini CLI in parallel across multiple projects</li>
       <li>You need a self-healing watchdog that restarts stuck AI coding sessions automatically</li>
       <li>You want to manage AI agent sessions from your phone (iOS app or mobile PWA)</li>
-      <li>You need built-in CRM, notes, email, and a kanban board for an AI engineering team</li>
+      <li>You need built-in CRM, notes, email (including file attachments), and a kanban board for an AI engineering team</li>
+      <li>You want agents to send email reports with attached files automatically, from your domain</li>
       <li>You are an indie founder or small team building software autonomously with AI agents</li>
       <li>You want a single Rust binary you can read, audit, and modify without a complex platform</li>
     </ul>

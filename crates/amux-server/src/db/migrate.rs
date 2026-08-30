@@ -126,6 +126,76 @@ const MIGRATIONS: &[Migration] = &[
         name: "0020_mdai_runs",
         sql: include_str!("../../migrations/0020_mdai_runs.sql"),
     },
+    Migration {
+        version: 21,
+        name: "0021_heartbeat",
+        sql: include_str!("../../migrations/0021_heartbeat.sql"),
+    },
+    Migration {
+        version: 22,
+        name: "0022_downtime_requests_during",
+        sql: include_str!("../../migrations/0022_downtime_requests_during.sql"),
+    },
+    Migration {
+        version: 23,
+        name: "0023_downtime_backfill",
+        sql: include_str!("../../migrations/0023_downtime_backfill.sql"),
+    },
+    Migration {
+        version: 24,
+        name: "0024_steering_dead_letter",
+        sql: include_str!("../../migrations/0024_steering_dead_letter.sql"),
+    },
+    Migration {
+        version: 25,
+        name: "0025_mdai_run_duration",
+        sql: include_str!("../../migrations/0025_mdai_run_duration.sql"),
+    },
+    Migration {
+        version: 26,
+        name: "0026_reclaim_skipped",
+        sql: include_str!("../../migrations/0026_reclaim_skipped.sql"),
+    },
+    Migration {
+        version: 27,
+        name: "0027_guard_verdicts",
+        sql: include_str!("../../migrations/0027_guard_verdicts.sql"),
+    },
+    Migration {
+        version: 28,
+        name: "0028_downtime_cause",
+        sql: include_str!("../../migrations/0028_downtime_cause.sql"),
+    },
+    Migration {
+        version: 29,
+        name: "0029_steering_history_source",
+        sql: include_str!("../../migrations/0029_steering_history_source.sql"),
+    },
+    Migration {
+        version: 30,
+        name: "0030_request_log_boot_at",
+        sql: include_str!("../../migrations/0030_request_log_boot_at.sql"),
+    },
+    Migration {
+        version: 31,
+        name: "0031_issues_closed_at",
+        sql: include_str!("../../migrations/0031_issues_closed_at.sql"),
+    },
+    Migration {
+        version: 32,
+        name: "0032_state_events_entity_index",
+        sql: include_str!("../../migrations/0032_state_events_entity_index.sql"),
+    },
+    Migration {
+        version: 33,
+        name: "0033_steering_precondition",
+        sql: include_str!("../../migrations/0033_steering_precondition.sql"),
+    },
+    Migration {
+        version: 34,
+        name: "0034_request_log_load1",
+        sql: include_str!("../../migrations/0034_request_log_load1.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.
@@ -312,7 +382,12 @@ pub fn apply_all(conn: &mut Connection) -> anyhow::Result<()> {
         "CREATE TABLE IF NOT EXISTS _amux_migrations (
             version    INTEGER PRIMARY KEY,
             name       TEXT NOT NULL,
-            applied_at TEXT NOT NULL
+            applied_at TEXT NOT NULL,
+            -- Fresh databases get this from the start; existing ones get it
+            -- from 0032's ADDCOL. Both paths, because CREATE TABLE IF NOT
+            -- EXISTS is a no-op against a table that already exists and would
+            -- silently leave every deployed database without the column.
+            duration_ms INTEGER
         );",
     )?;
     for m in MIGRATIONS {
@@ -326,18 +401,53 @@ pub fn apply_all(conn: &mut Connection) -> anyhow::Result<()> {
         if already {
             continue;
         }
+        // TIME EVERY MIGRATION. This function used to log nothing, so 0031
+        // holding the connection for 186 seconds on 2026-08-24 was
+        // indistinguishable from a crash, a slow build, or a launchd problem:
+        // the only symptom anyone could see was /health not answering. A
+        // migration is the one startup step that can take arbitrarily long
+        // while looking exactly like a dead process.
+        let started = std::time::Instant::now();
         let tx = conn.transaction()?;
         apply_one(&tx, m.sql)?;
+        let ms = started.elapsed().as_millis() as i64;
         tx.execute(
             "INSERT INTO _amux_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
             rusqlite::params![m.version, m.name, chrono::Utc::now().to_rfc3339()],
         )?;
+        // Best-effort: the column arrives in 0032, so every migration before it
+        // on an existing database has nowhere to put this. Failing to RECORD a
+        // duration must never fail the migration itself, and the tracing line
+        // below carries the number regardless.
+        let _ = tx.execute(
+            "UPDATE _amux_migrations SET duration_ms = ?1 WHERE version = ?2",
+            rusqlite::params![ms, m.version],
+        );
         tx.commit()?;
+        // WARN, not INFO, above a threshold a human would notice as downtime.
+        // 2s is well above every migration here except the one that caused the
+        // outage, so this fires on the shape that matters and stays quiet
+        // otherwise.
+        if ms >= 2_000 {
+            tracing::warn!(
+                migration = m.name, duration_ms = ms,
+                "migration held the database for {:.1}s — the server is unreachable for this whole period",
+                ms as f64 / 1000.0
+            );
+        } else {
+            tracing::info!(migration = m.name, duration_ms = ms, "migration applied");
+        }
     }
     Ok(())
 }
 
-fn apply_one(conn: &Connection, sql: &str) -> anyhow::Result<()> {
+/// Apply ONE migration's body, honouring `-- ADDCOL:` directives.
+///
+/// `pub(crate)` so tests can build a schema through the SHIPPED path. A fixture
+/// that `execute_batch`es a migration file silently SKIPS every ADDCOL line —
+/// they are SQL comments — so it would prove a column exists that production
+/// has and the test does not, or vice versa (AF-99).
+pub(crate) fn apply_one(conn: &Connection, sql: &str) -> anyhow::Result<()> {
     // Split ADDCOL directives from plain SQL. Directives are full-line
     // comments so the file stays valid SQL for external tools.
     let mut plain = String::new();
@@ -356,9 +466,17 @@ fn apply_one(conn: &Connection, sql: &str) -> anyhow::Result<()> {
             plain.push('\n');
         }
     }
-    if !plain.trim().is_empty() {
-        conn.execute_batch(&plain)?;
-    }
+    // ADDCOL BEFORE the plain SQL (AMUX-3609). "Add a column, then populate it"
+    // is the natural shape for a backfill migration, and with the old order it
+    // was impossible: the UPDATE ran first and died on `no such column`. Nobody
+    // had hit it because every ADDCOL migration so far only added.
+    //
+    // Safe for the existing 31 because ADDCOL targets tables that already exist
+    // — that is what the directive is FOR (a live Python DB whose tables may or
+    // may not already carry the column). Audited before reordering: no
+    // migration both CREATEs and ADDCOLs the same table, which is the only
+    // arrangement this order would break. `addcol_can_be_used_by_the_same_
+    // migration` pins the new guarantee.
     for (table, column, decl) in addcols {
         if !column_exists(conn, &table, &column)? {
             // Identifiers cannot be bound as parameters; they come from our
@@ -367,6 +485,9 @@ fn apply_one(conn: &Connection, sql: &str) -> anyhow::Result<()> {
                 "ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" {decl};"
             ))?;
         }
+    }
+    if !plain.trim().is_empty() {
+        conn.execute_batch(&plain)?;
     }
     Ok(())
 }
@@ -381,6 +502,84 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> anyhow::Result
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod registration_guard {
+    use super::MIGRATIONS;
+
+    /// A `.sql` file nobody registered is a migration that NEVER RUNS, and
+    /// nothing anywhere says so (AF-99).
+    ///
+    /// MIGRATIONS is a hand-maintained array, so adding a file and forgetting the
+    /// entry is silent in every direction: the server boots clean, the schema is
+    /// simply older than the code, and the first symptom is a query failing at
+    /// runtime somewhere far away. That is exactly what happened — 0022/0023 sat
+    /// on disk unregistered while `/api/debug/downtime` returned an empty list,
+    /// which reads identically to "there were never any outages".
+    #[test]
+    fn every_migration_file_on_disk_is_registered() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+            .expect("migrations dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".sql"))
+            .map(|n| n.trim_end_matches(".sql").to_owned())
+            .collect();
+        on_disk.sort();
+
+        // The control. If read_dir ever returned nothing — wrong path, renamed
+        // directory — an equality assert could only fail loudly, but a future
+        // rewrite into a subset check would pass vacuously. Pin it here.
+        assert!(
+            on_disk.len() >= 23,
+            "found {} migration files; the scan is looking in the wrong place",
+            on_disk.len()
+        );
+
+        let mut registered: Vec<String> =
+            MIGRATIONS.iter().map(|m| m.name.to_owned()).collect();
+        registered.sort();
+
+        let unregistered: Vec<&String> =
+            on_disk.iter().filter(|n| !registered.contains(n)).collect();
+        let missing_file: Vec<&String> =
+            registered.iter().filter(|n| !on_disk.contains(n)).collect();
+
+        // Name the offending FILE rather than printing two sorted lists. On this
+        // shared checkout the usual cause is a peer mid-work who wrote the .sql
+        // before editing the array, and a diff of 24 names does not say that.
+        assert!(
+            unregistered.is_empty(),
+            "migration file(s) on disk but NOT in the MIGRATIONS array: {unregistered:?}. \
+             An unregistered migration never runs: the server boots clean, the schema \
+             silently lags the code, and the first symptom is a query failing somewhere \
+             far away. Add a Migration{{version, name, sql: include_str!(..)}} entry. \
+             (If this is not your file, a peer is mid-work — tell them rather than \
+             registering it for them.)"
+        );
+        assert!(
+            missing_file.is_empty(),
+            "MIGRATIONS references file(s) that do not exist: {missing_file:?}"
+        );
+    }
+
+    /// Versions must be dense and ascending, or `apply_all`'s ordering and the
+    /// `_amux_migrations` bookkeeping stop lining up with the filenames.
+    #[test]
+    fn versions_are_dense_and_match_their_filenames() {
+        for (i, m) in MIGRATIONS.iter().enumerate() {
+            let expected = i as i64 + 1;
+            assert_eq!(m.version, expected, "{} is out of order", m.name);
+            let prefix = format!("{:04}_", m.version);
+            assert!(
+                m.name.starts_with(&prefix),
+                "{} does not start with its own version prefix {prefix}",
+                m.name
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -402,6 +601,109 @@ mod tests {
             .query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rev, 0);
+    }
+
+    /// AMUX-3609's backfill, driven through the SHIPPED migration body rather
+    /// than a paraphrase of its SQL.
+    ///
+    /// The backfill can only recover what the reaper left: `_amux_state_events`
+    /// is swept at 14 days, so ~10,700 of the board's 10,905 rows will end up
+    /// NULL forever. That is the point of the negative cases below — a backfill
+    /// that guessed a date for them would be worse than the NULL, and a test
+    /// with only the positive case would pass against one that did.
+    #[test]
+    fn closed_at_backfill_recovers_only_what_the_journal_still_holds() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_all(&mut conn).unwrap();
+
+        conn.execute_batch(
+            "INSERT INTO issues (id,title,desc,status,creator,created,updated) VALUES
+               ('C-CLOSED','a','', 'done',     'x',1,1),
+               ('C-REOPEN','b','', 'doing',    'x',1,1),
+               ('C-REAPED','c','', 'verified', 'x',1,1),
+               ('C-TWICE' ,'d','', 'done',     'x',1,1);
+             INSERT INTO _amux_state_events (rev,entity_type,entity_id,mutation,at,payload) VALUES
+               (1,'task','C-CLOSED','{\"kind\":\"status_changed\",\"from\":\"doing\",\"to\":\"done\"}','2026-08-20T10:00:00.123456+00:00',NULL),
+               -- reopened: its journal says it closed, but it is OPEN now, so
+               -- the backfill must skip it or `closed_at IS NOT NULL` would
+               -- start meaning \"was closed once\".
+               (2,'task','C-REOPEN','{\"kind\":\"status_changed\",\"from\":\"doing\",\"to\":\"done\"}','2026-08-20T11:00:00+00:00',NULL),
+               -- a NON-terminal transition must not be mistaken for a close.
+               (3,'task','C-TWICE','{\"kind\":\"status_changed\",\"from\":\"todo\",\"to\":\"doing\"}','2026-08-19T09:00:00+00:00',NULL),
+               (4,'task','C-TWICE','{\"kind\":\"status_changed\",\"from\":\"doing\",\"to\":\"done\"}','2026-08-20T09:00:00+00:00',NULL),
+               (5,'task','C-TWICE','{\"kind\":\"status_changed\",\"from\":\"done\",\"to\":\"doing\"}','2026-08-21T09:00:00+00:00',NULL),
+               (6,'task','C-TWICE','{\"kind\":\"status_changed\",\"from\":\"doing\",\"to\":\"done\"}','2026-08-22T09:00:00+00:00',NULL);",
+        )
+        .unwrap();
+
+        // Re-run the shipped body. ADDCOL is idempotent; the UPDATE is the part
+        // under test. Reading it from the same include_str the registry uses
+        // means this cannot drift from what production applies.
+        apply_one(&conn, super::MIGRATIONS.iter().find(|m| m.version == 31).unwrap().sql).unwrap();
+
+        let at = |id: &str| -> Option<i64> {
+            conn.query_row("SELECT closed_at FROM issues WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap()
+        };
+
+        // 1787220000 = 2026-08-20T10:00:00Z. The microseconds and the +00:00
+        // offset are parsed by strftime, which is the assumption the migration
+        // rests on — asserted here rather than trusted.
+        assert_eq!(at("C-CLOSED"), Some(1787220000), "a closed card recovers its real close time");
+        assert_eq!(at("C-REOPEN"), None, "a card that is open NOW must not be backfilled from an old close");
+        assert_eq!(at("C-REAPED"), None, "no journal row survives for it: NULL means NOT RECORDED, never a guess");
+        assert_eq!(
+            at("C-TWICE"),
+            Some(1787389200),
+            "2026-08-22T09:00:00Z — the LATEST close, matching the live write rule; MIN would make backfilled rows disagree with every row written after this migration"
+        );
+
+        // Idempotent: the migration is guarded by `closed_at IS NULL`, so a
+        // second run must not disturb what the first wrote.
+        apply_one(&conn, super::MIGRATIONS.iter().find(|m| m.version == 31).unwrap().sql).unwrap();
+        assert_eq!(at("C-CLOSED"), Some(1787220000));
+        assert_eq!(at("C-TWICE"), Some(1787389200));
+    }
+
+    /// A migration must be able to ADD a column and then USE it in the same
+    /// file. Before AMUX-3609 the runner executed plain SQL first and the
+    /// ADDCOLs after, so a backfill died on `no such column` — with nothing in
+    /// the mechanism hinting at the ordering. Nobody hit it because every
+    /// ADDCOL migration until then only added.
+    /// The timing instrument itself must be able to fail. `apply_all` logged
+    /// nothing until 0031 held the database for 186 seconds and the only visible
+    /// symptom was /health not answering; an instrument added in response to
+    /// that, and never checked, would be the same defect with more code.
+    #[test]
+    fn every_migration_records_how_long_it_held_the_database() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_all(&mut conn).unwrap();
+        let missing: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _amux_migrations WHERE duration_ms IS NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            missing, 0,
+            "on a fresh database every migration must record its duration, or the next \
+             outage is a forensic exercise again"
+        );
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _amux_migrations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n as usize, super::MIGRATIONS.len(), "and every migration must be recorded at all");
+    }
+
+    #[test]
+    fn addcol_can_be_used_by_the_same_migration() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (id TEXT PRIMARY KEY, n INTEGER);").unwrap();
+        conn.execute("INSERT INTO t VALUES ('a', 7)", []).unwrap();
+        apply_one(
+            &conn,
+            "-- ADDCOL: t doubled INTEGER\nUPDATE t SET doubled = n * 2;",
+        )
+        .expect("a migration that adds a column and populates it must apply");
+        let got: i64 = conn.query_row("SELECT doubled FROM t WHERE id='a'", [], |r| r.get(0)).unwrap();
+        assert_eq!(got, 14, "the plain SQL must run AFTER the column exists");
     }
 
     #[test]
@@ -583,4 +885,301 @@ mod guard_tests {
     // the escape case failed roughly at random. That is precisely the flake
     // class AMUX-2675 was about; merging removes it by construction instead of
     // adding another lock that the next test must remember to take.
+}
+
+/// AF-193 / AMUX-3609: a migration's COST, which the rest of the suite cannot express.
+///
+/// 0031 backfilled `issues.closed_at` with a correlated subquery over
+/// `_amux_state_events`, which carried exactly one index, on `rev`. It
+/// full-scanned ~79,000 rows for each of 7,281 terminal cards, inside the
+/// exclusive transaction a migration runs in, at server startup, and the server
+/// was unreachable for 186 seconds. Every test was green throughout, because
+/// migration tests apply their SQL to four fixture rows — and on four rows an
+/// index scan and a table scan are indistinguishable. Correctness and cost are
+/// different questions and the suite only ever answered the first.
+///
+/// WHY THE PLAN AND NOT A ROW COUNT. The obvious fix is a fixture with realistic
+/// row counts, and it is the wrong one: it needs a threshold, the threshold has
+/// to be guessed, and a migration that is 10x too slow on 79,000 rows still
+/// passes on whatever number gets picked. Ethos rule 7 — prefer the
+/// structurally-absent signal over the tuned parameter. `EXPLAIN QUERY PLAN`
+/// answers the actual question at any table size, in microseconds, on an empty
+/// database.
+///
+/// THE RULE: inside a CORRELATED subquery, every table access must use an index.
+/// A correlated subquery runs once per outer row, so an unindexed access there is
+/// O(outer x inner) by construction — that is the shape that took the server
+/// down, and it is a property of the SQL, not of how much data happens to exist.
+/// A `SCAN` at the top level is left alone: one pass over the table being
+/// updated is unavoidable and is O(n) once.
+///
+/// MEASURED, not assumed, because the obvious matcher does not work. The plan
+/// prints the ALIAS, not the table name, so a check that greps for
+/// `_amux_state_events` finds nothing and passes on the incident itself:
+///
+///   without the index:  `--SEARCH e
+///   with the index:     `--SEARCH e USING INDEX idx_amux_state_events_entity
+///
+/// Note also that it is SEARCH in both cases. A `SCAN` vs `SEARCH` check — the
+/// other obvious one — is green on the specimen too. The discriminator is the
+/// presence of USING INDEX, and nothing else in that output separates the two.
+#[cfg(test)]
+mod cost_tests {
+    use super::*;
+
+    /// An EXPLAIN QUERY PLAN row: (id, parent, detail).
+    ///
+    /// `Err` means "not explainable here", which is NOT the same as "costs
+    /// nothing" and must never quietly become a pass. Trigger bodies split out
+    /// of a CREATE TRIGGER reference `new.*` and cannot prepare standalone, so
+    /// this cannot hard-fail — instead `explained` below counts what actually
+    /// got checked, and a named statement pins that the check reached the one
+    /// that caused the outage.
+    fn plan(conn: &Connection, stmt: &str) -> Option<Vec<(i64, i64, String)>> {
+        let mut s = conn.prepare(&format!("EXPLAIN QUERY PLAN {stmt}")).ok()?;
+        let rows = s
+            .query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(3)?))
+            })
+            .ok()?
+            .flatten()
+            .collect::<Vec<_>>();
+        Some(rows)
+    }
+
+    /// Table accesses that run inside a CORRELATED subquery without an index.
+    fn unindexed_correlated_access(rows: &[(i64, i64, String)]) -> Vec<String> {
+        let parent_of = |id: i64| rows.iter().find(|r| r.0 == id).map(|r| r.1);
+        let detail_of = |id: i64| rows.iter().find(|r| r.0 == id).map(|r| r.2.clone());
+        let mut bad = Vec::new();
+        for (_, parent, d) in rows {
+            let is_access = d.starts_with("SCAN ") || d.starts_with("SEARCH ");
+            let indexed = d.contains("USING INDEX")
+                || d.contains("USING COVERING INDEX")
+                || d.contains("USING INTEGER PRIMARY KEY")
+                || d.contains("USING ROWID SEARCH");
+            if !is_access || indexed {
+                continue;
+            }
+            let mut cur = *parent;
+            let mut hops = 0;
+            while cur != 0 && hops < 32 {
+                let Some(p) = detail_of(cur) else { break };
+                if p.contains("CORRELATED") {
+                    bad.push(d.clone());
+                    break;
+                }
+                cur = parent_of(cur).unwrap_or(0);
+                hops += 1;
+            }
+        }
+        bad
+    }
+
+    /// Statements a migration body executes, minus comments and DDL.
+    fn dml(sql: &str) -> Vec<String> {
+        let stripped: String = sql
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        stripped
+            .split(';')
+            .map(|s| s.trim().to_string())
+            .filter(|s| {
+                let u = s.to_uppercase();
+                u.starts_with("UPDATE ")
+                    || u.starts_with("DELETE ")
+                    || u.starts_with("INSERT ")
+                    || u.starts_with("SELECT ")
+                    || u.starts_with("WITH ")
+                    || u.starts_with("REPLACE ")
+            })
+            .collect()
+    }
+
+    fn squash(s: &str) -> String {
+        s.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// Every migration, applied in order, with each one's DML plan-checked
+    /// against the schema THAT MIGRATION LEAVES BEHIND — previous migrations
+    /// plus its own DDL, and nothing from later ones.
+    ///
+    /// Checking against the FINAL schema would be vacuous for exactly the
+    /// incident: 0032 adds the index 0031 needed, so a final-schema check reads
+    /// 0031 as fine no matter what 0031 does.
+    #[test]
+    fn no_migration_runs_an_unindexed_correlated_subquery() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS _amux_migrations (
+                version INTEGER PRIMARY KEY, name TEXT NOT NULL,
+                applied_at TEXT NOT NULL, duration_ms INTEGER);",
+        )
+        .unwrap();
+
+        let mut offenders: Vec<String> = Vec::new();
+        let mut explained = 0usize;
+        let mut saw_the_0031_backfill = false;
+
+        for m in MIGRATIONS {
+            let tx = conn.transaction().unwrap();
+            apply_one(&tx, m.sql).unwrap_or_else(|e| panic!("{} failed to apply: {e}", m.name));
+            tx.execute(
+                "INSERT INTO _amux_migrations (version, name, applied_at) VALUES (?1, ?2, 'test')",
+                rusqlite::params![m.version, m.name],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+
+            for stmt in dml(m.sql) {
+                let Some(rows) = plan(&conn, &stmt) else { continue };
+                explained += 1;
+                let sq = squash(&stmt);
+                if sq.starts_with("UPDATE issues SET closed_at") {
+                    saw_the_0031_backfill = true;
+                }
+                for bad in unindexed_correlated_access(&rows) {
+                    offenders.push(format!(
+                        "{}: `{}` runs once per outer row with no index\n    statement: {}",
+                        m.name,
+                        bad,
+                        sq.chars().take(200).collect::<String>()
+                    ));
+                }
+            }
+        }
+
+        // VACUITY GUARDS. This check silently passed on the real incident during
+        // development because every statement failed to prepare and the helper
+        // returned "nothing to see". A count alone is weak, so the statement
+        // that caused the outage is pinned BY NAME: if 0031's backfill ever
+        // stops being reached, this fails instead of going quietly green.
+        assert!(
+            explained >= 5,
+            "only {explained} statements were explainable — the check is not reaching the SQL \
+             it claims to check"
+        );
+        assert!(
+            saw_the_0031_backfill,
+            "0031's `UPDATE issues SET closed_at ...` was never explained. That is the statement \
+             that held the database for 186 seconds, and this check exists to see it."
+        );
+
+        assert!(
+            offenders.is_empty(),
+            "a migration would full-scan a table once per outer row, which is how 0031 held \
+             the database for 186 seconds at startup. Create the index BEFORE the backfill, \
+             in the same migration.\n\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// The ordering variant the plan check cannot see.
+    ///
+    /// `apply_one` hands the plain SQL to `execute_batch`, so statements run in
+    /// FILE ORDER. An index created after the backfill that needs it produces
+    /// exactly the same final schema and exactly the same 186 seconds. The plan
+    /// check above is blind to it — it explains against the finished migration,
+    /// by which time the index exists either way.
+    ///
+    /// ONLY THE READ SIDE. An index on the table the DML WRITES is a different
+    /// thing and belongs after: building `issues(closed_at)` once the backfill
+    /// has populated it is correct practice, and cheaper than maintaining the
+    /// index through the update. 0031 does exactly that, so a rule of "no
+    /// CREATE INDEX after any DML" fires on the CORRECT file — measured, it did.
+    /// What must come first is an index on a table the statement READS, which is
+    /// the one that turns into a scan per outer row.
+    #[test]
+    fn a_migration_creates_its_read_side_indexes_before_the_dml_that_needs_them() {
+        fn indexed_table(stmt_upper: &str) -> Option<String> {
+            let on = stmt_upper.find(" ON ")? + 4;
+            let rest = stmt_upper[on..].trim_start();
+            let end = rest.find(['(', ' ', '\n']).unwrap_or(rest.len());
+            Some(rest[..end].trim().trim_matches('"').to_string())
+        }
+        fn written_table(stmt_upper: &str) -> Option<String> {
+            let rest = stmt_upper.strip_prefix("UPDATE ")?;
+            let end = rest.find([' ', '\n']).unwrap_or(rest.len());
+            Some(rest[..end].trim().trim_matches('"').to_string())
+        }
+
+        let mut bad = Vec::new();
+        for m in MIGRATIONS {
+            let body: String = m
+                .sql
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("--"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            // (offset, table written) for each DML seen so far.
+            let mut dml_seen: Vec<(usize, Option<String>)> = Vec::new();
+            let mut offset = 0usize;
+            for raw in body.split(';') {
+                let t = raw.trim().to_uppercase();
+                if t.starts_with("UPDATE ") || t.starts_with("DELETE ") || t.starts_with("WITH ") {
+                    dml_seen.push((offset, written_table(&t)));
+                }
+                if t.starts_with("CREATE INDEX") || t.starts_with("CREATE UNIQUE INDEX") {
+                    if let Some(idx_table) = indexed_table(&t) {
+                        for (d_off, written) in &dml_seen {
+                            if offset > *d_off && written.as_deref() != Some(idx_table.as_str()) {
+                                bad.push(format!(
+                                    "{}: CREATE INDEX on {} appears AFTER a statement that reads \
+                                     it — same final schema, same outage",
+                                    m.name, idx_table
+                                ));
+                            }
+                        }
+                    }
+                }
+                offset += raw.len() + 1;
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// NEGATIVE CONTROL, built from the incident rather than from a convenient
+    /// shape: 0031's own UPDATE, against the schema it actually met on
+    /// 2026-08-24 — `_amux_state_events` with its single index on `rev`.
+    ///
+    /// 88af1ff3 edited 0031 to create the index first, so the checks above now
+    /// pass on a fresh database, and a check that passes has told you nothing
+    /// until you have seen it fail on the thing it was written for.
+    #[test]
+    fn the_real_0031_specimen_without_its_index_is_caught() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _amux_state_events (rev INTEGER, entity_type TEXT, entity_id TEXT,
+                                              mutation TEXT, at TEXT);
+             CREATE INDEX idx_rev ON _amux_state_events(rev);
+             CREATE TABLE issues (id TEXT, status TEXT, closed_at INTEGER);",
+        )
+        .unwrap();
+
+        let backfill = "UPDATE issues SET closed_at = (
+                SELECT CAST(MAX(strftime('%s', e.at)) AS INTEGER)
+                  FROM _amux_state_events e
+                 WHERE e.entity_type = 'task' AND e.entity_id = issues.id)
+             WHERE status IN ('done','verified','discarded') AND closed_at IS NULL";
+
+        let before = unindexed_correlated_access(&plan(&conn, backfill).expect("explainable"));
+        assert!(
+            !before.is_empty(),
+            "the check did not fire on the statement that caused the outage — it cannot fail, \
+             so its green tells you nothing"
+        );
+
+        conn.execute_batch(
+            "CREATE INDEX idx_amux_state_events_entity
+                 ON _amux_state_events(entity_type, entity_id);",
+        )
+        .unwrap();
+        let after = unindexed_correlated_access(&plan(&conn, backfill).expect("explainable"));
+        assert!(
+            after.is_empty(),
+            "the index that fixed the incident does not clear the check: {after:?}"
+        );
+    }
 }

@@ -396,8 +396,21 @@ pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> R
     .await;
     match joined {
         Ok(Ok(Some(s))) => {
-            ([("x-amux-unhonoured-fields", UNHONOURED_FIELDS_HEADER)], Json(s.to_json()))
-                .into_response()
+            let mut v = s.to_json();
+            // A tombstone must not read as live (AMUX-3431): the raw row
+            // carries enabled:1 next to deleted:<ts>, and SCHED-349's owner
+            // read exactly that as a working schedule for five days. Say it
+            // in words, not just a timestamp field.
+            if s.is_deleted() {
+                if let Some(o) = v.as_object_mut() {
+                    o.insert("tombstone".into(), json!(true));
+                    o.insert(
+                        "note".into(),
+                        json!("DELETED — this schedule never fires and the scheduler's list excludes it. PATCH {\"resurrect\": true} to restore, or POST /api/schedules to recreate."),
+                    );
+                }
+            }
+            ([("x-amux-unhonoured-fields", UNHONOURED_FIELDS_HEADER)], Json(v)).into_response()
         }
         Ok(Ok(None)) => not_found(),
         Ok(Err(e)) => internal(e),
@@ -454,6 +467,59 @@ pub struct ScheduleBody {
     /// Claimed attribution (weaker than the header; see `mutation_by`).
     #[serde(default)]
     pub by: Option<String>,
+    /// PATCH-only: explicitly restore a soft-deleted schedule (AMUX-3431).
+    /// Without this a PATCH to a tombstone is refused with 409 — silently
+    /// accepting the write is how a deleted burn backstop read as live for
+    /// five days while the scheduler (which reads the list) never fired it.
+    #[serde(default)]
+    pub resurrect: Option<bool>,
+}
+
+/// The cadence note a caller sees AT CREATION (AMUX-3546).
+///
+/// 165 schedules were enabled on this machine when this was written, roughly
+/// 1,650 turns/day from 34 rows. `every 15m` is eleven characters and reads like
+/// a small choice; it is 96 turns a day, and five of them were enabled. Nothing
+/// said so at the moment of the decision, which is the only moment the
+/// information is free.
+///
+/// STATES, NEVER REFUSES — the card is explicit about this and it is right. A
+/// ten-minute poll is a legitimate thing to want.
+///
+/// THE PLAN-TIER HALF IS NOT BUILT, and that is a finding rather than a
+/// shortcut. The card asked to flag sub-hourly schedules against the plan tier
+/// and to CHECK first whether the tier is available. It is not: `/api/usage`
+/// returns `limit_dollars: null` on every window and `spend.limit: null`, so
+/// there is no tier to compare against. Inventing a threshold instead would be
+/// a tuned parameter standing in for a fact, so the note reports the rate and
+/// the implied spend and leaves the judgment where it belongs.
+///
+/// The per-fire figure is `kind`-dependent and that is the whole point: a
+/// `shell` schedule wakes no model and costs nothing per fire, which is the
+/// choice AF-216's `kind_note` exists to surface. Only a `tmux` schedule gets a
+/// spend line.
+fn cadence_note(expr: &str, kind: &str) -> Option<Value> {
+    let parsed = ScheduleExpr::parse(expr).ok()?;
+    let per_day = crate::runtime_jobs::scheduler::fires_per_day(&parsed)?;
+    let per_day_r = (per_day * 10.0).round() / 10.0;
+    let mut note = format!("This expression fires ~{per_day_r} time(s) a day");
+    if kind == "tmux" {
+        // ~$6/fire, the figure AF-216 measured on 2026-08-24 and which the
+        // `kind_note` beside this one already quotes. Reused rather than
+        // re-derived so the two lines in one response cannot disagree.
+        let usd = (per_day * 6.0 * 100.0).round() / 100.0;
+        note.push_str(&format!(
+            ", and kind='tmux' wakes a full model turn on each one — about ${usd}/day at the \
+             ~$6/fire measured in AF-216. Nothing is refused; the number is here because \
+             creation is the only moment it is free."
+        ));
+    } else {
+        note.push_str(&format!(
+            ". kind='{kind}' runs directly and wakes no model turn, so the fire rate costs \
+             nothing per fire."
+        ));
+    }
+    Some(json!(note))
 }
 
 pub async fn create(
@@ -498,7 +564,23 @@ pub async fn create(
     m.insert("title".into(), json!(title));
     m.insert("session".into(), json!(body.session.clone().unwrap_or_default()));
     m.insert("command".into(), json!(body.command.clone().unwrap_or_default()));
-    m.insert("kind".into(), json!(body.kind.clone().unwrap_or_else(|| "tmux".into())));
+    // KIND DEFAULTS TO `tmux`, WHICH IS THE EXPENSIVE ONE, AND THE CALLER IS NOW
+    // TOLD (AF-216). `tmux` delivers the command to a lane as a PROMPT and wakes a
+    // full turn-loop; `shell` runs it directly and costs nothing.
+    //
+    // Measured 2026-08-24: 53 enabled schedules, 50 `tmux` and 3 `shell`, while
+    // "a schedule fired" cost $1,330 across 2,602 turns in 24h — 214 declared
+    // fires/day, so ~12 turns and ~$6.20 PER FIRE. The mechanism to avoid that
+    // works and reaches 3 of 53, which is ethos rule 1 and the mcp.json shape.
+    //
+    // NOT AUTO-SWITCHED, deliberately. A command that LOOKS like shell can still
+    // need a lane — it may expect the worker's cwd, its env, or its agent. Silently
+    // running such a schedule headless would break it in a way nobody would trace
+    // back to here. So the default is unchanged and the response says what was
+    // picked and how to change it: the caller decides, having been told.
+    let kind = body.kind.clone().unwrap_or_else(|| "tmux".into());
+    let kind_defaulted = body.kind.is_none();
+    m.insert("kind".into(), json!(kind));
     m.insert("sched_type".into(), json!(sched_type));
     m.insert("recurrence".into(), body.recurrence.clone().map(Value::from).unwrap_or(Value::Null));
     m.insert("run_at".into(), json!(run_at));
@@ -556,7 +638,28 @@ pub async fn create(
         .await;
     match write {
         Ok(_) => {
-            let body = slot.lock().expect("slot").take().unwrap_or(Value::Null);
+            let mut body = slot.lock().expect("slot").take().unwrap_or(Value::Null);
+            // Say it in the RESPONSE, not only in the docs. A caller who never
+            // passed `kind` has no reason to know there was a choice, and the
+            // scheduler section of CLAUDE.md did not list the field either — so
+            // the expensive default was unanimous and uninformed.
+            if let Value::Object(o) = &mut body {
+                let expr = o.get("schedule_expr").and_then(Value::as_str).unwrap_or("").to_string();
+                let kind = o.get("kind").and_then(Value::as_str).unwrap_or("tmux").to_string();
+                if let Some(n) = cadence_note(&expr, &kind) {
+                    o.insert("cadence_note".into(), n);
+                }
+            }
+            if kind_defaulted {
+                if let Value::Object(o) = &mut body {
+                    o.insert(
+                        "kind_note".into(),
+                        json!(
+                            "kind defaulted to 'tmux': this command is delivered to the                              session as a PROMPT and wakes a full model turn on every fire                              (~$6/fire measured 2026-08-24). If it is a self-contained                              command that needs no agent, pass kind:'shell' and it runs                              directly for nothing. AF-216."
+                        ),
+                    );
+                }
+            }
             (StatusCode::CREATED, Json(body)).into_response()
         }
         Err(e) => internal(e),
@@ -564,6 +667,48 @@ pub async fn create(
 }
 
 // ---- PATCH /api/schedules/{id} --------------------------------------------
+
+/// Who deleted this schedule, from the audit trail (best effort — the trail
+/// predates nothing here: deletes have been audited since AMUX-1812).
+fn deleter_of(conn: &rusqlite::Connection, id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT by_who FROM schedule_audit WHERE schedule_id = ?1 AND field = 'deleted' \
+         ORDER BY ts DESC, id DESC LIMIT 1",
+        [id],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+    .filter(|s| !s.is_empty())
+}
+
+/// The refusal every write path answers on a tombstone (AMUX-3431). A deleted
+/// schedule NEVER fires — the scheduler reads the list, which excludes it — so
+/// accepting a write here manufactures fictional coverage: SCHED-349's owner
+/// PATCHed a deleted burn backstop twice, got 200s, and the fleet's >=85%
+/// pager was fiction for five days. Names the deletion (when, by whom) and
+/// both honest exits. The WARN is the log-surfacing half of the two-fixes
+/// rule: grep `schedule_write_on_tombstone`.
+fn tombstone_refusal(id: &str, verb: &str, deleted_at: i64, deleted_by: Option<&str>) -> Response {
+    tracing::warn!(
+        "schedule_write_on_tombstone: {verb} {id} refused — deleted at {deleted_at} by {}",
+        deleted_by.unwrap_or("?")
+    );
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": format!("schedule {id} is deleted — {verb} refused"),
+            "blocked": true,
+            "deleted_at": deleted_at,
+            "deleted_by": deleted_by,
+            "how": {
+                "resurrect": format!("PATCH /api/schedules/{id} with {{\"resurrect\": true}} restores it (audited), then it fires again"),
+                "recreate": "POST /api/schedules creates a fresh one",
+            },
+        })),
+    )
+        .into_response()
+}
 
 pub async fn patch(
     State(state): State<AppState>,
@@ -591,6 +736,7 @@ pub async fn patch(
 
     enum Outcome {
         NotFound,
+        Tombstone { deleted_at: i64, deleted_by: Option<String> },
         Applied(Value),
     }
     let slot: Arc<Mutex<Option<Outcome>>> = Arc::new(Mutex::new(None));
@@ -602,6 +748,34 @@ pub async fn patch(
             let Some(mut s) = get_schedule(conn, &id_w)? else {
                 return finish(&slot_w, Outcome::NotFound, no_write());
             };
+            // A tombstone accepts NO ordinary write (AMUX-3431): the row will
+            // never fire, so a 200 here is fictional coverage. The one honest
+            // write is an EXPLICIT resurrect, audited as such.
+            let was_deleted = s.is_deleted();
+            if was_deleted && body.resurrect != Some(true) {
+                return finish(
+                    &slot_w,
+                    Outcome::Tombstone {
+                        deleted_at: s.i64_field("deleted", 0),
+                        deleted_by: deleter_of(conn, s.id()),
+                    },
+                    no_write(),
+                );
+            }
+            if was_deleted {
+                let old = s
+                    .raw()
+                    .get("deleted")
+                    .and_then(Value::as_i64)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                // update_schedule's column list excludes `deleted` on purpose
+                // (an ordinary write must never flip a tombstone), so the
+                // clear is its own explicit statement, like the delete.
+                scheduler::resurrect_schedule(conn, s.id())?;
+                s.set("deleted", Value::Null);
+                insert_audit(conn, s.id(), "deleted", &old, "", "api-resurrect", &by)?;
+            }
             let old_vals: Map<String, Value> = AUDIT_FIELDS
                 .iter()
                 .map(|k| (k.to_string(), s.raw().get(*k).cloned().unwrap_or(Value::Null)))
@@ -666,13 +840,37 @@ pub async fn patch(
                 }
             }
             let events = vec![ev(s.id(), MutationKind::Updated)];
-            finish(&slot_w, Outcome::Applied(s.to_json()), WriteOutcome { applied: true, events })
+            let mut out = s.to_json();
+            if was_deleted {
+                if let Some(o) = out.as_object_mut() {
+                    o.insert("resurrected".into(), json!(true));
+                }
+            }
+            finish(&slot_w, Outcome::Applied(out), WriteOutcome { applied: true, events })
         })
         .await;
     match write {
         Ok(_) => match slot.lock().expect("slot").take() {
-            Some(Outcome::Applied(v)) => Json(v).into_response(),
+            // AMUX-3546: the card says "created OR EDITED". An edit that
+            // changes the cadence is the same decision as choosing it, made a
+            // second time, and it is the one a schedule actually gets — nobody
+            // deletes and recreates to go from hourly to every 10m.
+            Some(Outcome::Applied(mut v)) => {
+                if let Value::Object(o) = &mut v {
+                    let expr =
+                        o.get("schedule_expr").and_then(Value::as_str).unwrap_or("").to_string();
+                    let kind =
+                        o.get("kind").and_then(Value::as_str).unwrap_or("tmux").to_string();
+                    if let Some(n) = cadence_note(&expr, &kind) {
+                        o.insert("cadence_note".into(), n);
+                    }
+                }
+                Json(v).into_response()
+            }
             Some(Outcome::NotFound) => not_found(),
+            Some(Outcome::Tombstone { deleted_at, deleted_by }) => {
+                tombstone_refusal(&id, "PATCH", deleted_at, deleted_by.as_deref())
+            }
             None => internal("patch produced no outcome"),
         },
         Err(e) => internal(e),
@@ -769,6 +967,7 @@ pub async fn skip_next(
 
     enum Outcome {
         NotFound,
+        Tombstone { deleted_at: i64, deleted_by: Option<String> },
         Once,
         NoNext(String),
         Skipped(Value),
@@ -787,7 +986,16 @@ pub async fn skip_next(
                 return finish(&slot_w, Outcome::NotFound, no_write());
             };
             if s.is_deleted() {
-                return finish(&slot_w, Outcome::NotFound, no_write());
+                // Skipping a tombstone is a write to a row that never fires —
+                // name the deletion, same as PATCH (AMUX-3431).
+                return finish(
+                    &slot_w,
+                    Outcome::Tombstone {
+                        deleted_at: s.i64_field("deleted", 0),
+                        deleted_by: deleter_of(conn, s.id()),
+                    },
+                    no_write(),
+                );
             }
             // Python's guard: a one-shot has no "next occurrence" to resume
             // to, so skipping it would mean deleting it under another name.
@@ -824,6 +1032,9 @@ pub async fn skip_next(
         Ok(_) => match slot.lock().expect("slot").take() {
             Some(Outcome::Skipped(v)) => Json(v).into_response(),
             Some(Outcome::NotFound) => not_found(),
+            Some(Outcome::Tombstone { deleted_at, deleted_by }) => {
+                tombstone_refusal(&id, "skip", deleted_at, deleted_by.as_deref())
+            }
             Some(Outcome::Once) => err(
                 StatusCode::BAD_REQUEST,
                 json!({
@@ -890,12 +1101,25 @@ pub async fn run_now(
     let id_r = id.clone();
     let sched = match tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
-        Ok(get_schedule(&conn, &id_r)?)
+        let s = get_schedule(&conn, &id_r)?;
+        // Fetch the deleter alongside, so a tombstone refusal can name it
+        // without a second round trip (AMUX-3431).
+        let del_by = match &s {
+            Some(x) if x.is_deleted() => deleter_of(&conn, x.id()),
+            _ => None,
+        };
+        Ok((s, del_by))
     })
     .await
     {
-        Ok(Ok(Some(s))) if !s.is_deleted() => s,
-        Ok(Ok(_)) => return not_found(),
+        Ok(Ok((Some(s), _))) if !s.is_deleted() => s,
+        Ok(Ok((Some(s), del_by))) => {
+            // Running a deleted schedule by hand is the same fiction as
+            // PATCHing one: it LOOKS live while the scheduler will never
+            // fire it. Name the deletion instead of a bare 404.
+            return tombstone_refusal(&id, "run-now", s.i64_field("deleted", 0), del_by.as_deref());
+        }
+        Ok(Ok((None, _))) => return not_found(),
         Ok(Err(e)) => return internal(e),
         Err(e) => return internal(e),
     };
@@ -1100,6 +1324,36 @@ pub async fn audit_trail(
 
 #[cfg(test)]
 mod tests {
+    /// AMUX-3546: the note states the rate and the spend, and NEVER refuses.
+    ///
+    /// `every 15m` is the card's own specimen: eleven characters, 96 turns a
+    /// day, five of them enabled on the machine that motivated this.
+    #[test]
+    fn a_cadence_note_states_the_rate_and_never_refuses() {
+        let n = super::cadence_note("every 15m", "tmux").expect("countable");
+        let t = n.as_str().unwrap();
+        assert!(t.contains("96"), "the RATE is the fact nobody had: {t}");
+        assert!(t.contains("576"), "96 fires x ~$6 = $576/day, and that is the point: {t}");
+        assert!(
+            t.contains("Nothing is refused"),
+            "the card is explicit that a 10-minute poll is a legitimate thing to want: {t}"
+        );
+
+        // kind='shell' wakes no model, so a spend line would be false. This is
+        // AF-216's distinction, and stating a dollar figure here would undo the
+        // very choice its kind_note exists to encourage.
+        let sh = super::cadence_note("every 15m", "shell").expect("countable");
+        let st = sh.as_str().unwrap();
+        assert!(st.contains("96"), "the rate is still worth stating: {st}");
+        assert!(!st.contains('$'), "a shell schedule costs nothing per fire: {st}");
+
+        // CONTROL: an expression that cannot be parsed produces NO note rather
+        // than a note with a wrong number in it. A confident zero is worse than
+        // silence, because the caller acts on it.
+        assert!(super::cadence_note("not an expression", "tmux").is_none());
+        assert!(super::cadence_note("", "tmux").is_none());
+    }
+
 
     #[test]
     fn dashboard_worker_field_aliases_to_session() {
@@ -1338,6 +1592,73 @@ mod tests {
         let rows = audit.as_array().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["by_who"], json!("tester-session"));
+    }
+
+    #[tokio::test]
+    async fn writes_to_a_tombstone_are_refused_with_provenance_and_resurrect_is_the_exit() {
+        // AMUX-3431 (SCHED-349): a deleted schedule accepted PATCHes, advanced
+        // `updated`, and read back as enabled — five days of fictional burn
+        // pager. Rebuilt from that specimen: delete, then write.
+        let (app, _dir) = app();
+        let (_, created) = send(
+            &app,
+            "POST",
+            "/api/schedules",
+            Some(json!({ "title": "backstop", "schedule_expr": "every 1h", "command": "orig" })),
+            &SES,
+        )
+        .await;
+        let id = created["id"].as_str().unwrap().to_string();
+        send(&app, "DELETE", &format!("/api/schedules/{id}"), None, &SES).await;
+
+        // The ordinary PATCH is REFUSED, naming when and by whom.
+        let (st, body) = send(
+            &app,
+            "PATCH",
+            &format!("/api/schedules/{id}"),
+            Some(json!({ "command": "edited-in-vain" })),
+            &SES,
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["blocked"], json!(true));
+        assert!(body["deleted_at"].as_i64().unwrap() > 0, "{body}");
+        assert_eq!(body["deleted_by"], json!("tester-session"));
+        assert!(body["how"]["resurrect"].as_str().unwrap().contains("resurrect"), "{body}");
+
+        // The refused write did NOT land, and the tombstone says what it is
+        // in words — the raw row's enabled:1 next to deleted:<ts> is exactly
+        // what read as live for five days.
+        let (_, one) = send(&app, "GET", &format!("/api/schedules/{id}"), None, &[]).await;
+        assert_eq!(one["command"], json!("orig"), "{one}");
+        assert_eq!(one["tombstone"], json!(true), "{one}");
+        assert!(one["note"].as_str().unwrap().contains("never fires"), "{one}");
+
+        // Skip is a write too — same refusal, not a bare 404.
+        let (st, sk) = send(&app, "POST", &format!("/api/schedules/{id}/skip"), None, &SES).await;
+        assert_eq!(st, StatusCode::CONFLICT, "{sk}");
+        assert!(sk["error"].as_str().unwrap().contains("deleted"), "{sk}");
+
+        // The honest exit: an EXPLICIT resurrect applies the write, audited.
+        let (st, res) = send(
+            &app,
+            "PATCH",
+            &format!("/api/schedules/{id}"),
+            Some(json!({ "resurrect": true, "command": "back-alive" })),
+            &SES,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{res}");
+        assert_eq!(res["resurrected"], json!(true));
+        assert_eq!(res["command"], json!("back-alive"));
+        // Live again: the list (what the scheduler reads) includes it.
+        let (_, list) = send(&app, "GET", "/api/schedules", None, &[]).await;
+        assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+        // Audited: delete + resurrect are both rows on the `deleted` field.
+        let (_, audit) =
+            send(&app, "GET", &format!("/api/schedules/audit?id={id}&field=deleted"), None, &[])
+                .await;
+        assert_eq!(audit.as_array().unwrap().len(), 2, "{audit}");
     }
 
     #[tokio::test]

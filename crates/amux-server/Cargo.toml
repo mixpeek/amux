@@ -30,6 +30,8 @@ regex.workspace = true
 rcgen.workspace = true
 reqwest.workspace = true
 cron.workspace = true
+calamine.workspace = true
+jsonwebtoken.workspace = true
 tower.workspace = true
 tower-http.workspace = true
 # flate2: decode gzip error bodies in the request log. The log middleware is

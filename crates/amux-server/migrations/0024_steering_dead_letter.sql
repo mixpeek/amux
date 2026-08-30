@@ -1,0 +1,7 @@
+-- AMUX-3110: steering_history gains an outcome column so a DEAD-LETTERED row
+-- is distinguishable from a delivered one. Without it, moving an undeliverable
+-- row into history would make it read as delivered — the exact ethos-rule-4
+-- failure (a wrong answer indistinguishable from a right one) this table
+-- exists to prevent. NULL/absent = delivered (every legacy row); dead-lettered
+-- rows carry 'dead:<reason>' (e.g. dead:no-env-file, dead:archived).
+-- ADDCOL: steering_history outcome TEXT

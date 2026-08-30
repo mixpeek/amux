@@ -742,7 +742,7 @@ pub(crate) async fn accountability_tick(state: &AppState) {
              no board card created or moved — the work isn't tracked yet. Please open a board card \
              for the ask (owned by you) and pursue it. Most recent: \"{snippet}\"",
         );
-        crate::api::session_verbs::steer_enqueue(state, &worker, &text, "accountability", "").await;
+        let _ = crate::api::session_verbs::steer_enqueue(state, &worker, &text, "accountability", "").await;
         nudged.insert(worker.clone(), now);
         sent += 1;
         tracing::info!(worker=%worker, human_messages=msgs, "[accountability] nudged unaccounted lane");
@@ -1212,6 +1212,15 @@ mod tests {
         };
         let now_s = Utc::now().timestamp();
         let now_ms = now_s * 1000;
+        // AF-188: the enqueue refuses a target with no env file, so both lanes
+        // must be REGISTERED for this test to exercise nudging rather than
+        // refusal. Before the widening it queued for lanes that never existed,
+        // which is precisely the shape being stopped.
+        let _home = crate::api::settings::test_env::set_home(_dir.path());
+        std::fs::create_dir_all(_dir.path().join("sessions")).unwrap();
+        for w in ["w-gap", "w-cooled"] {
+            std::fs::write(_dir.path().join(format!("sessions/{w}.env")), "CC_DIR=/tmp\n").unwrap();
+        }
         // Both lanes are unaccounted (a human message, no board card). w-cooled
         // was "already nudged just now" via the prefs stamp; w-gap never was.
         store

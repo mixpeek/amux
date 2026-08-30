@@ -180,6 +180,29 @@ pub fn http_redirect_response(head: &[u8], fallback_host: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// Extract the request path (with query) from a raw HTTP request head.
+pub fn http_head_path(head: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(head);
+    text.lines().next().and_then(|req| req.split_whitespace().nth(1)).map(str::to_string)
+}
+
+/// OAuth callback paths must COMPLETE on the plain-HTTP leg (AMUX-3427).
+/// Google redirects the browser to the registered `http://localhost:<port>`
+/// URI; answering that with a 301 into https strands the consent tab on the
+/// self-signed-cert interstitial and the grant silently never lands — the
+/// exact incident: the user pasted the stranded URL by hand and the exchange
+/// only completed because a human curl'd it. These paths are deliberately
+/// public (single-use state is the guard), so serving them over loopback
+/// plain HTTP adds no exposure the registered http URI did not already have.
+pub fn is_oauth_callback_path(path: &str) -> bool {
+    let bare = path.split('?').next().unwrap_or(path);
+    if bare.contains("..") {
+        return false;
+    }
+    bare == "/api/gmail/callback"
+        || (bare.starts_with("/api/connectors/") && bare.ends_with("/callback"))
+}
+
 #[cfg(test)]
 mod redirect_tests {
     use super::*;
@@ -197,6 +220,64 @@ mod redirect_tests {
         let resp = String::from_utf8(http_redirect_response(b"GET / HTTP/1.0\r\n\r\n", "127.0.0.1:8824")).unwrap();
         assert!(resp.contains("Location: https://127.0.0.1:8824/"));
     }
+
+    #[test]
+    fn oauth_callbacks_are_recognised_and_nothing_else_is() {
+        // These must be SERVED on the plain leg (AMUX-3427: a 301 into https
+        // strands the consent tab on the cert interstitial).
+        assert!(is_oauth_callback_path("/api/gmail/callback?state=x&code=y"));
+        assert!(is_oauth_callback_path("/api/gmail/callback"));
+        assert!(is_oauth_callback_path("/api/connectors/google/callback?code=y"));
+        assert!(is_oauth_callback_path("/api/connectors/slack/callback"));
+        // Everything else keeps the https redirect — the carve-out must not
+        // quietly grow into serving the whole API over plain HTTP.
+        assert!(!is_oauth_callback_path("/"));
+        assert!(!is_oauth_callback_path("/board"));
+        assert!(!is_oauth_callback_path("/api/sessions"));
+        assert!(!is_oauth_callback_path("/api/gmail/accounts"));
+        assert!(!is_oauth_callback_path("/api/connectors/google/token"));
+        assert!(!is_oauth_callback_path("/api/gmail/callback/../../sessions"));
+        assert!(!is_oauth_callback_path("/api/connectors/../admin/callback"));
+    }
+
+    #[test]
+    fn head_path_parses_the_request_line() {
+        assert_eq!(
+            http_head_path(b"GET /api/gmail/callback?state=x HTTP/1.1\r\nHost: h\r\n\r\n").as_deref(),
+            Some("/api/gmail/callback?state=x")
+        );
+        assert_eq!(http_head_path(b"").as_deref(), None);
+    }
+}
+
+/// Complete an OAuth callback that arrived on the plain-HTTP leg by replaying
+/// it against our own TLS listener on loopback (cert unverified: it is our own
+/// self-signed cert, and the hop never leaves the machine). The response body
+/// is the callback's own HTML ("✓ connected" / the error page), so the consent
+/// tab finishes without the browser ever crossing the interstitial.
+async fn proxy_oauth_callback(path: &str, fallback_host: &str) -> Result<Vec<u8>, String> {
+    let port = fallback_host.rsplit(':').next().and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or_else(crate::config::canonical_port);
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let res = client
+        .get(format!("https://127.0.0.1:{port}{path}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = res.status();
+    let body = res.text().await.map_err(|e| e.to_string())?;
+    Ok(format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+        status.as_u16(),
+        status.canonical_reason().unwrap_or("OK"),
+        body.len(),
+        body
+    )
+    .into_bytes())
 }
 
 /// axum-server Acceptor that answers plain-HTTP requests on the TLS port
@@ -235,12 +316,33 @@ where
             let mut first = [0u8; 1];
             let n = stream.peek(&mut first).await?;
             if n == 1 && first[0] != 0x16 {
-                // Plain HTTP: read the head, answer the redirect, close.
+                // Plain HTTP: read the head. OAuth callbacks are SERVED in
+                // place (see is_oauth_callback_path — a 301 into https strands
+                // the consent tab on the cert interstitial); everything else
+                // gets the redirect, as before.
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let mut stream = stream;
-                let mut head = vec![0u8; 2048];
+                let mut head = vec![0u8; 4096];
                 let read = stream.read(&mut head).await.unwrap_or(0);
-                let resp = http_redirect_response(&head[..read], &fallback);
+                let path = http_head_path(&head[..read]);
+                let resp = match path.as_deref().filter(|p| is_oauth_callback_path(p)) {
+                    Some(p) => match proxy_oauth_callback(p, &fallback).await {
+                        Ok(r) => {
+                            tracing::info!(
+                                path = p.split('?').next().unwrap_or(p),
+                                "plain-http oauth callback served in place (no TLS interstitial)"
+                            );
+                            r
+                        }
+                        Err(e) => {
+                            // Fall back to the old behavior so the flow is
+                            // never WORSE than before the fix — but say so.
+                            tracing::warn!(error = %e, "oauth callback proxy failed — falling back to https redirect (the consent tab may strand on the cert interstitial)");
+                            http_redirect_response(&head[..read], &fallback)
+                        }
+                    },
+                    None => http_redirect_response(&head[..read], &fallback),
+                };
                 let _ = stream.write_all(&resp).await;
                 let _ = stream.shutdown().await;
                 return Err(std::io::Error::new(

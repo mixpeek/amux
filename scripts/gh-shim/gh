@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# amux `gh` shim — put the GitHub App token in front of every fleet gh call.
+#
+# WHY (AMUX-3789, from autopilot MA-103 / MG-1526). mixpeek's CLAUDE.md has
+# mandated `eval "$(~/.amux/github-app/get-token.sh)"` before any gh call since
+# May. It is DOCUMENTED-ONLY: there is no wrapper, no alias, nothing on the box
+# enforcing it, so a bare `gh` in a fleet shell authenticates as the ambient
+# user. Measured 2026-08-27 on this machine:
+#
+#     gh api /rate_limit          ambient -> login esteininger, 5000/hr, 4447 left
+#     GH_TOKEN=<app> same call    app     -> 8700/hr, 8663 left
+#
+# esteininger is also SDK_DISPATCH_TOKEN's identity, so fleet gh spends the
+# budget CI needs, and GitHub's SECONDARY (concurrency/abuse) limits 403 real CI
+# calls while /rate_limit still shows primary headroom. MG-1526 reproduced that
+# 403. Three enabled schedules carry bare gh; interactive use is not auditable
+# at all, which is the argument for a wrapper over more documentation.
+#
+# WHAT THE APP TOKEN CANNOT DO, measured rather than assumed, because this is
+# the whole risk of turning it on:
+#
+#     gh api /user        403 "Resource not accessible by integration"
+#     gh api /repos/...   OK
+#     gh run list         OK
+#     gh workflow list    OK
+#
+# An installation token has no USER context. Everything the card is about
+# (workflow run/watch, run list, api on repos) works; anything asking "who am I"
+# does not. If that bites, `AMUX_GH_SHIM=0 gh ...` restores the ambient identity
+# for one call, and unsetting it in the environment restores it for a session.
+#
+# FAILS OPEN, LOUDLY. If the token cannot be minted this delegates to the real
+# gh as the ambient identity rather than refusing — a shim that can take gh away
+# from the whole fleet on a bad network is worse than the contention it fixes.
+# The stderr line is how a sweep sees that happening; silence here would make a
+# broken minter indistinguishable from a working one.
+#
+# NEVER PRINTS THE TOKEN. get-token.sh --raw writes it to stdout, so it is
+# captured into a variable and exported, never echoed, never put in a log line.
+set -uo pipefail
+
+# Resolve the REAL gh: the first `gh` on PATH that is not in THIS file's own
+# directory. Comparing resolved directories rather than argv[0] is what keeps a
+# symlinked install (~/.amux/bin/gh -> this file) from finding itself and
+# forking until the box gives up.
+_self_dir=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)
+_real=""
+_old_ifs=$IFS
+IFS=:
+for _d in $PATH; do
+  [ -n "$_d" ] || continue
+  _rd=$(cd "$_d" 2>/dev/null && pwd) || continue
+  [ "$_rd" = "$_self_dir" ] && continue
+  if [ -x "$_rd/gh" ]; then _real="$_rd/gh"; break; fi
+done
+IFS=$_old_ifs
+
+if [ -z "$_real" ]; then
+  echo "amux gh shim: no real \`gh\` on PATH outside $_self_dir — cannot delegate" >&2
+  exit 127
+fi
+
+# Do not override a caller who has already decided. An explicitly exported
+# GH_TOKEN/GITHUB_TOKEN is someone choosing an identity on purpose (CI, a
+# one-off with a PAT), and silently replacing it would be the same class of
+# surprise this shim exists to remove.
+if [ "${AMUX_GH_SHIM:-1}" != "0" ] && [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
+  _get="${AMUX_HOME:-$HOME/.amux}/github-app/get-token.sh"
+  if [ -x "$_get" ]; then
+    if _tok=$("$_get" --raw 2>/dev/null) && [ -n "$_tok" ]; then
+      export GH_TOKEN="$_tok"
+    else
+      echo "amux: gh app-token mint FAILED — this call runs as the AMBIENT identity and" \
+           "competes with CI for its rate limit (AMUX-3789)" >&2
+    fi
+    unset _tok
+  else
+    echo "amux: no $_get — gh runs as the ambient identity (AMUX-3789)" >&2
+  fi
+fi
+
+# `exec`, so gh owns the terminal: `gh run watch` streams, exit codes pass
+# through unchanged, and nothing here buffers output. A shim that captured
+# stdout to inspect it would break the one command CI lanes use most.
+exec "$_real" "$@"

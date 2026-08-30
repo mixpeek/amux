@@ -54,7 +54,7 @@ const GATEWAY_OWNED: &[&str] =
 /// near-misses and not just the hits: an exclusion list that swallows a sibling
 /// hides exactly the work it was meant to make visible (ethos rule 1's
 /// over-filtering corollary).
-fn gateway_owned(path: &str) -> bool {
+pub(crate) fn gateway_owned(path: &str) -> bool {
     GATEWAY_OWNED.iter().any(|p| {
         if let Some(prefix) = p.strip_suffix('/') {
             path == prefix || path.starts_with(p)
@@ -62,6 +62,24 @@ fn gateway_owned(path: &str) -> bool {
             path == *p
         }
     })
+}
+
+/// Families whose ABSENCE is a documented product state with a GUARDED caller
+/// (AMUX-3468). `/api/tunnel/*`: the python-era tunnel API was never ported;
+/// the one caller (`amux tunnel`, AF-63) PREFLIGHTS /api/tunnel/status and
+/// prints "not available in this server build" instead of failing blind — so
+/// the census's own why_it_matters ("silent capability loss unless the client
+/// fails loudly") does not apply, and a permanent red here trains readers to
+/// skim the rows that matter (the AF-132 lesson). Entries are prefixes ending
+/// in `/`. The exclusion is SELF-EXPIRING both ways: if the family gets
+/// mounted, the stale entry FAILS the census naming itself for deletion; and
+/// if the guarded caller is ever removed, the call site disappears from the
+/// census with it. Porting-or-removing tunnel is a product call (Ethan's),
+/// tracked on AMUX-3468.
+const CALLER_GUARDED_ABSENT: &[&str] = &["/api/tunnel/"];
+
+fn caller_guarded_absent(path: &str) -> bool {
+    CALLER_GUARDED_ABSENT.iter().any(|p| path.starts_with(p))
 }
 
 pub fn route_callers_have_routes(
@@ -98,6 +116,29 @@ pub fn route_callers_have_routes(
             if let RouteMatch::MethodNotAllowed(_) = verdict {
                 verdict = RouteMatch::Ok;
             }
+        }
+        // Documented-absent family with a guarded caller: Missing is the
+        // EXPECTED state and passes with the license named; anything else
+        // (the family got mounted, or a verb mismatch) means the exclusion
+        // is STALE and must fail so the entry gets deleted.
+        if caller_guarded_absent(&c.path) {
+            match verdict {
+                RouteMatch::Missing => {
+                    out.push(InvariantResult::pass(ID).entity(format!("{} {}", c.method, c.path)));
+                }
+                _ => out.push(
+                    InvariantResult::fail(
+                        ID,
+                        format!("{} stays in CALLER_GUARDED_ABSENT only while unrouted", c.path),
+                        format!(
+                            "{} now has a mounted route — the CALLER_GUARDED_ABSENT entry is                              STALE; delete it so the census guards this family again",
+                            c.path
+                        ),
+                    )
+                    .entity(format!("{} {}", c.method, c.path)),
+                ),
+            }
+            continue;
         }
         match verdict {
             RouteMatch::Missing => out.push(
@@ -366,6 +407,240 @@ pub fn reviewer_is_independent(cards: &[(String, String, String)]) -> Vec<Invari
     out
 }
 
+/// WHICH UNIT IS EACH `ts` COLUMN IN? (AF-184)
+///
+/// Five tables in this schema carry a column literally named `ts` and they use
+/// TWO different units, with nothing in the name to say which:
+///
+/// ```text
+/// SECONDS       _amux_request_log.ts, session_events.ts, token_ledger.ts
+/// MILLISECONDS  cmd_history.ts, interaction_log.ts
+/// ```
+///
+/// This has now cost four separate sessions. Two on one evening wrote
+/// `datetime(ts,'unixepoch')` against `interaction_log` and compared to a
+/// seconds cutoff, so the filter was ~1000x too small and matched the entire
+/// table — one of them nearly reported the whole historical backlog as post-fix
+/// regressions (recorded in ethos rule 7). On 2026-08-23 amux read
+/// `_amux_request_log.ts` as milliseconds from the other direction and got
+/// "496040 hours ago", and was one absurd value away from filing two cards
+/// against already-fixed bugs.
+///
+/// The tell that saved that one was the VALUE, not a review. That is the whole
+/// argument for checking it here: a unit error is invisible in the code and
+/// glaring in the data, so the check belongs where the data is.
+///
+/// This table is the DECLARATION. A column absent from it is a failure, not a
+/// pass — adding a timestamp column should force its author to say which unit it
+/// is, which is the only durable fix short of renaming every column.
+///
+/// SCOPE, STATED BECAUSE AN UNSTATED EXEMPTION IS THE RULE-1 TRAP. amux caught
+/// this in review: the first draft keyed on columns literally named `ts`, which
+/// saw 15 of the 44 numeric timestamp columns in this schema and silently
+/// exempted the other 29 — including `cmd_history.queued_at` and
+/// `cmd_history.delivered_at`, two of the five MILLISECOND columns that are the
+/// entire point of the check. A reader trusting the table would have assumed it
+/// was exhaustive over timestamps rather than over one spelling of them.
+///
+/// So the filter is now: a column named `ts`, `*_ts`, `*_at`, `time` or
+/// `timestamp`, whose DECLARED TYPE is numeric. Text columns are out of scope on
+/// purpose — an ISO-8601 string says its own unit, which is exactly the property
+/// the numeric ones lack. Declared type rather than a sampled value, so an empty
+/// table is still in scope.
+pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
+    // (table, column, is_millis) — MEASURED against the live database, not read
+    // off the migrations. 44 numeric timestamp columns; 5 are milliseconds and
+    // they are the whole trap.
+    ("_amux_invariant_incident", "resolved_at", false),
+    ("_amux_invariant_result", "ts", false),
+    ("_amux_media_jobs", "created_at", false), // UNVERIFIED: no rows yet; seconds is the convention every sibling follows
+    ("_amux_media_jobs", "updated_at", false), // UNVERIFIED: no rows yet; seconds is the convention every sibling follows
+    ("_amux_request_log", "ts", false),
+    // AF-175's boot column: which process wrote the row. Same unit as `ts` by
+    // construction — it is `heartbeat::boot_at()`, the same clock — and the
+    // one-sided restart predicate depends on `boot_at <= ts` holding, so a unit
+    // mismatch here would not merely mislead a reader, it would silently
+    // exclude or admit the wrong rows. Verified against 174 live rows: 0 with
+    // boot_at > ts, and the magnitude is 1.78e9 (seconds), not 1.78e12.
+    ("_amux_request_log", "boot_at", false),
+    ("cmd_history", "delivered_at", true),
+    ("cmd_history", "queued_at", true),
+    ("cmd_history", "ts", true),
+    ("dictation_history", "ts", true),
+    ("guard_verdicts", "outcome_ts", false),
+    ("guard_verdicts", "ts", false),
+    ("interaction_log", "ts", true),
+    ("issue_files", "added_at", false),
+    ("issue_tags", "added_at", false),
+    // SECONDS, like every other `issues` timestamp. Set from `row.updated`,
+    // which the caller stamps in seconds, and backfilled through
+    // `strftime('%s', ...)` which yields seconds (AMUX-3609).
+    ("issues", "closed_at", false),
+    ("issues", "last_verified_at", false),
+    ("layout_presets", "created_at", false),
+    ("logs", "ts", false),
+    ("mdai_runs", "ts", false),
+    ("org", "created_at", false),
+    ("org_invites", "created_at", false),
+    ("org_invites", "expires_at", false),
+    ("org_invites", "used_at", false), // UNVERIFIED: no rows yet; seconds is the convention every sibling follows
+    ("org_members", "joined_at", false), // UNVERIFIED: no rows yet; seconds is the convention every sibling follows
+    ("owner_alerts", "ts", false),
+    ("proxies", "created_at", false),
+    ("reclaim_quarantine", "created_at", false),
+    ("reclaim_quarantine", "purged_at", false),
+    ("reclaim_scans", "finished_at", false),
+    ("reclaim_scans", "started_at", false),
+    ("schedule_audit", "ts", false),
+    ("schedule_runs", "ran_at", false),
+    ("search_docs", "updated_at", false),
+    ("send_dedup", "ts", false),
+    ("server_downtime", "up_at", false),
+    ("server_heartbeat", "beat_at", false),
+    ("session_events", "ts", false),
+    ("share_tokens", "created_at", false),
+    ("share_tokens", "expires_at", false), // UNVERIFIED: no rows yet; seconds is the convention every sibling follows
+    ("status_scope", "added_at", false),
+    ("steering_history", "delivered_at", false),
+    ("steering_history", "queued_at", false),
+    ("steering_queue", "queued_at", false),
+    ("token_ledger", "ts", false),
+    ("waitlist", "ts", false), // UNVERIFIED: no rows yet; seconds is the convention every sibling follows
+];
+
+/// Does each declared timestamp column actually hold what readers assume?
+///
+/// `observed` is `(table.column, MAX(value))` — `None` when the table is empty,
+/// which is UNKNOWN and not a pass: an empty table is an absence of evidence and
+/// reporting it as green is the silence-reads-as-health failure this repo has a
+/// rule about.
+///
+/// `undeclared` is any timestamp-shaped column the schema has and
+/// [`TIMESTAMP_COLUMNS`] does not. Those fail: an undeclared unit is exactly the
+/// state that produced every incident above.
+pub fn timestamp_units_are_what_readers_assume(
+    observed: &[(String, Option<f64>)],
+    undeclared: &[String],
+    now: f64,
+) -> Vec<InvariantResult> {
+    const ID: &str = "schema.timestamp_units_declared";
+    // Generous: a year ahead for clock skew, ten years back for old rows. The
+    // discriminator is 1000x, so the window does not need to be tight — and a
+    // tight one would be a tuned parameter guarding a factor-of-1000 error.
+    const AHEAD: f64 = 86_400.0 * 365.0;
+    const BEHIND: f64 = 86_400.0 * 3_650.0;
+    let mut out = Vec::new();
+    for name in undeclared {
+        out.push(
+            InvariantResult::fail(
+                ID,
+                format!("{name}: unit declared in TIMESTAMP_COLUMNS"),
+                "timestamp-shaped column with no declared unit — say whether it is seconds or \
+                 milliseconds, because the column name cannot"
+                    .to_string(),
+            )
+            .entity(name),
+        );
+    }
+    for (name, max) in observed {
+        let declared = TIMESTAMP_COLUMNS
+            .iter()
+            .find(|(t, c, _)| format!("{t}.{c}") == *name)
+            .map(|(_, _, ms)| *ms);
+        let Some(is_millis) = declared else { continue };
+        let Some(v) = *max else {
+            out.push(
+                InvariantResult::unknown(ID, format!("{name} is empty — no rows to check the unit against"))
+                    .entity(name),
+            );
+            continue;
+        };
+        let as_declared = if is_millis { v / 1000.0 } else { v };
+        if as_declared <= now + AHEAD && as_declared >= now - BEHIND {
+            out.push(InvariantResult::pass(ID).entity(name));
+            continue;
+        }
+        // NAME THE OTHER READING. "out of range" sends the reader to the clock;
+        // "this is seconds, not milliseconds" sends them to the one line that is
+        // wrong. The whole incident is that the two are indistinguishable
+        // without doing this arithmetic.
+        let other = if is_millis { v } else { v / 1000.0 };
+        let other_fits = other <= now + AHEAD && other >= now - BEHIND;
+        out.push(
+            InvariantResult::fail(
+                ID,
+                format!(
+                    "{name} holds {} (declared)",
+                    if is_millis { "milliseconds" } else { "seconds" }
+                ),
+                format!(
+                    "MAX = {v:.0}, which under the declared unit is {:.0} hours from now{}",
+                    (now - as_declared) / 3600.0,
+                    if other_fits {
+                        format!(
+                            " — it fits as {} instead. Either the declaration or the writer is wrong.",
+                            if is_millis { "SECONDS" } else { "MILLISECONDS" }
+                        )
+                    } else {
+                        String::new()
+                    }
+                ),
+            )
+            .entity(name),
+        );
+    }
+    out
+}
+
+/// A request cannot arrive before the process that served it booted (AMUX-3647).
+///
+/// This is the assumption the latency detectors now rest on, and it was being
+/// ASSERTED rather than checked. `spans_own_restart` used to subtract a latency
+/// from `ts` and call the result an arrival, which is a moment before the
+/// request existed; the fix compares `ts < boot_at` instead, and that comparison
+/// is only correct because migrations run inside `Store::open`, `record_boot`
+/// stamps the boot straight after, and the listener binds several hundred lines
+/// later. Measured at the time: 0 of 97,019 rows violate it.
+///
+/// The whole point of the check is that the structural argument could stop being
+/// true without anybody noticing. Socket activation, an inherited listener, a
+/// `record_boot` moved after the bind: each would make `since_boot_s` go
+/// negative and each would look like nothing at all. A failing row here is not
+/// cosmetic, it means the exclusion branch this repo believes is unreachable has
+/// started firing.
+///
+/// UNKNOWN when no row carries a `boot_at`, because "the invariant holds" and
+/// "the column was never populated" are different facts and a pass would say the
+/// wrong one. That is the AMUX-3575 rule: a check that cannot run says so.
+pub fn request_arrival_follows_boot(
+    rows_with_boot: i64,
+    arrivals_before_boot: i64,
+    window_h: f64,
+) -> Vec<InvariantResult> {
+    const ID: &str = "reqlog.arrival_follows_boot";
+    if rows_with_boot == 0 {
+        return vec![InvariantResult::unknown(
+            ID,
+            format!("no request_log row in the last {window_h:.0}h carries a boot_at"),
+        )];
+    }
+    if arrivals_before_boot == 0 {
+        return vec![InvariantResult::pass(ID)];
+    }
+    vec![InvariantResult::fail(
+        ID,
+        format!("0 of {rows_with_boot} rows with ts < boot_at"),
+        format!(
+            "{arrivals_before_boot} request(s) in the last {window_h:.0}h are stamped BEFORE the \
+             boot of the process that served them. `ts` is the request START, so this cannot \
+             happen while the listener binds after record_boot — something moved. The latency \
+             detectors' restart exclusion (autofix::spans_own_restart) is now live rather than \
+             structurally false, and /api/logs/stats will report negative since_boot_s. Recheck: \
+             SELECT COUNT(*) FROM _amux_request_log WHERE boot_at IS NOT NULL AND ts < boot_at;"
+        ),
+    )]
+}
+
 pub fn config_env_reaches_process(env_file: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Vec<InvariantResult> {
     const ID: &str = "config.env_reaches_process";
     let mut out = Vec::new();
@@ -386,14 +661,46 @@ pub fn config_env_reaches_process(env_file: &str, lookup: &dyn Fn(&str) -> Optio
         let want = v.trim().trim_matches('"').trim_matches('\'');
         match lookup(k) {
             Some(got) if got == want => out.push(InvariantResult::pass(ID).entity(k)),
-            Some(_) => out.push(
-                InvariantResult::fail(ID, format!("{k} = (server.env value)"), format!("{k} = (different process value)"))
+            // TWO STATES BEHIND ONE SYMPTOM, with opposite remedies (AMUX-3612).
+            // Drift alone used to be the whole message, so a reader could not
+            // tell a value that WILL self-heal on the next redeploy from one
+            // that never will, and the invariant read as chronic noise.
+            //
+            // `AMUX_ENV_FROM_FILE` names the keys this server exported from
+            // server.env, carried across the self-adoption exec. If the drifting
+            // key is in it, the refresh mechanism is broken and that is a real
+            // defect. If it is absent, this process lineage predates the marker:
+            // its exports are indistinguishable from launchd's own environment,
+            // they are deliberately left alone, and no amount of redeploying
+            // clears them because self-adoption re-execs with the inherited env.
+            Some(_) => {
+                let ours = lookup(crate::config::ENV_FROM_FILE_MARKER)
+                    .unwrap_or_default()
+                    .split(',')
+                    .any(|m| m.trim() == k);
+                let (class, remedy) = if ours {
+                    ("config-drift-despite-refresh",
+                     "this key IS marked as server-exported, so ServerConfig::load should have \
+                      refreshed it on the last boot and did not — a real defect in the refresh path")
+                } else {
+                    ("config-drift-unmarked-lineage",
+                     "this process lineage predates AMUX_ENV_FROM_FILE, so the value is pinned \
+                      until a REAL restart: `launchctl kickstart -k gui/$(id -u)/com.amux.server-rs`. \
+                      Redeploying will not clear it — self-adoption re-execs with the inherited env")
+                };
+                out.push(
+                    InvariantResult::fail(
+                        ID,
+                        format!("{k} = (server.env value)"),
+                        format!("{k} = (different process value) — {remedy}"),
+                    )
                     .entity(k)
                     .evidence(json!({
-                        "key": k, "class": "config-drift",
+                        "key": k, "class": class, "server_exported": ours, "remedy": remedy,
                         "note": "values intentionally omitted — server.env holds credentials",
                     })),
-            ),
+                )
+            }
             None => out.push(
                 InvariantResult::fail(ID, format!("{k} present in process env"), format!("{k} unset in process env"))
                     .entity(k)
@@ -425,7 +732,22 @@ pub fn config_env_reaches_process(env_file: &str, lookup: &dyn Fn(&str) -> Optio
 ///
 /// The IDLE qualifier is load-bearing: a deep queue behind a busy worker is
 /// correct behaviour, and flagging it would train everyone to ignore this.
-pub fn queue_has_live_consumer(items: &[QueuedItem], now: f64, stale_after_s: f64) -> Vec<InvariantResult> {
+/// `dead_letter_after_s` is `steer_dead_letter_s()` — the SAME deadline the
+/// reaper uses, passed in so the check stays pure. AMUX-3473: this check used
+/// to fail unroutable rows after `stale_after_s` (300s) while the dead-letter
+/// deliberately waits an hour, so for 55 minutes per row the invariant flagged
+/// a fate the system had already scheduled — the view disagreeing with the
+/// predicate of the mechanism it describes, flapping across 18 entities and
+/// refiling within hours of every retirement. And `not-running` rows are
+/// KEPT by design (the 2026-08-19 panic: age cannot distinguish a 6.5h outage
+/// from a dead lane, and every queued row delivered on restart), so failing
+/// them forever was a permanent red that trains skimming.
+pub fn queue_has_live_consumer(
+    items: &[QueuedItem],
+    now: f64,
+    stale_after_s: f64,
+    dead_letter_after_s: f64,
+) -> Vec<InvariantResult> {
     const ID: &str = "queue.has_live_consumer";
     let mut out = Vec::new();
     for it in items {
@@ -436,49 +758,105 @@ pub fn queue_has_live_consumer(items: &[QueuedItem], now: f64, stale_after_s: f6
             continue;
         }
         match it.block_reason.as_deref() {
-            // The target is not a live consumer at all (no env file, not
-            // running, archived). The message is UNROUTABLE, not merely late:
-            // no delivery tick will ever land it, so this is a distinct, louder
-            // fact than an idle consumer with lagging delivery, and it was
-            // misread as the latter because the invariant did not consult
-            // lane_block_reason (AMUX-3084 / AMUX-3111, ethos rule 4: the
-            // instrument could not express the discriminator). The cure is a
-            // dead-letter path (AMUX-3110), not waiting for a consumer that will
-            // never exist.
+            // A registered-but-stopped lane KEEPS its queue by design (the
+            // 08-19 panic lesson above); the sender was told "queued" at send
+            // time. Not a failure — a failing invariant on a deliberate state
+            // is the AF-132 shape.
+            Some("not-running") => {
+                out.push(InvariantResult::pass(ID).entity(&it.target));
+            }
+            // no-env-file / archived: the dead-letter reaper OWNS this row's
+            // fate. Inside its deadline the wait is sanctioned; PAST it, the
+            // reaper failed to reap — a real wedge, and the louder fact.
             Some(reason) => {
-                out.push(
-                    InvariantResult::fail(
-                        ID,
-                        format!("queued item delivered or dead-lettered within {stale_after_s:.0}s"),
-                        format!("undelivered for {age:.0}s; target is UNROUTABLE ({reason})"),
-                    )
-                    .entity(&it.target)
-                    .evidence(json!({
-                        "target": it.target, "age_s": age, "queue": it.queue,
-                        "class": "unroutable-target",
-                        "block_reason": reason,
-                        "fix": "dead-letter unreachable rows (AMUX-3110); do not wait for a \
-                                consumer that will never exist",
-                    })),
-                );
+                if age <= dead_letter_after_s {
+                    out.push(InvariantResult::pass(ID).entity(&it.target));
+                } else {
+                    out.push(
+                        InvariantResult::fail(
+                            ID,
+                            format!(
+                                "an unroutable row is dead-lettered within {dead_letter_after_s:.0}s"
+                            ),
+                            format!(
+                                "undelivered for {age:.0}s, {:.0}s PAST the dead-letter deadline; \
+                                 target is UNROUTABLE ({reason}) and the reaper did not reap it",
+                                age - dead_letter_after_s
+                            ),
+                        )
+                        .entity(&it.target)
+                        .evidence(json!({
+                            "target": it.target, "age_s": age, "queue": it.queue,
+                            "class": "dead-letter-wedged",
+                            "block_reason": reason,
+                            "dead_letter_after_s": dead_letter_after_s,
+                            "fix": "the reaper (steer_dead_letter_verdict path) should have \
+                                    moved this row to steering_history; find out why it did not",
+                        })),
+                    );
+                }
             }
             // A live consumer sitting IDLE with an old item in front of it is
             // the original producer-without-consumer incident: it is not draining.
+            // A live consumer sitting IDLE with an old item in front of it is
+            // the original producer-without-consumer incident: it is not
+            // draining.
+            //
+            // AMUX-3572: measure that against WHEN IT WENT IDLE, not against
+            // when the row was queued. Those are different clocks, and this
+            // check's own `expected` string names the first one ("within 300s
+            // of the target going idle") while the code used the second. For a
+            // lane whose turns routinely exceed 300s the age is already past
+            // the threshold before it goes idle, so the check fired on the
+            // instant of every busy->idle transition and cleared as soon as
+            // delivery ran seconds later. That produced 629 occurrences for
+            // one lane and an auto-filed card describing an incident that had
+            // already healed, which cost a session an investigation. A queue
+            // behind a lane that was busy the whole time is the queue WORKING.
+            //
+            // `idle_since` missing while `target_idle` is true means the report
+            // carried no timestamp: fall back to the queued clock rather than
+            // passing, so a genuinely stuck consumer is never silently excused.
             None if it.target_idle => {
-                out.push(
-                    InvariantResult::fail(
-                        ID,
-                        format!("queued item delivered within {stale_after_s:.0}s of the target going idle"),
-                        format!("undelivered for {age:.0}s while target is IDLE"),
-                    )
-                    .entity(&it.target)
-                    .evidence(json!({
-                        "target": it.target, "age_s": age, "queue": it.queue,
-                        "class": "producer-without-consumer",
-                        "incident": "steering queue had 3 producers and no consumer; auto-pickup \
-                                     died with the python retirement",
-                    })),
-                );
+                let idle_for = it
+                    .idle_since
+                    .map(|s| now - s.max(it.queued_at))
+                    .unwrap_or(age);
+                if idle_for <= stale_after_s {
+                    // Idle, but not for long enough to have drained yet.
+                    out.push(InvariantResult::pass(ID).entity(&it.target));
+                } else {
+                    out.push(
+                        InvariantResult::fail(
+                            ID,
+                            format!(
+                                "queued item delivered within {stale_after_s:.0}s of the target going idle"
+                            ),
+                            format!(
+                                "undelivered for {idle_for:.0}s of IDLE time \
+                                 (queued {age:.0}s ago)"
+                            ),
+                        )
+                        .entity(&it.target)
+                        .evidence(json!({
+                            "target": it.target, "queue": it.queue,
+                            // Both clocks, always, so the next occurrence says
+                            // which one it tripped on without anyone re-deriving
+                            // it from the source (ethos rule 4).
+                            "age_s": age,
+                            "idle_for_s": idle_for,
+                            "idle_since": it.idle_since,
+                            "measured_against": if it.idle_since.is_some() {
+                                "idle_since"
+                            } else {
+                                "queued_at (report carried no timestamp)"
+                            },
+                            "class": "producer-without-consumer",
+                            "incident": "steering queue had 3 producers and no consumer; auto-pickup \
+                                         died with the python retirement",
+                        })),
+                    );
+                }
             }
             // A deep queue behind a BUSY worker (routable, not idle) is correct.
             None => out.push(InvariantResult::pass(ID).entity(&it.target)),
@@ -502,6 +880,11 @@ pub struct QueuedItem {
     /// Without it the check could not tell an unroutable ghost from an
     /// idle-but-lagging consumer (AMUX-3084 / AMUX-3111).
     pub block_reason: Option<String>,
+    /// When the target last REPORTED itself idle, if it is idle now. The idle
+    /// branch below measures against this rather than against `queued_at`,
+    /// because those are different clocks and only one of them matches what the
+    /// check claims to test (AMUX-3572).
+    pub idle_since: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -532,7 +915,19 @@ pub fn status_agrees_with_pane(lanes: &[LaneTruth]) -> Vec<InvariantResult> {
         // a quiet pane is not: a lane can be legitimately mid-turn with
         // nothing painting (a long tool call, a subagent), and flagging it
         // would fire constantly and train everyone to ignore this.
-        if l.pane_says_working && l.status == "idle" {
+        // GRACE (AMUX-3474): only a disagreement that has AGED is a
+        // contradiction. A fresh idle report under a working pane is the
+        // routine turn-boundary race — Stop landed, the next steered prompt
+        // began, its prompt-hook report is in flight — and this class filed
+        // ~100 per-entity cards over weeks, flapping healed-by-read-time
+        // every time. 120s keeps the incident this check exists for
+        // (AMUX-2646's fabricated report was HOURS old) and the dropped-report
+        // case (a lost prompt-hook report ages past the grace within two
+        // minutes of real work, still fires, still files — and a dropped
+        // report IS worth a card). The dominant drop producer, reports fired
+        // into a 10s restart window, died with AMUX-3458's exec adoption;
+        // this grace covers the residue.
+        if l.pane_says_working && l.status == "idle" && l.report_age_s > 120.0 {
             out.push(
                 InvariantResult::fail(
                     ID,
@@ -834,44 +1229,338 @@ pub const REPORT_HOOK: InstalledScript = InstalledScript {
     noun: "report hook",
 };
 
+/// AF-132: the committed side must be read at CHECK time, not baked at build
+/// time. These scripts are not compiled into the binary's deploy unit — the
+/// builder rebuilds only on crates//Cargo.* commits — so a script-only commit
+/// (4f06e22) left the baked sha stale and this check fired on the HEALTHY
+/// state, calling "runtime == HEAD, tree clean" an unreviewed hand-edit and
+/// prescribing a remedy (reinstall from source) that produces the
+/// byte-identical file already running. A loud wrong probe with an unwalkable
+/// remedy is the AMUX-2140 shape: the sanctioned instruction and the failure
+/// are the same action.
+///
+/// `head_src` is `git show HEAD:<path>` at check time (None when no repo is
+/// reachable — the cloud image); `worktree_src` is the tracked source file as
+/// it sits on disk. The verdict table, in order:
+/// - runtime == HEAD                          -> PASS (the healthy state).
+/// - runtime == worktree != HEAD              -> fail: an UNCOMMITTED edit is
+///   installed — real, actionable, and a different claim from a hand-edit.
+/// - runtime != both                          -> the original hand-edit alarm,
+///   now true when it fires.
+/// - no git (head_src None): fall back to the build-time baked source, and a
+///   mismatch HEDGES — it names both possible causes and this binary's own
+///   commit (AMUX_BUILD_COMMIT), because from a baked sha alone a hand-edit
+///   and a binary predating a legitimate script commit are indistinguishable.
 pub fn installed_script_matches_committed(
     spec: &InstalledScript,
-    committed_src: &str,
+    baked_src: &str,
+    head_src: Option<&str>,
+    worktree_src: Option<&str>,
     runtime: Result<String, String>,
 ) -> Vec<InvariantResult> {
     let id = spec.id;
-    let committed_sha = sha256_hex(committed_src.as_bytes());
-    match runtime {
-        Err(e) => vec![InvariantResult::unknown(
+    let content = match runtime {
+        Err(e) => {
+            return vec![InvariantResult::unknown(
+                id,
+                format!("runtime {} {} unreadable: {e}", spec.noun, spec.runtime_path),
+            )]
+        }
+        Ok(c) => c,
+    };
+    let runtime_sha = sha256_hex(content.as_bytes());
+    if let Some(head) = head_src {
+        let head_sha = sha256_hex(head.as_bytes());
+        if runtime_sha == head_sha {
+            return vec![InvariantResult::pass(id)];
+        }
+        let wt_matches =
+            worktree_src.map(|w| sha256_hex(w.as_bytes()) == runtime_sha).unwrap_or(false);
+        let observed = if wt_matches {
+            format!(
+                "runtime {} matches an UNCOMMITTED edit of {} (runtime == worktree, sha {}, \
+                 HEAD has {}) — commit the tracked source; the installed copy already \
+                 carries the edit.",
+                spec.noun,
+                spec.committed_path,
+                &runtime_sha[..12],
+                &head_sha[..12],
+            )
+        } else {
+            format!(
+                "runtime {} sha {} DRIFTED from {} at HEAD ({}) and matches the worktree \
+                 copy of neither — the fleet is running an unreviewed hand-edit. Reinstall \
+                 from source (install.sh) or fold the edit back into the committed copy.",
+                spec.noun,
+                &runtime_sha[..12],
+                spec.committed_path,
+                &head_sha[..12],
+            )
+        };
+        return vec![InvariantResult::fail(
             id,
-            format!("runtime {} {} unreadable: {e}", spec.noun, spec.runtime_path),
-        )],
-        Ok(content) => {
-            let runtime_sha = sha256_hex(content.as_bytes());
-            if runtime_sha == committed_sha {
-                vec![InvariantResult::pass(id)]
-            } else {
-                vec![InvariantResult::fail(
-                    id,
-                    format!("runtime {} == committed sha {}", spec.noun, &committed_sha[..12]),
+            format!("runtime {} == committed sha {}", spec.noun, &head_sha[..12]),
+            observed,
+        )
+        .evidence(json!({
+            "committed_sha": head_sha,
+            "runtime_sha": runtime_sha,
+            "runtime_matches_worktree": wt_matches,
+            "committed_source": "HEAD (read at check time)",
+            "runtime_path": spec.runtime_path,
+            "committed_path": spec.committed_path,
+        }))];
+    }
+    // No repo reachable: baked fallback, hedged on mismatch.
+    let baked_sha = sha256_hex(baked_src.as_bytes());
+    if runtime_sha == baked_sha {
+        return vec![InvariantResult::pass(id)];
+    }
+    vec![InvariantResult::fail(
+        id,
+        format!("runtime {} == baked sha {}", spec.noun, &baked_sha[..12]),
+        format!(
+            "runtime {} sha {} differs from the source baked into this binary (built at \
+             commit {}) and no repo is reachable to read HEAD — EITHER a hand-edit of the \
+             runtime copy OR this binary predates a legitimate commit of {} (script-only \
+             commits do not trigger a rebuild). Confirm against /health's commit before \
+             acting; reinstalling only helps in the first case.",
+            spec.noun,
+            &runtime_sha[..12],
+            env!("AMUX_BUILD_COMMIT"),
+            spec.committed_path,
+        ),
+    )
+    .evidence(json!({
+        "committed_sha": baked_sha,
+        "runtime_sha": runtime_sha,
+        "committed_source": "baked at build time (no repo reachable)",
+        "build_commit": env!("AMUX_BUILD_COMMIT"),
+        "runtime_path": spec.runtime_path,
+        "committed_path": spec.committed_path,
+    }))]
+}
+
+// ---------------------------------------------------------------------------
+// 6b2. Are auto-filed cards DISPATCHABLE? (AF-137)
+// ---------------------------------------------------------------------------
+
+/// AF-137: 215 auto-filed cards sat in todo with session=NULL while
+/// auto-pickup's predicate is `i.session=?1` — every card the autofix files
+/// was structurally invisible to the mechanism that hands cards to lanes,
+/// and BOTH halves reported success (the filer filed, the pickup found
+/// nothing to do). AMUX-2872 said "this card is the only place it shows up"
+/// and then sat unseen for 11 days while the nightly failed 13 of 13 runs.
+/// Rule 1 in its exact shape: who receives this, by default? Nobody — and
+/// rule 4's: the gap left no trace anywhere anyone looks. This check IS that
+/// trace. The remedy it names is real: AMUX_AUTOFIX_SESSION routes new
+/// filings; the backlog needs the recovery sweep, not a 215-card discharge
+/// into one lane's queue (the migration-event shape rule 1 warns about).
+pub fn autofix_cards_are_dispatchable(open_unowned: i64, examples: &[String]) -> Vec<InvariantResult> {
+    const ID: &str = "board.autofix_cards_are_dispatchable";
+    if open_unowned <= 0 {
+        return vec![InvariantResult::pass(ID)];
+    }
+    vec![InvariantResult::fail(
+        ID,
+        "every open auto-filed card has a session, so auto-pickup can reach it".to_string(),
+        format!(
+            "{open_unowned} open auto-filed card(s) have NO session — auto-pickup selects on              i.session=?1, so no lane will EVER be offered them; the detector that filed them              is writing reports nobody receives (e.g. {}). New filings: set              AMUX_AUTOFIX_SESSION in server.env. Backlog: run the recovery sweep (close              reports whose subject has recovered, route the live ones) — do NOT bulk-assign              the backlog into one queue.",
+            examples.join(", "),
+        ),
+    )
+    .evidence(json!({"open_unowned": open_unowned, "examples": examples}))]
+}
+
+/// Every open card's type is IN THE VOCABULARY (AMUX-3552).
+///
+/// An unknown type is not inert: `core_item_type` maps anything it does not
+/// recognise to `Code`, the STRICTEST gate. So a card typed `bug` silently
+/// demands "Implemented and merged" and "Tests / lint pass", and its owner —
+/// who believes they set something meaningful — has only a false ack, `force`,
+/// or rot as exits. That is ethos rule 3 arriving without anybody choosing it.
+///
+/// WHY THIS EXISTS AS A CHECK RATHER THAN A FIX. Both write paths already
+/// validate: `POST /api/board` and `PATCH .../type` each return 400 with the
+/// vocabulary and the reason. I assumed CREATE was the hole and TESTED it — it
+/// refuses. The 14 live offenders (`bug` x12, `decision`, `docs`, across eight
+/// lanes) were all created between 2026-07-30 and 2026-08-08, and validation
+/// landed 2026-08-09 in b538866. They are PRE-VALIDATION RESIDUE, and zero have
+/// been created since.
+///
+/// Which makes the real defect a migration one, and the reason it needs a
+/// standing check rather than a one-off cleanup: validation started refusing new
+/// bad writes and said nothing about the rows already holding bad values. They
+/// sat for two weeks in the strictest gate with nothing pointing at them. Any
+/// future addition to `KNOWN_TYPES` has exactly the same shape.
+///
+/// It reads `KNOWN_TYPES` rather than restating the list, so a type added there
+/// cannot make this check wrong — the two-spellings problem that `KNOWN_TYPES`
+/// own doc already flags against `ItemType::ALL`.
+///
+/// It does NOT propose a bulk retype. The 14 belong to eight other lanes and
+/// reclassifying someone else's work is ethos rule 8; the message names them so
+/// their owners can decide.
+pub fn card_types_are_in_vocabulary(offenders: &[(String, String)]) -> Vec<InvariantResult> {
+    const ID: &str = "board.card_types_are_in_vocabulary";
+    if offenders.is_empty() {
+        return vec![InvariantResult::pass(ID)];
+    }
+    let shown: Vec<String> =
+        offenders.iter().take(5).map(|(id, t)| format!("{id}({t})")).collect();
+    vec![InvariantResult::fail(
+        ID,
+        "every open card's type is one of the known types, so its gate is the one its          owner chose"
+            .to_string(),
+        format!(
+            "{} open card(s) carry a type outside the vocabulary ({}). An unknown type              falls through to the STRICTEST (code) gate, so these demand a merge their              owners never claimed and cannot exit honestly. Known types: {}. Do NOT bulk              retype — they belong to other lanes; surface each to its owner (AMUX-3552).",
+            offenders.len(),
+            shown.join(", "),
+            crate::db::board_store::KNOWN_TYPES.join(" | "),
+        ),
+    )
+    .evidence(json!({
+        "count": offenders.len(),
+        "offenders": offenders.iter().map(|(i, t)| json!({"id": i, "type": t})).collect::<Vec<_>>(),
+        "known_types": crate::db::board_store::KNOWN_TYPES,
+    }))]
+}
+
+// ---------------------------------------------------------------------------
+// 10. Host memory + kernel-panic tripwire (AMUX-3397)
+// ---------------------------------------------------------------------------
+
+/// INCIDENT (AMUX-3396, 2026-08-19): the host kernel panicked on memory/swap
+/// exhaustion at 14:03 and the entire 45-lane fleet died at once. Nothing in
+/// amux recorded pressure before, the death during, or the cause after —
+/// "why did every lane vanish" was answered by a human reading
+/// /Library/Logs/DiagnosticReports by hand.
+///
+/// The verdict here is the KERNEL's, not a tuned amux threshold: level 4
+/// (critical) means jetsam is imminent. Level 2 (warn) stays a pass — this
+/// box visits warn routinely under normal load, and a flapping incident
+/// teaches everyone to ignore it — but the level and swap numbers ride in
+/// the evidence of every evaluation, and /health carries them continuously.
+pub fn host_memory_not_critical(
+    pressure_level: Option<u32>,
+    swap_used_mb: Option<f64>,
+    swap_total_mb: Option<f64>,
+) -> Vec<InvariantResult> {
+    const ID: &str = "host.memory_not_critical";
+    let ev = json!({
+        "pressure_level": pressure_level,
+        "swap_used_mb": swap_used_mb,
+        "swap_total_mb": swap_total_mb,
+    });
+    match pressure_level {
+        Some(4) => vec![InvariantResult::fail(
+            ID,
+            "kernel memory pressure below critical".to_string(),
+            format!(
+                "kern.memorystatus_vm_pressure_level = 4 (CRITICAL), swap {:.0}/{:.0}MB — \
+                 the state that preceded the 08-19 fleet-killing panic (AMUX-3396). Jetsam \
+                 is imminent: shed lanes or memory before the kernel does it for you.",
+                swap_used_mb.unwrap_or(0.0),
+                swap_total_mb.unwrap_or(0.0),
+            ),
+        )
+        .evidence(ev)],
+        Some(_) => vec![InvariantResult::pass(ID).evidence(ev)],
+        None => vec![InvariantResult::unknown(
+            ID,
+            "pressure level unmeasurable on this platform (no kern.memorystatus_vm_pressure_level)",
+        )
+        .evidence(ev)],
+    }
+}
+
+/// The after-the-fact half of AMUX-3397: a fresh `.panic` artifact in the
+/// diagnostic-reports directory means the host died out from under the fleet,
+/// and the incident should be READ off amux instead of reconstructed from
+/// "every lane's uptime reset at once". One result per file, entity-keyed on
+/// the filename, so each panic is exactly one incident (the store's dedupe)
+/// and each HEALS when its file ages past the dwell window — stale files get
+/// an explicit entity-keyed pass, which is what resolves the incident row.
+pub fn no_fresh_kernel_panic(
+    panics: &[(String, f64)],
+    window_s: f64,
+    now: f64,
+) -> Vec<InvariantResult> {
+    const ID: &str = "host.no_fresh_kernel_panic";
+    if panics.is_empty() {
+        return vec![InvariantResult::pass(ID)];
+    }
+    panics
+        .iter()
+        .map(|(name, age_s)| {
+            if *age_s < window_s {
+                InvariantResult::fail(
+                    ID,
+                    "no kernel panic artifact inside the dwell window".to_string(),
                     format!(
-                        "runtime {} sha {} DRIFTED from {} — the fleet is running an unreviewed \
-                         hand-edit. Reinstall from source (install.sh) or fold the edit back into \
-                         the committed copy.",
-                        spec.noun,
-                        &runtime_sha[..12],
-                        spec.committed_path,
+                        "{name} is {:.1}h old — the host kernel panicked and the whole fleet \
+                         died at once (the 08-19 memory-exhaustion panic was invisible to \
+                         every amux instrument: AMUX-3396). Read the artifact for the memory \
+                         state at death; this stays visible {:.0} days (AMUX_PANIC_FRESH_S) \
+                         so it cannot scroll away unacknowledged.",
+                        age_s / 3600.0,
+                        window_s / 86400.0,
                     ),
                 )
-                .evidence(json!({
-                    "committed_sha": committed_sha,
-                    "runtime_sha": runtime_sha,
-                    "runtime_path": spec.runtime_path,
-                    "committed_path": spec.committed_path,
-                }))]
+                .entity(name.as_str())
+                .evidence(json!({"file": name, "age_h": age_s / 3600.0}))
+                // The dwell is the point, so SAY when it ends (AMUX-3645).
+                // Without this the auto-filed card reads "failing across N
+                // evaluations and has not self-healed", which is true and
+                // reads as an escalating fault; the honest reading is "held
+                // red on purpose until <date>, no action accelerates it".
+                // `now` is a PARAMETER, not a clock read in here. The ages in
+                // `panics` were measured against the caller's clock, and a
+                // second time source would disagree with them by however long
+                // the directory scan took. It also keeps this a pure function,
+                // so the cell below can assert an exact epoch rather than a
+                // tolerance around whatever the test machine's clock said.
+                .heals_at(now - age_s + window_s)
+            } else {
+                InvariantResult::pass(ID).entity(name.as_str())
             }
-        }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// 6e. Is the invariant system's OWN evaluation log bounded? (AMUX-3489)
+// ---------------------------------------------------------------------------
+
+/// INCIDENT (AMUX-3489, 2026-08-22): `_amux_invariant_result` reached 8M rows
+/// (~2GB of DB) — the 7-day flat retention was working exactly as written
+/// while 15 invariants x per-entity fan-out wrote ~13 green heartbeats a
+/// second. Nothing watched the watcher: the table that exists to make
+/// failures visible was itself growing invisibly, and it surfaced only
+/// because a perf calibration tripped over a 20-minute `.backup`.
+///
+/// The check is a row budget, not a growth ratio, because the healthy state
+/// after differential retention is small and roughly constant (~50k rows);
+/// any sustained excursion past the budget means retention broke or a new
+/// fan-out multiplied the write rate.
+pub fn result_log_bounded(rows: i64, budget: i64, oldest_age_s: f64) -> Vec<InvariantResult> {
+    const ID: &str = "store.result_log_bounded";
+    if rows <= budget {
+        return vec![InvariantResult::pass(ID)];
     }
+    vec![InvariantResult::fail(
+        ID,
+        format!("evaluation log holds <= {budget} rows (differential retention: pass 1h, fail 7d)"),
+        format!(
+            "{rows} rows in _amux_invariant_result (oldest {:.0}s old) — either the \
+             opportunistic trim in invariants/store.rs stopped running, or a new \
+             per-entity fan-out multiplied the write rate past what the batch cap \
+             drains. A fresh deploy of AMUX-3489 legitimately shows this while the \
+             8M-row backlog drains (~3h); sustained past that, it is real.",
+            oldest_age_s,
+        ),
+    )
+    .evidence(json!({"rows": rows, "budget": budget, "oldest_age_s": oldest_age_s}))]
 }
 
 // ---------------------------------------------------------------------------
@@ -1353,6 +2042,400 @@ pub fn alert_channel_can_deliver(s: &AlertChannelState) -> Vec<InvariantResult> 
 }
 
 // ---------------------------------------------------------------------------
+// 11. The frustrations.md ledger agrees with the board (AF-191)
+// ---------------------------------------------------------------------------
+
+/// One parsed `frustrations.md` entry, joined against its card.
+///
+/// `card_status` is `None` when the `CARD:` id is not on THIS board — which is
+/// not the same as "no card": the entry claims a link and the link resolves to
+/// nothing a reader here can open.
+#[derive(Debug, Clone)]
+pub struct LedgerRow {
+    pub line: usize,
+    pub card: String,
+    /// The first word of `STATUS:` — entries carry qualifiers
+    /// ("open (the live deviation is fixed…)") that must not change the class.
+    pub file_status: String,
+    pub session: String,
+    pub title: String,
+    pub card_status: Option<String>,
+    /// Whether the card is ARCHIVED (AF-246). Carried separately from
+    /// `card_status` because an archived card still HAS a status, so the two
+    /// are independent axes and folding them loses the alarming one: `done` is
+    /// reachable, archived is not.
+    pub card_archived: bool,
+}
+
+/// `frustrations.md` is a fixed-field file precisely so it can be counted; this
+/// is the counter. Entries start at a column-0 `## ` heading AFTER the `---`
+/// that closes the header, because the header's own template is indented two
+/// spaces on purpose (an instrument that measures itself is the bug that file
+/// exists to record). Field lines are column-0 `NAME: value`; the FIRST
+/// occurrence wins, so a superseding `NOTE:` paragraph cannot silently rewrite
+/// the entry's class.
+pub fn parse_frustration_entries(md: &str) -> Vec<(usize, String, String, String, Vec<String>)> {
+    let mut out = Vec::new();
+    let mut started = false;
+    let mut cur: Option<(usize, String, String, String, Vec<String>)> = None;
+    for (i, line) in md.lines().enumerate() {
+        if !started {
+            if line.trim() == "---" {
+                started = true;
+            }
+            continue;
+        }
+        if let Some(t) = line.strip_prefix("## ") {
+            if let Some(e) = cur.take() {
+                out.push(e);
+            }
+            cur = Some((i + 1, t.trim().to_string(), String::new(), String::new(), Vec::new()));
+            continue;
+        }
+        let Some(e) = cur.as_mut() else { continue };
+        if let Some(v) = line.strip_prefix("STATUS:") {
+            if e.2.is_empty() {
+                e.2 = v.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+            }
+        } else if let Some(v) = line.strip_prefix("SESSION:") {
+            if e.3.is_empty() {
+                e.3 = v.trim().to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("CARD:") {
+            if e.4.is_empty() {
+                e.4 = extract_card_ids(v);
+            }
+        }
+    }
+    if let Some(e) = cur.take() {
+        out.push(e);
+    }
+    out
+}
+
+/// `AF-191`, `AMUX-3618`, `AC-227` — uppercase-and-hyphen prefix, `-`, digits.
+/// Deliberately tolerant of the surrounding prose (`CARD: AF-69 (investigation)`)
+/// because the field is free-form and always has been.
+fn extract_card_ids(s: &str) -> Vec<String> {
+    let b: Vec<char> = s.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        if !b[i].is_ascii_uppercase() {
+            i += 1;
+            continue;
+        }
+        if i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == '-') {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < b.len() && (b[j].is_ascii_uppercase() || b[j] == '-') {
+            j += 1;
+        }
+        // need at least PREFIX- then a digit
+        if j > i + 1 && b[j - 1] == '-' && j < b.len() && b[j].is_ascii_digit() {
+            let mut k = j;
+            while k < b.len() && b[k].is_ascii_digit() {
+                k += 1;
+            }
+            if k == b.len() || !b[k].is_ascii_alphanumeric() {
+                let id: String = b[i..k].iter().collect();
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+            i = k;
+            continue;
+        }
+        i = j.max(i + 1);
+    }
+    out
+}
+
+/// Statuses that mean the card is CLOSED. `discarded` counts: a discarded card
+/// is a decision that the work will not happen, which is an answer.
+pub const CLOSED_CARD_STATUSES: [&str; 3] = ["done", "verified", "discarded"];
+
+/// INCIDENT (AF-191, 2026-08-24): `grep '^STATUS: open' frustrations.md` is that
+/// file's OWN documented primary grep — its header says the greps are what make
+/// a cluster countable, and the whole argument for the file is that "one
+/// frustration is a complaint and a cluster is an argument". It reported 78 open
+/// entries. 52 of them had a card that was already `done` or `verified`. The
+/// ledger and the board are two independent stores of the same fact and nothing
+/// kept them in step, so the view that decides what to fix next was wrong by
+/// two thirds — ethos rule 4 (a tag in a store the reader never opens) and rule
+/// 1's view/mechanism rule (a view must share the predicate of the mechanism it
+/// claims to describe).
+///
+/// BOTH DIRECTIONS, because they are different failures with different costs:
+///
+/// - `open` entry, closed card: the file overstates the backlog. Cheap-looking,
+///   and it is the one that actually bit — 52 entries of noise around 26 real
+///   ones.
+/// - `fixed` entry, open card: the file understates it, and this is the
+///   PROTOCOL violation AC-227 reports in its own body. Somebody who was not the
+///   author marked that entry `fixed` while the card sat in `review`; the author
+///   flipped it back and wrote "whoever marked this entry fixed was NOT the
+///   author — which is the one thing this protocol is supposed to make
+///   impossible". A closed entry over an open card is exactly that fingerprint.
+///
+/// It does NOT propose reconciling either side automatically. The entries belong
+/// to the sessions that hit the friction and closing someone's report on their
+/// behalf is ethos rule 8 — and AC-227 is the standing proof that a card reading
+/// `done` does not mean the friction is gone. The check names the rows; their
+/// authors decide.
+pub fn frustration_ledger_agrees_with_board(rows: &[LedgerRow], source: &str) -> Vec<InvariantResult> {
+    const ID: &str = "frustrations.ledger_agrees_with_board";
+    let closed = |s: &str| CLOSED_CARD_STATUSES.contains(&s);
+    let mut stale_open: Vec<&LedgerRow> = Vec::new();
+    let mut premature_fixed: Vec<&LedgerRow> = Vec::new();
+    let mut archived_open: Vec<&LedgerRow> = Vec::new();
+    for r in rows {
+        let Some(cs) = r.card_status.as_deref() else { continue };
+        // ARCHIVED IS ITS OWN STATE, AND IT IS CHECKED FIRST (AF-246, found on
+        // the 2026-08-26 drain when AC-354 was validated as STILL LIVE and
+        // `amux board status AC-354 todo` answered
+        // `{"error":"task is archived; restore it first"}`).
+        //
+        // This check compared STATUS only, and status is the wrong axis. An
+        // archived card is invisible to auto-pickup, rot detection and the
+        // verify queue simultaneously — every one of them additionally requires
+        // `COALESCE(archived,0)=0` — while still carrying a status this check
+        // happily compares. Two ways that went wrong, and the second is why
+        // this is a precedence change rather than a new bucket:
+        //
+        //   archived + `done`  -> landed in `stale_open`, indistinguishable
+        //                         from an ordinary done-over-open row, so the
+        //                         prescribed remedy ("route it to its session
+        //                         to reopen") hits a refusal this check never
+        //                         predicted.
+        //   archived + `todo`  -> landed NOWHERE. The pair read as AGREEING and
+        //                         the entry looked healthy while nothing could
+        //                         ever pick the card up. A view that is silent
+        //                         about unreachable work is worse than no view,
+        //                         because it is trusted and it is read first.
+        //
+        // THE PREDICATE IS COPIED FROM THE MECHANISM, not re-derived, which is
+        // rule 1's own caution about this exact trap: `archived` here is the
+        // same `COALESCE(archived,0)=0` that board_drive.rs's pickup queries
+        // apply. `owner_type='agent'` is deliberately NOT included — that is
+        // auto-pickup's additional narrowing, and a human-owned card is still
+        // reachable by a human. Unreachable means unreachable BY ANYONE.
+        if r.file_status == "open" && r.card_archived {
+            archived_open.push(r);
+        } else if r.file_status == "open" && closed(cs) {
+            stale_open.push(r);
+        } else if r.file_status != "open" && !r.file_status.is_empty() && !closed(cs) {
+            premature_fixed.push(r);
+        }
+    }
+    let ev = |v: &[&LedgerRow]| {
+        v.iter()
+            .map(|r| {
+                json!({"line": r.line, "card": r.card, "file_status": r.file_status,
+                       "card_status": r.card_status, "session": r.session, "title": r.title})
+            })
+            .collect::<Vec<_>>()
+    };
+    if stale_open.is_empty() && premature_fixed.is_empty() && archived_open.is_empty() {
+        return vec![InvariantResult::pass(ID)
+            .evidence(json!({"entries": rows.len(), "source": source}))];
+    }
+    let ex = |v: &[&LedgerRow]| {
+        v.iter().take(4).map(|r| format!("L{}:{}", r.line, r.card)).collect::<Vec<_>>().join(", ")
+    };
+    vec![InvariantResult::fail(
+        ID,
+        "every frustrations.md entry's STATUS agrees with its CARD's status on this board"
+            .to_string(),
+        format!(
+            "{} entry/entries disagree with their card. {} say STATUS: open over a CLOSED card \
+             ({}) — `grep '^STATUS: open'` is the file's own documented primary grep and it \
+             overstates the live backlog by that much. {} claim fixed over an OPEN card ({}) — \
+             that is the AC-227 fingerprint: an entry closed by somebody who was not its author. \
+             Do NOT reconcile either side automatically: the entries belong to the sessions that \
+             hit the friction, and a card reading `done` is not proof the friction is gone \
+             (AC-227's card was `done` and only its documentation half had shipped). Route each \
+             row to its SESSION for sign-off. Ledger read from: {}.",
+            stale_open.len() + premature_fixed.len() + archived_open.len(),
+            stale_open.len(),
+            ex(&stale_open),
+            premature_fixed.len(),
+            ex(&premature_fixed),
+            source,
+        ) + &archived_sentence(&archived_open, &ex),
+    )
+    .evidence(json!({
+        "entries": rows.len(),
+        "source": source,
+        "stale_open": ev(&stale_open),
+        "premature_fixed": ev(&premature_fixed),
+        "archived_open": ev(&archived_open),
+        "archived_open_note": "the card is ARCHIVED, so it is invisible to auto-pickup, rot \
+                               detection and the verify queue at once. `amux board status <id> \
+                               todo` REFUSES with archived_task_immutable — restore it first.",
+    }))]
+}
+
+/// The archived clause, appended only when there is one (AF-246).
+///
+/// Separate from the sentence above rather than interpolated into it, because a
+/// zero-count clause reading "0 sit behind an ARCHIVED card ()" is noise on
+/// every ordinary failure, and this check already fails routinely for the two
+/// status classes. It says the REMEDY differs, since that is the part the
+/// prescribed one gets wrong: routing an archived card to its session produces
+/// a refusal, not a reopen.
+fn archived_sentence(
+    archived_open: &[&LedgerRow],
+    ex: &impl Fn(&[&LedgerRow]) -> String,
+) -> String {
+    if archived_open.is_empty() {
+        return String::new();
+    }
+    format!(
+        " SEPARATELY, {} open entry/entries sit behind an ARCHIVED card ({}) — a different and \
+         worse fact than a closed one. Archived hides a card from auto-pickup, rot detection AND \
+         the verify queue at the same time, so the friction is live and no loop can reach it. \
+         Do NOT route these to a session to reopen: `amux board status <id> todo` answers \
+         `archived_task_immutable`. RESTORE the card first, then decide its status with its \
+         author.",
+        archived_open.len(),
+        ex(archived_open),
+    )
+}
+
+/// The `AF-191` in `AF-191-1` is not a card id; the prefix is everything before
+/// the first `-` that is followed by digits.
+fn card_prefix(id: &str) -> &str {
+    id.rsplit_once('-').map_or(id, |(p, _)| p)
+}
+
+/// INCIDENT (AF-191, same sweep): entries carry a `CARD:` id that does not exist
+/// on this board at all. `.claude/rules/frustrations.md` says "Link the card. A
+/// frustration without a `CARD:` is a complaint; with one it is a work item
+/// someone can pick up." Those entries HAVE the field, so the rule reads
+/// satisfied while the link resolves to nothing — the rule-6 shape.
+///
+/// SPLIT BY PREFIX, and this is the whole design (amux, 2026-08-24, who
+/// classified all 13 by hand before suggesting it). The first version failed on
+/// every unresolvable id and 12 of 13 were `AEAB-NN` from a lane whose board is
+/// a different install entirely. Nobody here can fix those, they arrive again
+/// every time an off-board lane appends, and a permanent red for a reason nobody
+/// can act on is exactly how the other failures stop being read — ethos rule 1's
+/// "a threshold below the baseline is not a detector", one level up.
+///
+/// So the discriminator is whether THIS INSTANCE MINTS THE PREFIX, read off the
+/// board's own ids rather than a hardcoded list, so a new lane's prefix works
+/// with no edit here:
+///
+/// - foreign prefix (`AEAB-`): context. Named in the message and the evidence so
+///   it is visible, never a failure.
+/// - LOCAL prefix, absent id: a genuine dangling reference, and the case the
+///   check exists for. `AMUX-40` reads local and resolvable and is neither — it
+///   is a live id on a contributor's own amux whose prefix collides with ours,
+///   and it arrived in a commit citing it. amux hit the same class from the
+///   other side the same day: a 2026-08-10 entry cites `AMUX-2701`, which here
+///   is an unrelated route invariant, and the finding sat correct and untracked
+///   for fourteen days because its handle pointed somewhere else.
+/// - NO card id at all: a complaint by the rule's own definition. This is also
+///   where a STRUCTURE BREAK lands — a `## ` heading committed with no field
+///   block turns up here by name instead of being silently dropped from the
+///   ledger or misreported as a status disagreement (amux's caution, from the
+///   51 minutes main's `checks` job was red for exactly that reason).
+///
+/// It reports rather than files: filing a local card for someone else's entry
+/// decides their report is now this board's work (rule 8).
+pub fn frustration_cards_are_reachable(
+    rows: &[LedgerRow],
+    cardless_lines: &[(usize, String)],
+    local_prefixes: &BTreeSet<String>,
+    source: &str,
+) -> Vec<InvariantResult> {
+    const ID: &str = "frustrations.cards_are_reachable";
+    let mut dangling: Vec<&LedgerRow> = Vec::new();
+    let mut foreign: Vec<&LedgerRow> = Vec::new();
+    for r in rows.iter().filter(|r| r.card_status.is_none()) {
+        if local_prefixes.contains(card_prefix(&r.card)) {
+            dangling.push(r);
+        } else {
+            foreign.push(r);
+        }
+    }
+    let foreign_ev: Vec<_> = foreign
+        .iter()
+        .map(|r| json!({"line": r.line, "card": r.card, "session": r.session}))
+        .collect();
+    let base = json!({
+        "entries": rows.len(),
+        "source": source,
+        "foreign_prefix": foreign_ev,
+        "foreign_prefix_note": "another amux install mints these; not actionable here",
+    });
+    if dangling.is_empty() && cardless_lines.is_empty() {
+        return vec![InvariantResult::pass(ID).evidence(base)];
+    }
+    let mut observed = String::new();
+    if !dangling.is_empty() {
+        let shown: Vec<String> =
+            dangling.iter().take(5).map(|r| format!("L{}:{}", r.line, r.card)).collect();
+        observed.push_str(&format!(
+            "{} entry/entries name a LOCAL-prefix card that is not on this board ({}). The \
+             prefix is one this instance mints, so the id reads resolvable and is not — a \
+             dangling handle, or a collision with another amux instance that uses the same \
+             prefix. Re-file the content under a local id rather than trusting the reference. ",
+            dangling.len(),
+            shown.join(", "),
+        ));
+    }
+    if !cardless_lines.is_empty() {
+        let shown: Vec<String> =
+            cardless_lines.iter().take(5).map(|(l, t)| format!("L{l}:{}", &t[..t.len().min(40)]))
+                .collect();
+        observed.push_str(&format!(
+            "{} entry/entries carry NO card id at all ({}) — a complaint by the rule's own \
+             definition, and where a broken entry STRUCTURE lands too. ",
+            cardless_lines.len(),
+            shown.join(", "),
+        ));
+    }
+    if !foreign.is_empty() {
+        observed.push_str(&format!(
+            "{} further entry/entries name a FOREIGN prefix ({}) — another amux install mints \
+             those and nobody here can resolve or fix them, so they are context in the evidence, \
+             not a failure. ",
+            foreign.len(),
+            foreign
+                .iter()
+                .map(|r| card_prefix(&r.card))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
+    observed.push_str(&format!("Ledger read from: {source}."));
+    vec![InvariantResult::fail(
+        ID,
+        "every frustrations.md entry carries a card id, and every LOCAL-prefix id resolves on \
+         this board"
+            .to_string(),
+        observed,
+    )
+    .evidence(json!({
+        "entries": rows.len(),
+        "source": source,
+        "dangling_local": dangling.iter().map(|r| json!({
+            "line": r.line, "card": r.card, "session": r.session, "title": r.title
+        })).collect::<Vec<_>>(),
+        "cardless": cardless_lines.iter().map(|(l, t)| json!({"line": l, "title": t}))
+            .collect::<Vec<_>>(),
+        "foreign_prefix": foreign_ev,
+        "foreign_prefix_note": "another amux install mints these; not actionable here",
+    }))]
+}
+
+// ---------------------------------------------------------------------------
 // Negative controls (AMUX-2624). Each proves the check DETECTS the real bug.
 // ---------------------------------------------------------------------------
 
@@ -1360,6 +2443,310 @@ pub fn alert_channel_can_deliver(s: &AlertChannelState) -> Vec<InvariantResult> 
 mod negative_controls {
     use super::*;
     use crate::invariants::Status;
+
+    // -- AF-191: the frustrations ledger vs the board -----------------------
+
+    fn lrow(line: usize, card: &str, file_status: &str, card_status: Option<&str>) -> LedgerRow {
+        LedgerRow {
+            line,
+            card: card.into(),
+            file_status: file_status.into(),
+            session: "amux-cloud".into(),
+            title: "t".into(),
+            card_status: card_status.map(str::to_string),
+            card_archived: false,
+        }
+    }
+
+    /// Same row, ARCHIVED (AF-246).
+    fn lrow_archived(
+        line: usize,
+        card: &str,
+        file_status: &str,
+        card_status: Option<&str>,
+    ) -> LedgerRow {
+        LedgerRow { card_archived: true, ..lrow(line, card, file_status, card_status) }
+    }
+
+    /// AF-191 rebuilt from the sweep's own artifact: an entry reading
+    /// `STATUS: open` over a `done` card is the state that made
+    /// `grep '^STATUS: open'` report 78 when 26 were live, and the INVERSE —
+    /// a `fixed` entry over a card still in `review` — is the AC-227
+    /// fingerprint of somebody who was not the author closing the report.
+    /// Both must go red; agreement must pass, or the check is the permanent
+    /// red that trains skimming.
+    #[test]
+    fn a_ledger_entry_that_disagrees_with_its_card_is_detected_in_both_directions() {
+        let agree = vec![
+            lrow(10, "AF-1", "open", Some("doing")),
+            lrow(20, "AF-2", "fixed", Some("verified")),
+            lrow(30, "AF-3", "fixed", Some("discarded")),
+        ];
+        let ok = frustration_ledger_agrees_with_board(&agree, "worktree");
+        assert_eq!(ok[0].status, Status::Pass, "{ok:?}");
+
+        let stale = vec![lrow(47, "AC-227", "open", Some("done"))];
+        let r = frustration_ledger_agrees_with_board(&stale, "worktree");
+        assert_eq!(r[0].status, Status::Fail);
+        assert!(r[0].observed.contains("L47:AC-227"), "names the row: {}", r[0].observed);
+        assert!(r[0].observed.contains("primary grep"), "names WHY it matters: {}", r[0].observed);
+
+        let premature = vec![lrow(99, "AC-227", "fixed", Some("review"))];
+        let r2 = frustration_ledger_agrees_with_board(&premature, "worktree");
+        assert_eq!(r2[0].status, Status::Fail);
+        assert!(r2[0].observed.contains("AC-227 fingerprint"), "{}", r2[0].observed);
+        assert!(
+            r2[0].observed.contains("Do NOT reconcile"),
+            "carries the rule-8 caution: {}",
+            r2[0].observed
+        );
+        // A qualifier on STATUS must not change the class: the file really does
+        // carry "open (the live deviation is fixed; the hazard is not)".
+        let qualified = vec![lrow(1514, "AEAB-12", "open", Some("done"))];
+        assert_eq!(
+            frustration_ledger_agrees_with_board(&qualified, "worktree")[0].status,
+            Status::Fail
+        );
+        // An unresolvable card belongs to the OTHER check, not this one.
+        let absent = vec![lrow(2995, "AMUX-40", "fixed", None)];
+        assert_eq!(
+            frustration_ledger_agrees_with_board(&absent, "worktree")[0].status,
+            Status::Pass,
+            "an absent card is cards_are_reachable's finding, not a status disagreement"
+        );
+    }
+
+    /// AF-246: an ARCHIVED card behind a live entry is its own state.
+    ///
+    /// Rebuilt from the incident's own artifact rather than a convenient case.
+    /// AC-354 was validated as STILL LIVE on the 2026-08-26 drain and
+    /// `amux board status AC-354 todo` answered `archived_task_immutable`.
+    ///
+    /// THE `todo` CELL IS THE LOAD-BEARING ONE and it is why this had to change
+    /// the existing check rather than sit beside it: an archived card whose
+    /// status reads `todo` matches NEITHER status class, so before this the
+    /// pair read as AGREEING — a green row over work no loop can reach. A
+    /// sibling invariant would have left that green exactly where a reader
+    /// looks first.
+    #[test]
+    fn an_archived_card_behind_a_live_entry_is_reported_as_its_own_state() {
+        // THE NASTY CELL: archived + `todo`. Agrees on status, unreachable in
+        // fact. This is the one that was silently green.
+        let todo_archived = vec![lrow_archived(100, "AC-354", "open", Some("todo"))];
+        let r = frustration_ledger_agrees_with_board(&todo_archived, "worktree");
+        assert_eq!(
+            r[0].status,
+            Status::Fail,
+            "archived+todo agrees on STATUS and is unreachable in fact; it must not read green"
+        );
+        assert!(
+            r[0].observed.contains("ARCHIVED"),
+            "the message must name the state, not fold it into a status disagreement: {}",
+            r[0].observed
+        );
+        assert!(
+            r[0].observed.contains("archived_task_immutable"),
+            "it must say the prescribed remedy REFUSES, or a reader routes it to a session and \
+             gets an error the check never predicted: {}",
+            r[0].observed
+        );
+        assert_eq!(r[0].evidence["archived_open"].as_array().map(Vec::len), Some(1));
+
+        // Archived + a CLOSED status used to land in `stale_open`, where it is
+        // indistinguishable from an ordinary done-over-open row. Archived wins.
+        let done_archived = vec![lrow_archived(101, "AC-355", "open", Some("done"))];
+        let r2 = frustration_ledger_agrees_with_board(&done_archived, "worktree");
+        assert_eq!(r2[0].status, Status::Fail);
+        assert_eq!(
+            r2[0].evidence["stale_open"].as_array().map(Vec::len),
+            Some(0),
+            "an archived card must NOT be filed as an ordinary stale_open row — the remedies differ"
+        );
+        assert_eq!(r2[0].evidence["archived_open"].as_array().map(Vec::len), Some(1));
+
+        // NEGATIVE CONTROL 1 — an archived card behind a CLOSED entry is fine.
+        // The work is done and the card is put away; flagging it would make this
+        // fire on every properly-retired entry, which is the "threshold below
+        // the baseline" failure (a check that fires constantly stops being read).
+        let done_over_archived = vec![lrow_archived(102, "AC-356", "fixed", Some("done"))];
+        assert_eq!(
+            frustration_ledger_agrees_with_board(&done_over_archived, "worktree")[0].status,
+            Status::Pass,
+            "retiring an entry and archiving its card is the NORMAL end state"
+        );
+
+        // NEGATIVE CONTROL 2 — the same rows UNARCHIVED must behave exactly as
+        // before, or this fix has quietly widened the check. Without this cell,
+        // a build that flagged every open entry would pass everything above.
+        let live_todo = vec![lrow(100, "AC-354", "open", Some("todo"))];
+        assert_eq!(
+            frustration_ledger_agrees_with_board(&live_todo, "worktree")[0].status,
+            Status::Pass,
+            "open entry over a live todo card is agreement; archived is what changed"
+        );
+        let live_done = vec![lrow(101, "AC-355", "open", Some("done"))];
+        let r3 = frustration_ledger_agrees_with_board(&live_done, "worktree");
+        assert_eq!(r3[0].status, Status::Fail);
+        assert_eq!(
+            r3[0].evidence["stale_open"].as_array().map(Vec::len),
+            Some(1),
+            "a LIVE done card behind an open entry is still an ordinary stale_open row"
+        );
+
+        // The archived clause must be ABSENT when there is nothing archived, or
+        // every ordinary failure carries a "0 sit behind an ARCHIVED card ()"
+        // clause and the signal is diluted on the rows that fire most often.
+        assert!(!r3[0].observed.contains("ARCHIVED"), "{}", r3[0].observed);
+    }
+
+    /// AF-191, in the shape amux's hand classification produced: an id whose
+    /// prefix THIS instance mints and which is absent is a dangling reference
+    /// and must go RED (`AMUX-40` reads local and resolvable and is neither —
+    /// it is a colliding id on a contributor's own amux). An id whose prefix is
+    /// minted somewhere else (`AEAB-`) is context: 12 of the 13 were that, and
+    /// failing on them is a permanent red nobody here can act on, which is how
+    /// the rest of the failures stop being read.
+    #[test]
+    fn only_a_local_prefix_that_is_absent_is_a_dangling_reference() {
+        let local: BTreeSet<String> =
+            ["AF", "AMUX", "AC"].iter().map(|s| s.to_string()).collect();
+        let ok = vec![lrow(10, "AF-1", "open", Some("todo"))];
+        assert_eq!(
+            frustration_cards_are_reachable(&ok, &[], &local, "worktree")[0].status,
+            Status::Pass
+        );
+
+        // Foreign prefix ONLY: context, not a failure — but still NAMED.
+        let foreign = vec![lrow(2180, "AEAB-47", "open", None), lrow(2225, "AEAB-49", "open", None)];
+        let rf = frustration_cards_are_reachable(&foreign, &[], &local, "worktree");
+        assert_eq!(rf[0].status, Status::Pass, "{:?}", rf[0].observed);
+        assert_eq!(
+            rf[0].evidence["foreign_prefix"].as_array().map(Vec::len),
+            Some(2),
+            "a foreign-prefix entry must still be visible in the evidence"
+        );
+
+        // A LOCAL prefix that is absent IS the failure, and the foreign ones
+        // ride along as context in the same message.
+        let mixed = vec![
+            lrow(2180, "AEAB-47", "open", None),
+            lrow(2995, "AMUX-40", "fixed", None),
+        ];
+        let r = frustration_cards_are_reachable(&mixed, &[], &local, "worktree");
+        assert_eq!(r[0].status, Status::Fail);
+        assert!(r[0].observed.contains("AMUX-40"), "names the dangling id: {}", r[0].observed);
+        assert!(r[0].observed.contains("1 entry"), "counts the dangling: {}", r[0].observed);
+        assert!(r[0].observed.contains("AEAB"), "keeps foreign as context: {}", r[0].observed);
+        assert!(
+            !r[0].observed.contains("2 entry/entries name a LOCAL"),
+            "a foreign id must not be counted as dangling: {}",
+            r[0].observed
+        );
+    }
+
+    /// amux's caution, 2026-08-24: main's `checks` job was red for 51 minutes
+    /// because a `## ` heading was committed with no field block, and a ledger
+    /// check that inherits the same parser would report a structure break as a
+    /// ledger DISAGREEMENT and send the next reader after the wrong thing.
+    /// A card-less entry gets its own named condition instead — which is also
+    /// what the rule already says ("a frustration without a CARD is a
+    /// complaint").
+    #[test]
+    fn an_entry_with_no_card_is_named_as_a_complaint_not_a_disagreement() {
+        let local: BTreeSet<String> = ["AF"].iter().map(|s| s.to_string()).collect();
+        let r = frustration_cards_are_reachable(
+            &[],
+            &[(1200, "a heading with no field block".to_string())],
+            &local,
+            "worktree",
+        );
+        assert_eq!(r[0].status, Status::Fail);
+        assert!(r[0].observed.contains("NO card id"), "{}", r[0].observed);
+        assert!(r[0].observed.contains("L1200"), "names the line: {}", r[0].observed);
+        // And it must NOT be reported by the status check, which is the whole
+        // point of separating them.
+        let agree = frustration_ledger_agrees_with_board(&[], "worktree");
+        assert_eq!(agree[0].status, Status::Pass);
+    }
+
+    /// The parser is the load-bearing half: if it silently reads zero entries
+    /// BOTH checks pass and the instrument is the theatre it exists to prevent.
+    /// So it is pinned against the real file's shape — the two-space-indented
+    /// template inside the header must NOT count (the header says so in as many
+    /// words), a superseding NOTE must not rewrite the entry's STATUS, and a
+    /// `CARD:` field with prose around the id must still yield the id.
+    #[test]
+    fn the_ledger_parser_skips_the_header_template_and_takes_the_first_field() {
+        let md = concat!(
+            "# amux frustrations\n\n",
+            // A COLUMN-0 heading in the header — the real file has one
+            // ("## Format — fixed fields so this greps"). Only the `---` guard
+            // keeps it out; the column-0 rule cannot.
+            "## Format — fixed fields so this greps\n",
+            "STATUS: not-an-entry\n",
+            "CARD: AF-0\n\n",
+            "```\n",
+            "  ## <one-line title>\n",
+            "  STATUS: <open|fixed>\n",
+            "  CARD: <ID>\n",
+            "```\n\n",
+            "---\n",
+            "## first real entry\n",
+            // Indented, and BEFORE the real STATUS, so only the column-0 rule
+            // can keep it from winning the first-field-wins race.
+            "  ## an indented heading inside an entry body is not a new entry\n",
+            "  STATUS: fixed\n",
+            "STATUS: open\n",
+            "SESSION: amux-cloud\n",
+            "CARD: AC-297 helps with this\n",
+            "SYMPTOM: x\n\n",
+            "NOTE: superseded\n",
+            "STATUS: fixed\n\n",
+            "## second real entry\n",
+            "STATUS: open (the live deviation is fixed; the hazard is not)\n",
+            "SESSION: amux\n",
+            "CARD: AF-114, AF-115 and AMUX-40\n",
+        );
+        let es = parse_frustration_entries(md);
+        assert_eq!(
+            es.len(),
+            2,
+            "nothing before the `---` and no indented heading may parse as an entry: {es:?}"
+        );
+        assert_eq!(es[0].1, "first real entry");
+        assert_eq!(
+            es[0].2, "open",
+            "the first COLUMN-0 STATUS wins — not an indented one in the body, not the \
+             superseding NOTE's"
+        );
+        assert_eq!(es[0].4, vec!["AC-297".to_string()]);
+        assert_eq!(es[1].2, "open", "a qualifier must not change the class");
+        assert_eq!(
+            es[1].4,
+            vec!["AF-114".to_string(), "AF-115".to_string(), "AMUX-40".to_string()]
+        );
+    }
+
+    /// The parser runs against the REAL file in-tree, so a format change that
+    /// silently zeroes it fails here rather than turning both checks green.
+    /// Bounds only — the count moves every time anyone appends.
+    #[test]
+    fn the_real_frustrations_file_still_parses() {
+        const MD: &str = include_str!("../../../../frustrations.md");
+        let es = parse_frustration_entries(MD);
+        assert!(es.len() > 40, "parsed only {} entries from the real file", es.len());
+        assert!(
+            es.iter().filter(|e| !e.4.is_empty()).count() * 10 >= es.len() * 9,
+            "at least 90% of entries must yield a card id; got {} of {}",
+            es.iter().filter(|e| !e.4.is_empty()).count(),
+            es.len()
+        );
+        assert!(
+            es.iter().all(|e| e.2 == "open" || e.2 == "fixed" || e.2 == "half-fixed"),
+            "unexpected STATUS values: {:?}",
+            es.iter().map(|e| &e.2).collect::<BTreeSet<_>>()
+        );
+    }
 
     /// AMUX-3203, rebuilt from the incident artifact: both channels ENABLED with
     /// no destination (0 subs, empty phone) is the disconnected fire alarm that
@@ -1700,6 +3087,50 @@ mod negative_controls {
         assert_eq!(failed[0].entity_key, "AMUX_RS_SCHEDULER");
     }
 
+    /// AMUX-3612. Drift alone was one output covering two states with OPPOSITE
+    /// remedies: a value that will self-heal on the next redeploy, and one that
+    /// never will because self-adoption re-execs with the inherited env. Both
+    /// used to read as "different process value" and the invariant looked like
+    /// chronic noise.
+    ///
+    /// Both arms asserted together on the same drift, because the claim is
+    /// precisely that the two are TOLD APART — pinning one alone would pass
+    /// against a version that prints the same sentence for both.
+    #[test]
+    fn drift_says_whether_a_restart_is_required_or_the_refresh_itself_broke() {
+        let envf = "MARKED=want\nUNMARKED=want\n";
+        let rs = config_env_reaches_process(envf, &|k| match k {
+            "MARKED" | "UNMARKED" => Some("stale".into()),
+            // Only MARKED is claimed as server-exported.
+            crate::config::ENV_FROM_FILE_MARKER => Some("MARKED,SOMETHING_ELSE".into()),
+            _ => None,
+        });
+        let get = |k: &str| rs.iter().find(|r| r.entity_key == k).expect("a result per key");
+
+        let marked = get("MARKED");
+        assert_eq!(marked.status, Status::Fail);
+        assert_eq!(marked.evidence["class"], "config-drift-despite-refresh");
+        assert!(
+            marked.observed.contains("refreshed it on the last boot and did not"),
+            "a marked key that drifted means the refresh path is broken: {}",
+            marked.observed
+        );
+
+        let unmarked = get("UNMARKED");
+        assert_eq!(unmarked.status, Status::Fail);
+        assert_eq!(unmarked.evidence["class"], "config-drift-unmarked-lineage");
+        assert!(
+            unmarked.observed.contains("launchctl kickstart"),
+            "an unmarked key must name the ONLY thing that clears it: {}",
+            unmarked.observed
+        );
+        assert!(
+            unmarked.observed.contains("Redeploying will not clear it"),
+            "and must say the obvious remedy does not work, which is the part that cost the time: {}",
+            unmarked.observed
+        );
+    }
+
     /// Quoted values must not be reported as drift — a value read with its
     /// quotes still attached is its own incident in this repo.
     #[test]
@@ -1718,9 +3149,46 @@ mod negative_controls {
             queued_at: 0.0,
             target_idle: true,
             block_reason: None,
+            idle_since: None,
         }];
-        let rs = queue_has_live_consumer(&items, 7_560.0, 300.0); // 2h6m, the real age
+        let rs = queue_has_live_consumer(&items, 7_560.0, 300.0, 3_600.0); // 2h6m, the real age
         assert!(rs.iter().any(|r| r.status == Status::Fail), "must detect the dead consumer");
+    }
+
+    /// AMUX-3473, the flap that refiled across 18 entities: the check must
+    /// share the predicates of the mechanisms it describes. An unroutable row
+    /// INSIDE the dead-letter deadline has a scheduled fate (pass); PAST the
+    /// deadline the reaper failed and it fails as dead-letter-wedged; and a
+    /// `not-running` row is KEPT by design (the 08-19 panic: an outage and a
+    /// dead lane are indistinguishable by age, and every row delivered on
+    /// restart) so it passes however old.
+    #[test]
+    fn the_check_shares_the_reaper_and_outage_predicates() {
+        let mk = |reason: &str, queued_at: f64| QueuedItem {
+            queue: "steering".into(),
+            target: "ETHAN".into(),
+            queued_at,
+            target_idle: false,
+            block_reason: Some(reason.into()),
+            idle_since: None,
+        };
+        // Inside the reaper's deadline: sanctioned wait, pass.
+        let rs = queue_has_live_consumer(&[mk("no-env-file", 6_000.0)], 7_560.0, 300.0, 3_600.0);
+        assert!(
+            rs.iter().all(|r| r.status == Status::Pass),
+            "a row the reaper will reap is scheduled fate, not a failure: {rs:?}"
+        );
+        // Past the deadline: the reaper is wedged — the louder fact.
+        let rs = queue_has_live_consumer(&[mk("no-env-file", 0.0)], 7_560.0, 300.0, 3_600.0);
+        let f = rs.iter().find(|r| r.status == Status::Fail).expect("past-deadline must fail");
+        assert_eq!(f.evidence["class"].as_str(), Some("dead-letter-wedged"), "{}", f.evidence);
+        assert!(f.observed.contains("PAST the dead-letter deadline"), "{}", f.observed);
+        // not-running: kept by design, passes at any age.
+        let rs = queue_has_live_consumer(&[mk("not-running", 0.0)], 7_560.0, 300.0, 3_600.0);
+        assert!(
+            rs.iter().all(|r| r.status == Status::Pass),
+            "a stopped-but-registered lane keeps its queue deliberately: {rs:?}"
+        );
     }
 
     /// AMUX-3084 / AMUX-3111: a target that is not a live consumer at all (its
@@ -1737,15 +3205,19 @@ mod negative_controls {
             queued_at: 0.0,
             target_idle: true, // carries a stale, never-decaying idle report (AMUX-2646)
             block_reason: Some("no-env-file".into()),
+            idle_since: None,
         }];
-        let rs = queue_has_live_consumer(&items, 7_560.0, 300.0);
+        // Post-AMUX-3473: the ghost still fails, but only PAST the reaper's
+        // deadline (2h6m old vs a 1h deadline here), and the class names the
+        // wedged reaper — the discriminator one level deeper than AMUX-3084's.
+        let rs = queue_has_live_consumer(&items, 7_560.0, 300.0, 3_600.0);
         let f = rs
             .iter()
             .find(|r| r.status == Status::Fail)
-            .expect("an 18h-stuck row must still fail");
+            .expect("a row past the dead-letter deadline must still fail");
         assert_eq!(
             f.evidence["class"].as_str(),
-            Some("unroutable-target"),
+            Some("dead-letter-wedged"),
             "a ghost target must be classed unroutable, not producer-without-consumer: {}",
             f.evidence
         );
@@ -1776,6 +3248,30 @@ mod negative_controls {
             "must detect a card that contradicts its own pane"
         );
         assert_eq!(rs[0].entity_key, "amux-rust", "the failure must name the lane");
+    }
+
+    /// AMUX-3474, the flap that filed ~100 per-entity cards: a FRESH idle
+    /// report under a working pane is the turn-boundary race (Stop landed,
+    /// the next steered prompt began, its report in flight) and must PASS;
+    /// the same disagreement AGED past the grace is the dropped-report /
+    /// fabricated-report case and must still fail (the 1076s incident cell
+    /// above stays red).
+    #[test]
+    fn a_fresh_idle_report_under_a_working_pane_is_a_race_not_a_contradiction() {
+        let lanes = vec![LaneTruth {
+            name: "amux-gtm".into(),
+            status: "idle".into(),
+            pane_says_working: true,
+            report_state: "idle".into(),
+            report_age_s: 8.0,
+            report_source: "stop-hook".into(),
+            report_origin: "amux-gtm".into(),
+        }];
+        assert!(
+            status_agrees_with_pane(&lanes).iter().all(|r| r.status == Status::Pass),
+            "a seconds-old idle report over a working pane is the routine race — \
+             failing it is the flap that buried the board"
+        );
     }
 
     /// ...and must NOT fire in the other direction. A lane reported `active`
@@ -1882,11 +3378,115 @@ mod negative_controls {
             queued_at: 0.0,
             target_idle: false, // mid-turn: queueing is the POINT
             block_reason: None,
+            idle_since: None,
         }];
-        let rs = queue_has_live_consumer(&items, 7_560.0, 300.0);
+        let rs = queue_has_live_consumer(&items, 7_560.0, 300.0, 3_600.0);
         assert!(
             rs.iter().all(|r| r.status == Status::Pass),
             "a deep queue behind a busy worker is correct, not a fault"
+        );
+    }
+
+    /// An INDENTED block in a doc comment is a Markdown code block, so rustdoc
+    /// compiles it as Rust and `cargo test --doc` fails on it (AMUX-3577).
+    ///
+    /// This turned main red for three consecutive commits. It slipped through
+    /// every local gate because the routine everyone here runs is
+    /// `cargo test -p amux-server --lib`, and `--lib` DOES NOT RUN DOCTESTS —
+    /// so the tree was green locally and red in CI, which reads as a CI problem
+    /// rather than a source one. Putting the check in the lib suite is the
+    /// point: it has to fail where people actually look.
+    ///
+    /// The rule is precise, and the precision is what keeps it from crying
+    /// wolf. An indented block is only a code block when a BLANK doc line
+    /// precedes it; otherwise it is a lazy paragraph continuation and is
+    /// harmless. This file contains one of each, which is why only one failed.
+    #[test]
+    fn no_doc_comment_indents_a_block_into_an_accidental_doctest() {
+        for (path, src) in [
+            ("invariants/checks.rs", include_str!("checks.rs")),
+            ("invariants/monitor.rs", include_str!("monitor.rs")),
+        ] {
+            let lines: Vec<&str> = src.lines().collect();
+            let mut fenced = false;
+            for (i, line) in lines.iter().enumerate() {
+                let t = line.trim_start();
+                if t.starts_with("/// ```") || t.starts_with("//! ```") {
+                    fenced = !fenced;
+                    continue;
+                }
+                if fenced {
+                    continue;
+                }
+                let Some(body) = t.strip_prefix("///").or_else(|| t.strip_prefix("//!")) else {
+                    continue;
+                };
+                // Four spaces of body after the marker is the code-block trigger.
+                if !body.starts_with("    ") || body.trim().is_empty() {
+                    continue;
+                }
+                let prev = i
+                    .checked_sub(1)
+                    .map(|j| lines[j].trim_start())
+                    .unwrap_or("");
+                let prev_is_blank_doc = prev == "///" || prev == "//!";
+                assert!(
+                    !prev_is_blank_doc,
+                    "{path}:{} indents a block after a blank doc line — rustdoc will compile it \
+                     as Rust and `cargo test --doc` will fail. Fence it as ```text instead.\n  {line}",
+                    i + 1
+                );
+            }
+        }
+    }
+
+    /// AMUX-3572, rebuilt from the incident's own artifact rather than from the
+    /// case that is easy to construct. The recorded observed string was
+    /// "undelivered for 308s while target is IDLE" against a 300s threshold, on
+    /// a lane whose turns routinely run past 300s. So the age had already
+    /// cleared the threshold while the lane was legitimately BUSY, and the
+    /// check fired on the instant of the busy->idle transition, then cleared
+    /// once delivery ran seconds later: 629 occurrences and an auto-filed card
+    /// for an incident that had already healed.
+    ///
+    /// The pair is the point. Both rows are idle with an identically-aged item;
+    /// only the time spent idle differs. A check that reads `queued_at` cannot
+    /// separate them and fails both.
+    #[test]
+    fn idle_is_measured_from_when_the_lane_went_idle_not_from_queued_at() {
+        let now = 1_000_000.0;
+        let mk = |idle_since: f64| QueuedItem {
+            queue: "steering".into(),
+            target: "amux".into(),
+            queued_at: now - 308.0, // the incident's own age
+            target_idle: true,
+            block_reason: None,
+            idle_since: Some(idle_since),
+        };
+
+        // Just went idle after a long turn: the queue has had 5s to drain.
+        let rs = queue_has_live_consumer(&[mk(now - 5.0)], now, 300.0, 3_600.0);
+        assert!(
+            rs.iter().all(|r| r.status == Status::Pass),
+            "a lane 5s into being idle has not failed to drain; this is the false \
+             positive that filed AMUX-3572"
+        );
+
+        // CONTROL: same item age, but idle the whole time. Still a real wedge.
+        let rs = queue_has_live_consumer(&[mk(now - 308.0)], now, 300.0, 3_600.0);
+        assert!(
+            rs.iter().any(|r| r.status == Status::Fail),
+            "a lane idle for the item's whole life IS the producer-without-consumer \
+             incident and must still fail"
+        );
+
+        // A report with no timestamp must not become an excuse: fall back to the
+        // queued clock so a stuck consumer is never silently passed.
+        let no_ts = QueuedItem { idle_since: None, ..mk(0.0) };
+        let rs = queue_has_live_consumer(&[no_ts], now, 300.0, 3_600.0);
+        assert!(
+            rs.iter().any(|r| r.status == Status::Fail),
+            "missing idle_since must degrade to the old behaviour, not to a pass"
         );
     }
 
@@ -1954,6 +3554,55 @@ mod negative_controls {
         assert_eq!(rs[0].status, Status::Unknown, "too-small fleet must be Unknown: {rs:?}");
     }
 
+    /// AMUX-3468 both directions: a guarded-absent family (tunnel, AF-63
+    /// preflight) PASSES while unrouted — a permanent red on a documented
+    /// absence trains skimming — and the exclusion SELF-EXPIRES: mounting the
+    /// family turns the entry itself into the failure. A sibling near-miss
+    /// stays guarded (the over-exclusion hazard the GATEWAY_OWNED comment
+    /// warns about).
+    #[test]
+    fn a_caller_guarded_absent_family_passes_until_it_is_mounted() {
+        let mounted: Vec<(&str, &[&str])> = vec![("/api/board", &["GET"])];
+        let callers = vec![
+            CallerPath { method: "POST".into(), path: "/api/tunnel/start".into(),
+                         source: "amux-cli".into(), interpolated: false, method_known: true },
+            CallerPath { method: "GET".into(), path: "/api/tunnel2/x".into(),
+                         source: "amux-cli".into(), interpolated: false, method_known: true },
+        ];
+        let rs = route_callers_have_routes(&mounted, &callers);
+        let by_ent = |e: &str| rs.iter().find(|r| r.entity_key == e).unwrap();
+        assert_eq!(by_ent("POST /api/tunnel/start").status, Status::Pass,
+                   "documented absence with a preflighting caller must not be a permanent red");
+        assert_eq!(by_ent("GET /api/tunnel2/x").status, Status::Fail,
+                   "a sibling outside the prefix stays guarded");
+        // Mount the family: the exclusion is now stale and must SAY SO.
+        let mounted2: Vec<(&str, &[&str])> =
+            vec![("/api/board", &["GET"]), ("/api/tunnel/start", &["POST"])];
+        let rs2 = route_callers_have_routes(&mounted2, &callers);
+        let row = rs2.iter().find(|r| r.entity_key == "POST /api/tunnel/start").unwrap();
+        assert_eq!(row.status, Status::Fail);
+        assert!(row.observed.contains("STALE"), "{}", row.observed);
+    }
+
+    /// AF-137 both directions: unowned auto-filed cards must go RED naming
+    /// the count and the remedy (215 accumulated silently while both halves
+    /// reported success); zero unowned must pass, or the check becomes the
+    /// permanent-red that trains skimming.
+    #[test]
+    fn unowned_autofix_cards_fail_the_dispatchability_check() {
+        let ok = autofix_cards_are_dispatchable(0, &[]);
+        assert_eq!(ok[0].status, Status::Pass, "{ok:?}");
+        let bad = autofix_cards_are_dispatchable(215, &["AMUX-2872".into(), "AMUX-3447".into()]);
+        assert_eq!(bad[0].status, Status::Fail);
+        assert!(bad[0].observed.contains("215"), "{}", bad[0].observed);
+        assert!(bad[0].observed.contains("AMUX_AUTOFIX_SESSION"), "names the remedy: {}", bad[0].observed);
+        assert!(bad[0].observed.contains("AMUX-2872"), "names examples: {}", bad[0].observed);
+        assert!(
+            bad[0].observed.contains("do NOT bulk-assign"),
+            "carries the migration-event caution: {}", bad[0].observed
+        );
+    }
+
     /// AMUX-3033: an identical runtime guard passes, a hand-edit is DETECTED as a
     /// Fail (the whole point — an unreviewed fleet-wide edit must not hide), and
     /// an unreadable runtime (a container that never installed it) is Unknown,
@@ -1961,21 +3610,81 @@ mod negative_controls {
     #[test]
     fn shared_guard_drift_is_detected() {
         let committed = "#!/usr/bin/env python3\n# canonical guard source\n";
-        let same =
-            installed_script_matches_committed(&GIT_SHARED_GUARD, committed, Ok(committed.into()));
+        let same = installed_script_matches_committed(
+            &GIT_SHARED_GUARD,
+            committed,
+            Some(committed),
+            Some(committed),
+            Ok(committed.into()),
+        );
         assert_eq!(same[0].status, Status::Pass, "identical must pass: {same:?}");
+
+        // AF-132, THE false-fire cell: runtime matches HEAD while the BAKED
+        // source is stale (a script-only commit landed; no rebuild happened).
+        // This is the healthy state, and the old build-time comparison called
+        // it "an unreviewed hand-edit" with a remedy that reproduced the same
+        // bytes. Must PASS.
+        let stale_baked = installed_script_matches_committed(
+            &GIT_SHARED_GUARD,
+            "# OLD baked source from the running binary's commit\n",
+            Some(committed),
+            Some(committed),
+            Ok(committed.into()),
+        );
+        assert_eq!(
+            stale_baked[0].status,
+            Status::Pass,
+            "runtime == HEAD is healthy whatever the binary baked: {stale_baked:?}"
+        );
+
+        // Runtime matches an UNCOMMITTED worktree edit: a real warn, but a
+        // DIFFERENT claim from a hand-edit — the remedy is committing the
+        // tracked source, not reinstalling.
+        let uncommitted = committed.to_string() + "# staged but not committed\n";
+        let wt = installed_script_matches_committed(
+            &GIT_SHARED_GUARD,
+            committed,
+            Some(committed),
+            Some(&uncommitted),
+            Ok(uncommitted.clone()),
+        );
+        assert_eq!(wt[0].status, Status::Fail);
+        assert!(wt[0].observed.contains("UNCOMMITTED"), "{}", wt[0].observed);
+        assert!(!wt[0].observed.contains("hand-edit"), "{}", wt[0].observed);
 
         let drifted = installed_script_matches_committed(
             &GIT_SHARED_GUARD,
             committed,
+            Some(committed),
+            Some(committed),
             Ok(committed.to_string() + "# HAND EDIT\n"),
         );
         assert_eq!(drifted[0].status, Status::Fail, "a hand-edit must fail: {drifted:?}");
         assert!(drifted[0].observed.contains("DRIFTED"), "{}", drifted[0].observed);
 
+        // No repo reachable (cloud): baked fallback must HEDGE — a mismatch
+        // there cannot distinguish a hand-edit from a binary predating a
+        // legitimate script commit, and must say so with this binary's commit.
+        let hedged = installed_script_matches_committed(
+            &GIT_SHARED_GUARD,
+            committed,
+            None,
+            None,
+            Ok(committed.to_string() + "# newer legit commit\n"),
+        );
+        assert_eq!(hedged[0].status, Status::Fail);
+        assert!(hedged[0].observed.contains("predates"), "{}", hedged[0].observed);
+        assert!(
+            !hedged[0].observed.contains("unreviewed hand-edit"),
+            "the no-repo fallback must not ASSERT a hand-edit: {}",
+            hedged[0].observed
+        );
+
         let missing = installed_script_matches_committed(
             &GIT_SHARED_GUARD,
             committed,
+            Some(committed),
+            Some(committed),
             Err("No such file (os error 2)".into()),
         );
         assert_eq!(missing[0].status, Status::Unknown, "unreadable is Unknown not pass: {missing:?}");
@@ -1983,12 +3692,20 @@ mod negative_controls {
         // The generalisation must not have silently renamed the ids consumers
         // match on, and the two specs must not collide onto one id.
         assert_eq!(same[0].invariant_id, "hooks.shared_guard_matches_committed");
-        let rep = installed_script_matches_committed(&REPORT_HOOK, committed, Ok(committed.into()));
+        let rep = installed_script_matches_committed(
+            &REPORT_HOOK,
+            committed,
+            Some(committed),
+            Some(committed),
+            Ok(committed.into()),
+        );
         assert_eq!(rep[0].invariant_id, "hooks.report_hook_matches_committed");
         // ...and the prose must follow the spec, not stay hardcoded to the guard.
         let rep_drift = installed_script_matches_committed(
             &REPORT_HOOK,
             committed,
+            Some(committed),
+            Some(committed),
             Ok(committed.to_string() + "x"),
         );
         assert!(
@@ -2091,5 +3808,503 @@ mod negative_controls {
         // settings file into an API response.
         assert!(the_incident[0].evidence["entries"][0]["command_head"].is_string());
         assert!(healthy[0].evidence["entries"][0]["command_head"].is_null());
+    }
+
+    /// AMUX-3397 cells, built from the real incident artifact. The specimen
+    /// panic file at 2.7 days must FAIL inside the 7-day dwell and PASS (with
+    /// its entity, so the incident resolves) once the window shrinks past it.
+    #[test]
+    fn the_0819_panic_specimen_fails_inside_the_dwell_and_heals_past_it() {
+        let specimen = vec![(
+            "panic-base+socd-2026-08-19-210001.panic".to_string(),
+            2.7 * 86400.0,
+        )];
+
+        // A FIXED clock, so the heal epoch below is an exact equality rather
+        // than a tolerance around whatever the test machine's clock said.
+        const NOW: f64 = 1_787_500_000.0;
+
+        let fresh = no_fresh_kernel_panic(&specimen, 7.0 * 86400.0, NOW);
+        assert_eq!(fresh[0].status, Status::Fail, "{:?}", fresh[0]);
+        assert_eq!(fresh[0].entity_key, "panic-base+socd-2026-08-19-210001.panic");
+        assert!(fresh[0].observed.contains("AMUX-3396"), "{:?}", fresh[0].observed);
+
+        // AMUX-3645: the dwell is DECLARED, so a consumer can tell "held red on
+        // purpose until Tuesday" from "a fault that is getting worse". The
+        // artifact is 2.7d old inside a 7d window, so it ages out 4.3d from now.
+        let declared = crate::invariants::heals_at_of(&fresh[0].evidence)
+            .expect("a dwell-window failure must declare when it heals");
+        assert!(
+            (declared - (NOW + 4.3 * 86400.0)).abs() < 1.0,
+            "heal epoch is now - age + window: got {declared}, want {}",
+            NOW + 4.3 * 86400.0
+        );
+        // It must survive ALONGSIDE the diagnostic evidence, not replace it —
+        // trading the causal slice for the label would be the worse bargain.
+        assert_eq!(fresh[0].evidence["file"], "panic-base+socd-2026-08-19-210001.panic");
+
+        // Past the window the SAME entity gets an explicit pass — that is
+        // what resolves the incident row; a bare pass would leave it open
+        // forever (the store resolves on matching (invariant, entity)).
+        let aged = no_fresh_kernel_panic(&specimen, 2.0 * 86400.0, NOW);
+        assert_eq!(aged[0].status, Status::Pass);
+        assert_eq!(aged[0].entity_key, "panic-base+socd-2026-08-19-210001.panic");
+        // A PASS declares nothing: `heals_at` is a property of a live dwell,
+        // and leaving it on the healed result would park a card for a
+        // condition that is already gone.
+        assert_eq!(crate::invariants::heals_at_of(&aged[0].evidence), None, "{:?}", aged[0]);
+
+        // No artifacts at all: a bare pass so the check reads alive.
+        assert_eq!(no_fresh_kernel_panic(&[], 7.0 * 86400.0, NOW)[0].status, Status::Pass);
+    }
+
+    /// The pressure check carries the kernel's verdict: only critical fails,
+    /// warn stays a pass (this box visits warn under normal load), and an
+    /// unmeasurable platform is unknown, NOT a pass.
+    #[test]
+    fn only_critical_pressure_fails_and_unmeasurable_is_unknown_not_pass() {
+        let crit = host_memory_not_critical(Some(4), Some(30000.0), Some(32768.0));
+        assert_eq!(crit[0].status, Status::Fail, "{:?}", crit[0]);
+        assert!(crit[0].observed.contains("CRITICAL"), "{:?}", crit[0].observed);
+
+        assert_eq!(host_memory_not_critical(Some(1), Some(0.0), Some(0.0))[0].status, Status::Pass);
+        assert_eq!(host_memory_not_critical(Some(2), Some(9000.0), Some(16384.0))[0].status, Status::Pass);
+
+        let unk = host_memory_not_critical(None, None, None);
+        assert_eq!(unk[0].status, Status::Unknown, "{:?}", unk[0]);
+    }
+
+    /// AMUX-3489 cells. The incident specimen (8M rows) must FAIL with the
+    /// numbers in the observed text; the post-retention steady state passes.
+    #[test]
+    fn result_log_within_budget_passes_and_the_incident_specimen_fails() {
+        let ok = result_log_bounded(50_000, 500_000, 3000.0);
+        assert_eq!(ok[0].status, Status::Pass);
+
+        let bad = result_log_bounded(7_993_107, 500_000, 604_800.0);
+        assert_eq!(bad[0].status, Status::Fail, "{:?}", bad[0]);
+        assert!(bad[0].observed.contains("7993107"), "{:?}", bad[0].observed);
+        assert_eq!(bad[0].evidence["budget"], 500_000);
+
+        // Exactly-at-budget is not an excursion.
+        assert_eq!(result_log_bounded(500_000, 500_000, 1.0)[0].status, Status::Pass);
+    }
+
+    /// AF-184. The unit error is invisible in the code and glaring in the data,
+    /// which is the whole reason this check reads the data.
+    ///
+    /// Both real incidents are cells here, in the two directions they happened:
+    /// `interaction_log` (ms) read as seconds, which made a filter ~1000x too
+    /// small and matched the entire table; and `_amux_request_log` (s) read as
+    /// ms, which produced "496040 hours ago" and was one absurd value away from
+    /// two cards filed against already-fixed bugs.
+    #[test]
+    fn a_ts_column_in_the_wrong_unit_is_named_with_the_reading_that_fits() {
+        let now = 1_787_533_773.0;
+
+        // Correct on both sides of the declaration: nothing to say but PASS.
+        let ok = timestamp_units_are_what_readers_assume(
+            &[
+                ("_amux_request_log.ts".into(), Some(now - 1.0)),
+                ("cmd_history.ts".into(), Some((now - 1.0) * 1000.0)),
+            ],
+            &[],
+            now,
+        );
+        assert!(ok.iter().all(|r| r.status == Status::Pass), "{ok:?}");
+        assert_eq!(ok.len(), 2, "every declared column reports, not just the bad ones");
+
+        // A SECONDS column holding milliseconds. The failure must name
+        // MILLISECONDS, because "out of range" sends the reader to the clock and
+        // the fitting reading sends them to the one wrong line.
+        let bad = timestamp_units_are_what_readers_assume(
+            &[("_amux_request_log.ts".into(), Some(now * 1000.0))],
+            &[],
+            now,
+        );
+        assert_eq!(bad[0].status, Status::Fail, "{bad:?}");
+        assert!(bad[0].observed.contains("MILLISECONDS"), "name the reading that fits: {:?}", bad[0].observed);
+
+        // And the mirror, which is the incident from the other direction.
+        let bad2 = timestamp_units_are_what_readers_assume(
+            &[("cmd_history.ts".into(), Some(now))],
+            &[],
+            now,
+        );
+        assert_eq!(bad2[0].status, Status::Fail, "{bad2:?}");
+        assert!(bad2[0].observed.contains("SECONDS"), "{:?}", bad2[0].observed);
+
+        // AN EMPTY TABLE IS UNKNOWN, NOT PASS. An absence of evidence rendered
+        // as green is the silence-reads-as-health failure, and it would hide a
+        // wrong declaration on any table that has not been written to yet.
+        let empty = timestamp_units_are_what_readers_assume(
+            &[("token_ledger.ts".into(), None)],
+            &[],
+            now,
+        );
+        assert_eq!(empty[0].status, Status::Unknown, "{empty:?}");
+
+        // An UNDECLARED timestamp column fails. This is the half that keeps
+        // working as the schema grows: a sixth table with a bare `ts` inherits
+        // the trap silently, and only a check that goes red makes its author
+        // state the unit.
+        let undecl = timestamp_units_are_what_readers_assume(&[], &["new_table.ts".into()], now);
+        assert_eq!(undecl[0].status, Status::Fail, "{undecl:?}");
+        assert!(undecl[0].entity_key.contains("new_table"), "{:?}", undecl[0]);
+
+        // CONTROL ON THE WINDOW: it must be loose enough not to fire on ordinary
+        // old rows, or the check becomes noise and stops being read. Ten years
+        // back and a year ahead both pass under the correct unit.
+        //
+        // This also answers the false-failure amux warned about in review: a
+        // recency-based detector would classify `interaction_log` UNKNOWN or
+        // FAILED because its newest row is 5.5 days old. Under a ten-year window
+        // 5.5 days is nowhere near the edge, and it cannot be, because the error
+        // being detected is a factor of 1000 and the window is a factor of ~3600
+        // wide. A table nobody has written to recently is still checkable.
+        let oldrow = timestamp_units_are_what_readers_assume(
+            &[("_amux_request_log.ts".into(), Some(now - 86_400.0 * 3_000.0))],
+            &[],
+            now,
+        );
+        assert_eq!(oldrow[0].status, Status::Pass, "a 3000-day-old row is old, not mis-united: {oldrow:?}");
+    }
+
+    /// AMUX-3647: the assumption the latency exclusion rests on is CHECKED, and
+    /// its three states stay distinguishable.
+    ///
+    /// The point of this cell is the third one. A violation count of zero and a
+    /// column nobody writes produce the same number, and reporting both as a
+    /// pass is how a check goes green by ceasing to be able to fail. The whole
+    /// reason `ts < boot_at` is safe to compare on is a startup ORDER that a
+    /// future edit could change silently, so "I could not tell" has to be its
+    /// own answer.
+    #[test]
+    fn arrival_before_its_own_boot_is_a_failure_and_no_data_is_not_a_pass() {
+        let clean = request_arrival_follows_boot(97_019, 0, 24.0);
+        assert_eq!(clean[0].status, Status::Pass, "{clean:?}");
+
+        let broken = request_arrival_follows_boot(97_019, 3, 24.0);
+        assert_eq!(broken[0].status, Status::Fail, "{broken:?}");
+        assert!(
+            broken[0].observed.contains("spans_own_restart"),
+            "the failure must name the code whose assumption just broke, or a reader gets a \
+             count with no consequence attached: {broken:?}"
+        );
+
+        let blind = request_arrival_follows_boot(0, 0, 24.0);
+        assert_eq!(
+            blind[0].status,
+            Status::Unknown,
+            "zero violations out of zero observations is not evidence — it is the same number \
+             a check that stopped running produces: {blind:?}"
+        );
+    }
+
+    /// AF-184 REVIEW (amux): the declaration must cover timestamps, not one
+    /// SPELLING of them.
+    ///
+    /// The first draft keyed on columns literally named `ts`. Measured against
+    /// the live schema afterwards: 44 numeric timestamp columns exist and the
+    /// `ts` spelling covers only 15 of them. Five columns are milliseconds and
+    /// TWO of those five are `_at`-named, so the narrow filter was blind to 40%
+    /// of the exact thing the check exists to catch. That is the rule-1
+    /// exemption shape, where narrowing does not make a thing cheap, it makes it
+    /// invisible, and it was caught in review rather than by the check.
+    ///
+    /// The first draft of THIS cell then asserted "three of the five", which is
+    /// wrong, and it failed against correct code until I recounted. Left in the
+    /// history rather than tidied away: a red test on code you just verified
+    /// means the instrument is the candidate before the code is.
+    ///
+    /// Pinned here so a future narrowing of the filter fails loudly instead of
+    /// silently shrinking what the invariant can see.
+    #[test]
+    fn the_declaration_covers_the_millisecond_columns_a_ts_only_filter_would_miss() {
+        let ms: Vec<String> = TIMESTAMP_COLUMNS
+            .iter()
+            .filter(|(_, _, is_ms)| *is_ms)
+            .map(|(t, c, _)| format!("{t}.{c}"))
+            .collect();
+        for name in [
+            "cmd_history.queued_at",
+            "cmd_history.delivered_at",
+            "cmd_history.ts",
+            "interaction_log.ts",
+            "dictation_history.ts",
+        ] {
+            assert!(
+                ms.contains(&name.to_string()),
+                "{name} is MILLISECONDS in the live schema and must be declared: {ms:?}"
+            );
+        }
+        assert_eq!(
+            ms.iter().filter(|n| n.ends_with("_at")).count(),
+            2,
+            "two of the five millisecond columns are `_at`-named — that is why the \
+             filter cannot key on `ts` alone: {ms:?}"
+        );
+        // No duplicate declarations: a column declared twice with different
+        // units would make the lookup order-dependent and quietly authoritative.
+        let mut names: Vec<String> = TIMESTAMP_COLUMNS
+            .iter()
+            .map(|(t, c, _)| format!("{t}.{c}"))
+            .collect();
+        let before = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(before, names.len(), "a column is declared twice");
+    }
+}
+
+/// A schedule whose TITLE claims a cost property its `kind` contradicts (AF-216).
+#[derive(Debug, Clone)]
+pub struct ScheduleKindRow {
+    pub id: String,
+    pub title: String,
+    pub kind: String,
+    pub session: String,
+    /// What the schedule runs. Carried because the TITLE cannot answer the
+    /// question that matters (AMUX-3680): a schedule burning a model turn on a
+    /// pure shell command is just as expensive whether or not it claims to be
+    /// cheap, and only the command can say which it is.
+    pub command: String,
+}
+
+/// Titles that assert the schedule costs no model tokens. Kept as a list rather
+/// than one string because the claim is what matters, not the spelling.
+const ZERO_COST_CLAIMS: &[&str] = &["zero-token", "zero token", "no-token", "tokenless"];
+
+/// Does this command run a program, with no prose for a model to interpret?
+///
+/// Deliberately conservative: it must START with something that is
+/// unambiguously an invocation. Anything a person would read as an instruction
+/// ("review the breaches and reply", "check X then post Y") does not match, and
+/// that is the direction to be wrong in — a missed expensive schedule costs a
+/// turn a day, while a false one costs a card that says "should this be shell?"
+/// about a command that is prose.
+///
+/// `&&`/`;`/`|` chains are fine and are the common shape here
+/// (`cd ~/dir && ./runner.sh x`): the first token still decides whether a shell
+/// could have run the whole line.
+fn is_pure_shell(command: &str) -> bool {
+    let c = command.trim();
+    if c.is_empty() {
+        return false;
+    }
+    // A blank line means the author wrote a prompt with structure, not a
+    // command line. Real commands here are one line, possibly chained.
+    if c.contains("\n\n") {
+        return false;
+    }
+    let first = c.split_whitespace().next().unwrap_or("");
+    first.starts_with("./")
+        || first.starts_with('/')
+        || first.starts_with("~/")
+        || first.starts_with("$(")
+        || matches!(
+            first,
+            "cd" | "bash" | "sh" | "zsh" | "python" | "python3" | "node" | "npm" | "npx"
+                | "curl" | "git" | "make" | "cargo" | "docker" | "psql" | "sqlite3" | "amux"
+                | "env" | "export" | "source" | "echo" | "rsync" | "aws" | "gh"
+        )
+}
+
+/// `kind: shell` runs the command directly. `kind: tmux` delivers it to a lane as
+/// a PROMPT and wakes a full model turn — measured 2026-08-24 at ~$6.20 per fire
+/// (2,602 schedule-caused turns against 214 declared fires/day).
+///
+/// So a schedule TITLED "zero-token" while running as `tmux` is not a naming
+/// nitpick: it is a row asserting a cost property the row itself contradicts, and
+/// it defeats exactly the audit someone would run to find this class. Both
+/// specimens found on 2026-08-24 already had pure-shell commands
+/// (`cd ~/Dev/... && ./tick_runner.sh opps`), so each was ONE FIELD from being
+/// true, and their titles are why nobody looked.
+///
+/// FAILS TODAY, on purpose: 2 enabled rows. An invariant that goes green on the
+/// day it ships has not been shown to discriminate — this one names its specimens
+/// and can be watched to zero.
+pub fn schedule_cost_titles_match_kind(rows: &[ScheduleKindRow]) -> Vec<InvariantResult> {
+    const ID: &str = "schedules.cost_title_matches_kind";
+    let claims_free = |t: &str| {
+        let low = t.to_lowercase();
+        ZERO_COST_CLAIMS.iter().any(|c| low.contains(c))
+    };
+    // THE TITLE IS THE WRONG OPERAND (AMUX-3680, found by gtm-ticker).
+    //
+    // This fired only on a CONTRADICTION — a title claiming zero-token on a row
+    // that is not `shell`. So a schedule whose title says nothing about cost was
+    // invisible, however expensive it was, and honesty was what evaded the
+    // check. Measured 2026-08-24: this check found TWO of gtm-ticker's
+    // schedules; SEVEN were spending a model turn per firing on the same
+    // runner. The five it missed had made no claim, so there was nothing to
+    // contradict. It reported clean on them the whole time.
+    //
+    // The costlier question needs no title at all: does this schedule spend a
+    // model turn to run something a shell could have run? A command with no
+    // prose for a model to interpret, on a kind that wakes a lane, is a wasted
+    // turn per fire whatever the title says.
+    //
+    // Kept HIGH-PRECISION on purpose. This mints cards, and a detector that
+    // guesses at "is this prose" would bury the board in judgement calls; the
+    // rule below only fires on a command that unambiguously starts as a shell
+    // invocation, so the false-positive it can produce is "this looks
+    // self-contained, should it be shell?" — cheap to answer and usually yes.
+    // A prompt like "review the SLA breaches and reply" does not match and is
+    // correctly left alone.
+    let liars: Vec<&ScheduleKindRow> = rows
+        .iter()
+        .filter(|r| r.kind != "shell" && (claims_free(&r.title) || is_pure_shell(&r.command)))
+        .collect();
+    if liars.is_empty() {
+        return vec![InvariantResult::pass(ID)];
+    }
+    liars
+        .iter()
+        .map(|r| {
+            let mut out = InvariantResult::new(ID, Status::Fail);
+            // Per-schedule entity_key: two mislabelled rows are two incidents,
+            // and one being corrected must not close the other's.
+            out.entity_key = r.id.clone();
+            out.expected = format!("schedule {} titled zero-cost runs as kind='shell'", r.id);
+            out.observed = format!("kind='{}' — every fire wakes a lane and costs a model turn", r.kind);
+            out.evidence = serde_json::json!({
+                "id": r.id,
+                "title": r.title,
+                "kind": r.kind,
+                "session": r.session,
+                "remedy": "PATCH /api/schedules/<id> {\"kind\":\"shell\"} if the command is \
+                           self-contained, or retitle it — a title asserting a cost property \
+                           the row contradicts is worse than no title",
+            });
+            out
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod schedule_kind_tests {
+    use super::*;
+
+    fn row(id: &str, title: &str, kind: &str) -> ScheduleKindRow {
+        // Existing cells predate the command operand and are about the TITLE
+        // rule, so they get prose: it does not match `is_pure_shell`, which
+        // keeps each of them asserting exactly what it asserted before.
+        row_cmd(id, title, kind, "review the breaches and reply")
+    }
+
+    fn row_cmd(id: &str, title: &str, kind: &str, command: &str) -> ScheduleKindRow {
+        ScheduleKindRow {
+            id: id.into(),
+            title: title.into(),
+            kind: kind.into(),
+            session: "gtm-ticker".into(),
+            command: command.into(),
+        }
+    }
+
+    /// AMUX-3680, found by gtm-ticker after acting on this check's own output.
+    ///
+    /// The check found TWO of their schedules. SEVEN were spending a model turn
+    /// per firing on the same runner. The five it missed made no cost claim in
+    /// their titles, so there was nothing to contradict, and it reported clean
+    /// on them the whole time — honesty was what evaded the check.
+    ///
+    /// The cell above, `an_ordinary_tmux_schedule_making_no_cost_claim_passes`,
+    /// encoded that blind spot as intended behaviour. It still passes, because
+    /// its command is prose; what changes is that a claimless title no longer
+    /// protects a schedule whose command a shell could have run.
+    #[test]
+    fn a_claimless_title_no_longer_hides_a_model_turn_spent_on_a_shell_command() {
+        // The real command, verbatim, from all seven of gtm-ticker's rows.
+        let runner = "cd ~/Dev/mixpeek/gtm/engine && ./tick_runner.sh rb2b-inbound";
+
+        // THE FIVE IT MISSED: no cost claim, pure shell command, kind=tmux.
+        let missed = row_cmd("SCHED-200", "rb2b inbound tick", "tmux", runner);
+        let out = schedule_cost_titles_match_kind(&[missed]);
+        assert_eq!(out[0].status, Status::Fail, "{:?}", out[0]);
+        assert_eq!(out[0].entity_key, "SCHED-200");
+
+        // Same row on `shell` is the fixed state and must pass — otherwise the
+        // check would keep firing after the remedy it prescribes.
+        let fixed = row_cmd("SCHED-200", "rb2b inbound tick", "shell", runner);
+        assert_eq!(schedule_cost_titles_match_kind(&[fixed])[0].status, Status::Pass);
+
+        // CONTROL, and the reason the rule is conservative: a real PROMPT on a
+        // model lane is not a wasted turn, and flagging it would bury the board
+        // in judgement calls about what counts as prose.
+        let prompt = row_cmd(
+            "SCHED-999",
+            "SLA sweep",
+            "tmux",
+            "review the SLA breaches since yesterday and reply to any over 4h",
+        );
+        assert_eq!(
+            schedule_cost_titles_match_kind(&[prompt])[0].status,
+            Status::Pass,
+            "a genuine prompt must not be flagged"
+        );
+
+        // The predicate itself, both directions, since it is what decides.
+        assert!(is_pure_shell(runner));
+        assert!(is_pure_shell("./scripts/x.sh"));
+        assert!(is_pure_shell("python3 -m foo"));
+        assert!(is_pure_shell("/usr/local/bin/thing --flag"));
+        assert!(!is_pure_shell("review the breaches and reply"));
+        assert!(!is_pure_shell(""));
+        assert!(!is_pure_shell("   "));
+        // A structured prompt that HAPPENS to open with a command-looking word
+        // is still a prompt: the blank line is the tell.
+        assert!(!is_pure_shell("curl the thing\n\nThen summarise what you saw."));
+    }
+
+    /// The real specimens, verbatim from the board on 2026-08-24.
+    #[test]
+    fn a_zero_token_title_running_as_tmux_is_named() {
+        let rows = vec![
+            row("SCHED-1", "Opps tick: booked meetings -> Lightfield (zero-token, GT-62)", "tmux"),
+            row("SCHED-2", "rb2b inbound tick: sink -> Lightfield, zero-token (playbook 05)", "tmux"),
+        ];
+        let out = schedule_cost_titles_match_kind(&rows);
+        assert_eq!(out.len(), 2, "two mislabelled rows are TWO incidents, not one");
+        assert!(out.iter().all(|r| r.status == Status::Fail));
+        // entity_key must be per-schedule, or correcting one closes the other's incident.
+        let keys: Vec<&str> = out.iter().map(|r| r.entity_key.as_str()).collect();
+        assert_eq!(keys, vec!["SCHED-1", "SCHED-2"]);
+        assert!(out[0].observed.contains("tmux"));
+    }
+
+    /// NEGATIVE CONTROL 1: the claim is TRUE. A check that failed here would be
+    /// telling every correctly-configured schedule it is wrong.
+    #[test]
+    fn a_zero_token_title_running_as_shell_passes() {
+        let rows = vec![row("SCHED-3", "Opps tick (zero-token, GT-62)", "shell")];
+        let out = schedule_cost_titles_match_kind(&rows);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].status, Status::Pass);
+    }
+
+    /// NEGATIVE CONTROL 2: `tmux` is the CORRECT kind for most schedules — the
+    /// defect is the contradiction, not the kind. Without this cell, a check that
+    /// simply flagged every `tmux` row would pass the first cell perfectly and
+    /// fail 50 innocent schedules in production.
+    #[test]
+    fn an_ordinary_tmux_schedule_making_no_cost_claim_passes() {
+        let rows = vec![
+            row("SCHED-4", "MVS reliability/uptime — closed-loop health", "tmux"),
+            row("SCHED-5", "TS P0-P2 driver", "tmux"),
+        ];
+        let out = schedule_cost_titles_match_kind(&rows);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].status, Status::Pass, "a tmux schedule that claims nothing is fine");
+    }
+
+    /// The claim is matched on MEANING, not one spelling, and case-insensitively.
+    #[test]
+    fn the_claim_is_matched_in_its_other_spellings() {
+        for t in ["Nightly sweep (Zero-Token)", "tokenless tick", "no-token relay"] {
+            let out = schedule_cost_titles_match_kind(&[row("S", t, "tmux")]);
+            assert_eq!(out[0].status, Status::Fail, "{t} asserts zero cost and runs as tmux");
+        }
     }
 }

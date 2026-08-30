@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Agent Multiplexer — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Agent Multiplexer: A tool that runs and manages multiple AI coding agents simultaneously.">
-  <meta name="keywords" content="agent multiplexer, AI agent glossary, amux, claude code">
+  <title>Agent Multiplexer — What It Is and Why It Matters (2026) — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="An agent multiplexer runs and manages dozens of parallel AI coding agents — Claude Code, Codex, or Gemini CLI — from one dashboard. Self-healing, mobile-first, open source. amux is the reference implementation.">
+  <meta name="keywords" content="agent multiplexer, AI agent multiplexer, parallel AI agents, Claude Code multiplexer, multi-agent orchestration, amux glossary">
   <link rel="canonical" href="https://amux.io/glossary/agent-multiplexer/">
-  <meta property="og:title" content="Agent Multiplexer — amux">
-  <meta property="og:description" content="Agent Multiplexer: A tool that runs and manages multiple AI coding agents simultaneously.">
+  <meta property="og:title" content="Agent Multiplexer — What It Is and Why It Matters (2026)">
+  <meta property="og:description" content="An agent multiplexer runs dozens of parallel AI coding agents from one dashboard. Self-healing, mobile-first, open source. amux is the reference implementation.">
   <meta property="og:url" content="https://amux.io/glossary/agent-multiplexer/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -22,8 +22,10 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Glossary","item":"https://amux.io/glossary/"},{"@type":"ListItem","position":3,"name":"Agent Multiplexer","item":"https://amux.io/glossary/agent-multiplexer/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"DefinedTerm","name":"Agent Multiplexer","description":"Agent Multiplexer: A tool that runs and manages multiple AI coding agents simultaneously.","url":"https://amux.io/glossary/agent-multiplexer/","inDefinedTermSet":{"@type":"DefinedTermSet","name":"amux Glossary","url":"https://amux.io/glossary/"}}</script>
-  </head>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"DefinedTerm","name":"Agent Multiplexer","description":"An agent multiplexer runs, monitors, and coordinates multiple parallel AI coding agents — such as Claude Code, Codex, or Gemini CLI workers — from a single interface. It handles session lifecycle, self-healing, task routing, and status visibility so a single developer or team can operate dozens of agents simultaneously.","url":"https://amux.io/glossary/agent-multiplexer/","inDefinedTermSet":{"@type":"DefinedTermSet","name":"amux Glossary","url":"https://amux.io/glossary/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Agent Multiplexer — What It Is and Why It Matters","description":"An agent multiplexer runs dozens of parallel AI coding agents from one dashboard. Handles self-healing, task routing, status visibility, and mobile control. amux is the open-source reference implementation.","url":"https://amux.io/glossary/agent-multiplexer/","datePublished":"2026-04-15","dateModified":"2026-08-21","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an agent multiplexer?","acceptedAnswer":{"@type":"Answer","text":"An agent multiplexer is a platform that runs, monitors, and coordinates multiple AI coding agents in parallel. It handles the lifecycle of each agent session — starting, stopping, restarting on failure, tracking status, and routing tasks — so you can operate dozens of Claude Code, Codex, or Gemini CLI workers from a single dashboard without managing each terminal separately."}},{"@type":"Question","name":"How does an agent multiplexer differ from a task queue?","acceptedAnswer":{"@type":"Answer","text":"A task queue dispatches work items to workers and tracks completion. An agent multiplexer goes further: it manages persistent AI coding sessions (which hold context across tasks), self-heals when a session crashes, handles provider rate limits, compacts context overflows, and provides live status visibility via a dashboard and mobile app. Task queues are stateless by design; agent multiplexers are stateful by necessity."}},{"@type":"Question","name":"Can one agent multiplexer run Claude Code, Codex, and Gemini CLI together?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux treats each session as a terminal process, so any CLI-based AI coding agent runs inside it — Claude Code, Codex, Gemini CLI, Aider, Goose, or custom scripts. You can mix runtimes within a single fleet, assign different tasks to different agents based on their strengths, and monitor all of them from the same dashboard."}},{"@type":"Question","name":"What happens when an agent crashes inside a multiplexer?","acceptedAnswer":{"@type":"Answer","text":"amux detects the crash via its watchdog and auto-restarts the session. If the failure was a context overflow, it triggers context compaction before restarting. If it was a provider rate limit, it waits and retries. The board card tied to that session is updated automatically so you can see what happened without checking each terminal pane."}},{"@type":"Question","name":"Is there an open-source agent multiplexer?","acceptedAnswer":{"@type":"Answer","text":"Yes — amux is MIT-licensed and available at github.com/mixpeek/amux. It installs with a single script (./install.sh), requires only Python 3 and tmux, and runs entirely on your machine with no cloud dependency. The dashboard is accessible from any browser, including your phone as a PWA."}},{"@type":"Question","name":"How many agents can one multiplexer handle?","acceptedAnswer":{"@type":"Answer","text":"amux users routinely run 20–50 concurrent agents on a laptop. The practical ceiling is your machine's memory and the number of open API connections your provider allows. The dashboard, board, and mobile app scale to hundreds of sessions without performance degradation — the bottleneck is always compute, not the multiplexer itself."}}]}</script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -39,10 +41,133 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/glossary/">Glossary</a> <span class="sep">›</span> <span>Agent Multiplexer</span></div>
-    <h1>Agent Multiplexer</h1><p class="subtitle">A tool that runs and manages multiple AI coding agents simultaneously.</p><p>An agent multiplexer manages the lifecycle of multiple AI coding sessions — starting, stopping, monitoring, and coordinating them from a single interface. amux is an agent multiplexer for Claude Code, built on tmux.</p><h2>Why multiplex?</h2><p>Running one agent at a time is a bottleneck. With a multiplexer, you assign different tasks to different agents and they work in parallel, dramatically increasing throughput.</p><div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+    <h1>Agent Multiplexer</h1>
+    <p class="subtitle">A platform that runs, monitors, and self-heals dozens of parallel AI coding agents from a single dashboard — without you managing each terminal separately.</p>
+
+    <!-- EXP-051: top-of-page green CTA on glossary/agent-multiplexer page -->
+    <div style="background:rgba(110,231,183,.08);border:1px solid rgba(110,231,183,.25);border-radius:8px;padding:1rem 1.25rem;margin:1.5rem 0;display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+      <span style="flex:1;min-width:200px;font-size:14px;color:var(--fg,#e2e8f0)">Run an AI engineering team from one dashboard. amux is the open-source agent multiplexer for Claude Code, Codex, and Gemini CLI — self-healing, kanban board, phone control, MIT licensed.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="if(window.posthog) posthog.capture('exp051_agent_multiplexer_glossary_cta_click')" style="display:inline-flex;align-items:center;gap:.5rem;background:rgba(110,231,183,.15);color:#6ee7b7;text-decoration:none;padding:.5rem 1.125rem;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap;border:1px solid rgba(110,231,183,.3)">View amux on GitHub ★</a>
+    </div>
+
+    <h2>Definition</h2>
+    <p>An agent multiplexer manages the full lifecycle of multiple AI coding agent sessions running in parallel. It starts and stops sessions, monitors their health, restarts crashed agents, routes tasks from a shared board, tracks token usage, and surfaces status to a dashboard and mobile app — all without you logging into each terminal individually.</p>
+    <p>The term is borrowed from networking, where a multiplexer combines multiple signals over a single channel. In AI engineering, the "signals" are independent coding agents and the "channel" is a unified control plane.</p>
+
+    <h2>How it works</h2>
+    <p>Each agent session runs inside a tmux window managed by the multiplexer. The multiplexer tracks the session's output, infers its status (idle, working, waiting for input, crashed), and exposes that state via a REST API and web dashboard. A self-healing watchdog polls for stalled or crashed sessions and takes corrective action — restart, compact context, or alert the operator — without human involvement.</p>
+    <p>Tasks move from the board to agents via steering messages. When a session finishes, it marks the card done and the multiplexer picks the next queued task. The result: a team of AI agents working through a backlog overnight while you sleep.</p>
+
+    <h2>Agent multiplexer vs the alternatives</h2>
+    <table style="width:100%;border-collapse:collapse;font-size:14px;margin:1.5rem 0">
+      <thead>
+        <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <th style="text-align:left;padding:.6rem .75rem;color:var(--fg-mute,#8892a4);font-weight:600">Capability</th>
+          <th style="text-align:left;padding:.6rem .75rem;color:var(--fg-mute,#8892a4);font-weight:600">Raw tmux</th>
+          <th style="text-align:left;padding:.6rem .75rem;color:var(--fg-mute,#8892a4);font-weight:600">Shell scripts</th>
+          <th style="text-align:left;padding:.6rem .75rem;color:#6ee7b7;font-weight:600">Agent multiplexer (amux)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <td style="padding:.6rem .75rem">Start 20 agents</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">Manual, one by one</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">Scripted</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">One click or API call</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <td style="padding:.6rem .75rem">Self-heal on crash</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">No</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">Maybe</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">Yes — watchdog auto-restarts</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <td style="padding:.6rem .75rem">Context overflow recovery</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">No</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">No</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">Yes — auto-compact</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <td style="padding:.6rem .75rem">Rate-limit handling</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">No</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">Maybe</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">Yes — waits and retries</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <td style="padding:.6rem .75rem">Status visibility</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">Check each pane</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">Poll output</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">Dashboard + iOS app</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <td style="padding:.6rem .75rem">Task kanban</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">No</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">No</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">Built-in</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <td style="padding:.6rem .75rem">REST API</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">No</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">No</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">Full HTTPS API</td>
+        </tr>
+        <tr>
+          <td style="padding:.6rem .75rem">Phone / mobile control</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">No</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">No</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">iOS app + PWA</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Who uses agent multiplexers</h2>
+    <p>Solo developers use them to parallelize their own backlog — assigning different features or bugs to different agents and checking progress from their phone. Engineering teams use them to share a fleet of agents across a project, with the kanban board as the coordination layer. CTOs and engineering managers use the dashboard to review what the fleet accomplished overnight.</p>
+    <p>The common thread: anyone who hits the ceiling of what a single AI coding session can do in a day.</p>
+
+    <h2>Frequently asked questions</h2>
+
+    <details open>
+      <summary><strong>What is an agent multiplexer?</strong></summary>
+      <p>An agent multiplexer is a platform that runs, monitors, and coordinates multiple AI coding agents in parallel. It handles the lifecycle of each agent session — starting, stopping, restarting on failure, tracking status, and routing tasks — so you can operate dozens of Claude Code, Codex, or Gemini CLI workers from a single dashboard without managing each terminal separately.</p>
+    </details>
+
+    <details>
+      <summary><strong>How does an agent multiplexer differ from a task queue?</strong></summary>
+      <p>A task queue dispatches work items to workers and tracks completion. An agent multiplexer goes further: it manages persistent AI coding sessions (which hold context across tasks), self-heals when a session crashes, handles provider rate limits, compacts context overflows, and provides live status visibility via a dashboard and mobile app. Task queues are stateless by design; agent multiplexers are stateful by necessity.</p>
+    </details>
+
+    <details>
+      <summary><strong>Can one agent multiplexer run Claude Code, Codex, and Gemini CLI together?</strong></summary>
+      <p>Yes. amux treats each session as a terminal process, so any CLI-based AI coding agent runs inside it — Claude Code, Codex, Gemini CLI, Aider, Goose, or custom scripts. You can mix runtimes within a single fleet, assign different tasks to different agents based on their strengths, and monitor all of them from the same dashboard.</p>
+    </details>
+
+    <details>
+      <summary><strong>What happens when an agent crashes inside a multiplexer?</strong></summary>
+      <p>amux detects the crash via its watchdog and auto-restarts the session. If the failure was a context overflow, it triggers context compaction before restarting. If it was a provider rate limit, it waits and retries. The board card tied to that session is updated automatically so you can see what happened without checking each terminal pane.</p>
+    </details>
+
+    <details>
+      <summary><strong>Is there an open-source agent multiplexer?</strong></summary>
+      <p>Yes — amux is MIT-licensed and available at <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>. It installs with a single script (<code>./install.sh</code>), requires only Python 3 and tmux, and runs entirely on your machine with no cloud dependency. The dashboard is accessible from any browser, including your phone as a PWA.</p>
+    </details>
+
+    <details>
+      <summary><strong>How many agents can one multiplexer handle?</strong></summary>
+      <p>amux users routinely run 20–50 concurrent agents on a laptop. The practical ceiling is your machine's memory and the number of open API connections your provider allows. The dashboard, board, and mobile app scale to hundreds of sessions without performance degradation — the bottleneck is always compute, not the multiplexer itself.</p>
+    </details>
+
+    <div class="cta-box">
+      <h3>Get started with amux</h3>
+      <p>Open-source agent multiplexer for Claude Code, Codex, and Gemini CLI. Self-healing, kanban board, iOS app. MIT licensed.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
-amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div><p><a href="/glossary/">← Back to glossary</a></p>
+amux serve  # → https://localhost:8824</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+    </div>
+
+    <p><strong>Related:</strong> <a href="/glossary/agent-orchestration/">Agent Orchestration</a> · <a href="/glossary/parallel-coding-agents/">Parallel Coding Agents</a> · <a href="/glossary/self-healing-agent/">Self-Healing Agent</a> · <a href="/guides/best-ai-agent-multiplexers-2026/">Best AI Agent Multiplexers (2026)</a></p>
+    <p><a href="/glossary/">← Back to glossary</a></p>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -58,38 +183,33 @@ amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" 
             <li><a href="/blog/">Blog</a></li>
             <li><a href="/demos/">Demos</a></li>
             <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
           </ul>
         </div>
         <div class="footer-col">
           <div class="footer-col-label">Compare</div>
           <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/amux-vs-cmux/">amux vs cmux</a></li>
+            <li><a href="/compare/amux-vs-cursor/">amux vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-codex/">amux vs Codex</a></li>
             <li><a href="/compare/">All comparisons</a></li>
           </ul>
         </div>
         <div class="footer-col">
-          <div class="footer-col-label">More</div>
+          <div class="footer-col-label">GitHub</div>
           <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a></li>
+            <li><a href="https://github.com/mixpeek/amux/releases" target="_blank" rel="noopener">Releases</a></li>
+            <li><a href="https://github.com/mixpeek/amux/issues" target="_blank" rel="noopener">Issues</a></li>
           </ul>
         </div>
       </div>
       <div class="footer-bottom">
-        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-        </div>
+        <span>© 2026 Mixpeek, Inc. MIT License.</span>
+        <a href="/press/">Press</a>
+        <a href="/pricing/">Pricing</a>
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
       </div>
     </div>
   </footer>
-
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

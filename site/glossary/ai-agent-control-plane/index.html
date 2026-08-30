@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agent Control Plane — Open Source Definition and Reference (2026) — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="An AI agent control plane manages session lifecycle, health, task routing, credential scoping, and self-healing for a fleet of AI coding agents. amux is the open-source reference implementation — MIT licensed, runs on your machine.">
+  <meta name="keywords" content="AI agent control plane, agent control plane open source, AI agent orchestration platform, parallel agent management, Claude Code fleet management, amux glossary">
+  <link rel="canonical" href="https://amux.io/glossary/ai-agent-control-plane/">
+  <meta property="og:title" content="AI Agent Control Plane — Open Source Definition and Reference (2026)">
+  <meta property="og:description" content="An AI agent control plane manages session lifecycle, health, task routing, credential scoping, and self-healing for a fleet of AI coding agents. amux is the open-source reference.">
+  <meta property="og:url" content="https://amux.io/glossary/ai-agent-control-plane/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Glossary","item":"https://amux.io/glossary/"},{"@type":"ListItem","position":3,"name":"AI Agent Control Plane","item":"https://amux.io/glossary/ai-agent-control-plane/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"DefinedTerm","name":"AI Agent Control Plane","description":"An AI agent control plane is the infrastructure layer that manages the lifecycle, health, task routing, credential scoping, and observability for a fleet of AI coding agents. It sits above the individual agent sessions and provides the coordination logic that lets a team of agents work together without constant human supervision.","url":"https://amux.io/glossary/ai-agent-control-plane/","inDefinedTermSet":{"@type":"DefinedTermSet","name":"amux Glossary","url":"https://amux.io/glossary/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Control Plane — Open Source Definition and Reference","description":"An AI agent control plane manages lifecycle, health, task routing, and self-healing for a fleet of AI coding agents. amux is the open-source reference implementation.","url":"https://amux.io/glossary/ai-agent-control-plane/","datePublished":"2026-08-21","dateModified":"2026-08-21","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an AI agent control plane?","acceptedAnswer":{"@type":"Answer","text":"An AI agent control plane is the coordination layer that manages a fleet of AI coding agents. It handles session lifecycle (start, stop, restart), health monitoring and self-healing, task routing via a shared board, credential scoping so agents get only the API keys they need, and observability so you can see what every agent is doing at a glance. The term comes from networking, where the control plane governs how traffic is routed; here it governs how work and context flow between agents."}},{"@type":"Question","name":"What is the difference between a control plane and an orchestrator?","acceptedAnswer":{"@type":"Answer","text":"An orchestrator sequences a defined workflow — it knows step 1, step 2, step 3 and executes them. A control plane manages the infrastructure of agents themselves: their health, their credentials, their queued work, and their recovery from failure. You can have an orchestrator without a control plane (the orchestrator dies if an agent crashes and nobody restarts it), and you can have a control plane without an orchestrator (agents pull tasks from a board independently). Most production AI engineering teams need both."}},{"@type":"Question","name":"Is there an open-source AI agent control plane?","acceptedAnswer":{"@type":"Answer","text":"Yes — amux is an MIT-licensed AI agent control plane for Claude Code, Codex, and Gemini CLI sessions. It provides session lifecycle management, a self-healing watchdog, a kanban board for task routing, credential scoping via the Connectors tab, an iOS app and PWA for mobile monitoring, email and calendar integration, and a full REST API. It runs on your machine with no cloud dependency."}},{"@type":"Question","name":"Do I need a control plane if I only run one AI agent?","acceptedAnswer":{"@type":"Answer","text":"For a single agent, a control plane adds overhead without proportional benefit. The value compounds as you scale: at 3 agents you want a shared task list; at 10 you want health monitoring; at 20+ you want credential scoping, context overflow recovery, and a mobile dashboard. Most teams reach for a control plane when they find themselves context-switching between terminal windows more than they are reviewing output."}},{"@type":"Question","name":"How does a control plane handle agent credentials?","acceptedAnswer":{"@type":"Answer","text":"amux's Connectors tab lets you configure API keys and OAuth tokens once — scoped globally, per group, or per session. Every agent that launches gets the right credentials injected as environment variables at startup. Keys never land in CLAUDE.md or git history. When you rotate a credential, you update one record and every agent picks up the new key on next launch. The OAuth broker (shipped August 2026) extends this: authorize a service once and every agent in the fleet shares the grant."}},{"@type":"Question","name":"What does 'self-healing' mean in the context of an AI agent control plane?","acceptedAnswer":{"@type":"Answer","text":"Self-healing means the control plane detects and recovers from failure automatically, without a human waking up to fix it. In amux this covers three common failure modes: session crashes (watchdog detects and restarts the agent), context window overflow (auto-compact triggers before the next prompt), and provider rate limits (the session pauses and retries when the provider is available again). A self-healing control plane is what makes overnight agent runs practical."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/glossary/">Glossary</a> <span class="sep">›</span> <span>AI Agent Control Plane</span></div>
+    <h1>AI Agent Control Plane</h1>
+    <p class="subtitle">The infrastructure layer that manages lifecycle, health, task routing, credentials, and self-healing for a fleet of AI coding agents — so the fleet keeps running without constant human supervision.</p>
+
+    <!-- EXP-052: top-of-page green CTA baked into new glossary/ai-agent-control-plane page -->
+    <div style="background:rgba(110,231,183,.08);border:1px solid rgba(110,231,183,.25);border-radius:8px;padding:1rem 1.25rem;margin:1.5rem 0;display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+      <span style="flex:1;min-width:200px;font-size:14px;color:var(--fg,#e2e8f0)">amux is the open-source AI agent control plane for Claude Code, Codex, and Gemini CLI — self-healing, kanban board, credential scoping, mobile dashboard. MIT licensed.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="if(window.posthog) posthog.capture('exp052_control_plane_glossary_cta_click')" style="display:inline-flex;align-items:center;gap:.5rem;background:rgba(110,231,183,.15);color:#6ee7b7;text-decoration:none;padding:.5rem 1.125rem;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap;border:1px solid rgba(110,231,183,.3)">View amux on GitHub ★</a>
+    </div>
+
+    <h2>Definition</h2>
+    <p>An AI agent control plane is the coordination layer that manages a fleet of AI coding agents. It sits above the individual agent sessions and provides the infrastructure they share: lifecycle management, health monitoring, task routing, credential distribution, and observability. The term comes from networking, where the control plane governs how traffic is routed; here it governs how work and context flow between agents.</p>
+    <p>Without a control plane, each agent is a standalone process you must start, monitor, restart, and supply with credentials independently. With one, the fleet behaves as a managed system: tasks flow in, agents pick them up, failures are recovered automatically, and the operator gets a dashboard instead of a set of open terminal windows.</p>
+
+    <h2>What a control plane manages</h2>
+    <ul>
+      <li><strong>Session lifecycle.</strong> Start, stop, and restart agent sessions on demand or on a schedule.</li>
+      <li><strong>Health and self-healing.</strong> Detect crashed, stalled, or context-overflowed agents and take corrective action automatically.</li>
+      <li><strong>Task routing.</strong> A shared kanban board assigns work to the right agent and tracks completion without any manual coordination.</li>
+      <li><strong>Credential scoping.</strong> API keys and OAuth tokens are configured once and injected as environment variables at session launch — scoped globally, per team group, or per individual agent.</li>
+      <li><strong>Observability.</strong> A web dashboard, iOS app, and REST API surface real-time status so you can see what every agent is doing without opening a terminal.</li>
+      <li><strong>Scheduling.</strong> Recurring tasks (daily digests, nightly runs, periodic sweeps) fire at configured times without manual intervention.</li>
+    </ul>
+
+    <h2>Control plane vs orchestrator vs task queue</h2>
+    <table style="width:100%;border-collapse:collapse;font-size:14px;margin:1.5rem 0">
+      <thead>
+        <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <th style="text-align:left;padding:.6rem .75rem;color:var(--fg-mute,#8892a4);font-weight:600">Capability</th>
+          <th style="text-align:left;padding:.6rem .75rem;color:var(--fg-mute,#8892a4);font-weight:600">Task queue</th>
+          <th style="text-align:left;padding:.6rem .75rem;color:var(--fg-mute,#8892a4);font-weight:600">Orchestrator</th>
+          <th style="text-align:left;padding:.6rem .75rem;color:#6ee7b7;font-weight:600">Control plane (amux)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <td style="padding:.6rem .75rem">Dispatch work to agents</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">Yes</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">Yes</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">Yes — kanban board</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <td style="padding:.6rem .75rem">Self-heal on crash</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">No</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">Sometimes</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">Yes — watchdog</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <td style="padding:.6rem .75rem">Manage agent credentials</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">No</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">No</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">Yes — Connectors + OAuth broker</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <td style="padding:.6rem .75rem">Session state (context)</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">Stateless</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">Stateless</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">Stateful — tmux sessions persist</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--line,#2a3040)">
+          <td style="padding:.6rem .75rem">Mobile dashboard</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">No</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">Rarely</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">Yes — iOS app + PWA</td>
+        </tr>
+        <tr>
+          <td style="padding:.6rem .75rem">Open source</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">Varies</td>
+          <td style="padding:.6rem .75rem;color:var(--fg-mute,#8892a4)">Varies</td>
+          <td style="padding:.6rem .75rem;color:#6ee7b7">Yes — MIT license</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Frequently asked questions</h2>
+
+    <details open>
+      <summary><strong>What is an AI agent control plane?</strong></summary>
+      <p>An AI agent control plane is the coordination layer that manages a fleet of AI coding agents. It handles session lifecycle (start, stop, restart), health monitoring and self-healing, task routing via a shared board, credential scoping so agents get only the API keys they need, and observability so you can see what every agent is doing at a glance.</p>
+    </details>
+
+    <details>
+      <summary><strong>What is the difference between a control plane and an orchestrator?</strong></summary>
+      <p>An orchestrator sequences a defined workflow — it knows step 1, step 2, step 3 and executes them. A control plane manages the infrastructure of agents themselves: their health, their credentials, their queued work, and their recovery from failure. You can have an orchestrator without a control plane (it dies if an agent crashes and nobody restarts it), and you can have a control plane without an orchestrator (agents pull tasks from a board independently). Most production AI engineering teams need both.</p>
+    </details>
+
+    <details>
+      <summary><strong>Is there an open-source AI agent control plane?</strong></summary>
+      <p>Yes — amux is an MIT-licensed AI agent control plane for Claude Code, Codex, and Gemini CLI sessions. It provides session lifecycle management, a self-healing watchdog, a kanban board for task routing, credential scoping via the Connectors tab, an iOS app and PWA for mobile monitoring, and a full REST API. It runs entirely on your machine with no cloud dependency.</p>
+    </details>
+
+    <details>
+      <summary><strong>Do I need a control plane if I only run one AI agent?</strong></summary>
+      <p>For a single agent, a control plane adds overhead without proportional benefit. The value compounds as you scale: at 3 agents you want a shared task list; at 10 you want health monitoring; at 20+ you want credential scoping, context overflow recovery, and a mobile dashboard. Most teams reach for a control plane when they find themselves context-switching between terminal windows more than they are reviewing output.</p>
+    </details>
+
+    <details>
+      <summary><strong>How does a control plane handle agent credentials?</strong></summary>
+      <p>amux's Connectors tab lets you configure API keys and OAuth tokens once — scoped globally, per group, or per session. Every agent gets the right credentials injected as environment variables at launch. Keys never land in CLAUDE.md or git history. The OAuth broker (shipped August 2026) extends this: authorize a service once and every agent in the fleet shares the grant.</p>
+    </details>
+
+    <details>
+      <summary><strong>What does 'self-healing' mean in the context of an AI agent control plane?</strong></summary>
+      <p>Self-healing means the control plane detects and recovers from failure automatically, without a human waking up to fix it. In amux this covers three common failure modes: session crashes (watchdog detects and restarts the agent), context window overflow (auto-compact triggers before the next prompt), and provider rate limits (the session pauses and retries when the provider is available again). Self-healing is what makes overnight agent runs practical.</p>
+    </details>
+
+    <div class="cta-box">
+      <h3>Run your AI engineering team with amux</h3>
+      <p>Open-source control plane for Claude Code, Codex, and Gemini CLI. Self-healing, kanban board, credential scoping, iOS app. MIT licensed. Runs on your machine.</p>
+      <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
+amux register myproject --dir ~/Dev/myproject --yolo
+amux start myproject
+amux serve  # → https://localhost:8824</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+    </div>
+
+    <p><strong>Related:</strong> <a href="/glossary/agent-multiplexer/">Agent Multiplexer</a> · <a href="/glossary/agent-orchestration/">Agent Orchestration</a> · <a href="/glossary/self-healing-agent/">Self-Healing Agent</a> · <a href="/guides/ai-agent-connectors/">AI Agent Connectors Guide</a></p>
+    <p><a href="/glossary/">← Back to glossary</a></p>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cmux/">amux vs cmux</a></li>
+            <li><a href="/compare/amux-vs-cursor/">amux vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-codex/">amux vs Codex</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">GitHub</div>
+          <ul>
+            <li><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a></li>
+            <li><a href="https://github.com/mixpeek/amux/releases" target="_blank" rel="noopener">Releases</a></li>
+            <li><a href="https://github.com/mixpeek/amux/issues" target="_blank" rel="noopener">Issues</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>© 2026 Mixpeek, Inc. MIT License.</span>
+        <a href="/press/">Press</a>
+        <a href="/pricing/">Pricing</a>
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

@@ -43,6 +43,7 @@ pub mod monitor;
 pub mod store;
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 /// Outcome of one invariant evaluation.
 ///
@@ -141,6 +142,60 @@ impl InvariantResult {
         self.evidence = ev;
         self
     }
+
+    /// DECLARE THAT THIS FAILURE'S ONLY EXIT IS A CLOCK (AMUX-3645).
+    ///
+    /// A DWELL-WINDOW check holds itself red on purpose for a fixed period, so
+    /// the thing it names cannot scroll away unacknowledged, and then heals by
+    /// the calendar. `no_fresh_kernel_panic` is the specimen: a `.panic`
+    /// artifact fails the check for `AMUX_PANIC_FRESH_S` (7 days) and no action
+    /// by anyone shortens that.
+    ///
+    /// Nothing distinguished such a failure from an escalating one, and the
+    /// difference is the whole disposition. AMUX-3640 was auto-filed reading
+    /// "has been failing across 5301 evaluations and has not self-healed" —
+    /// two claims that are TRUE and both read as a fault getting worse. It has
+    /// not self-healed because it is not due to; the occurrence count is the
+    /// evaluation rate times the dwell, so it measures how often we looked, not
+    /// how bad it is. Establishing that took reading the check's source. The
+    /// card could not express the discriminator (ethos rule 4), so the only
+    /// dispositions left were to assert an outcome for something that has not
+    /// concluded, or to discard the card — which is exactly the scrolling away
+    /// the 7-day window exists to prevent.
+    ///
+    /// `ts` is the unix epoch at which the check will next pass ON ITS OWN.
+    /// Declared by the check because the check is the only thing that knows;
+    /// read back with [`heals_at_of`] so the producer and every consumer share
+    /// one accessor instead of a stringly key each spells for itself.
+    pub fn heals_at(mut self, ts: f64) -> Self {
+        match &mut self.evidence {
+            serde_json::Value::Object(map) => {
+                map.insert(EVIDENCE_HEALS_AT.into(), json!(ts));
+            }
+            serde_json::Value::Null => {
+                self.evidence = json!({ EVIDENCE_HEALS_AT: ts });
+            }
+            // A non-object blob is nested rather than dropped: losing a check's
+            // evidence to add a field would trade the diagnosis for the label.
+            other => {
+                let prev = std::mem::replace(other, serde_json::Value::Null);
+                self.evidence = json!({ EVIDENCE_HEALS_AT: ts, "evidence": prev });
+            }
+        }
+        self
+    }
+}
+
+/// Evidence key for [`InvariantResult::heals_at`]. Private spelling, public
+/// accessors: `heals_at()` writes it and [`heals_at_of`] reads it, so a rename
+/// is one edit rather than a hunt through every consumer.
+const EVIDENCE_HEALS_AT: &str = "heals_at";
+
+/// The declared self-heal epoch of a dwell-window failure, if the check
+/// declared one. `None` for every ordinary failure, which is the answer that
+/// means "an action is what closes this".
+pub fn heals_at_of(evidence: &serde_json::Value) -> Option<f64> {
+    evidence.get(EVIDENCE_HEALS_AT)?.as_f64()
 }
 
 /// Overall confidence for a health surface (spec §25).

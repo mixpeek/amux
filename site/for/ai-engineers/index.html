@@ -45,7 +45,7 @@
     "description": "AI engineers use amux as their agent control plane — orchestrating multi-model fleets (Claude Code, Codex, Gemini CLI), tracking token spend, integrating MCP servers, and building self-healing pipelines.",
     "url": "https://amux.io/for/ai-engineers/",
     "datePublished": "2026-07-05",
-    "dateModified": "2026-08-03",
+    "dateModified": "2026-08-25",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "image": "https://amux.io/og-image.png",
@@ -404,6 +404,15 @@ jobs:
 
     <h3>Read-aloud for hands-free morning reviews</h3>
     <p>The <a href="/guides/ai-agent-read-aloud/">amux read-aloud feature</a> (Piper TTS, free, local, no API key) lets you listen to the Trends summary or individual session output. For AI engineers who manage fleet state first thing in the morning, this enables a fully hands-free review on the commute — hear what the fleet accomplished overnight, dictate your next instructions via Whisper, and start the workday without sitting down at a desk.</p>
+
+    <h2>What's New — August 2026</h2>
+    <p>Four engineering improvements shipped in August 2026 that directly affect AI engineers building on amux:</p>
+    <ul>
+      <li><strong>Canonical worker-send route</strong> (<code>5e647edd</code>): <code>POST /api/sessions/&lt;worker-id&gt;/send</code> is now a first-class, stable API endpoint. External systems — GitHub Actions, webhooks, other agents — can address any named worker directly. Previously the send path had no canonical address and had to be discovered from session listings. See the new <a href="/guides/ai-agent-github-actions/">GitHub Actions integration guide</a>.</li>
+      <li><strong>Schedule turns/day estimate</strong> (<code>9b27e1c1</code>): When you create or edit a recurring schedule, amux now displays the estimated number of agent turns per day that schedule will consume. AI engineers can plan token budgets before scheduling overnight batch runs, rather than discovering cost only after the first execution.</li>
+      <li><strong>Rate-limit message hold</strong> (<code>84d0bd03</code>): Messages sent to a session that is currently rate-limited now hold in a queue until the limit is released. Previously, a message sent at the wrong moment was silently dropped. This matters for agent-to-agent pipelines where one agent dispatches to another and cannot know whether the target is currently rate-limited.</li>
+      <li><strong>Worker pickup counted as prompt</strong> (<code>54ec7ae6</code>): When a background agent auto-picks up a board task, that pickup is now counted as a prompted turn in token usage. Previously, auto-pickup consumed tokens but was under-reported as background activity. Token accounting is now accurate across the full agent turn lifecycle.</li>
+    </ul>
 
     <h2>amux vs other AI engineering tools</h2>
 

@@ -81,17 +81,81 @@ check_tracked_guard_mode() {
 
 install_guard_only() {
   local target="$1" fail=0
-  if [ ! -d "$target/.git/hooks" ]; then
+  if [ ! -d "$target/.git/hooks" ] && [ ! -d "$target/.git" ]; then
     echo "  SKIP $target — no .git/hooks (not a checkout, or a linked worktree)" >&2
     return 0
   fi
-  install -m 0755 "$SRC/scripts/git-hooks/amux-staged-guard" "$target/.git/hooks/amux-staged-guard"
-  if cmp -s "$SRC/scripts/git-hooks/amux-staged-guard" "$target/.git/hooks/amux-staged-guard"; then
-    echo "  ok   $target/.git/hooks/amux-staged-guard matches the tracked source"
-  else
-    echo "  FAIL $target/.git/hooks/amux-staged-guard differs after install" >&2
-    fail=1
+  # THE EFFECTIVE HOOKS DIR, resolved FIRST (MG-1484/MG-1485 follow-up). This
+  # function used to install into $target/.git/hooks unconditionally while its
+  # own pre-push CHECK below resolved core.hooksPath — split-brain in one
+  # function. In mixpeek (hooksPath=.githooks) that meant every refresh landed
+  # in a directory git never consults: the resurrection guard was live in the
+  # repo where it was authored and DARK in the repo where the incident
+  # happened, and a verification grep on .git/hooks read the dead copy as
+  # proof. A custom hooksPath dir is usually TRACKED (repo-owned, committed),
+  # so we never overwrite divergent files there — mixpeek's copy is a
+  # deliberate merge carrying local additions that a blind install would have
+  # destroyed. Missing files are installed (and must then be committed in that
+  # repo); divergent ones are classified by the guard-features tokens below.
+  local hooksdir="$target/.git/hooks" hp tracked_hooks=0
+  hp=$(git -C "$target" config core.hooksPath 2>/dev/null || true)
+  if [ -n "$hp" ]; then
+    case "$hp" in /*) hooksdir="$hp" ;; *) hooksdir="$target/$hp" ;; esac
+    case "$hooksdir" in "$target/.git/"*) ;; *) tracked_hooks=1 ;; esac
+    if [ ! -d "$hooksdir" ]; then
+      echo "  WARN $target core.hooksPath=$hp does not exist — git runs NO hooks there" >&2
+      return 1
+    fi
   fi
+
+  # place <file>: .git-owned dir -> install+verify (ours to manage).
+  # Tracked dir -> equal: ok; missing: install + tell them to commit it;
+  # differs: report, never overwrite (the copy is the repo owner's).
+  place() {
+    local name="$1" src="$SRC/scripts/git-hooks/$1" dst="$hooksdir/$1"
+    if [ "$tracked_hooks" -eq 0 ]; then
+      install -m 0755 "$src" "$dst"
+      if cmp -s "$src" "$dst"; then
+        echo "  ok   $dst matches the tracked source"
+      else
+        echo "  FAIL $dst differs after install" >&2
+        return 1
+      fi
+      return 0
+    fi
+    if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
+      echo "  ok   $dst matches the canonical source (tracked hooks dir)"
+      return 0
+    fi
+    if [ ! -f "$dst" ]; then
+      install -m 0755 "$src" "$dst"
+      echo "  note $dst INSTALLED into a TRACKED hooks dir — commit it in that repo or it"
+      echo "       exists only in this worktree"
+      return 0
+    fi
+    # Divergent tracked copy: classify by canonical feature tokens so a STALE
+    # copy (dark in the repo where it runs) is distinguishable from a
+    # deliberate local merge. Tokens come from the canonical's own
+    # `# guard-features:` line; absence of the line means cmp is all we have.
+    local feats missing_feats="" t
+    feats=$(grep -m1 '^# guard-features:' "$src" | cut -d: -f2-)
+    for t in $feats; do
+      grep -qi "$t" "$dst" || missing_feats="$missing_feats $t"
+    done
+    if [ -n "$missing_feats" ]; then
+      echo "  WARN $dst is STALE — missing canonical feature(s):$missing_feats" >&2
+      echo "       This is the MG-1485 dark-guard shape: the copy that RUNS lacks what the" >&2
+      echo "       canonical enforces. Merge $src into it (do not blind-copy: the vendored" >&2
+      echo "       file may carry local additions worth keeping), then commit in that repo." >&2
+      fail=1
+    else
+      echo "  note $dst diverges from canonical but carries every canonical feature —"
+      echo "       reads as a deliberate local merge; left untouched"
+    fi
+    return 0
+  }
+
+  place "amux-staged-guard" || fail=1
   # THE SESSION STAMP (AMUX-2567). Installed alongside the guard because the
   # guard's attribution is only as good as the trailer: with no
   # prepare-commit-msg, every commit in this checkout is untrailered, the push
@@ -103,17 +167,25 @@ install_guard_only() {
   # silent non-attribution and looked fine. Unlike pre-commit (which we refuse
   # to rewrite, because it is the repo owner's), prepare-commit-msg is entirely
   # ours: nothing else claims it, so installing it is safe.
-  install -m 0755 "$SRC/scripts/git-hooks/prepare-commit-msg" "$target/.git/hooks/prepare-commit-msg"
-  if cmp -s "$SRC/scripts/git-hooks/prepare-commit-msg" "$target/.git/hooks/prepare-commit-msg"; then
-    echo "  ok   $target/.git/hooks/prepare-commit-msg matches the tracked source"
+  place "prepare-commit-msg" || fail=1
+  # append-only-push-guard (MG-1483): the stale-republish data-loss guard —
+  # a stale shared checkout committing FRUSTRATIONS.md silently reverted 10
+  # pushed entry-lines with no conflict. The FILE is safe to drop anywhere
+  # (self-contained, fail-open); the CALL belongs to the repo owner's
+  # pre-push, so check it and hand over the line, never edit theirs.
+  place "append-only-push-guard" || fail=1
+  if [ -f "$hooksdir/pre-push" ] && grep -q 'append-only-push-guard' "$hooksdir/pre-push"; then
+    echo "  ok   $target pre-push calls append-only-push-guard"
   else
-    echo "  FAIL $target/.git/hooks/prepare-commit-msg differs after install" >&2
-    fail=1
+    echo "  WARN $target pre-push does NOT call append-only-push-guard — stale-republish" >&2
+    echo "       protection is OFF there (hooks dir: $hooksdir). Add near the top:" >&2
+    echo '         aog="$(git rev-parse --git-path hooks)/append-only-push-guard"' >&2
+    echo '         if [ -x "$aog" ]; then "$aog" "$@" <&0 || exit 1; fi' >&2
   fi
   # The shim is the whole chain: an installed guard nothing calls is a file, not
   # a guard. We do not write their pre-commit, so all we can do is check it and
   # hand over the exact lines — which is the honest move, not a silent no-op.
-  local pc="$target/.git/hooks/pre-commit"
+  local pc="$hooksdir/pre-commit"
   if [ -f "$pc" ] && grep -q 'amux-staged-guard' "$pc" && grep -q '"\$g" || exit 1' "$pc"; then
     echo "  ok   $target pre-commit calls amux-staged-guard"
   else
@@ -122,6 +194,25 @@ install_guard_only() {
     echo '         g="$(dirname -- "$0")/amux-staged-guard"' >&2
     echo '         if [ -x "$g" ]; then "$g" || exit 1; fi' >&2
     fail=1
+  fi
+  # SHIM RESOLUTION (mixpeek 1721501b81): presence in the effective dir is
+  # NECESSARY AND NOT SUFFICIENT — the consuming shim's lookup path is a
+  # second variable. mixpeek's pre-commit resolved guards via ../.git/hooks/
+  # (per-clone, untracked) while the guard sat vendored right next to the
+  # shim, so a fresh clone skipped it with only a stderr warning. A shim that
+  # references .git/hooks WITHOUT a dirname-based resolution does not travel;
+  # one that prefers dirname($0) with .git/hooks as fallback is fine.
+  if [ "$tracked_hooks" -eq 1 ]; then
+    local shim
+    for shim in "$hooksdir/pre-commit" "$hooksdir/pre-push"; do
+      [ -f "$shim" ] || continue
+      if grep -q '\.git/hooks/' "$shim" && ! grep -q 'dirname' "$shim"; then
+        echo "  WARN $shim resolves guards via .git/hooks/ only — per-clone and untracked, so" >&2
+        echo "       a FRESH CLONE skips the guard even with the vendored copy next to the" >&2
+        echo '       shim. Prefer "$(dirname -- "$0")/<guard>" with .git/hooks as fallback.' >&2
+        fail=1
+      fi
+    done
   fi
   return $fail
 }
@@ -154,11 +245,30 @@ check_tracked_guard_mode || true
 
 ROOT="$SRC"
 
-install -m 0755 "$ROOT/scripts/git-hooks/pre-commit" "$ROOT/.git/hooks/pre-commit"
-install -m 0755 "$ROOT/scripts/git-hooks/amux-staged-guard" "$ROOT/.git/hooks/amux-staged-guard"
-install -m 0755 "$ROOT/scripts/git-hooks/prepare-commit-msg" "$ROOT/.git/hooks/prepare-commit-msg"
-install -m 0755 "$ROOT/scripts/git-hooks/pre-push" "$ROOT/.git/hooks/pre-push"
-install -m 0755 "$ROOT/scripts/git-hooks/post-commit" "$ROOT/.git/hooks/post-commit"
+# WHERE THE HOOKS ACTUALLY LIVE — `git rev-parse --git-path hooks`, never
+# "$ROOT/.git/hooks" (2026-08-26). In a linked WORKTREE `.git` is a FILE, not a
+# directory, so the hardcoded path is not a directory at all and every install
+# below died with `install: cannot stat ... Not a directory` after the script had
+# already printed its first `ok` line — a half-run that leaves the checkout with
+# NO guards while looking like it started fine.
+#
+# This script already knew: line ~85 skips a linked worktree by name, and the
+# WARN at ~182 tells OTHER hooks to resolve guards this exact way. Only its own
+# install path still spelled the path by hand.
+#
+# The resolved dir is the git COMMON dir, shared by the main checkout and every
+# worktree — which is correct and is why the `--all` sweep skips worktrees: one
+# install covers them all.
+HOOKS="$(git -C "$ROOT" rev-parse --git-path hooks 2>/dev/null)"
+case "$HOOKS" in /*) : ;; ?*) HOOKS="$ROOT/$HOOKS" ;; *) HOOKS="$ROOT/.git/hooks" ;; esac
+mkdir -p "$HOOKS"
+
+install -m 0755 "$ROOT/scripts/git-hooks/pre-commit" "$HOOKS/pre-commit"
+install -m 0755 "$ROOT/scripts/git-hooks/amux-staged-guard" "$HOOKS/amux-staged-guard"
+install -m 0755 "$ROOT/scripts/git-hooks/prepare-commit-msg" "$HOOKS/prepare-commit-msg"
+install -m 0755 "$ROOT/scripts/git-hooks/pre-push" "$HOOKS/pre-push"
+install -m 0755 "$ROOT/scripts/git-hooks/append-only-push-guard" "$HOOKS/append-only-push-guard"
+install -m 0755 "$ROOT/scripts/git-hooks/post-commit" "$HOOKS/post-commit"
 
 # Verify rather than announce (ethos #7): compare what landed against its source,
 # so a stale installed copy cannot hide behind a success message. That drift was
@@ -167,11 +277,11 @@ install -m 0755 "$ROOT/scripts/git-hooks/post-commit" "$ROOT/.git/hooks/post-com
 # commits printed "Security scan passed" from a scanner that could match none of
 # them.
 fail=0
-for h in pre-commit amux-staged-guard prepare-commit-msg pre-push post-commit; do
-  if cmp -s "$ROOT/scripts/git-hooks/$h" "$ROOT/.git/hooks/$h"; then
-    echo "  ok   .git/hooks/$h matches scripts/git-hooks/$h"
+for h in pre-commit amux-staged-guard prepare-commit-msg pre-push post-commit append-only-push-guard; do
+  if cmp -s "$ROOT/scripts/git-hooks/$h" "$HOOKS/$h"; then
+    echo "  ok   $HOOKS/$h matches scripts/git-hooks/$h"
   else
-    echo "  FAIL .git/hooks/$h differs from scripts/git-hooks/$h" >&2
+    echo "  FAIL $HOOKS/$h differs from scripts/git-hooks/$h" >&2
     fail=1
   fi
 done
@@ -179,8 +289,8 @@ done
 # The shim is the whole chain: an installed guard that pre-commit never calls is
 # a file, not a guard. Check the LINK, not just the two files — this is exactly
 # the failure that shipped when pre-commit was overwritten without it.
-if grep -q 'amux-staged-guard' "$ROOT/.git/hooks/pre-commit" \
-   && grep -q '"\$g" || exit 1' "$ROOT/.git/hooks/pre-commit"; then
+if grep -q 'amux-staged-guard' "$HOOKS/pre-commit" \
+   && grep -q '"\$g" || exit 1' "$HOOKS/pre-commit"; then
   echo "  ok   pre-commit calls amux-staged-guard"
 else
   echo "  FAIL pre-commit does NOT call amux-staged-guard — sweep protection is OFF" >&2

@@ -1,0 +1,28 @@
+-- AF-175: `_amux_request_log` rows record WHICH PROCESS logged them, so
+-- "did this request span a server restart" becomes a property OF THE ROW
+-- rather than a comparison against whichever boot happens to be current.
+--
+-- The latency detector counts wall time from arrival to completion. A request
+-- that arrived before the server started and completed after it came up
+-- measured the OUTAGE, not the endpoint — which is how a 107-second restart
+-- was filed as "11 requests to GET /api/sessions exceeded 10s; worst 62.0s"
+-- on 2026-08-23, for a window in which the server was not running.
+--
+-- The first fix compared against `heartbeat::boot_at()`, the CURRENT process's
+-- boot. That can only ever catch rows spanning the MOST RECENT restart. This
+-- server restarts roughly 27 times a day, and a detector window is hours long,
+-- so every earlier restart inside the window stayed invisible. Worse, it made
+-- the predicate need two conditions (arrived-before-boot AND completed-after),
+-- because "before the current boot" is also true of every legitimately old row
+-- — and shipping the one-sided version excluded 213,420 of 213,935 rows within
+-- the hour.
+--
+-- With the row's own boot the predicate is one-sided and cannot have that bug:
+-- a row's `ts` is by construction >= the boot of the process that wrote it, so
+-- `arrival < boot_at` alone is exactly "spanned this process's start". The
+-- durable fix makes the check SIMPLER, not more elaborate.
+--
+-- NULL means a legacy row written before this column existed. Consumers must
+-- fall back to the process-boot comparison for those rather than treating NULL
+-- as "did not span" — absence is not evidence, and this table retains a week.
+-- ADDCOL: _amux_request_log boot_at REAL

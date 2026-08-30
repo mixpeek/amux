@@ -56,7 +56,8 @@
 //   probe discriminates "absent" from "ported".
 // - Toggle inputs (.theme-toggle input) are opacity:0/size:0 — the USER
 //   clicks the visible .theme-track sibling, so the tests do too.
-import { test, expect, Page, APIRequestContext } from '@playwright/test';
+import { test, expect } from './fixtures';
+import type { Page, APIRequestContext } from '@playwright/test';
 
 // Deterministic theme baseline: initTheme falls back to prefers-color-scheme
 // when no amux_theme is saved, and Playwright's default is LIGHT — pin dark so

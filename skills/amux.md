@@ -123,24 +123,37 @@ curl -sk -X POST $AMUX_URL/api/schedules/SCHED_ID/run
 
 ## Notes (documents / reference material)
 
+**Corrected 2026-08-28** — this section previously documented a
+`/api/notes*` family that does not exist on the running server (confirmed
+live: 404 on both `/api/notes` and `/api/notes/test`, and `GET
+/api/debug/routes` lists no such family). Notes are backed by
+`/api/memories` (the `memories` primitive) instead — see
+`skills/amux-worker.md`'s "Gap found" section for the full investigation.
+
 ```bash
 # List all notes
-curl -sk $AMUX_URL/api/notes | python3 -m json.tool
+curl -sk $AMUX_URL/api/memories | python3 -m json.tool
 
 # Read a note
-curl -sk $AMUX_URL/api/notes/my-note
+curl -sk $AMUX_URL/api/memories/MEMORY_ID
 
-# Create or update a note (use slug as path)
+# Create a note (global scope; memory_type "reference" fits documents best)
 curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"content":"# Title\n\nBody text here"}' \
-  $AMUX_URL/api/notes/my-note
+  -d '{"scope":{"level":"global"},"name":"my-note","content":"# Title\n\nBody text here","memory_type":"reference"}' \
+  $AMUX_URL/api/memories
 
-# Delete a note (moves to trash)
-curl -sk -X DELETE $AMUX_URL/api/notes/my-note
+# Update a note's content
+curl -sk -X PATCH -H 'Content-Type: application/json' \
+  -d '{"content":"updated body"}' \
+  $AMUX_URL/api/memories/MEMORY_ID
 
-# Pin/unpin a note
-curl -sk -X POST $AMUX_URL/api/notes/my-note/pin
+# Delete a note (soft-delete: content stays, deleted_at is set)
+curl -sk -X DELETE $AMUX_URL/api/memories/MEMORY_ID
 ```
+
+There is no pin verb on `/api/memories`. For a scripted client rather than
+raw curl, `skills/amux-worker/scripts/amux-worker.sh notes <verb>` wraps
+all of the above.
 
 ---
 
@@ -244,7 +257,7 @@ amux crm fu
 
 **When to use what:**
 - Person / contact → `amux crm add`
-- Document / reference → `/api/notes`
+- Document / reference → `/api/memories` (see Notes section above)
 - Task / action item → `/api/board`
 - Recurring automation → `/api/schedules`
 

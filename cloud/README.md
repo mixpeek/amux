@@ -236,6 +236,16 @@ and every endpoint they call is routed on the rust server (checked against
   moment cloud.amux.io 502s. Read-only on real-customer orgs; the active reply probe
   (`--send-probe`) is opt-in and refused for anything that is not a demo. Exits
   non-zero on any failure so a scheduler can gate on it; `--json` for a summary.
+* **`cloud_autofix.py`** — daily cloud health check + deterministic AUTOFIX (runs on
+  SCHED-356). Probes cloud.amux.io, runs `e2e_personas` when up, and when down applies
+  the exact repairs the 2026-08-16 outage needed BY HAND: a truncated `gateway.env` ->
+  restore from the newest good backup (merged with current) + restart; disk full of
+  LOGS -> truncate container json-logs + journald + restart; gateway crash-loop ->
+  restart. It ESCALATES what it must not touch (disk full of DATA = customer volumes,
+  ethos rule 8; or a still-502 after repairs) via board + `amux alert`, and traces
+  every action to `/var/log/cloud-autofix.jsonl` and stdout. `--no-fix` for a dry check.
+  It SSHes to the host via `~/.ssh/amux_cloud`; override the host with `AMUX_CLOUD_HOST`.
+* **`CDN.md`** — design + usage for the public `cdn.amux.io` CDN subdomain (Cloudflare R2 + edge cache, the CloudFront-equivalent on amux's stack). Provisioning is blocked on one Cloudflare R2-admin token; the doc has the architecture, the upload commands, and the exact access grant needed.
 
 `gateway.py` stays python for the same reason: it is a host process that never
 runs customer code, and rewriting it was not part of the server cutover.

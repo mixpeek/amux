@@ -13,7 +13,18 @@ test('the full-text hydrator is INERT while the payload already carries desc', a
     const w = window as any;
     let fetches = 0;
     const orig = w.fetch;
-    w.fetch = (...a: any[]) => { fetches++; return orig(...a); };
+    // Count the HYDRATOR's fetch shape only (full=1 — the prose escape it
+    // asks for), which is the claim in this test's name. The counter used to
+    // count EVERY fetch, which worked while nothing else fetched in the
+    // window — but since AMUX-3503 replaced SSE full-pushes with
+    // invalidate-driven conditional fetches, a PARALLEL spec's board write
+    // makes this page legitimately fetch its slim poll mid-window, and an
+    // unscoped counter reads that as the hydrator firing.
+    w.fetch = (...a: any[]) => {
+      const u = String(a[0]);
+      if (u.includes('/api/board') && u.includes('full=1')) fetches++;
+      return orig(...a);
+    };
     // Today's shape: items carry desc. Must not fetch.
     w._bqEnsureFullText([{ id: 'A-1', desc: 'present', log: '' }]);
     await new Promise(res => setTimeout(res, 200));
@@ -31,7 +42,11 @@ test('it hydrates once when the payload is slim, and not again inside the cache 
     let fetches = 0;
     const orig = w.fetch;
     w.fetch = (...a: any[]) => {
-      if (String(a[0]).includes('/api/board?archived=0')) fetches++;
+      // The hydrator's own shape only (full=1) — the slim poll an
+      // AMUX-3503 invalidate triggers also matches archived=0 and would
+      // count as a phantom second hydration.
+      const u = String(a[0]);
+      if (u.includes('/api/board') && u.includes('full=1')) fetches++;
       return orig(...a);
     };
     // Slim shape: desc absent. `desc_len` present, as slim actually serves.

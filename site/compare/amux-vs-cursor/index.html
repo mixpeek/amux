@@ -24,7 +24,7 @@
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Cursor","item":"https://amux.io/compare/amux-vs-cursor/"}]}</script>
 
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Cursor (2026): AI Agent Orchestration vs AI Coding IDE","description":"Cursor is the leading AI coding IDE. amux runs dozens of Claude Code agents overnight in parallel. Here's the key difference — and why many teams use both.","url":"https://amux.io/compare/amux-vs-cursor/","datePublished":"2026-07-16","dateModified":"2026-07-16","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Cursor (2026): AI Agent Orchestration vs AI Coding IDE","description":"Cursor is the leading AI coding IDE. amux runs dozens of Claude Code agents overnight in parallel. Here's the key difference — and why many teams use both.","url":"https://amux.io/compare/amux-vs-cursor/","datePublished":"2026-07-16","dateModified":"2026-08-18","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is amux a Cursor alternative?","acceptedAnswer":{"@type":"Answer","text":"amux is not a direct replacement for Cursor — they solve different problems. Cursor is an AI-powered IDE for interactive coding (completions, chat, single-agent refactoring). amux is a headless orchestrator for running 10–50 AI coding agents in parallel, overnight, unattended. Most developers who use amux also use an IDE like Cursor for interactive work."}},{"@type":"Question","name":"Can Cursor run multiple agents in parallel?","acceptedAnswer":{"@type":"Answer","text":"Cursor Agent runs one autonomous agent per window. To run 10 agents in parallel, you would need 10 open Cursor windows with no shared coordination. amux is purpose-built for parallel agents: it launches dozens of Claude Code, Codex CLI, or Gemini CLI sessions simultaneously, with a shared kanban board for task coordination and a self-healing watchdog that keeps them running overnight."}},{"@type":"Question","name":"Does amux work with Cursor?","acceptedAnswer":{"@type":"Answer","text":"Yes — amux and Cursor complement each other. Many developers use Cursor for interactive coding during the day (Tab completions, Cursor Chat, quick agent fixes) and amux for overnight batch work (running 10–50 agents to generate tests, refactor modules, or review PRs across a large codebase). They operate at different moments in the development workflow."}},{"@type":"Question","name":"What is the difference between amux and Cursor Agent?","acceptedAnswer":{"@type":"Answer","text":"Cursor Agent is a single autonomous agent per Cursor window. It can plan, edit files, and run terminal commands, but it requires Cursor to be open and running, supports only one agent at a time, and has no self-healing — if the agent crashes overnight, it stays crashed until you restart it manually. amux runs agents as persistent tmux sessions — 10, 20, or 50 simultaneously — with a watchdog that auto-compacts context, restarts crashed sessions, and replays the last message, so they keep running while you sleep."}},{"@type":"Question","name":"Which is better for overnight batch coding jobs?","acceptedAnswer":{"@type":"Answer","text":"amux. Its core use case is running AI coding agents overnight while you sleep. The self-healing watchdog auto-compacts context when agents near their limit, restarts crashed sessions, and replays the last message so no work is lost. Cursor Agent is not designed for unattended overnight operation — it requires the IDE to be open and running. amux lets you queue 50 tasks, close your laptop, and wake up to finished pull requests."}}]}</script>
 
@@ -47,7 +47,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Cursor</span></div>
 
     <h1>amux vs Cursor (2026)</h1>
-    <p class="subtitle">AI Agent Orchestration vs AI Coding IDE — different tools for different workflows, and why many teams use both.</p>
+    <p class="subtitle">AI Agent Orchestration vs AI Coding IDE — different tools for different workflows, and why many teams use both. <span style="font-size:0.85em;color:var(--text-muted)">Updated August 2026.</span></p>
 
     <!-- EXP-007: compare pages GitHub CTA -->
     <div style="display:flex;align-items:center;gap:1rem;background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:0.875rem 1.125rem;margin:1.5rem 0;flex-wrap:wrap">
@@ -162,8 +162,18 @@
               <td>No — full Electron IDE</td>
             </tr>
             <tr>
+              <td><strong>Credential management</strong></td>
+              <td>Connectors tab — paste API keys once, scope to global/group/worker</td>
+              <td>No credential manager — keys live in .env files or IDE settings</td>
+            </tr>
+            <tr>
+              <td><strong>Owner alerts</strong></td>
+              <td>Push, email, iMessage when fleet needs attention</td>
+              <td>No alerting — must watch IDE</td>
+            </tr>
+            <tr>
               <td><strong>GitHub stars</strong></td>
-              <td>299 (MIT)</td>
+              <td>353+ (MIT)</td>
               <td>~50,000+ (proprietary)</td>
             </tr>
           </tbody>
@@ -506,6 +516,20 @@
       <p>
         Yes. amux runs entirely on your local machine (or a VM you control). Your code never leaves your environment through amux — it only leaves through the AI runtime's API calls (e.g., Claude Code sending prompts to Anthropic's API, the same as when you use Claude Code directly). The amux server runs on <code>localhost:8824</code> with a self-signed TLS cert; it is not exposed to the public internet unless you explicitly configure a tunnel or reverse proxy.
       </p>
+    </section>
+
+    <!-- August 2026 amux updates -->
+    <section>
+      <h2>What's new in amux (August 2026)</h2>
+      <p>Several significant features shipped in August 2026 that widen amux's advantages in the multi-agent, unattended workflow space:</p>
+      <ul>
+        <li><strong>Connectors tab</strong> — paste API credentials for external services (Google, Granola, custom APIs) once. Set scope at global, group, or per-worker level. Agents pick credentials up automatically as environment variables, with no changes to CLAUDE.md or shell profiles. A Test button verifies the connection before the first run. See <a href="/guides/ai-agent-connectors/">connector setup guide</a>.</li>
+        <li><strong>Owner alerts</strong> — agents send push notifications, email, and iMessage when they need the operator's attention. Set the threshold in CLAUDE.md; the agent calls <code>amux alert</code>; your phone buzzes. You approve and the run continues. Cursor has no equivalent for headless, overnight workflows. See <a href="/guides/ai-agent-owner-alerts/">owner alerts guide</a>.</li>
+        <li><strong>Computed files (.mdai)</strong> — define a knowledge DAG in plain Markdown. Agent outputs feed into downstream agents automatically at scheduled intervals. Useful for research pipelines, competitive monitoring, and multi-step business automation where no single agent should hold the whole context. See <a href="/guides/ai-agent-automations/">ai-agent-automations guide</a>.</li>
+        <li><strong>Spreadsheet preview in Files tab</strong> — .xlsx and .xls files render as sortable tables in the Files viewer. Agents can be directed to process spreadsheet data without additional tooling.</li>
+        <li><strong>TTS cancel</strong> — stop audio generation or playback mid-session. Improves the voice-first mobile workflow on iOS.</li>
+      </ul>
+      <p>None of these features are available in Cursor — they are specific to the multi-session, server-side orchestration model amux provides.</p>
     </section>
 
     <!-- Install / CTA box -->

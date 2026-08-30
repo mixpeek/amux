@@ -97,6 +97,7 @@ pub mod ids {
     pub const SCAN: &str = "terminal-scan";
     pub const BOOTSTRAP: &str = "session-bootstrap";
     pub const COMMIT_NUDGE: &str = "commit-nudge";
+    pub const COMMIT_MENTION_NOTES: &str = "commit-mention-notes";
     pub const SELF_ADOPT: &str = "self-adoption";
     // The PeriodicTask ids below are NOT referenced by any spawn site — they
     // register themselves through `spawn_periodic_every` under the name their
@@ -107,6 +108,8 @@ pub mod ids {
     pub const GHOST_RESCUE: &str = "ghost-rescue";
     pub const PANE_SIZE: &str = "pane_size";
     pub const STORAGE: &str = "storage";
+    pub const HEARTBEAT: &str = "heartbeat";
+    pub const TAILNET_WATCH: &str = "tailnet-watch";
 }
 
 /// Every id above, enumerated. `mod ids` is a set of constants and Rust cannot
@@ -126,12 +129,15 @@ pub const ALL_IDS: &[&str] = &[
     ids::SCAN,
     ids::BOOTSTRAP,
     ids::COMMIT_NUDGE,
+    ids::COMMIT_MENTION_NOTES,
     ids::SELF_ADOPT,
     ids::AUTOFIX,
     ids::BOARD_DRIVE,
     ids::GHOST_RESCUE,
     ids::PANE_SIZE,
     ids::STORAGE,
+    ids::HEARTBEAT,
+    ids::TAILNET_WATCH,
 ];
 
 /// An env var this job reads at startup. It is a READOUT, never a switch: a
@@ -238,6 +244,30 @@ pub const CATALOG: &[Doc] = &[
         detail: Some("/api/debug/autofix"),
     },
     Doc {
+        id: ids::HEARTBEAT,
+        name: "Liveness heartbeat",
+        purpose: "Stamps a row while the server runs, so the NEXT boot can name how long amux was down instead of leaving a gap in a log file that nothing counts (AEAB-29).",
+        env: &[
+            EnvControl {
+                var: "AMUX_HEARTBEAT_SECS",
+                effect: "seconds between stamps (default 15); bounds how precisely an outage's start can be named",
+                // TRUE, and checked by the code that spawns, not by this row:
+                // `spawn_periodic` derives the per-job switch from the job name,
+                // so `AMUX_HEARTBEAT_SECS=0` really does stop this loop. The
+                // same var is honoured by `record_boot`, so an isolated server
+                // does not stamp the fleet's row either.
+                off: Some("0"),
+            },
+            EnvControl {
+                var: "AMUX_DOWNTIME_MIN_S",
+                effect: "gap that counts as an outage rather than a restart (default 120)",
+                off: None,
+            },
+        ],
+        pref: None,
+        detail: Some("/api/debug/downtime"),
+    },
+    Doc {
         id: ids::STORAGE,
         name: "Storage retention",
         purpose: "Prunes seven append-only tables and three cache directories on a timer, and rotates the server log.",
@@ -278,6 +308,22 @@ pub const CATALOG: &[Doc] = &[
         name: "Pane-size repair",
         purpose: "Restores a worker's tmux window width after a peek shrank it to the reader's viewport.",
         env: NO_ENV,
+        pref: None,
+        detail: None,
+    },
+    Doc {
+        id: ids::COMMIT_MENTION_NOTES,
+        name: "Commit-mention notes",
+        purpose: "Tells an open card, once, that a merged commit names it. NOTED, never closed — a \
+                  mention is not proof of completion, since commits also reference cards for \
+                  context, partial work and reverts. Hourly rather than on the autofix tick \
+                  because the scan shells out to git across every repo behind an open card and \
+                  measured ~11s.",
+        env: &[EnvControl {
+            var: "AMUX_COMMIT_MENTION_TICK_S",
+            effect: "seconds between scans (floor 60)",
+            off: None,
+        }],
         pref: None,
         detail: None,
     },
@@ -329,6 +375,14 @@ pub const CATALOG: &[Doc] = &[
         id: ids::SELF_ADOPT,
         name: "Self-adoption watch",
         purpose: "Exits 0 when the installed binary changes on disk so launchd relaunches the new build instead of serving stale code.",
+        env: NO_ENV,
+        pref: None,
+        detail: None,
+    },
+    Doc {
+        id: ids::TAILNET_WATCH,
+        name: "Tailnet watch",
+        purpose: "Samples `tailscale status` for node-key expiry and reachability, and caches the verdict for /health — so the tailnet going away is visible before the day it takes remote access with it.",
         env: NO_ENV,
         pref: None,
         detail: None,

@@ -11,9 +11,31 @@ on:
     # neither gate, so the guard existed but never met the file it guards. The cost is
     # that a CLI-only change also runs the cargo + e2e jobs; over-covering is the safe
     # direction for a gate.
-    paths: ['crates/**', 'Cargo.toml', 'Cargo.lock', 'e2e/**', 'amux', 'scripts/**', '.github/workflows/rust.yml']
+    # `eslint.config.mjs` is here because the e2e job's SPA static gate
+    # (scripts/spa-lint.sh) READS it for the vendor-global allowlist, but it lives
+    # at repo root, outside every other pattern. Without it a fix to the lint
+    # config alone could not re-trigger the very gate it fixes, so a red spa-lint
+    # stayed red after the fix landed (32c416b: whitelisting XLSX did not re-run CI).
+    # `cloud/**` is the THIRD instance of the same shape as the two notes above,
+    # and it was found the same way — by a fix that could not prove itself.
+    # `dockerfile_copies_every_external_include_str_input` reads
+    # cloud/docker/Dockerfile and asserts it COPYs every external include_str!
+    # root, but `cloud/**` was in no pattern, so the test that GUARDS that file
+    # never ran when that file changed. Two consequences, and the second is the
+    # dangerous one: a PR fixing the Dockerfile ran only the secret scan and
+    # could not demonstrate the fix (AEAB-55), and a PR BREAKING it by editing
+    # only the Dockerfile would have gone green. The break would then surface as
+    # a dead cloud image on the next deploy — which is exactly the latency the
+    # test was written to remove.
+    #
+    # The AEAB-55 fix itself is the argument for this one. That COPY reached main
+    # by being "swept into that commit through the shared index while staged"
+    # (23eac180) rather than through a reviewed change — so no PR gated it, and
+    # with `cloud/**` absent no PR could have. A test that cannot run when its
+    # subject changes does not catch the sweep going the other way.
+    paths: ['crates/**', 'Cargo.toml', 'Cargo.lock', 'e2e/**', 'amux', 'scripts/**', 'cloud/**', 'eslint.config.mjs', '.github/workflows/rust.yml']
   pull_request:
-    paths: ['crates/**', 'Cargo.toml', 'Cargo.lock', 'e2e/**', 'amux', 'scripts/**', '.github/workflows/rust.yml']
+    paths: ['crates/**', 'Cargo.toml', 'Cargo.lock', 'e2e/**', 'amux', 'scripts/**', 'cloud/**', 'eslint.config.mjs', '.github/workflows/rust.yml']
 
 jobs:
   check:
@@ -29,8 +51,41 @@ jobs:
         run: cargo check --workspace --all-targets
       - name: clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: cargo test (workspace)
-        run: cargo test --workspace
+      # AF-150 (AREA silent-partial). A test fixture created a directory in the
+      # checkout to prove a refusal, the refusal was later removed, and the
+      # residue outlived the run — turning a green test red on every machine
+      # WITH history while CI, freshly checked out, stayed green (67137cc).
+      # CI is the right place to catch it precisely because a fresh checkout
+      # has no history for residue to hide in: this run is the only thing that
+      # could have made it.
+      #
+      # The self-test runs FIRST as a negative control. A guard nobody has
+      # watched fail is a guard nobody should trust — and this one's own
+      # self-test shipped once asserting merely "non-zero", which passed while
+      # carrying the exact bug the control existed to catch (7ca3f68).
+      - name: Tree-residue guard — self-test (negative control)
+        run: bash scripts/test-tree-clean.sh --self-test
+      # Wrapped, not run-after, so the guard cannot drift away from what it
+      # guards. Exit codes (7ca3f68): 0 clean · 3 command SUCCEEDED but left
+      # residue · anything else is the command's own rc, which always wins.
+      #
+      # ADVISORY ON RESIDUE FOR NOW, deliberately: this gates every lane's
+      # push, and a detector that has never been observed silent across real
+      # runs should not block — that is the threshold-below-baseline trap in a
+      # new suit. Only code 3 is downgraded, so a genuine cargo failure still
+      # fails the job. Flip to blocking (delete the `if`) once it has been
+      # quiet for a few days; leaving it advisory forever would make it
+      # decoration.
+      - name: cargo test (workspace) — tree-residue guarded
+        run: |
+          set -uo pipefail
+          bash scripts/test-tree-clean.sh cargo test --workspace
+          rc=$?
+          if [ "$rc" = "3" ]; then
+            echo "::warning title=Tree residue::A test left residue in the checkout. Advisory during the AF-150 trial period; the diff is above. Fix the FIXTURE, not .gitignore."
+            exit 0
+          fi
+          exit $rc
       # AF-74. The `amux` bash CLI is a shipped client with no compiler behind
       # it, and `bash -n` (the pre-commit gate) proves the file PARSES, not that
       # its names resolve. This catches the classes shellcheck CAN see.
@@ -66,6 +121,27 @@ jobs:
       # complements the static gate; it does not replace it.
       - name: runtime smoke -- CLI launch unbound-var (the AMUX-3145 scope shape shellcheck cannot see)
         run: bash scripts/test-cli-launch-unbound.sh
+      # AF-120: the frustrations audit existed, detected its failure class
+      # precisely (a headingless append folds into the previous entry and
+      # vanishes from every census), and NOTHING RAN IT — six malformed
+      # entries landed on main while the purpose-built check sat unread.
+      # This step is its CI consumer; the pre-commit hook is the local one.
+      # Exit contract (the script's own docstring, which the first wiring of
+      # this step did not read): 0 clean, 1 structural problems (decidable
+      # with NO board, so it must fail here), 2 board unreachable with
+      # structure clean — CI never has a board, so 2 is this environment's
+      # green. Failing on 2 turned the consumer red on every push (33b92a5).
+      - name: frustrations.md structural audit + its own test suite (AF-120)
+        run: |
+          set +e
+          python3 scripts/frustrations_audit.py > /dev/null
+          rc=$?
+          set -e
+          if [ "$rc" != "0" ] && [ "$rc" != "2" ]; then
+            python3 scripts/frustrations_audit.py | head -20
+            exit "$rc"
+          fi
+          bash scripts/test-frustrations-audit.sh
 
       # MHC-377. `amux board status-update <ID> --outcome-file <path>` used to
       # record the literal flag string, print "status update posted" and exit 0,
@@ -76,6 +152,37 @@ jobs:
       # --stdin and --file must reach the wire byte-for-byte.
       - name: runtime smoke -- board status-update refuses flag-shaped prose (MHC-377 data loss)
         run: bash scripts/test-cli-status-update-flags.sh
+
+      # AF-195. The guard refuses a commit whose staged bytes are not the bytes
+      # on disk, and must NOT refuse `git commit -a` or `git commit -- <path>`,
+      # which resolve through a temporary index built FROM the working tree.
+      # That second half is a claim about git's behaviour rather than about our
+      # code, so it needs a real repo and a real `git commit` — reading the hook
+      # cannot settle it, and getting it wrong makes the guard fire on every
+      # ordinary commit, which is how a guard becomes a thing people bypass.
+      - name: runtime smoke -- staged-guard refuses an index that is not the worktree (AF-195)
+        run: bash scripts/test-index-worktree-divergence.sh
+
+      # AMUX-3667. CI has no `.cargo/config.toml` (install.sh writes it and it
+      # is gitignored), so this SKIPS here and exits 0. That is deliberate and
+      # it is not theatre: the half CI can genuinely break is the CONTROL —
+      # this job sets CARGO_TARGET_DIR itself, serve-head.sh exports its own
+      # (AMUX-2961), and a future change that let `build.target-dir` win over
+      # the env would move both silently. The script asserts that precedence
+      # empirically, so when a config IS present the control runs; keeping the
+      # step wired means the day someone commits a config, or CI starts running
+      # install.sh, the assertion is already here rather than remembered.
+      - name: runtime smoke -- a bare cargo does not build into the checkout (AMUX-3667)
+        run: bash scripts/test-cargo-target-dir-pinned.sh
+
+      # AMUX-3682. Two runtime hooks ran uncommitted for four days each because
+      # install.sh copied the WORKTREE while its own comments claimed the
+      # committed copy was authoritative. CI is the right home for this: the
+      # dirty-worktree cell builds its own throwaway repo, so it needs no
+      # fixture from this checkout and cannot pass for the wrong reason on a
+      # clean CI tree.
+      - name: runtime smoke -- hooks install from HEAD, not the worktree (AMUX-3682)
+        run: bash scripts/test-hook-install-from-head.sh
 
   e2e:
     # PR Full Gate tier (plan §CI tiers): the golden scenarios in a real

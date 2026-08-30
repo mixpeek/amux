@@ -173,11 +173,34 @@ function _applyTheme(light) {
   if (meta) meta.content = light ? '#ffffff' : '#0d1117';
   _hljsApplyTheme(light);
 }
-// Swap the highlight.js theme stylesheet to match amux's light/dark mode.
-function _hljsApplyTheme(light) {
+// The highlight.js theme is ALWAYS the dark one, because its only consumer is
+// always dark (Ethan, 2026-08-25: "when i open a python file it's just dark i
+// cant read it").
+//
+// This used to swap to `github.min.css` in light mode, to "match amux's
+// light/dark mode". But hljs markup is produced in exactly one place —
+// `_fileHighlightHTML` — and every rule styling it is scoped to
+// `.file-overlay-body.file-code`, which keeps a DARK body in light mode by
+// deliberate design. app.css says so a few rules down, where the GUTTER was
+// given a light-mode override for exactly that reason: "The light-mode file
+// viewer keeps a DARK body (#1c2128), so the gutter must match that, not the
+// page background." The gutter was fixed for the dark body and the syntax
+// colours were not.
+//
+// So in light mode the viewer loaded a stylesheet designed for a WHITE
+// background and painted it onto #1c2128. Measured on the shipped build:
+//   hljs-subst   rgb(36,41,46)  on rgb(28,33,40)  -> ~1.1:1 contrast
+//   hljs-string  rgb(3,47,98)   on rgb(28,33,40)  -> ~1.2:1 contrast
+// WCAG's floor for body text is 4.5:1. That is not "hard to read", it is
+// invisible, and it is why the report was "just dark".
+//
+// The theme is not a preference here, it is a property of the one surface that
+// renders it. If a light-background hljs consumer is ever added, this becomes a
+// per-surface class rather than a document-level stylesheet swap.
+function _hljsApplyTheme() {
   const l = document.getElementById('hljs-theme');
-  if (l) l.href = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/'
-    + (light ? 'github.min.css' : 'github-dark.min.css');
+  if (l) l.href =
+    'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css';
 }
 function toggleTheme(checked) {
   const isLight = checked !== undefined ? checked : !document.body.classList.contains('light');
@@ -274,6 +297,46 @@ async function toggleAutofix(checked) {
     if (cb) cb.checked = enabled;
   } catch(e) {}
 })();
+
+// ── YOLO by default for new workers (Ethan 2026-08-19) ──
+// A global pref like the toggles above. The create flow reads _yoloDefault and,
+// when on, enables YOLO on the freshly-created worker via the SAME toggle_yolo
+// the manual switch uses — which ADDS the provider yolo flag to CC_FLAGS without
+// dropping the server-resolved --model (passing `flags` at create would replace
+// it). Default OFF: skipping permission prompts is opt-in, per worker or globally.
+let _yoloDefault = false;
+async function toggleYoloDefault(checked) {
+  _yoloDefault = !!checked;
+  await fetch('/api/prefs', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ key: 'yolo_default', value: checked ? '1' : '0' })
+  });
+  if (typeof showToast === 'function') {
+    showToast(checked ? 'New workers will start in YOLO mode'
+                      : 'New workers will not default to YOLO');
+  }
+}
+(async function initYoloDefault() {
+  try {
+    const r = await fetch('/api/prefs?key=yolo_default');
+    const d = await r.json();
+    _yoloDefault = String((d && d.value) ?? '0') === '1';   // default OFF
+    const cb = document.getElementById('yolo-default-checkbox');
+    if (cb) cb.checked = _yoloDefault;
+  } catch (e) {}
+})();
+// Enable YOLO on a just-created worker when the pref is on. toggle_yolo is a
+// toggle, but a fresh worker is never already YOLO, so it deterministically
+// turns it ON while preserving the resolved model in CC_FLAGS.
+async function _applyYoloDefault(name) {
+  if (!_yoloDefault || !name) return;
+  try {
+    await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/config', {
+      method: 'PATCH', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ toggle_yolo: true })
+    });
+  } catch (e) {}
+}
 
 // ═══════ STATE & GLOBALS ═══════
 const API = '';
@@ -430,6 +493,7 @@ let filterStatuses = new Set();    // 'working' | 'waiting' | 'idle' | 'stopped'
 function _sessStatusKey(s) {
   if (!s.running) return 'stopped';
   if (s.status === 'rate_limited') return 'rate_limited';
+  if (s.status === 'api_error') return 'api_error';
   if (s.status === 'active') return 'working';
   if (s.status === 'waiting') return 'waiting';
   return 'idle';
@@ -1785,6 +1849,7 @@ async function runSyncBanner() {
       if (!createResp.ok && createResp.status !== 409) {
         item.status = 'failed'; draft.syncing = false; saveDrafts(); renderBanner(); continue;
       }
+      await _applyYoloDefault(draft.name);   // YOLO-by-default applies to synced drafts too
       const startResp = await _origFetch(API + '/api/sessions/' + encodeURIComponent(draft.name) + '/start', { method: 'POST', headers: _authHeaders() });
       if (draft.prompt && startResp.ok) {
         await new Promise(r => setTimeout(r, 5000));
@@ -2524,9 +2589,20 @@ function _staleShellRecover() {
   } catch (e) {}
 }
 
+let _sessEtag = null;
 async function fetchSessions() {
   try {
-    const r = await fetch(API + '/api/sessions');
+    // AMUX-3504: conditional fetch — the server hashes the (now byte-stable)
+    // payload, so an unchanged fleet answers 304 with no body. That is the
+    // whole cost of the reconnect/resume refetches intermittent mobile fires.
+    const r = await fetch(API + '/api/sessions', _sessEtag ? { headers: { 'If-None-Match': _sessEtag } } : undefined);
+    if (r.status === 304) {
+      consecutiveFailures = 0;
+      _lastDataTime = Date.now();
+      if (!online) setOnline(true);
+      return;
+    }
+    _sessEtag = r.headers.get('ETag') || null;
     const data = await r.json();
     // Same guard as fetchBoard (live crash 2026-08-09): a 401 error object
     // must not become `sessions` — every card render maps over it.
@@ -2615,6 +2691,7 @@ function updatePeekStatus() {
   if (s.status === 'active')  badge = '<span class="status-badge active">working</span>' + _agentsChip(s);
   else if (s.status === 'waiting') badge = '<span class="status-badge waiting"' + _waitingTitle(s) + '>' + _waitingLabel(s) + '</span>';
   else if (s.status === 'rate_limited') badge = '<span class="status-badge rate-limited">rate limited</span>';
+  else if (s.status === 'api_error') badge = `<span class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot;.">API ${esc(s.api_error_code || '5xx')}</span>`;
   else if (s.status === 'idle')    badge = '<span class="status-badge idle">idle</span>';
   else if (!s.running)             badge = '<span class="status-badge" style="background:rgba(255,255,255,0.06);color:var(--dim);border:1px solid var(--border);">stopped</span>';
   if (s.rate_limited_until) {
@@ -2975,12 +3052,28 @@ function render() {
     const taskStale = _taskStaleAge(s);
     const offCached = !!(_peekIndex && _peekIndex[s.name]);
     const taskDim = taskStale && s.task_source === 'board';   // stale board title shown as last resort
+    // AF-148: a lane with no active card falls back to its static DESCRIPTION,
+    // and the payload says so (`task_source: 'desc'`) — but the client only ever
+    // read task_source to dim a STALE BOARD title, so the fallback rendered
+    // identically to a live task: same weight, same colour, no badge.
+    //
+    // Found by the frustration sweep on its first run. Ethan asked tubescience
+    // "what's the status?" three times in 34 hours; that lane has 652 cards, 0
+    // in doing/review, 50 blocked — so the task slot was showing its job
+    // description ("The TubeScience customer account: product requirements…"),
+    // which reads exactly like a current task. He had no way to tell "working on
+    // this" from "no task, here is what this lane is for", so he asked.
+    //
+    // Same discriminator the stale case already uses, applied to the case it
+    // skipped. Not a mood, not a guess: the field was in the payload the whole
+    // time and one consumer read it for one branch.
+    const taskIsDesc = s.task_source === 'desc' && !!s.task_name;
     return `
     <div class="card ${isExp ? 'expanded' : ''}" data-session="${esc(s.name)}" onclick="event.stopPropagation();toggle('${s.name}')">
       <div class="card-header" onclick="headerTap('${s.name}', event)" onmousedown="tileMouseDown(event,'${s.name}')">
         <div class="card-header-top">
           <div class="card-drag-handle" title="Drag to reorder"><svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor"><circle cx="3" cy="3" r="1.3"/><circle cx="7" cy="3" r="1.3"/><circle cx="3" cy="8" r="1.3"/><circle cx="7" cy="8" r="1.3"/><circle cx="3" cy="13" r="1.3"/><circle cx="7" cy="13" r="1.3"/></svg></div>
-          <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${esc(s.name)}${offCached ? ' <span class="card-offline-dot" title="Scrollback saved on this device — readable offline">&#x2B07;</span>' : ''}</div>
+          <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${s.isolated ? '<span class="card-isolated" title="ISOLATED (raw agent): tmux plus the CLI, no amux harness — no AMUX_SESSION/AMUX_URL, no MCP config, no self-report hooks. Undiscoverable to peers: hidden from their fleet list and roster, and peer sends are refused. You can still peek and send from here. Applies at the next spawn.">ISOLATED</span> ' : ''}${esc(s.name)}${offCached ? ' <span class="card-offline-dot" title="Scrollback saved on this device — readable offline">&#x2B07;</span>' : ''}</div>
           <button class="card-menu-btn" onclick="event.stopPropagation();toggleMenu('${s.name}')" title="Options">&#x22EF;</button>
           <div class="card-menu" id="menu-${s.name}">
           <div class="card-menu-item" onclick="event.stopPropagation();editField('${s.name}','task','${escJs(s.task_name||"")}')"><span class="mi">&#x270F;</span> Task label${s.task_name ? '' : ' (none)'}</div>
@@ -3009,7 +3102,7 @@ function render() {
           ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();doStop('${s.name}')"><span class="mi">&#x23F9;</span> Stop</div>` : ''}
           ${s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();clearScrollback('${s.name}')"><span class="mi">&#x239A;</span> Clear scrollback</div>` : ''}
           <div class="card-menu-item" onclick="event.stopPropagation();duplicateSession('${s.name}')"><span class="mi">&#x2398;</span> Duplicate</div>
-          ${!s.running ? `<div class="card-menu-item" onclick="event.stopPropagation();newConversation('${s.name}')"><span class="mi">&#x1F195;</span> New conversation</div>` : ''}
+          <div class="card-menu-item" onclick="event.stopPropagation();newConversation('${s.name}', ${s.running ? 'true' : 'false'})"><span class="mi">&#x1F195;</span> New conversation</div>
           <div class="card-menu-item" onclick="event.stopPropagation();closeAllMenus();shareSession('${s.name}')"><span class="mi">&#x1F517;</span> Share link</div>
           <div class="card-menu-item" onclick="event.stopPropagation();archiveSession('${s.name}')"><span class="mi">&#x1F4E6;</span> Archive</div>
           <div class="card-menu-sep"></div>
@@ -3028,7 +3121,7 @@ ${/* A lane at a limit banner is not WORKING, and a working lane is not
           ${s.status === 'idle' ? '<span class="status-badge idle">idle</span>' : ''}`}
           ${s.rate_limited_until ? `<span class="status-badge rate-limited" title="${s.rate_limit_weekly ? 'Weekly limit' : 'Rate-limited'} — auto-resume at ${_fmtResetTime(s.rate_limited_until)}">${s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until'} ${_fmtResetTime(s.rate_limited_until)}</span>` : ''}
           ${s.credit_limited ? `<span class="status-badge rate-limited" title="${esc(s.credit_limit_model || 'Model')} usage limit — switch model or top up credits (Bulk actions)${s.credit_limited_since ? '. Detected ' + timeAgo(s.credit_limited_since) + ' — clears on model change or restart' : ''}">${esc(s.credit_limit_model || 'model')} limit${s.credit_limited_since ? ` · ${timeAgo(s.credit_limited_since)}` : ''}</span>` : ''}
-          ${s.api_error ? `<span class="status-badge rate-limited" title="API Error ${esc(s.api_error_code)} — server-side and retryable. Send &quot;continue&quot; (Bulk actions).">API ${esc(s.api_error_code)}${s.api_error_count > 1 ? ' &times;' + s.api_error_count : ''}</span>` : ''}
+          ${s.api_error ? `<span class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot; (Bulk actions).">API ${esc(s.api_error_code || '5xx')}${s.api_error_count > 1 ? ' &times;' + s.api_error_count : ''}</span>` : ''}
           ${_steerHumanCount(s) ? `<span class="status-badge steering" title="${_steerHumanCount(s)} steering message${_steerHumanCount(s)>1?'s':''} queued">${_steerHumanCount(s)} queued</span>` : ''}
           ${s.last_activity ? `<span class="last-active">${timeAgo(s.last_activity)}</span>` : ''}
           ${(() => {
@@ -3058,7 +3151,7 @@ ${/* A lane at a limit banner is not WORKING, and a working lane is not
       ${s.dir ? _renderBranchBadge(s.name, s.branch) : ''}
       ${isExp && s.desc ? `<div class="card-desc">${esc(s.desc)}</div>` : ''}
 
-      ${!isExp && s.task_name ? `<div class="card-preview${taskDim ? ' task-stale' : ''}" style="font-weight:600;color:var(--text);">${esc(s.task_name)}${_taskIdChip(s)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}</div>` : ''}
+      ${!isExp && s.task_name ? `<div class="card-preview${taskDim || taskIsDesc ? ' task-stale' : ''}" style="font-weight:600;color:var(--text);">${esc(s.task_name)}${_taskIdChip(s)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>` : ''}
       ${isExp && s.preview ? `<div class="card-preview">${esc(s.preview)}</div>` : ''}
       ${logSearchMode && _logMatches[s.name] ? (() => {
         const hits = _logMatches[s.name];
@@ -3079,7 +3172,7 @@ ${/* A lane at a limit banner is not WORKING, and a working lane is not
         <button class="btn primary" style="width:100%;" onclick="doStart('${s.name}')">&#x25B6; Start</button>
       </div>` : ''}
       <div class="panel" onclick="event.stopPropagation()">
-        ${isExp && s.task_name ? `<div class="card-task-name${taskDim ? ' task-stale' : ''}" title="Click the id to open the board card" style="font-weight:600;"><span onclick="event.stopPropagation();editField('${s.name}','task','${esc(s.task_name)}')" style="cursor:pointer;">${esc(s.task_name)}</span>${_taskIdChip(s)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}</div>` : ''}
+        ${isExp && s.task_name ? `<div class="card-task-name${taskDim || taskIsDesc ? ' task-stale' : ''}" title="Click the id to open the board card" style="font-weight:600;"><span onclick="event.stopPropagation();editField('${s.name}','task','${esc(s.task_name)}')" style="cursor:pointer;">${esc(s.task_name)}</span>${_taskIdChip(s)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>` : ''}
         ${isExp && s.running ? `<div class="card-timing">
           ${s.session_created ? `<div class="timing-item"><span class="timing-label">Worker</span><span class="timing-value">${fmtDuration(Math.floor(Date.now()/1000) - s.session_created)}</span></div>` : ''}
           ${s.task_time ? `<div class="timing-item"><span class="timing-label">Task</span><span class="timing-value accent">${esc(s.task_time)}</span></div>` : ''}
@@ -3089,13 +3182,15 @@ ${/* A lane at a limit banner is not WORKING, and a working lane is not
         <div class="card-stats" id="stats-${s.name}"></div>
         ${s.running ? `
         <div class="chips" id="card-chips-${s.name}"></div>
-        <div class="send-row" style="position:relative;">
+        <div class="peek-attach-bar card-attach-bar${(_cardFiles[s.name]||[]).length ? ' has-files' : ''}" id="card-attach-${s.name}">${_renderCardFileChips(s.name)}</div>
+        <div class="send-row" style="position:relative;" ondragover="cardDragOver(event)" ondragleave="cardDragLeave(event)" ondrop="cardDrop('${s.name}',event)" title="Drag files here to attach">
           <div id="card-ac-${s.name}" class="ac-list slash-ac"></div>
           <textarea class="send-input" id="input-${s.name}" rows="1"
             placeholder="Send to ${esc(s.name)}..." autocomplete="off" autocorrect="on"
             autocapitalize="sentences" spellcheck="true" enterkeyhint="enter"
             oninput="autoGrow(this);cardSlashAcUpdate('${s.name}');cmdHistoryReset();_draftSaveDebounced('${s.name}',this.value)"
             onkeydown="cardSlashAcKeydown('${s.name}',event)"
+            onpaste="handleCardPaste('${s.name}',event)"
             onbeforeinput="cardSlashAcBeforeInput('${s.name}',event)"></textarea>
           <div class="send-split${_sendMode === 'queue' ? ' mode-queue' : ''}"><button class="btn primary send-split-main" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => sendFromInput('${s.name}'))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => sendFromInput('${s.name}'))" onclick="_btnFire(event, () => sendFromInput('${s.name}'))">${_sendMode === 'queue' ? 'Queue' : 'Send'}</button><button class="btn primary send-split-arrow" onpointerdown="event.preventDefault()" onpointerup="_btnFire(event, () => _toggleSendMode(event))" ontouchstart="_btnTouchStart(event)" ontouchend="_btnTouchEnd(event, () => _toggleSendMode(event))" onclick="_btnFire(event, () => _toggleSendMode(event))" title="Switch send mode">&#x25BC;</button></div>
         </div>` : ''}
@@ -3138,14 +3233,16 @@ ${/* A lane at a limit banner is not WORKING, and a working lane is not
     const STATUS_GROUPS = [
       { key: 'active',  label: 'Working',     defaultOpen: true  },
       { key: 'waiting', label: 'Needs Input', defaultOpen: true  },
+      { key: 'api_error', label: 'API Error', defaultOpen: true  },
       { key: 'idle',    label: 'Idle',        defaultOpen: true  },
       { key: 'stopped', label: 'Stopped',     defaultOpen: false },
     ];
-    const buckets = { active: [], waiting: [], idle: [], stopped: [] };
+    const buckets = { active: [], waiting: [], api_error: [], idle: [], stopped: [] };
     filtered.forEach(s => {
       if (!s.running)              buckets.stopped.push(s);
       else if (s.status === 'active')  buckets.active.push(s);
       else if (s.status === 'waiting') buckets.waiting.push(s);
+      else if (s.status === 'api_error') buckets.api_error.push(s);
       else                             buckets.idle.push(s);
     });
     // Sort within each bucket: alpha (pinned → name) or pinned → last activity
@@ -3707,27 +3804,26 @@ document.addEventListener('click', e => {
   }
 });
 
-const ALL_TABS = [
-  { id: 'sessions',      label: 'Sessions',   required: true },
-  { id: 'board',         label: 'Board' },
-  { id: 'groups',        label: 'Groups' },
-  { id: 'calendar',      label: 'Calendar' },
-  { id: 'scheduler',     label: 'Scheduler' },
-  { id: 'files',         label: 'Files' },
-  { id: 'mdai',          label: 'MDAI' },
-  { id: 'proxies',       label: 'Proxies' },
-  { id: 'logs',          label: 'Logs' },
-  { id: 'browser',       label: 'Browser' },
-  { id: 'grid',          label: 'Workspace' },
-  { id: 'messages',      label: 'Messages' },
-  { id: 'skills',        label: 'Skills' },
-  { id: 'sql',           label: 'Database' },
-  { id: 'map',           label: 'Map' },
-  { id: 'metrics',       label: 'Metrics' },
-  { id: 'cost',          label: 'Cost' },
-  { id: 'torrents',      label: 'Torrents' },
-  { id: 'terminal',      label: 'Terminal' },
-];
+// Derived from the actual nav buttons (.tab-bar > button#tab-<id>) so EVERY tab,
+// including any added later (Connectors, and whatever comes next), is
+// hideable/draggable/reorderable WITHOUT being hand-registered here (Ethan
+// 2026-08-18: a new tab must be customizable "just like all other tabs"). A
+// hardcoded universe silently excluded any tab missing from it — Connectors, and
+// Groups before it, shipped un-customizable for exactly this reason. The
+// customizer button lives OUTSIDE .tab-bar, so it is never picked up; 'sessions'
+// is the one required (always-visible) tab. The .tab-bar markup precedes this
+// script, so the DOM is ready here; the fallback covers the impossible-empty case.
+const ALL_TABS = (function _discoverNavTabs() {
+  const REQUIRED = new Set(['sessions']);
+  const out = [];
+  document.querySelectorAll('.tab-bar button[id^="tab-"]').forEach(b => {
+    const id = b.id.slice(4);   // strip 'tab-'
+    if (!id) return;
+    const lbl = b.querySelector('.tab-lbl');
+    out.push({ id, label: lbl ? lbl.textContent.trim() : id, required: REQUIRED.has(id) });
+  });
+  return out.length ? out : [{ id: 'sessions', label: 'Workers', required: true }];
+})();
 
 let hiddenTabs = (function() {
   try {
@@ -3887,22 +3983,24 @@ function _peekTabsWheel(e) {
   e.preventDefault(); // keep the page from scrolling instead of the tabs
 }
 
-const PEEK_TABS = [
-  { id: 'simple',     label: 'Simple' },
-  { id: 'steering',   label: 'Steering' },
-  { id: 'schedules',  label: 'Schedules' },
-  { id: 'scope',      label: 'Scope' },
-  { id: 'messages',   label: 'Messages' },
-  { id: 'dictation',  label: 'Dictation' },
-  { id: 'readalouds', label: 'Read alouds' },
-  { id: 'issues',     label: 'Board' },
-  { id: 'cost',       label: 'Cost' },
-  { id: 'transcript', label: 'Transcript' },
-  { id: 'commits',    label: 'Commits' },
-  { id: 'memory',     label: 'Memory' },
-  { id: 'git',        label: 'Worktree' },
-  { id: 'logs',       label: 'Logs' },
-];
+// Derived from the actual peek-tab buttons (.peek-tabs > button.peek-tab#peek-tab-<id>)
+// so every WORKER-VIEW tab, including any added later, is hideable/draggable
+// without being hand-registered — the same rule as the global bar (Ethan
+// 2026-08-18). `terminal` is deliberately excluded: it is pinned first by
+// _applyPeekTabVisibility and is not reorderable. The customize button carries a
+// different class (tab-customize-btn, not peek-tab), so it is not picked up. DOM
+// order is the default order, matching what a fresh browser shows.
+const PEEK_TABS = (function _discoverPeekTabs() {
+  const PINNED = new Set(['terminal']);
+  const out = [];
+  document.querySelectorAll('.peek-tabs button.peek-tab[id^="peek-tab-"]').forEach(b => {
+    const id = b.id.slice('peek-tab-'.length);
+    if (!id || PINNED.has(id)) return;
+    const lbl = b.querySelector('.tab-lbl');
+    out.push({ id, label: lbl ? lbl.textContent.trim() : id });
+  });
+  return out.length ? out : [{ id: 'simple', label: 'Translate' }];
+})();
 let peekHiddenTabs = (function() {
   try { const v = localStorage.getItem('amux_peek_hidden_tabs'); if (v !== null) return new Set(JSON.parse(v)); } catch(e) {}
   return new Set(['dictation', 'commits', 'git']);   // sensible default
@@ -5088,15 +5186,40 @@ function cloneSession(session) {
   editField(session, 'clone', '');
 }
 
-async function newConversation(session) {
+// AMUX-3742: this used to be rendered ONLY on a stopped worker, and the API
+// refused while running — so on every live lane the one control that fixes a
+// degraded conversation was both hidden and refused. A lane resumes forever
+// and accumulates compaction generations (measured: amux median 8, max 215; a
+// raw terminal 0), which is what "raw claude performs better than amux claude"
+// turned out to be. It is available on a running worker now, and it says how
+// many generations deep the conversation is, because that number is what makes
+// this a decision rather than a guess.
+async function newConversation(session, running) {
   closeAllMenus();
-  // was `worker` — undefined here, so the click died as an invisible rejected
-  // promise (the exact bug class this gate exists for; caught by no-undef)
-  if (!await showConfirm('Start a fresh conversation for "' + session + '"?\n\nThe next time you start this worker, it will begin a new Claude conversation (history in the old conversation is preserved but won\'t be continued).', 'Reset', true)) return;
-  await apiCall(API + '/api/sessions/' + session + '/config', {
+  let gens = null;
+  try {
+    const r = await apiCall(API + '/api/debug/context-health');
+    if (r) {
+      const d = await r.json();
+      const lane = (d.lanes || []).find(l => l.session === session);
+      // `measured` is carried separately on purpose: never-compacted and
+      // could-not-measure both arrive as a missing count otherwise.
+      if (lane && lane.measured) gens = lane.generations;
+    }
+  } catch (e) { /* the count is context, not a precondition — proceed without it */ }
+  const depth = gens === null ? 'Its compaction depth could not be measured.'
+                              : 'It has been compacted ' + gens + ' time(s).';
+  const tail = running
+    ? '\n\nThis STOPS the worker now and restarts it on a new conversation. Anything it is mid-turn on is lost.'
+    : '\n\nThe next time you start this worker, it will begin a new conversation.';
+  if (!await showConfirm('Start a fresh conversation for "' + session + '"?\n\n' + depth
+      + ' The worker keeps its env, board cards, memory and groups — only the conversation restarts.'
+      + '\n\nThe old transcript is preserved, just not continued.' + tail, 'Reset', true)) return;
+  const r = await apiCall(API + '/api/sessions/' + session + '/config', {
     method: 'PATCH', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ new_conversation: true })
+    body: JSON.stringify({ new_conversation: true, restart: !!running })
   });
+  if (r) showToast(running ? 'Restarting ' + session + ' on a fresh conversation' : 'Conversation reset');
 }
 
 async function shareSession(session) {
@@ -5426,11 +5549,30 @@ function _draftSave(session, text) {
     else localStorage.setItem(k, JSON.stringify({ t: text, ts: Date.now() }));
   } catch (e) {}   // quota/private-mode: a lost draft must never break sending
 }
+// The value the composer for `session` holds RIGHT NOW, or null if none is
+// mounted. The peek box wins when it is the one showing this session (it is the
+// active editor); otherwise the list card.
+function _liveComposerValue(session) {
+  if (typeof peekSession !== 'undefined' && peekSession === session) {
+    const pk = document.getElementById('peek-cmd-input');
+    if (pk) return pk.value;
+  }
+  const card = document.getElementById('input-' + session);
+  return card ? card.value : null;
+}
 function _draftSaveDebounced(session, text) {
   clearTimeout(_draftTimers[session || '_']);
   _draftTimers[session || '_'] = setTimeout(() => {
-    _draftSave(session, text);
-    _draftSyncInputs(session, text);   // keep the other view in step as you type
+    // Read the LIVE composer at fire time, not the value captured 250ms ago at
+    // the keystroke. If a send cleared the box in that window, we save the
+    // CLEARED state (dropping the draft) instead of resurrecting the pre-send
+    // text — that stale-capture race is how an already-sent message came back and
+    // sat in the composer (a prefix of it, from the mid-typing snapshot). Falls
+    // back to the captured text only if the input is gone.
+    const live = _liveComposerValue(session);
+    const val = live != null ? live : text;
+    _draftSave(session, val);
+    _draftSyncInputs(session, val);   // keep the other view in step as you type
   }, 250);
 }
 function _draftGet(session) {
@@ -5494,18 +5636,29 @@ async function sendFromInput(name) {
   const inp = document.getElementById('input-' + name);
   if (!inp) return;
   const text = inp.value.trim();
-  if (!text) {
+  // Card attachments ride the message as inline @path refs, exactly like the
+  // peek composer (sendPeekCmd). Block while any is still uploading; a
+  // files-only send (no text) is allowed.
+  const _cf = _cardFiles[name] || [];
+  if (_blockedByAttachment(_cf)) return;
+  const _files = _cf.filter(f => f.path);
+  if (!text && _files.length === 0) {
     // Empty send = extract + submit the suggested prompt from the session
     inp.value = '';
     _submitSuggestion(name, false);
     return;
   }
-  const routed = _atRoute(text);
+  // No newlines: tmux treats \n as Enter, which would split the message and
+  // submit the path as its own line.
+  const _refs = _files.map(f => '@' + f.path).join(' ');
+  const msg = text ? (_refs ? text + ' ' + _refs : text) : _refs;
+  const routed = _atRoute(msg);
   if (routed) {
     // @mention opens a persistent channel drawer instead of fire-and-forget routing.
     // The message is pre-filled so the user can review/edit before sending.
     inp.value = '';
     inp.style.height = 'auto';
+    _clearCardFiles(name);
     channelOpen(name, routed.target, routed.message);
     return;
   }
@@ -5516,25 +5669,28 @@ async function sendFromInput(name) {
   // a waiting session needs the keystroke to land now, not at a turn boundary.
   const _atSel = (sessions.find(s => s.name === name) || {}).status === 'waiting';
   if (_sendMode === 'queue' && !_atSel) {
-    cmdHistoryAdd(text, { type: 'steering' });
+    cmdHistoryAdd(text || msg, { type: 'steering' });
     inp.value = '';
     _draftClear(name);
     inp.style.height = 'auto';
+    const _nf = _files.length;
+    _clearCardFiles(name);
     const splitMain = inp.closest('.panel, .card')?.querySelector('.send-split-main');
     if (splitMain) { splitMain.dataset.prevText = splitMain.textContent; splitMain.textContent = 'Queuing…'; splitMain.disabled = true; splitMain.style.opacity = '0.6'; }
-    await steerSession(name, _expandAtMentions(text));
+    await steerSession(name, _expandAtMentions(msg));
     if (splitMain) { splitMain.textContent = splitMain.dataset.prevText || 'Queue'; splitMain.disabled = false; splitMain.style.opacity = ''; }
     inp.style.borderColor = '#a371f7';
     setTimeout(() => { inp.style.borderColor = ''; }, 600);
     const sess = sessions.find(s => s.name === name);
     const cnt = _steerHumanCount(sess);
-    if (typeof showToast === 'function') showToast('Queued for ' + name + (cnt > 1 ? ' (' + cnt + ' in queue)' : ''));
+    if (typeof showToast === 'function') showToast('Queued for ' + name + (cnt > 1 ? ' (' + cnt + ' in queue)' : '') + (_nf ? ' · ' + _nf + ' file' + (_nf === 1 ? '' : 's') : ''));
     return;
   }
-  cmdHistoryAdd(text);
+  cmdHistoryAdd(text || msg);
   inp.value = '';
   _draftClear(name);          // it left the composer — a restored copy would be a ghost
   inp.style.height = 'auto';
+  _clearCardFiles(name);
   // OUTCOME FROM doSend, NOT FROM A FLAG SAMPLED BEFORE THE ATTEMPT (amux-cloud,
   // reviewing this card). `online` and "what the send actually did" are two different
   // facts and they diverge in reachable ways: an online fetch that THROWS gets queued
@@ -5546,7 +5702,7 @@ async function sendFromInput(name) {
   // Same defect as AMUX-2363 six commits earlier, inverted onto the client: there the
   // endpoint reported that it was REACHED rather than what it DID. doSend knows the
   // outcome; it was throwing it away and the caller was guessing.
-  const _outcome = await doSend(name, _expandAtMentions(text));
+  const _outcome = await doSend(name, _expandAtMentions(msg));
   // Same queue/send semantics as the peek composer. doSend() has always queued
   // correctly when offline; the worker list just never SAID which happened — a
   // 400ms green border reads identically for "delivered" and "sitting in a local
@@ -6234,7 +6390,11 @@ function _simpleCfgRender() {
   const cfg = _simpleCfg(name);
   const scope = _simpleCfgScope();
   el.innerHTML =
-    '<div style="font-size:0.72rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">Simple view</div>'
+    '<div style="font-size:0.72rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">Translate</div>'
+    // The prompt leads (Ethan 2026-08-20: the tab IS the prompt — plain
+    // English is just the default translation).
+    + '<label style="display:block;font-size:0.78rem;margin-bottom:8px;">Translation prompt'
+    +   '<textarea rows="3" placeholder="Leave blank for the default plain-English prompt" onchange="_simpleCfgSet(\'prompt\',this.value)" style="width:100%;margin-top:3px;font-size:0.75rem;">' + esc(cfg.prompt || '') + '</textarea></label>'
     + '<label style="display:block;font-size:0.78rem;margin-bottom:8px;">Applies to'
     +   '<select onchange="localStorage.setItem(\'amux_simple_cfg_scope\',this.value);_simpleCfgRender();_simpleRender()" style="width:100%;margin-top:3px;">'
     +     '<option value="global"' + (scope === 'global' ? ' selected' : '') + '>All workers (default)</option>'
@@ -6242,15 +6402,13 @@ function _simpleCfgRender() {
     +   '</select></label>'
     + '<label style="display:block;font-size:0.78rem;margin-bottom:8px;">Font size: ' + esc(cfg.px) + 'px'
     +   '<input type="range" min="12" max="28" value="' + esc(cfg.px) + '" oninput="_simpleCfgSet(\'px\',this.value)" style="width:100%;"></label>'
-    + '<label style="display:block;font-size:0.78rem;margin-bottom:8px;">Font'
+    + '<label style="display:block;font-size:0.78rem;">Font'
     +   '<select onchange="_simpleCfgSet(\'font\',this.value)" style="width:100%;margin-top:3px;">'
     +     '<option value=""' + (!cfg.font ? ' selected' : '') + '>Default</option>'
     +     '<option value="system-ui"' + (cfg.font === 'system-ui' ? ' selected' : '') + '>System</option>'
     +     '<option value="Georgia,serif"' + (cfg.font === 'Georgia,serif' ? ' selected' : '') + '>Serif</option>'
     +     '<option value="ui-monospace,monospace"' + (cfg.font === 'ui-monospace,monospace' ? ' selected' : '') + '>Mono</option>'
-    +   '</select></label>'
-    + '<label style="display:block;font-size:0.78rem;">Standing prompt'
-    +   '<textarea rows="3" placeholder="Leave blank for the default plain-English prompt" onchange="_simpleCfgSet(\'prompt\',this.value)" style="width:100%;margin-top:3px;font-size:0.75rem;">' + esc(cfg.prompt || '') + '</textarea></label>';
+    +   '</select></label>';
 }
 function _simpleCfgToggle(e) {
   if (e) e.stopPropagation();
@@ -6324,10 +6482,14 @@ async function _simpleRender(gen) {
   // Spinner on an explicit generate or a first load for this worker; otherwise
   // keep the list on screen while refetching.
   if (gen === true || body.dataset.simpleFor !== name) {
+    // Name what is actually happening: a custom prompt may be translating to
+    // Spanish or executive-summary-ese, and "plain English" would be a lie
+    // about it. The default keeps its honest wording.
+    const busy = cfg.prompt
+      ? (gen === true ? 'Running your translation prompt…' : 'Translating…')
+      : (gen === true ? 'Writing a new plain-English summary…' : 'Putting it in plain English…');
     body.innerHTML = '<div style="color:var(--dim);display:flex;align-items:center;gap:8px;padding:8px 2px;">'
-      + '<span class="simple-spin"></span>'
-      + (gen === true ? 'Writing a new plain-English summary…' : 'Putting it in plain English…')
-      + '</div>';
+      + '<span class="simple-spin"></span>' + busy + '</div>';
   }
   try {
     const params = [];
@@ -6366,6 +6528,8 @@ async function _simpleRender(gen) {
 
 function setPeekTab(tab) {
   _peekTab = tab;
+  // Persist so an app-switch away and back lands on this tab, not the default.
+  try { _savePeekState(); } catch(e) {}
   // The notes tab is gone; this flushed its pending save and called
   // _peekNotesSave(), which went with it. The branch never fired only because
   // _peekNotesSaveTimer is now never assigned non-null — so a single line
@@ -7780,7 +7944,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.668';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.745';   // bump together with the sw.js CACHE version
 
 // ── No silent failures (Ethan, 2026-08-09: "make sure every action has some
 // kind of response in the ui — i just deleted a worker and nothing happened").
@@ -7966,8 +8130,8 @@ function _offlineCacheInfo() {
 function _paintCachedPeek(cached) {
   if (!cached || (!cached.output && !cached.history)) return false;
   _peekHistoryRaw = cached.history || '';
-  _peekHistoryHTML = cached.histHTML || (cached.history ? wrapBoxBlocks(_fitRules(highlightPrompts(ansiToHtml(cached.history)))) : '');
-  _lastLiveHTML = cached.liveHTML || (cached.output ? wrapBoxBlocks(_fitRules(highlightPrompts(ansiToHtml(cached.output)))) : '');
+  _peekHistoryHTML = cached.histHTML || (cached.history ? _peekHtml(cached.history) : '');
+  _lastLiveHTML = cached.liveHTML || (cached.output ? _peekHtml(cached.output) : '');
   lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
   applyPeekSearch();
   const ago = Math.floor((Date.now() - (cached.time || Date.now())) / 60000);
@@ -8261,6 +8425,10 @@ function closePeek() {
   _peekPollStop('close');   // open-view poller stops when the view closes (beaconed)
   if (_transcriptTimer) { clearInterval(_transcriptTimer); _transcriptTimer = null; }
   sessionStorage.removeItem('peekState');
+  // An explicitly-closed peek must not resurrect after an iOS eviction: the
+  // localStorage copy exists only for eviction restore, and leaving it here
+  // meant close -> background -> relaunch reopened what the user dismissed.
+  try { localStorage.removeItem('amux_peek_state'); } catch(e) {}
 }
 
 // ── Peek split pane (file browser) ──
@@ -8269,6 +8437,9 @@ let _peekSplitPath = null;
 function _savePeekState() {
   if (peekSession) {
     const state = { session: peekSession };
+    // "Back to that location" includes WHICH tab (Ethan 2026-08-20): a
+    // restore that lands on the default tab is the right worker, wrong place.
+    if (typeof _peekTab === 'string' && _peekTab) state.tab = _peekTab;
     const wrap = document.getElementById('peek-split-wrap');
     if (wrap && wrap.classList.contains('split-active')) {
       state.split = true;
@@ -8356,6 +8527,10 @@ async function _psfLoad(dirPath) {
 }
 
 async function _psfViewFile(filePath) {
+  // .mdai opens in the dedicated MDAI viewer (metadata + version scroll +
+  // runs the chain on open), same as the main file browser (AMUX-3317).
+  if (/\.mdai$/i.test(filePath || '')) { openMdaiNode(filePath); return; }
+  if (/\.(xlsx|xls|ods)$/i.test(filePath || '')) { _openXlsxPreview(filePath); return; }
   const body = document.getElementById('psf-body');
   const bc = document.getElementById('psf-breadcrumb');
   const dir = filePath.substring(0, filePath.lastIndexOf('/')) || '/';
@@ -8950,58 +9125,131 @@ function _osc8Resolve(html, urls) {
     .replace(/\uE000\d+\uE001|\uE002/g, '');
 }
 
-function linkifyOutput(text) {
-  // Split text into segments: URLs, file paths, and plain text
-  // URL regex: match http/https URLs
-  const urlRe = /https?:\/\/[^\s<>\]\)'"`,;]+/g;
-  // File path regex: absolute paths or relative paths with extensions
-  const fileRe = /(?:^|[\s(])((\/[\w./-]+(?:\.\w+)(?::[\d]+)?)|(\.\/[\w./-]+(?:\.\w+)(?::[\d]+)?))/gm;
+// Resolve a path as it appeared in a session's OUTPUT into something the file
+// APIs can use. Output is written from the worker's cwd, so `customers/rothco/
+// data/x.csv` is only meaningful relative to that session's dir — which is what
+// `peekSessionDir` holds. An absolute path is returned untouched.
+function _resolveOutputPath(p) {
+  const raw = String(p || '').replace(/:\d+$/, '');   // strip a trailing :linenum
+  if (raw.startsWith('/')) return raw;
+  const base = (typeof peekSessionDir === 'string' && peekSessionDir) ? peekSessionDir.replace(/\/+$/, '') : '';
+  const rel = raw.replace(/^\.\//, '');
+  return base ? base + '/' + rel : rel;
+}
 
-  const parts = [];
-  let last = 0;
-
-  // First pass: find all URLs
-  const matches = [];
-  let m;
-  while ((m = urlRe.exec(text)) !== null) {
-    // Strip trailing punctuation that's likely not part of URL
-    let url = m[0].replace(/[.,;:!?)]+$/, '');
-    matches.push({ start: m.index, end: m.index + url.length, type: 'url', value: url });
-  }
-
-  // Second pass: find file paths (skip if overlapping with URL)
-  while ((m = fileRe.exec(text)) !== null) {
-    const path = m[1];
-    const pathStart = m.index + m[0].indexOf(path);
-    const pathEnd = pathStart + path.length;
-    const overlaps = matches.some(x => pathStart < x.end && pathEnd > x.start);
-    if (!overlaps) {
-      matches.push({ start: pathStart, end: pathEnd, type: 'file', value: path });
+// Click target for a path in session output: a FILE opens the file, a DIRECTORY
+// opens the file browser.
+//
+// SCOPE, because this is narrower than it looks and I got it wrong first.
+// ABSOLUTE paths never reach here: `ansiToHtml`'s own `linkChunk` matches
+// `/abs/x.py` and `./rel/x.py` and wires them straight to `openFilePreview`, and
+// `_linkifyPaths` skips what is already inside a tag. So absolute paths have
+// always opened the file. This handler serves what that regex cannot see — the
+// bare `customers/rothco/data/x.csv` a worker writes inside its own cwd — and
+// THAT branch sent every click to the browser instead. Same blue span, two
+// behaviours, decided by whether the path happened to start with a slash.
+//
+// The old comment defended the browser as deliberate: "peek output is most often
+// naming a file so you can go LOOK at it and what is around it, and the browser
+// is reachable from a preview while the reverse costs a round trip."
+//
+// Ethan, 2026-08-24 (AMUX-3663, screenshot of these links): "make sure i can
+// click the links and they work / open the files."
+//
+// The half of that rationale worth keeping is "see what is around it", and the
+// comment was ALREADY claiming the way back existed. It did not: `#file-subpath`
+// was dim text with no handler (ethos rule 6 — a claim that justifies a design
+// and is not implemented). It is a real button now, so the round trip the
+// comment promised is one click and the folder is never more than that away.
+async function _openPathFromOutput(p) {
+  if (window.getSelection && String(window.getSelection()) !== '') return;  // a drag-select is not a click
+  let full = _resolveOutputPath(p);
+  // AMUX-3511 (Ethan's screenshots): workers print paths relative to the
+  // root THEY think in (vault root, repo root), not necessarily their cwd —
+  // the blind join turned NYC/Events/x.md from cwd .../Vault/NYC into
+  // .../NYC/NYC/Events and a dead "not a directory". The server can CHECK:
+  // /api/fs/resolve walks cwd then its ancestors and returns the first
+  // spelling that exists. The blind join stays as the offline fallback.
+  try {
+    const raw = String(p || '').replace(/:\d+$/, '');
+    const cwd = (typeof peekSessionDir === 'string' && peekSessionDir) || '';
+    if (!raw.startsWith('/') && cwd) {
+      const r = await fetch(API + '/api/fs/resolve?cwd=' + encodeURIComponent(cwd)
+        + '&rel=' + encodeURIComponent(raw), { headers: _authHeaders() });
+      if (r.ok) {
+        const d = await r.json();
+        if (d && d.resolved) full = d.resolved;
+      }
     }
+  } catch (e) {}
+  const lastSeg = full.slice(full.lastIndexOf('/') + 1);
+  const looksLikeFile = /\.[A-Za-z0-9]{1,8}$/.test(lastSeg);
+  if (looksLikeFile) {
+    // No `:linenum` strip needed here: `_resolveOutputPath` already did it
+    // (and `_linkifyPaths` captures the suffix as a separate group, so `p`
+    // never carried one either). Said out loud so it does not get "fixed" back
+    // in as defensive noise.
+    openFilePreview(full);
+    return;
   }
+  openExplore(full, (typeof peekSession !== 'undefined' && peekSession) ? peekSession : null);
+}
 
-  matches.sort((a, b) => a.start - b.start);
+// Turn file paths in ALREADY-ESCAPED peek HTML into links to the file browser.
+//
+// Replaces a `linkifyOutput` that had ZERO callers — it was written for this
+// surface (its `.file-link`/`.md-link` classes are styled under `.overlay-body`,
+// which is exactly `#peek-body`'s class) and was never wired into the pipeline,
+// so every path in every session's output has always rendered as dead text.
+// Capability that reaches nobody does not improve when anything else does.
+//
+// It also could not have matched the reported case. Its regex required a leading
+// `/` or `./`, and real output says `Contacts are in customers/rothco/data/
+// jewishlink-prospects.csv.` — a BARE relative path, which is how a worker
+// naturally writes a path inside its own cwd.
+//
+// Runs on escaped HTML so it composes AFTER the URL/OSC-8 linkification that
+// ansiToHtml already did, using the same `(?![^<]*>)` tail-guard as _linkifyUrls
+// to skip anything sitting inside a tag's attributes.
+function _linkifyPaths(safeHtml) {
+  try {
+    // Leading boundary is CAPTURED and re-emitted rather than matched by a
+    // lookbehind: iOS Safari is the primary client here and this keeps the
+    // pattern portable. The class deliberately excludes `/`, `:`, `.`, `@` and
+    // word characters, which is what stops a URL's own path (`https://h/a/b.js`)
+    // being re-linkified inside the anchor ansiToHtml just built for it.
+    // `(?:\.?\/)?` covers all three shapes seen in real output: `/abs/x.py`,
+    // `./rel/x.py` and the bare `customers/rothco/data/x.csv` that started this.
+    // The segment class excludes quotes on purpose — a path containing `'` would
+    // break out of the inline onclick below, so such a path is simply not linked
+    // rather than linked unsafely.
+    const RE = /(^|[\s(\[>"'`,;=])((?:\.?\/)?(?:[\w.@-]+\/)+[\w.@-]+\.[A-Za-z0-9]{1,8})(:\d+)?(?![^<]*>)/gm;
+    return String(safeHtml).replace(RE, (m, pre, path, line) => {
+      // Trailing sentence punctuation is prose, not filename: "…prospects.csv."
+      let p = path, tail = line || '';
+      const dot = p.match(/\.$/);
+      if (dot) { p = p.slice(0, -1); tail = '.' + tail; }
+      if (!/\.[A-Za-z0-9]{1,8}$/.test(p)) return m;
+      // A RELATIVE path is only meaningful against the session's cwd. With no
+      // cwd we cannot resolve it, and linking it anyway would render text that
+      // looks clickable and does nothing — the precise failure this file already
+      // records for the OSC-8 hyperlinks above. Leave it as plain text instead.
+      if (!p.startsWith('/') && !(typeof peekSessionDir === 'string' && peekSessionDir)) return m;
+      const cls = /\.md$/i.test(p) ? 'md-link' : 'file-link';
+      const shown = p + (line || '');
+      return pre + '<span class="' + cls + '" title="Open in the file browser: '
+        + esc(_resolveOutputPath(p)) + '" onclick="event.preventDefault();event.stopPropagation();'
+        + "_openPathFromOutput('" + escJs(p) + "')" + '">' + esc(shown) + '</span>'
+        + (dot ? '.' : '');
+    });
+  } catch (e) { return safeHtml; }
+}
 
-  // Build HTML
-  let html = '';
-  for (const match of matches) {
-    if (match.start > last) {
-      html += esc(text.slice(last, match.start));
-    }
-    if (match.type === 'url') {
-      html += `<a href="${esc(match.value)}" target="_blank" rel="noopener noreferrer">${esc(match.value)}</a>`;
-    } else if (match.type === 'file') {
-      const rawPath = match.value.replace(/:[\d]+$/, '');  // strip :linenum
-      const isMd = /\.md$/i.test(rawPath);
-      const cls = isMd ? 'md-link' : 'file-link';
-      html += `<span class="${cls}" onclick="if(window.getSelection().toString())return;event.preventDefault();event.stopPropagation();openFilePreview('${esc(rawPath)}')">${esc(match.value)}</span>`;
-    }
-    last = match.end;
-  }
-  if (last < text.length) {
-    html += esc(text.slice(last));
-  }
-  return rewriteLocalhostUrls(html);
+// ONE peek render pipeline. The four call sites each spelled the chain out, so
+// adding a stage meant finding all of them — which is how the path linkifier
+// would have been half-wired.
+function _peekHtml(raw) {
+  return wrapBoxBlocks(_fitRules(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))));
 }
 
 // The MARKERS amux stamps on everything it injects into a pane. Structural, not
@@ -9380,12 +9628,12 @@ async function refreshPeek(liveOnly, bypassTrim) {
     let histChanged = false;
     if (histRaw !== null && histRaw !== _peekHistoryRaw) {   // full fetch → (re)render history once
       _peekHistoryRaw = histRaw;
-      _peekHistoryHTML = histRaw ? wrapBoxBlocks(_fitRules(highlightPrompts(ansiToHtml(histRaw)))) : '';
+      _peekHistoryHTML = histRaw ? _peekHtml(histRaw) : '';
       histChanged = true;
     }
     const atBottom = _isScrolledToBottom(body);
     if (atBottom) _peekScrollLocked = false;
-    const newHTML = wrapBoxBlocks(_fitRules(highlightPrompts(ansiToHtml(output))));
+    const newHTML = _peekHtml(output);
     if (peekSelecting || (window.getSelection()?.toString().length > 0)) return;
     if (_sendingSnapshot && newHTML !== _sendingSnapshot) clearSendingIndicator();
     // Claude runs on the terminal's ALT SCREEN: tmux holds only the viewport,
@@ -9783,14 +10031,21 @@ function renderPeekFiles() {
   if (!bar) return;
   bar.classList.toggle('has-files', peekFiles.length > 0);
   if (peekFiles.length > 12) {
-    const uploading = peekFiles.filter(f => !f.path).length;
-    const done = peekFiles.length - uploading;
+    // A blocker must not hide behind a collapsed summary. Past 12 files the
+    // chips are folded away, so a row reporting only progress would show a
+    // cheerful percentage while one failed chip held the send guard shut.
+    const failed = peekFiles.filter(f => !f.path && f.error).length;
+    const uploading = peekFiles.filter(f => !f.path && !f.error).length;
+    const done = peekFiles.length - uploading - failed;
     const totalMB = peekFiles.reduce((a, f) => a + (parseFloat(f.sizeMB) || 0), 0);
     const queued = _uploadQueue.length;
     let status = '';
+    const failHtml = failed ? `<span style="color:var(--red)">${failed} failed</span>` : '';
     if (uploading > 0) {
-      const avgPct = peekFiles.filter(f => !f.path).reduce((a, f) => a + (f.totalChunks ? f.chunk / f.totalChunks : 0), 0) / (uploading || 1);
-      status = `<span style="color:var(--dim)">${done}/${peekFiles.length} done (${Math.round(avgPct * 100)}%)${queued ? ', ' + queued + ' queued' : ''}</span>`;
+      const avgPct = peekFiles.filter(f => !f.path && !f.error).reduce((a, f) => a + (f.totalChunks ? f.chunk / f.totalChunks : 0), 0) / (uploading || 1);
+      status = `<span style="color:var(--dim)">${done}/${peekFiles.length} done (${Math.round(avgPct * 100)}%)${queued ? ', ' + queued + ' queued' : ''}</span>` + failHtml;
+    } else if (failed > 0) {
+      status = failHtml;
     } else {
       status = `<span style="color:var(--green)">all uploaded</span>`;
     }
@@ -9813,30 +10068,68 @@ function _renderPeekFileChips() {
     } else {
       thumb = `<span class="chip-icon">${_fileIcon(f.name)}</span>`;
     }
+    // THE × IS ON EVERY CHIP IN EVERY STATE. It used to render only in the
+    // `done` branch, so the one state where you need it most — an upload that
+    // will never finish — had no remove control at all, and `sendPeekCmd`
+    // refuses while any chip lacks a `.path`. One stranded chip therefore made
+    // the composer permanently unsendable with no way out (AF-235). The card
+    // composer got this right at AMUX-3372, citing "the peek's own AMUX-85
+    // lesson" — the lesson reached the new surface and never came back to fix
+    // the one that taught it.
     let statusHtml = '';
-    if (isUploading) {
+    if (f.error) {
+      statusHtml = `<span class="chip-err" title="${esc(f.error)}">!</span>` +
+        `<span class="chip-retry" onclick="event.stopPropagation();retryPeekFile(${i})" title="Retry upload">↻</span>`;
+    } else if (isUploading) {
       const pct = f.totalChunks ? Math.round(f.chunk / f.totalChunks * 100) : 0;
       statusHtml = `<span style="color:var(--dim);font-size:0.6rem;">${pct}%</span>`;
     } else {
-      statusHtml = `<span style="color:var(--green);font-size:0.75rem;margin-right:2px;">✓</span><span class="chip-remove" onclick="removePeekFile(${i})">×</span>`;
+      statusHtml = `<span style="color:var(--green);font-size:0.75rem;margin-right:2px;">✓</span>`;
     }
-    return `<div class="peek-attach-chip${isUploading ? ' uploading' : ''}">
+    const cls = f.path ? '' : (f.error ? ' failed' : ' uploading');
+    return `<div class="peek-attach-chip${cls}">
       ${thumb}
       <span class="chip-name">${esc(f.name)}</span>
       ${statusHtml}
+      <span class="chip-remove" onclick="event.stopPropagation();removePeekFile(${i})" title="Remove">×</span>
     </div>`;
   }).join('');
 }
 
 function removePeekFile(idx) {
   const f = peekFiles[idx];
+  // Cancel BEFORE splicing. Removing the chip no longer stops the transfer by
+  // itself — that was the membership inference this fix removed — so the intent
+  // has to be stated (AF-235).
+  _cancelUpload(f);
   if (f && f.previewUrl) URL.revokeObjectURL(f.previewUrl);
   peekFiles.splice(idx, 1);
   renderPeekFiles();
 }
 
+// Say "stop" explicitly, and abort the in-flight request so a large chunk is not
+// still on the wire after the chip is gone.
+function _cancelUpload(f) {
+  if (!f) return;
+  f.cancelled = true;
+  try { if (f.aborter) f.aborter.abort(); } catch (e) {}
+  f.inflight = false;
+}
+
+function retryPeekFile(idx) {
+  const f = peekFiles[idx];
+  if (!f || f.inflight || f.path) return;
+  _runUpload(f, _peekSink());
+}
+
+function retryCardFile(name, idx) {
+  const f = (_cardFiles[name] || [])[idx];
+  if (!f || f.inflight || f.path) return;
+  _runUpload(f, _cardSink(name));
+}
+
 function clearPeekFiles() {
-  peekFiles.forEach(f => { if (f && f.previewUrl) URL.revokeObjectURL(f.previewUrl); });
+  peekFiles.forEach(f => { _cancelUpload(f); if (f && f.previewUrl) URL.revokeObjectURL(f.previewUrl); });
   peekFiles = [];
   // Drop the stash too, or a send would clear the bar and the next open would
   // resurrect the files that were just sent.
@@ -9862,7 +10155,88 @@ function _peekFilesStash(session) {
 
 function _peekFilesRestore(session) {
   peekFiles = (session && _peekFilesBySession[session]) || [];
+  // AN ORPHAN PRESENTS AS SOMETHING TO ACT ON, NOT AS FROZEN PROGRESS (AF-235).
+  // A chip with no path that nothing is driving any more is the exact artifact
+  // the reporting user was staring at — it rendered "0%" forever, which reads
+  // as "still working" and is why they waited instead of removing it.
+  peekFiles.forEach(f => {
+    if (!f.path && !f.inflight && !f.error) f.error = 'upload did not finish — retry or remove';
+  });
   renderPeekFiles();
+}
+
+// ── Card-composer attachments (Ethan 2026-08-19: "upload files in card list view
+// just like the worker-details page"). The home list shows many worker cards at
+// once, each with its own composer, so attachments are keyed BY WORKER —
+// `_cardFiles[name]` — not a single global like the peek's `peekFiles`. Same
+// placeholder shape ({name, path, previewUrl, chunk, totalChunks, error}) and the
+// SAME chunked-upload core (via the upload sink), so a file attaches the same way
+// on both surfaces and rides the message as `@path` on send.
+let _cardFiles = {};   // worker name -> [{name, path, previewUrl, chunk, totalChunks, error}]
+
+// Repaint one card's attachment strip, throttled to a frame — a bulk drop calls
+// this after every chunk. Keyed by name so two cards uploading at once do not
+// stomp each other's rAF.
+let _cardFilesRAF = {};
+function _scheduleRenderCardFiles(name) {
+  if (_cardFilesRAF[name]) return;
+  _cardFilesRAF[name] = requestAnimationFrame(() => {
+    delete _cardFilesRAF[name];
+    renderCardFiles(name);
+  });
+}
+function renderCardFiles(name) {
+  const bar = document.getElementById('card-attach-' + name);
+  if (!bar) return;   // card not expanded / not running — state persists in _cardFiles
+  bar.innerHTML = _renderCardFileChips(name);
+  bar.classList.toggle('has-files', (_cardFiles[name] || []).length > 0);
+}
+function _renderCardFileChips(name) {
+  const files = _cardFiles[name] || [];
+  return files.map((f, i) => {
+    let thumb;
+    if (f.isImage && f.previewUrl) thumb = `<img src="${f.previewUrl}" alt="">`;
+    else thumb = `<span class="chip-icon">${_fileIcon(f.name)}</span>`;
+    let status;
+    if (f.path) status = `<span style="color:var(--green);font-size:0.75rem;">✓</span>`;
+    else if (f.error) status = `<span class="chip-err" title="${esc(f.error)}">!</span>` +
+      `<span class="chip-retry" onclick="event.stopPropagation();retryCardFile('${name}',${i})" title="Retry upload">↻</span>`;
+    else { const pct = f.totalChunks ? Math.round(f.chunk / f.totalChunks * 100) : 0;
+           status = `<span style="color:var(--dim);font-size:0.6rem;">${pct}%</span>`; }
+    // The × is on EVERY chip in EVERY state — an escape hatch that only exists
+    // once an upload finishes is not one (the peek's own AMUX-85 lesson).
+    const rm = `<span class="chip-remove" onclick="event.stopPropagation();removeCardFile('${name}',${i})" title="Remove">×</span>`;
+    return `<div class="peek-attach-chip${f.path ? '' : (f.error ? ' failed' : ' uploading')}">${thumb}<span class="chip-name">${esc(f.name)}</span>${status}${rm}</div>`;
+  }).join('');
+}
+function removeCardFile(name, idx) {
+  const a = _cardFiles[name] || [];
+  const f = a[idx];
+  if (!f) return;
+  _cancelUpload(f);
+  if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+  a.splice(idx, 1);
+  renderCardFiles(name);
+}
+function _clearCardFiles(name) {
+  (_cardFiles[name] || []).forEach(f => { _cancelUpload(f); if (f.previewUrl) URL.revokeObjectURL(f.previewUrl); });
+  delete _cardFiles[name];
+  renderCardFiles(name);
+}
+// Drop files onto a card's composer. Scoped to the send-row, not the whole card,
+// so it never fights the card's drag-to-reorder. Files only — a text/URL drag
+// falls through untouched.
+function cardDragOver(e) {
+  if (![...(e.dataTransfer && e.dataTransfer.types || [])].includes('Files')) return;
+  e.preventDefault(); e.stopPropagation();
+  e.currentTarget.classList.add('card-drop-over');
+}
+function cardDragLeave(e) { e.currentTarget.classList.remove('card-drop-over'); }
+function cardDrop(name, e) {
+  if (![...(e.dataTransfer && e.dataTransfer.types || [])].includes('Files')) return;
+  e.preventDefault(); e.stopPropagation();
+  e.currentTarget.classList.remove('card-drop-over');
+  for (const f of (e.dataTransfer.files || [])) _enqueueUpload(f, _cardSink(name));
 }
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB per chunk
@@ -9872,15 +10246,68 @@ const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB per chunk
 const _UPLOAD_CONCURRENCY = 4;
 let _uploadQueue = [];
 let _uploadActive = 0;
-function _enqueueUpload(file) {
-  _uploadQueue.push(file);
+// An upload SINK: where a placeholder lives while it uploads and how to repaint
+// it. The peek composer and each home card are separate sinks, so a file lands in
+// the surface it was dropped/pasted/picked on. This is the one seam that lets the
+// card list reuse the chunked-upload core instead of copying it.
+// THE SEND GUARD NAMES THE FILE AND SAYS WHAT TO DO (AF-235).
+//
+// Both composers used to refuse with a flat "Wait for upload to finish" on
+// `f.path == null`. That predicate cannot tell a transfer in progress from one
+// that died, and the message is a LIE in the second case — nothing is
+// transferring and waiting will never help. It is what kept the reporting user
+// waiting on an upload that was never going to complete, and since AMUX-3372
+// copied the guard to the card composer it was being told from two code paths.
+//
+// Returns true if the send must be blocked, having already explained why.
+function _blockedByAttachment(files) {
+  const arr = files || [];
+  const pending = arr.filter(f => !f.path);
+  if (!pending.length) return false;
+  const inflight = pending.filter(f => f.inflight);
+  const stuck = pending.filter(f => !f.inflight);
+  const say = (typeof showToast === 'function') ? showToast : function () {};
+  if (stuck.length) {
+    // Name the FIRST stuck file — a count alone does not tell you which chip to
+    // press, and past 12 files the chips are collapsed behind a summary row.
+    const n = stuck[0].name;
+    say(stuck.length === 1
+      ? `"${n}" did not upload — Retry (↻) or remove (×) it to send`
+      : `${stuck.length} attachments did not upload, starting with "${n}" — Retry (↻) or remove (×) them to send`);
+    return true;
+  }
+  const n = inflight[0].name;
+  say(inflight.length === 1
+    ? `Still uploading "${n}" — or remove (×) it to send now`
+    : `Still uploading ${inflight.length} attachments, starting with "${n}"`);
+  return true;
+}
+
+function _peekSink() {
+  return {
+    push: (p) => peekFiles.push(p),
+    has: (p) => peekFiles.indexOf(p) >= 0,
+    drop: (p) => { const i = peekFiles.indexOf(p); if (i >= 0) peekFiles.splice(i, 1); },
+    render: _scheduleRenderPeekFiles,
+  };
+}
+function _cardSink(name) {
+  return {
+    push: (p) => (_cardFiles[name] = _cardFiles[name] || []).push(p),
+    has: (p) => (_cardFiles[name] || []).indexOf(p) >= 0,
+    drop: (p) => { const a = _cardFiles[name] || []; const i = a.indexOf(p); if (i >= 0) a.splice(i, 1); },
+    render: () => _scheduleRenderCardFiles(name),
+  };
+}
+function _enqueueUpload(file, sink) {
+  _uploadQueue.push({ file, sink: sink || _peekSink() });
   _drainUploadQueue();
 }
 function _drainUploadQueue() {
   while (_uploadQueue.length && _uploadActive < _UPLOAD_CONCURRENCY) {
     _uploadActive++;
-    const f = _uploadQueue.shift();
-    uploadAndAttach(f).finally(() => { _uploadActive--; _drainUploadQueue(); });
+    const { file, sink } = _uploadQueue.shift();
+    uploadAndAttach(file, sink).finally(() => { _uploadActive--; _drainUploadQueue(); });
   }
 }
 
@@ -9896,7 +10323,8 @@ function _scheduleRenderPeekFiles() {
   }
 }
 
-async function uploadAndAttach(file) {
+async function uploadAndAttach(file, sink) {
+  sink = sink || _peekSink();
   const isImage = file.type.startsWith('image/');
   let previewUrl = null;
   if (isImage && file.size < 10 * 1024 * 1024) previewUrl = URL.createObjectURL(file);
@@ -9908,52 +10336,100 @@ async function uploadAndAttach(file) {
   // another chip, a second attach, a failed-chunk retry that splices — so a
   // numeric index goes stale and the finished file writes to the wrong slot or a
   // placeholder never gets its .path (send then stalls on "wait for upload").
-  const placeholder = { name: file.name, path: null, url: null, isImage, previewUrl, sizeMB, chunk: 0, totalChunks };
-  peekFiles.push(placeholder);
-  _scheduleRenderPeekFiles();
-  const _present = () => peekFiles.indexOf(placeholder) >= 0;
+  // `file` is RETAINED so a failed upload can be retried from the chip itself,
+  // and `cancelled`/`inflight` are EXPLICIT rather than inferred (AF-235).
+  const placeholder = { name: file.name, path: null, url: null, isImage, previewUrl, sizeMB,
+                        chunk: 0, totalChunks, file, error: null, inflight: false,
+                        cancelled: false, aborter: null };
+  sink.push(placeholder);
+  sink.render();
+  await _runUpload(placeholder, sink);
+}
+
+// Drive one attachment to completion. Safe to call again on a failed chip.
+//
+// CANCELLATION IS AN EXPLICIT FLAG, NOT ARRAY MEMBERSHIP (AF-235, diagnosed by
+// @Dygreens on #124 from a user report: "no delete button. No remove button no
+// way for me to send this prompt"). This loop used to ask `sink.has(placeholder)`
+// — i.e. "is this still in peekFiles?" — to decide whether the user had removed
+// the chip. But `_peekFilesStash` HANDS THE WHOLE ARRAY OFF (`peekFiles = []`)
+// when the peek closes or switches worker, so merely closing the peek read as a
+// removal: the transfer returned at i = 0 and the placeholder was left sitting
+// in the stashed array at 0% with nothing left to drive it. The artifact matched
+// exactly — four EMPTY `.chunked-*` dirs under ~/.amux/uploads, meaning
+// /api/upload/start had succeeded and chunk 0 never wrote.
+//
+// Progress is written by MUTATING `f` IN PLACE, so the transfer does not care
+// which array `f` currently lives in: close the peek, switch worker, reopen, and
+// the chip still lands on its path. That was already the right shape against one
+// array; since AMUX-3372 added card composers there are now several sinks, and it
+// is the only shape that works.
+async function _runUpload(f, sink) {
+  const file = f.file;
+  if (!file) { f.error = 'file no longer held — re-attach it'; f.inflight = false; sink.render(); return; }
+  f.error = null; f.cancelled = false; f.inflight = true; f.chunk = 0;
+  f.aborter = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  const _sig = f.aborter ? f.aborter.signal : undefined;
+  const totalChunks = f.totalChunks;
+  sink.render();
 
   try {
     const startR = await fetch(API + '/api/upload/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: file.name, size: file.size, chunks: totalChunks })
+      body: JSON.stringify({ name: file.name, size: file.size, chunks: totalChunks }),
+      signal: _sig
     });
     const startD = await startR.json();
     if (!startR.ok || startD.error) throw new Error(startD.error || 'start failed');
     const uploadId = startD.id;
 
     for (let i = 0; i < totalChunks; i++) {
-      if (!_present()) return;
+      if (f.cancelled) return;
       const start = i * CHUNK_SIZE;
       const end = Math.min(start + CHUNK_SIZE, file.size);
       const blob = file.slice(start, end);
       const r = await fetch(API + '/api/upload/' + uploadId + '/chunk/' + i, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/octet-stream' },
-        body: blob
+        body: blob,
+        signal: _sig
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
         throw new Error(d.error || 'chunk ' + i + ' failed');
       }
-      placeholder.chunk = i + 1;
-      _scheduleRenderPeekFiles();
+      f.chunk = i + 1;
+      sink.render();
     }
 
-    const finR = await fetch(API + '/api/upload/' + uploadId + '/finish', { method: 'POST' });
+    const finR = await fetch(API + '/api/upload/' + uploadId + '/finish', { method: 'POST', signal: _sig });
     const finD = await finR.json();
     if (!finR.ok || finD.error) throw new Error(finD.error || 'finalize failed');
-    if (!_present()) return;
-    placeholder.path = finD.path;
-    placeholder.url = finD.url;
+    if (f.cancelled) return;
+    f.path = finD.path;
+    f.url = finD.url;
+    f.error = null;
   } catch(e) {
+    // A DELIBERATE CANCEL IS NOT A FAILURE — it has already removed the chip.
+    if (f.cancelled || (e && e.name === 'AbortError')) return;
     console.error('Upload error:', e);
-    showToast('Upload failed: ' + e.message);
-    const i = peekFiles.indexOf(placeholder);
-    if (i >= 0) peekFiles.splice(i, 1);
+    // KEEP THE CHIP. This used to `sink.drop(placeholder)` behind a single
+    // toast, which silently lost the file: the only record that you had
+    // attached anything was a message that disappears. The chip now presents
+    // as something to act on, and `file` above is what makes Retry real.
+    //
+    // Note the card composer has rendered an `f.error` state since AMUX-3372
+    // and NOTHING HAS EVER SET IT — the sole failure path dropped the chip, so
+    // that branch and its `.failed` style were unreachable. This is the write
+    // that makes them live.
+    f.error = (e && e.message) ? e.message : 'upload failed';
+    showToast('Upload failed: ' + f.error + ' — use Retry on the chip');
+  } finally {
+    f.inflight = false;
+    f.aborter = null;
+    sink.render();
   }
-  _scheduleRenderPeekFiles();
 }
 
 function handlePeekFileInput(e) {
@@ -9971,6 +10447,21 @@ function handlePeekPaste(e) {
     if (item.kind === 'file') {
       e.preventDefault();
       _enqueueUpload(item.getAsFile());
+      return;
+    }
+  }
+}
+
+// Paste a file into a card's composer — the card analog of handlePeekPaste. The
+// document-level paste handler bails when a textarea is focused, so a pasted
+// screenshot needs this per-card hook to reach the upload sink.
+function handleCardPaste(name, e) {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.kind === 'file') {
+      e.preventDefault();
+      _enqueueUpload(item.getAsFile(), _cardSink(name));
       return;
     }
   }
@@ -10037,7 +10528,7 @@ setTimeout(_updateSendSplit, 0);
 
 async function sendPeekCmd() {
   if (!peekSession) return;
-  if (peekFiles.some(f => !f.path)) { showToast('Wait for upload to finish'); return; }
+  if (_blockedByAttachment(peekFiles)) return;
   const inp = document.getElementById('peek-cmd-input');
   const text = inp.value.trim();
   const files = peekFiles.filter(f => f.path);
@@ -10510,6 +11001,54 @@ function _fuzzyScore(q, name) {
   return { score, hits: new Set(hits) };
 }
 
+// ── generic @-mention attach (AMUX-3509, Ethan: "the same worker dropdown
+// in EVERY input, including the scheduler command editor") ──
+// Wires the existing _atQuery/_atRender machinery onto ANY input/textarea:
+// a dropdown appears under the field while the cursor sits in an @word,
+// arrows navigate, Enter/Tab picks, Escape closes, tap picks on mobile.
+// One dropdown is open at a time, so a single module-level current pair is
+// enough for the pick callback the rendered rows call by name.
+let _atGenCur = null;
+function _atGenPick(i) {
+  const cur = _atGenCur;
+  if (!cur || !cur.dd._atItems || !cur.dd._atItems[i]) return;
+  const inp = cur.inp;
+  const at = _atQuery(inp);
+  if (!at) return;
+  const name = cur.dd._atItems[i].name;
+  const after = inp.value.slice(inp.selectionStart);
+  inp.value = inp.value.slice(0, at.idx) + '@' + name + ' ' + after;
+  const pos = at.idx + name.length + 2;
+  inp.setSelectionRange(pos, pos);
+  cur.dd.classList.remove('open');
+  inp.focus();
+}
+function _atAttach(inp) {
+  if (!inp || inp._atWired) return;
+  inp._atWired = true;
+  const wrap = inp.parentElement;
+  if (getComputedStyle(wrap).position === 'static') wrap.style.position = 'relative';
+  const dd = document.createElement('div');
+  dd.className = 'ac-list';  // the styled dropdown container the composer uses
+  wrap.appendChild(dd);
+  let sel = -1;
+  const rows = () => dd.querySelectorAll('.at-item');
+  const highlight = () => rows().forEach((r, i) => r.classList.toggle('selected', i === sel));
+  inp.addEventListener('input', () => {
+    _atGenCur = { inp, dd };
+    sel = -1;
+    if (!_atRender(inp, dd, '_atGenPick')) dd.classList.remove('open');
+  });
+  inp.addEventListener('keydown', (e) => {
+    if (!dd.classList.contains('open')) return;
+    if (e.key === 'ArrowDown') { sel = Math.min(sel + 1, rows().length - 1); highlight(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { sel = Math.max(sel - 1, 0); highlight(); e.preventDefault(); }
+    else if (e.key === 'Enter' || e.key === 'Tab') { _atGenCur = { inp, dd }; _atGenPick(Math.max(sel, 0)); e.preventDefault(); e.stopPropagation(); }
+    else if (e.key === 'Escape') { dd.classList.remove('open'); e.stopPropagation(); }
+  });
+  inp.addEventListener('blur', () => setTimeout(() => dd.classList.remove('open'), 200));
+}
+
 // Populate dropdown with @session matches; returns true if @ mode active.
 // Empty @ lists ALL sessions (running first); a query fuzzy-matches + ranks.
 function _atRender(inp, el, pickCall) {
@@ -10634,8 +11173,176 @@ function _loadChips() {
   } catch(e) {}
   return null;
 }
+// AMUX-3499 (Ethan, 2026-08-22): the chip set — which buttons, custom ones,
+// and their ORDER — persists on the SERVER (prefs key ui_chips), so the
+// phone PWA and desktop stop diverging. localStorage stays the runtime read
+// path and the offline cache; the server is the sync backbone. Server wins
+// at boot; saves push up debounced (a drag-reorder is one POST, not ten);
+// an empty server pref is seeded from the first device that has local
+// customizations, so nobody's existing layout is lost by the migration.
+let _chipsPushTimer = null;
+function _pushChipsToServer(chips) {
+  clearTimeout(_chipsPushTimer);
+  _chipsPushTimer = setTimeout(() => {
+    fetch(API + '/api/prefs', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
+      body: JSON.stringify({ key: 'ui_chips', value: JSON.stringify(chips) }),
+    }).catch(() => {});  // offline: localStorage still holds it; the next save retries
+  }, 800);
+}
+async function _syncChipsFromServer() {
+  try {
+    const r = await fetch(API + '/api/prefs?key=ui_chips', { headers: _authHeaders() });
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d && typeof d.value === 'string' && d.value) {
+      const chips = JSON.parse(d.value);
+      if (Array.isArray(chips) && chips.length) {
+        localStorage.setItem('amux_chips', JSON.stringify(chips));
+        refreshAllChipBars();
+        return;
+      }
+    }
+    // Server has no chip pref yet: seed it from this device's customizations
+    // (null when the user never customized — nothing to seed, defaults rule).
+    const local = _loadChips();
+    if (local) _pushChipsToServer(local);
+  } catch (e) {}
+}
+if (document.body) _syncChipsFromServer();
+else document.addEventListener('DOMContentLoaded', _syncChipsFromServer);
+// AMUX-3514: external emails a worker tried to send sit HELD until a human
+// releases them (AMUX-3510). This strip is that human path: visible on every
+// tab, previews the frozen draft, and the Approve POST goes out from this
+// browser with no worker origin — which is exactly the gate's definition of
+// a human context. Polled at 60s (a pending approval expires in 1h, so a
+// minute of latency costs nothing; the endpoint is ~200 bytes).
+async function _approvalsRefresh() {
+  const el = document.getElementById('email-approvals-banner');
+  if (!el) return;
+  try {
+    const r = await fetch(API + '/api/email/approvals', { headers: _authHeaders() });
+    if (!r.ok) return;
+    const d = await r.json();
+    const pending = Array.isArray(d.pending) ? d.pending : [];
+    if (!pending.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+    // COLLAPSIBLE (Ethan, 2026-08-25: "i should be able to collapse this").
+    //
+    // This is a full-width block at the top of a mobile-first dashboard, and it
+    // stays as long as anything is held — which, with a lane probing the gate,
+    // was two rows plus a footer for an hour. There was no way to fold it.
+    //
+    // COLLAPSED STILL SHOWS THE COUNT, deliberately. A queue of pending external
+    // sends that can be hidden completely is worse than one that takes space:
+    // the whole point of the banner is that a human sees there is something
+    // waiting. Folding trades the previews for one line, never the fact.
+    //
+    // The preference is per-device (localStorage), because "I have seen these"
+    // is a property of the person looking, not of the server's queue.
+    const collapsed = localStorage.getItem('amuxApprCollapsed') === '1';
+    // COLLAPSING THE ROWS IS NOT COLLAPSING THE BANNER (Ethan: "its still taking
+    // up space"). The first version folded the CONTENT and left the container's
+    // padding and the header's 6px margin, so one line of text still sat in a
+    // ~90px red block. The container has to shrink too.
+    //
+    // 44px stays the floor on the clickable row: css-mobile.md requires it and
+    // this is the only control in the strip. So the padding moves onto the row
+    // instead of the wrapper: 8 (pad) + 44 (row) + 6 (margin) + 8 (pad) = 66px
+    // becomes 44. Derived from these declarations rather than measured off the
+    // screenshot — I first wrote "~90px" from eyeballing the image, which is a
+    // number I could not have justified.
+    el.style.padding = collapsed ? '0 16px' : '8px 16px';
+    let html = '<div style="max-width:860px;margin:0 auto;">'
+      + '<div onclick="_apprToggle()" role="button" tabindex="0" '
+      + 'style="font-weight:600;cursor:pointer;display:flex;'
+      + 'align-items:center;gap:8px;min-height:44px;'
+      + (collapsed ? '' : 'margin-bottom:6px;') + '" '
+      + 'title="' + (collapsed ? 'Show the drafts' : 'Collapse') + '">'
+      + '<span style="display:inline-block;width:1em;transition:transform .12s;'
+      + 'transform:rotate(' + (collapsed ? '-90' : '0') + 'deg);">&#x25BE;</span>'
+      + '<span>&#x2709;&#xFE0F; ' + pending.length + ' external email'
+      + (pending.length === 1 ? '' : 's') + ' held for your approval</span></div>';
+    if (collapsed) {
+      el.innerHTML = html + '</div>';
+      el.style.display = 'block';
+      return;
+    }
+    for (const p of pending) {
+      const pv = p.preview || {};
+      const mins = Math.max(1, Math.round((p.expires_in_s || 0) / 60));
+      // OPEN BY DEFAULT (Ethan: "i should be able to see the draft email").
+      // The body was behind a second click, so the banner told you a draft
+      // existed and made you hunt for what it said — on the one surface whose
+      // entire job is letting a human judge the content before it sends.
+      html += '<details open style="margin:4px 0;text-align:left;">'
+        + '<summary style="cursor:pointer;display:flex;align-items:center;gap:10px;min-height:34px;">'
+        + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+        + '<b>' + esc(p.session || '?') + '</b> &rarr; ' + esc(pv.to || '?')
+        + ' &middot; ' + esc(pv.subject || '(reply)') + '</span>'
+        + '<span style="opacity:0.7;font-size:0.76rem;">expires in ' + mins + 'm</span>'
+        + '<button onclick="event.preventDefault();_apprApprove(\'' + esc(p.id) + '\',this)" '
+        + 'style="background:#16a34a;color:#fff;border:none;border-radius:6px;'
+        + 'padding:8px 14px;font-size:0.8rem;cursor:pointer;min-height:34px;">Approve &amp; send</button>'
+        // DISCARD (AMUX-3698). Until this existed the only button here was
+        // "Approve & send", so a human looking at a draft they did not want had
+        // one move: wait an hour. Ethan hit it directly — two of autodesk's
+        // example.invalid gate probes sitting in his banner, approve-or-wait.
+        // 44x34 keeps it over the mobile touch floor (css-mobile.md).
+        + '<button onclick="event.preventDefault();_apprReject(\'' + esc(p.id) + '\',this)" '
+        + 'style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.45);'
+        + 'border-radius:6px;padding:8px 14px;font-size:0.8rem;cursor:pointer;'
+        + 'min-height:34px;min-width:44px;">Discard</button>'
+        + '</summary>'
+        + '<div style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.25);'
+        + 'border-radius:6px;padding:8px 10px;margin:6px 0;font-size:0.8rem;max-height:320px;overflow:auto;">'
+        + (pv.cc ? 'cc: ' + esc(pv.cc) + '\n' : '')
+        + esc(pv.body || '') + '</div></details>';
+    }
+    html += '<div style="opacity:0.65;font-size:0.74rem;margin-top:4px;">Nothing sends without Approve. Discard drops a draft now and records who dropped it; unapproved drafts also expire on their own.</div></div>';
+    el.innerHTML = html;
+    el.style.display = 'block';
+  } catch (e) {}
+}
+function _apprToggle() {
+  const now = localStorage.getItem('amuxApprCollapsed') === '1' ? '0' : '1';
+  localStorage.setItem('amuxApprCollapsed', now);
+  _approvalsRefresh();
+}
+async function _apprReject(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Discarding…'; }
+  try {
+    const r = await fetch(API + '/api/email/reject/' + encodeURIComponent(id), {
+      method: 'POST', headers: { ..._authHeaders(), 'X-Amux-Approver': 'dashboard' },
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) showToast('Discarded — nothing was sent' + (d.was_for_session ? ' (' + d.was_for_session + ')' : ''));
+    else showToast('Discard failed: ' + (d.error || r.status));
+  } catch (e) { showToast('Discard failed: ' + e); }
+  _approvalsRefresh();
+}
+async function _apprApprove(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  try {
+    // AUTOD-48: approve now authorizes on a POSITIVE marker. Absence used to
+    // mean "a human at the dashboard", which a worker produces by sending no
+    // headers at all — and the ledger then recorded that inference as fact.
+    // This names the approver in the send-audit ledger; it is not a password.
+    const r = await fetch(API + '/api/email/approve/' + encodeURIComponent(id), {
+      method: 'POST', headers: { ..._authHeaders(), 'X-Amux-Approver': 'dashboard' },
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) showToast('Approved — sent for ' + (d.sent_for_session || 'worker'));
+    else showToast('Approve failed: ' + (d.error || r.status));
+  } catch (e) { showToast('Approve failed: ' + e); }
+  _approvalsRefresh();
+}
+function _approvalsBoot() { _approvalsRefresh(); setInterval(_approvalsRefresh, 60_000); }
+if (document.body) _approvalsBoot();
+else document.addEventListener('DOMContentLoaded', _approvalsBoot);
 function _saveChips(chips) {
   localStorage.setItem('amux_chips', JSON.stringify(chips));
+  _pushChipsToServer(chips);
 }
 function _getChips() {
   const saved = _loadChips();
@@ -11032,6 +11739,7 @@ if (_abAudio) {
 let _ttsVoices = null;
 let _ttsSelectedVoice = '';
 let _ttsSpeakAudio = null;   // currently-playing one-click clip, so a second press stops the first
+let _ttsAbort = null;        // AbortController for the in-flight /api/tts generation, so Cancel aborts the 3-11s request (AMUX-3333)
 
 // Claim the tap's user-activation for the SHARED player element, synchronously.
 //
@@ -11085,20 +11793,41 @@ function _mdToSpeech(md) {
 // loading signal — not just the ones with a button to spin (Ethan 2026-08-13).
 // The button (if any) also spins; this covers the ellipsis-menu actions that
 // pass no button.
-function _ttsLoading(on) {
+// Legacy boolean callers map onto the mode-based indicator: true -> generating.
+function _ttsLoading(on) { _ttsIndicator(on ? 'generating' : 'off'); }
+
+// The floating TTS indicator, now carrying a Cancel/Stop control so a read-aloud
+// can be aborted mid-generation or stopped mid-playback from a single affordance,
+// whatever entry point triggered it (AMUX-3333). Modes: 'generating' | 'playing'
+// | 'off'.
+function _ttsIndicator(mode) {
   let el = document.getElementById('tts-loading');
-  if (on) {
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'tts-loading';
-      el.className = 'tts-loading';
-      el.innerHTML = '<span class="tts-loading-spin">◌</span> Generating audio…';
-      document.body.appendChild(el);
-    }
-    el.style.display = 'flex';
-  } else if (el) {
-    el.style.display = 'none';
+  if (mode === 'off') { if (el) el.style.display = 'none'; return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'tts-loading';
+    el.className = 'tts-loading';
+    document.body.appendChild(el);
   }
+  const label = mode === 'playing'
+    ? '<span class="tts-loading-spin" style="animation:none">&#9654;</span> Playing…'
+    : '<span class="tts-loading-spin">&#9676;</span> Generating audio…';
+  const btn = mode === 'playing' ? 'Stop' : 'Cancel';
+  el.innerHTML = label + ' <button class="tts-cancel-btn" onclick="_ttsCancel()">' + btn + '</button>';
+  el.style.display = 'flex';
+}
+
+// Cancel the whole read-aloud lifecycle: abort the in-flight /api/tts request if
+// generation is still running, stop playback if it started, and reset state so
+// the next Read-aloud works cleanly. Safe to call in any phase (each step is
+// guarded and idempotent).
+function _ttsCancel() {
+  try { if (_ttsAbort) _ttsAbort.abort(); } catch (_) {}
+  _ttsAbort = null;
+  try { if (_ttsSpeakAudio) _ttsSpeakAudio.pause(); } catch (_) {}
+  try { if (_abAudio) _abAudio.pause(); } catch (_) {}
+  _ttsSpeakAudio = null;
+  _ttsIndicator('off');
 }
 
 async function _ttsSpeak(text, btn) {
@@ -11125,11 +11854,14 @@ async function _ttsSpeak(text, btn) {
   // allowed the play either way).
   // Unlock the SHARED player element, not a private one — see _ttsClaimGesture.
   _ttsClaimGesture();
+  _ttsAbort = new AbortController();
+  let _ttsPlaying = false;
   try {
     const r = await fetch(API + '/api/tts', {
       method: 'POST',
       headers: _authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({ text }),
+      signal: _ttsAbort.signal,
     });
     const d = await r.json();
     if (d.error) { showToast(d.error, 'error'); return; }
@@ -11141,11 +11873,19 @@ async function _ttsSpeak(text, btn) {
     // the feature people actually listen to for minutes at a time, did not.
     _abPlay(d.url, 'Read aloud' + (peekSession ? ' — ' + peekSession : ''));
     _ttsSpeakAudio = _abAudio;   // so a second press still stops the first
-    _ttsLoading(false);   // audio is playing — done generating
+    // Generation is done and audio is playing: keep the floating control alive
+    // as a Stop affordance for the playback phase, and clear it when the clip
+    // ends on its own (AMUX-3333).
+    _ttsPlaying = true;
+    _ttsIndicator('playing');
+    if (_abAudio) { try { _abAudio.addEventListener('ended', () => _ttsIndicator('off'), { once: true }); } catch (_) {} }
     // Record for replay (Ethan: a tab of past read-alouds). Fire-and-forget so a
     // storage hiccup never blocks playback.
     _raRecord(text, d.url, (typeof peekSession !== 'undefined' && peekSession) || '');
   } catch(e) {
+    // A user-initiated Cancel aborts the fetch; that is the feature working, not
+    // an error — stay quiet (state was already reset by _ttsCancel) (AMUX-3333).
+    if (e && e.name === 'AbortError') return;
     // NotAllowedError is not a permission the user can grant — it means the tap's
     // user-activation expired. Say something actionable instead of WebKit's
     // "possibly because the user denied permission", which sends people hunting
@@ -11163,7 +11903,8 @@ async function _ttsSpeak(text, btn) {
                  { type: 'application/json' }));
     } catch (_) {}
   } finally {
-    _ttsLoading(false);
+    _ttsAbort = null;
+    if (!_ttsPlaying) _ttsIndicator('off');   // hide only if playback did NOT start
     if (btn) { btn.disabled = false; btn.innerHTML = orig; }
   }
 }
@@ -11884,7 +12625,11 @@ function openCmdHistoryModal(scopeSession) {
   // Drop the previous open's window/counts — they were fetched for a different
   // scope, and reusing them would show one session's rows under another's
   // heading until the refetch lands.
+  // Reset the PAGE cursor too (AF-213), not just the rows. Leaving _cmdHistOffset
+  // set would make the next open's first fetch start mid-history under a heading
+  // that says it is showing the newest.
   _cmdHistRows = null; _cmdHistCounts = null;
+  _cmdHistRaw = []; _cmdHistOffset = 0; _cmdHistDone = false;
   _populateCmdHistorySessions(_ctx);
   _renderCmdHistoryList();
   // History is server-side, but this page only pulled it once at load — a
@@ -11930,36 +12675,70 @@ let _cmdHistRows = null;      // server window for the CURRENT kind+session, or 
 // out of 2783 — the human messages had been crowded out of the window by
 // session and schedule traffic before the filter ever ran.
 let _cmdHistCounts = null;    // true per-kind totals from the server
-async function _cmdHistFetch() {
+// PAGINATED, like the other two /api/history consumers (AF-213). This asked for
+// `limit=500` in ONE shot with no offset — 852 KB global, 454 KB session-scoped,
+// on every open and on every kind/session change. `_messagesLoad` and the peek
+// Messages tab have both paged at 200 for a while; this surface kept the flat
+// fetch and was the odd one out of the three the comment above already counted.
+//
+// Accumulates the RAW newest-first pages and reverses once at the end. The
+// server returns newest-first and `_cmdHistRows` is held oldest-first (the
+// renderer flips it), so appending a page of OLDER rows to the reversed array
+// would interleave them backwards.
+const _CMDHIST_PAGE = 200;
+let _cmdHistRaw = [];      // accumulated pages, newest-first, pre-merge
+let _cmdHistOffset = 0;
+let _cmdHistDone = false;
+let _cmdHistLoading = false;
+
+async function _cmdHistFetch(more) {
+  if (_cmdHistLoading) return;
+  if (more && _cmdHistDone) return;
+  _cmdHistLoading = true;
+  if (!more) { _cmdHistRaw = []; _cmdHistOffset = 0; _cmdHistDone = false; }
   const sess = document.getElementById('cmd-history-session-filter')?.value || '';
   const qsess = sess ? '&session=' + encodeURIComponent(sess) : '';
-  let u = API + '/api/history?limit=500' + qsess;
+  let u = API + '/api/history?limit=' + _CMDHIST_PAGE + '&offset=' + _cmdHistOffset + qsess;
   if (_cmdHistKind !== 'all') u += '&kind=' + encodeURIComponent(_cmdHistKind);
   try {
     const [r, rc] = await Promise.all([
       fetch(u, { headers: _authHeaders() }),
-      fetch(API + '/api/history?counts=1' + qsess, { headers: _authHeaders() }),
+      // Totals are for the CHIPS and must stay unpaged — a tally of the loaded
+      // page would read 0 for every kind not on it.
+      _cmdHistOffset === 0
+        ? fetch(API + '/api/history?counts=1' + qsess, { headers: _authHeaders() })
+        : Promise.resolve(null),
     ]);
     if (r.ok) {
       const rows = (await r.json()).map(_msgNorm);
-      _cmdHistRows = _mergeUnechoed(rows.reverse(), sess);
+      _cmdHistDone = rows.length < _CMDHIST_PAGE;
+      _cmdHistOffset += rows.length;
+      _cmdHistRaw = _cmdHistRaw.concat(rows);
+      _cmdHistRows = _mergeUnechoed(_cmdHistRaw.slice().reverse(), sess);
     }
-    if (rc.ok) _cmdHistCounts = await rc.json();
+    if (rc && rc.ok) _cmdHistCounts = await rc.json();
   } catch(e) { /* keep whatever we had; render falls back to the shared cache */ }
+  _cmdHistLoading = false;
   _renderCmdHistoryList();
 }
+function _cmdHistMore() { _cmdHistFetch(true); }
 function _cmdHistSetKind(k) { _cmdHistKind = k; _renderCmdHistoryList(); _cmdHistFetch(); }
 function _cmdHistRenderChips(items) {
   const bar = document.getElementById('cmd-history-filter');
   if (!bar) return;
   // Server totals when we have them; local tally only as a pre-fetch placeholder.
+  // SEEDED FROM _MSG_KIND_ORDER, never from a hand-written list. Both branches
+  // used to enumerate four kinds inline, so adding a fifth made
+  // `counts[_msgKind(e)]++` increment `undefined` and the chip render NaN —
+  // a new kind would have broken the bar it was added to (AMUX-3737).
+  const _zero = () => _MSG_KIND_ORDER.reduce((a, k) => (a[k] = 0, a), {});
   let counts;
   if (_cmdHistCounts) {
-    counts = { all: _cmdHistCounts.all || 0, human: _cmdHistCounts.human || 0, amux: _cmdHistCounts.amux || 0,
-               session: _cmdHistCounts.session || 0, schedule: _cmdHistCounts.schedule || 0 };
+    counts = Object.assign(_zero(), { all: _cmdHistCounts.all || 0 });
+    _MSG_KIND_ORDER.forEach(k => { counts[k] = _cmdHistCounts[k] || 0; });
   } else {
-    counts = { all: items.length, human: 0, session: 0, schedule: 0, amux: 0 };
-    items.forEach(e => { counts[_msgKind(e)]++; });
+    counts = Object.assign(_zero(), { all: items.length });
+    items.forEach(e => { const k = _msgKind(e); if (k in counts) counts[k]++; });
   }
   const chips = [['all','All']].concat(_MSG_KIND_ORDER.map(k => [k, _MSG_KIND[k].label]));
   bar.innerHTML = chips.map(([k, lbl]) => {
@@ -11997,7 +12776,18 @@ function _renderCmdHistoryList() {
   // Was a second hand-maintained copy of the row markup, which is why this
   // list and the peek/Messages tabs showed the same rows with different
   // badges, no card chip and no search highlighting (AMUX-2334).
-  list.innerHTML = filtered.map(e => _cmdHistItemHTML(e, _msgCtxHistory())).join('');
+  // LOAD MORE (AF-213). Only when the server window is what we are showing —
+  // the shared global cache has no offset to continue from, and offering the
+  // button there would page a list this function is not driving.
+  const _more = (_cmdHistRows && !_cmdHistDone)
+    ? '<div style="padding:12px;text-align:center;">'
+      + '<button class="btn" onclick="_cmdHistMore()" '
+      + 'style="min-height:44px;min-width:44px;padding:10px 18px;">'
+      + (_cmdHistLoading ? 'Loading…' : 'Load older messages') + '</button>'
+      + '<div style="color:var(--dim);font-size:0.75rem;margin-top:6px;">showing '
+      + _cmdHistRaw.length + '</div></div>'
+    : '';
+  list.innerHTML = filtered.map(e => _cmdHistItemHTML(e, _msgCtxHistory())).join('') + _more;
 }
 // ── Peek Messages tab: the message history, scoped to the open session ──
 // One entry → its card HTML (same look as the Message-history modal). Kept as a
@@ -12020,7 +12810,13 @@ function _msgKind(e) {
   // verified (keystrokes reached a pane; a picker may have eaten them) and its
   // origin is the CLI's word, not a server-side stamp.
   if (t === 'raw-tmux-fallback') return 'unstamped';
-  return 'human';   // direct / steering / user / '' — all a person typing
+  if (t === 'pickup') return 'amux';   // board-drive's auto-pickup prompt
+  // ALLOWLIST, matching the server's msg_kind (AMUX-3737). This used to
+  // `return 'human'` for anything unrecognised, which is how `pickup` wore a
+  // Human badge in 355 rows. Falling through to `unknown` is just as visible
+  // and does not put a person's name on a machine's text.
+  if (t === 'direct' || t === 'steering' || t === 'user' || t === '') return 'human';
+  return 'unknown';
 }
 // Queued vs direct is a DELIVERY detail of a human message, not a fourth kind:
 // same person, same authority, one just waited for the session to free up.
@@ -12117,8 +12913,21 @@ const _MSG_KIND = {
   session:  { label: 'Session',   color: '#8957e5', bg: 'rgba(137,87,229,0.16)' },
   schedule: { label: 'Scheduled', color: '#3fb950', bg: 'rgba(63,185,80,0.15)' },
   amux:     { label: 'amux',      color: '#8b949e', bg: 'rgba(139,148,158,0.14)' },
+  // A send that reached the pane as raw keystrokes while the server was
+  // unreachable (AMUX-2670). `_msgKind` has returned 'unstamped' for it since
+  // that card, and this entry never existed — so it fell through to Human, the
+  // exact rendering that card exists to prevent. The branch also never ran,
+  // because the server's `kind` wins and the server said human. Both halves
+  // fixed together; either alone changes nothing on screen.
+  unstamped:{ label: 'Unstamped',    color: '#db6d28', bg: 'rgba(219,109,40,0.14)' },
+  // AMUX-3737: a kind THIS BUILD does not know. Amber because it is a prompt to
+  // go and classify the type, not a normal resting state. Without this entry
+  // the fallback below painted it blue and called it Human, which is the server
+  // bug reproduced client-side — so fixing only the server would have changed
+  // nothing on screen.
+  unknown:  { label: 'Unclassified', color: '#d29922', bg: 'rgba(210,153,34,0.14)' },
 };
-const _MSG_KIND_ORDER = ['human', 'session', 'schedule', 'amux'];
+const _MSG_KIND_ORDER = ['human', 'session', 'schedule', 'amux', 'unstamped', 'unknown'];
 // Back-compat shim: _msgOrigin was the old 4-way classifier. Anything still
 // calling it gets the canonical kind.
 function _msgOrigin(e) { return _msgKind(e); }
@@ -12262,7 +13071,12 @@ function _cmdHistItemHTML(e, ctx) {
   const _mq = (document.getElementById(ctx.searchId) || {}).value || '';
   const enc = encodeURIComponent(text).replace(/'/g, '%27');   // ' survives encodeURIComponent and breaks inline onclick
   const kind = _msgKind(e);
-  const km = _MSG_KIND[kind] || _MSG_KIND.human;
+  // FALL BACK TO `unknown`, NEVER TO `human` (AMUX-3737). A kind this build
+  // does not recognise is exactly the case where the honest answer is "I do not
+  // know who wrote this", and defaulting it to Human is how a machine nudge
+  // ends up wearing a person's badge — the same defect the server-side
+  // classifier had, one layer out.
+  const km = _MSG_KIND[kind] || _MSG_KIND.unknown;
   // Badge carries the specific origin: "Session · mvs-infra", "Scheduled · Nightly gate".
   // For a human message the origin is you, so instead we surface the delivery
   // path — "Human · queued" vs plain "Human".
@@ -13397,13 +14211,13 @@ function closeFiltersModal() {
 const _PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', iterm2: 'iTerm2', ollama: 'Ollama', grok: 'Grok' };
 const _MODEL_LABELS = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable', gpt: 'GPT', gemini: 'Gemini', 'o-series': 'o-series' };
 function _mLabel(x){ return _MODEL_LABELS[x] || (x.charAt(0).toUpperCase()+x.slice(1)); }
-const _STATUS_LABELS = { working: 'Working', waiting: 'Needs input', rate_limited: 'Rate limited', idle: 'Idle', stopped: 'Stopped' };
+const _STATUS_LABELS = { working: 'Working', waiting: 'Needs input', rate_limited: 'Rate limited', api_error: 'API error', idle: 'Idle', stopped: 'Stopped' };
 function renderFilterOptions() {
   const live = sessions.filter(s => !s.archived);
   // Status chips — fixed order, only states that exist (or are selected)
   const sEl = document.getElementById('filter-statuses');
   if (sEl) {
-    const opts = ['working', 'waiting', 'rate_limited', 'idle', 'stopped']
+    const opts = ['working', 'waiting', 'rate_limited', 'api_error', 'idle', 'stopped']
       .filter(k => filterStatuses.has(k) || live.some(x => _sessStatusKey(x) === k));
     sEl.innerHTML = opts.length ? opts.map(k => {
       const on = filterStatuses.has(k);
@@ -14339,13 +15153,124 @@ function _mdSearchHighlightCurrent() {
   if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
+// Spreadsheet preview (AMUX-3343): fetch the server-parsed sheets and render
+// them as tables in the file overlay, with a tab per sheet, instead of forcing a
+// download. Server-side parsing (calamine) keeps the client light for mobile.
+async function _openXlsxPreview(path) {
+  _fileData = null;
+  _fileViewMode = 'preview';
+  const titleEl = document.getElementById('file-title');
+  if (titleEl) titleEl.textContent = path.split('/').pop();
+  const subEl = document.getElementById('file-subpath');
+  if (subEl) { const dir = path.slice(0, path.lastIndexOf('/')) || '/'; subEl.textContent = dir; subEl.title = path; }
+  const body = document.getElementById('file-body');
+  body.className = 'file-overlay-body';
+  body.textContent = 'Loading spreadsheet…';
+  const tabsEl = document.getElementById('file-view-tabs');
+  if (tabsEl) tabsEl.style.display = 'none';
+  document.getElementById('file-overlay').classList.add('active');
+  const dlBtn = document.getElementById('file-download-btn');
+  if (dlBtn) {
+    dlBtn.dataset.url = API + '/api/file/raw?path=' + encodeURIComponent(path) + '&download=1';
+    dlBtn.dataset.filename = path.split('/').pop();
+    dlBtn.style.display = '';
+  }
+  try {
+    // Primary: SheetJS (the standard xlsx library) parses the raw bytes in the
+    // browser and preserves merged cells, number formats and multi-sheet
+    // structure via sheet_to_html (AMUX-3343, Ethan). Falls back to the
+    // server-side (calamine) parse if the CDN library is unavailable (offline).
+    if (window.XLSX) {
+      const buf = await (await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path))).arrayBuffer();
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
+      const names = wb.SheetNames || [];
+      if (!names.length) { body.innerHTML = '<div class="xlsx-empty">No sheets in this workbook.</div>'; return; }
+      let html = '';
+      if (names.length > 1) {
+        html += '<div class="xlsx-tabs">' + names.map((n, i) =>
+          '<button class="xlsx-tab' + (i === 0 ? ' active' : '') + '" onclick="_xlsxShowSheet(' + i + ')">' + esc(n) + '</button>').join('') + '</div>';
+      }
+      names.forEach((n, i) => {
+        const table = XLSX.utils.sheet_to_html(wb.Sheets[n], { id: 'xlsx-tbl-' + i });
+        html += '<div class="xlsx-sheet" id="xlsx-sheet-' + i + '"' + (i > 0 ? ' style="display:none"' : '') + '><div class="xlsx-scroll">' + table + '</div></div>';
+      });
+      body.innerHTML = html;
+      return;
+    }
+    await _openXlsxServerFallback(path, body);
+  } catch (e) {
+    // A SheetJS parse error still gets the server fallback a shot before giving up.
+    try { await _openXlsxServerFallback(path, body); }
+    catch (e2) { body.textContent = 'Failed to load spreadsheet: ' + e; }
+  }
+}
+
+// Server-parsed fallback (calamine): used when SheetJS did not load (offline) or
+// failed to parse. Renders the same tabbed table view.
+async function _openXlsxServerFallback(path, body) {
+  const r = await fetch(API + '/api/file/xlsx?path=' + encodeURIComponent(path));
+  const d = await r.json();
+  if (d.error) { body.textContent = 'Error: ' + d.error; return; }
+  const sheets = d.sheets || [];
+  if (!sheets.length) { body.innerHTML = '<div class="xlsx-empty">No sheets in this workbook.</div>'; return; }
+  let html = '';
+  if (sheets.length > 1) {
+    html += '<div class="xlsx-tabs">' + sheets.map((s, i) =>
+      '<button class="xlsx-tab' + (i === 0 ? ' active' : '') + '" onclick="_xlsxShowSheet(' + i + ')">' + esc(s.name) + '</button>').join('') + '</div>';
+  }
+  sheets.forEach((s, i) => {
+    html += '<div class="xlsx-sheet" id="xlsx-sheet-' + i + '"' + (i > 0 ? ' style="display:none"' : '') + '>' + _xlsxTableHtml(s) + '</div>';
+  });
+  if (d.truncated) html += '<div class="xlsx-trunc">Large workbook — some rows, columns or sheets were truncated. Use Download for the full file.</div>';
+  body.innerHTML = html;
+}
+
+function _xlsxTableHtml(sheet) {
+  const rows = sheet.rows || [];
+  if (!rows.length) return '<div class="xlsx-empty">Empty sheet.</div>';
+  let h = '<div class="xlsx-scroll"><table class="xlsx-table">';
+  rows.forEach((row, ri) => {
+    h += '<tr>';
+    row.forEach(cell => { h += ri === 0 ? ('<th>' + esc(cell) + '</th>') : ('<td>' + esc(cell) + '</td>'); });
+    h += '</tr>';
+  });
+  h += '</table></div>';
+  return h;
+}
+
+function _xlsxShowSheet(i) {
+  document.querySelectorAll('.xlsx-sheet').forEach((el, idx) => { el.style.display = idx === i ? '' : 'none'; });
+  document.querySelectorAll('.xlsx-tab').forEach((el, idx) => { el.classList.toggle('active', idx === i); });
+}
+
 async function openFilePreview(path) {
+  // .mdai files open in the dedicated MDAI viewer (Ethan, AMUX-3317): it shows
+  // the node's metadata (model / date / cached), lets you scroll the run
+  // versions, and RUNS THE CHAIN on open — none of which the generic file body
+  // does. Route before touching the file-overlay DOM so a .mdai opened from the
+  // file browser or a file link lands in the right viewer.
+  if (/\.mdai$/i.test(path || '')) { openMdaiNode(path); return; }
+  // Spreadsheets render as tables, not a download (AMUX-3343).
+  if (/\.(xlsx|xls|ods)$/i.test(path || '')) { _openXlsxPreview(path); return; }
   _fileData = null;
   _fileViewMode = 'preview';
   document.getElementById('file-title').textContent = path.split('/').pop();
   // Title bar shows the file name plus the folder it lives in, like a file manager.
   const _subEl = document.getElementById('file-subpath');
-  if (_subEl) { const _dir = path.slice(0, path.lastIndexOf('/')) || '/'; _subEl.textContent = _dir; _subEl.title = path; }
+  if (_subEl) {
+    const _dir = path.slice(0, path.lastIndexOf('/')) || '/';
+    _subEl.textContent = _dir;
+    // THE WAY BACK TO THE FOLDER (AMUX-3663). Dim text with no handler until
+    // now, while `_openPathFromOutput`'s comment justified sending every file
+    // click to the browser on the grounds that "the browser is reachable from a
+    // preview". It was not reachable from anywhere. Now that a file link opens
+    // the FILE, this is the one click that restores the other half of that
+    // rationale: see what is around it.
+    _subEl.title = 'Open this folder in the file browser';
+    _subEl.classList.add('clickable');
+    _subEl.onclick = () => openExplore(_dir,
+      (typeof peekSession !== 'undefined' && peekSession) ? peekSession : null);
+  }
   document.getElementById('file-body').className = 'file-overlay-body';
   document.getElementById('file-body').textContent = 'Loading...';
   document.getElementById('file-view-tabs').style.display = 'none';
@@ -14511,7 +15436,7 @@ let _explorePath = '';
 let _exploreShowHidden = true;
 let _exploreLastData = null;  // last loaded dir data (for search re-filter)
 let _filesLastData = null;    // last loaded dir data for Files tab
-let _filesSort = { col: 'name', dir: 1 }; // sort state
+let _filesSort = { col: 'modified', dir: -1 }; // default: newest first (Ethan 2026-08-20); dirs still lead
 
 function _filesSortEntries(entries) {
   return [...entries].sort((a, b) => {
@@ -15477,10 +16402,383 @@ function _mdaiSerialize(cur) {
 }
 
 // ── The MDAI tab (global list of every .mdai node) ──
+let _mdaiRootPath;   // cached mdai_root pref (the local.amux folder), '' if unset
+// ===== Connectors (integrations) tab =====
+// Renders GET /api/connectors: one card per provider with a status badge, the
+// env-key fields to paste (values POST to /credentials -> ~/.amux/server.env,
+// never echoed back), the OAuth redirect URI to register + a Connect button,
+// and a scope control (global / group / worker) that drives the EXISTING
+// /api/scope connectors capability. A connector is a scopable capability, not a
+// new subsystem — the tab composes primitives (scope + env), it does not add one.
+let _connectorsData = null;
+async function _connectorsTabLoad() {
+  const host = document.getElementById('connectors-list');
+  if (!host) return;
+  host.innerHTML = '<div class="conn-empty">Loading connectors…</div>';
+  try {
+    const r = await fetch('/api/connectors');
+    const d = await r.json();
+    _connectorsData = d;
+    _connectorsRender(d);
+  } catch (e) {
+    host.innerHTML = '<div class="conn-empty">Failed to load connectors: ' + esc(String(e)) + '</div>';
+  }
+}
+
+function _connBadge(status) {
+  const map = {
+    connected: ['Connected', '#1f8f4e'],
+    needs_auth: ['Needs sign-in', '#b8860b'],
+    needs_credentials: ['Needs credentials', '#8a4b4b'],
+  };
+  const pair = map[status] || [status, '#666'];
+  return '<span class="conn-badge" style="background:' + pair[1] + '">' + esc(pair[0]) + '</span>';
+}
+
+function _connectorsRender(d) {
+  const host = document.getElementById('connectors-list');
+  if (!host) return;
+  const list = (d && d.connectors) || [];
+  if (!list.length) { host.innerHTML = '<div class="conn-empty">No connectors registered.</div>'; return; }
+  let html = '';
+  html += '<div class="conn-origin">This server: <code>' + esc(d.origin || '') + '</code>. Pasted keys are written to <code>~/.amux/server.env</code> and never shown again.</div>';
+  for (const c of list) {
+    html += '<div class="conn-card" data-id="' + esc(c.id) + '">';
+    html += '<div class="conn-head"><span class="conn-title">' + esc(c.label) + '</span>';
+    html += '<span class="conn-cat">' + esc(c.category) + '</span>' + _connBadge(c.status) + '</div>';
+    if (c.setup_note) html += '<div class="conn-note">' + esc(c.setup_note) + (c.docs ? ' <a href="' + esc(c.docs) + '" target="_blank" rel="noopener">docs ↗</a>' : '') + '</div>';
+    // credential fields
+    html += '<div class="conn-creds">';
+    for (const k of (c.env_keys || [])) {
+      html += '<label class="conn-field"><span class="conn-klabel">' + esc(k.name) + (k.set ? ' <em>(set: ' + esc(k.masked || '••••') + ')</em>' : '') + '</span>';
+      html += '<input type="password" class="conn-input" data-env="' + esc(k.name) + '" placeholder="' + (k.set ? 'replace…' : 'paste value…') + '" autocomplete="off"></label>';
+    }
+    html += '<button class="conn-save" onclick="_connectorSave(\'' + esc(c.id) + '\', this)">Save keys</button>';
+    html += '</div>';
+    // oauth
+    if (c.auth === 'oauth2' && c.oauth) {
+      html += '<div class="conn-oauth"><div class="conn-redir">Redirect URI to register: <code>' + esc(c.oauth.redirect_uri) + '</code> <button class="conn-copy" onclick="_copyTextWithToast(\'' + esc(c.oauth.redirect_uri) + '\',\'Redirect URI copied\')">copy</button></div>';
+      html += '<button class="conn-connect" onclick="_connectorAuth(\'' + esc(c.id) + '\')">Connect ' + esc(c.label) + ' ↗</button></div>';
+    }
+    // Gmail: connected accounts with token health + one-click Reconnect/Add, so a
+    // dead token (invalid_grant) is VISIBLE and FIXABLE here instead of needing
+    // the raw /api/gmail/auth?account= URL (Ethan via amux-cloud, AMUX-3389).
+    if (c.id === 'google-gmail') {
+      html += '<div class="conn-gmail" id="conn-gmail-accounts"><div class="conn-gmail-loading">Loading Gmail accounts…</div></div>';
+    }
+    // test connection — verify it actually WORKS, not just that a key is present
+    html += '<div class="conn-test"><button class="conn-test-btn" onclick="_connectorTest(\'' + esc(c.id) + '\', this)">Test connection</button> <span class="conn-test-result" id="conn-test-' + esc(c.id) + '"></span></div>';
+    // scope control (global / group / worker) — drives /api/scope
+    html += '<div class="conn-scope"><span class="conn-slabel">Enable for:</span> '
+      + '<button class="conn-scope-btn" onclick="_connectorScope(\'' + esc(c.id) + '\',\'global\',true)">Global</button>'
+      + '<button class="conn-scope-btn" onclick="_connectorScope(\'' + esc(c.id) + '\',\'group\',true)">Group…</button>'
+      + '<button class="conn-scope-btn" onclick="_connectorScope(\'' + esc(c.id) + '\',\'worker\',true)">Worker…</button>'
+      + '<button class="conn-scope-btn conn-scope-off" onclick="_connectorScope(\'' + esc(c.id) + '\',\'global\',false)">Disable global</button>'
+      + '</div>';
+    html += '</div>';
+  }
+  host.innerHTML = html;
+  if (list.some(c => c.id === 'google-gmail')) _gmailAccountsLoad();
+  _connAccountsLoad();
+}
+
+// ── Consolidated accounts panel (AMUX-3418): one row per ACCOUNT across all ──
+// families, live health, and ONE Reconnect that starts the family-wide grant
+// (a Google approval covers gmail + calendar + drive/docs and every worker
+// mints from it — authorize once per account).
+async function _connAccountsLoad() {
+  const host = document.getElementById('connectors-accounts');
+  if (!host) return;
+  try {
+    const r = await fetch('/api/connectors/accounts');
+    const d = await r.json();
+    const accts = d.accounts || [];
+    if (!accts.length) { host.innerHTML = ''; return; }
+    let h = '<div class="conn-card"><div class="conn-head"><span class="conn-title">Accounts</span>'
+      + '<span class="conn-cat">one approval per account, shared by every worker</span></div>';
+    for (const a of accts) {
+      h += '<div class="conn-gmail-row"><span class="conn-gmail-addr">' + esc(a.account) + '</span>';
+      const fams = a.families || {};
+      for (const f of Object.keys(fams)) {
+        const st = fams[f];
+        const color = st === 'ok' ? '#1f8f4e' : st === 'needs_reauth' ? '#c0392b' : '#8a6d3b';
+        h += '<span class="conn-gmail-badge" style="background:' + color + '">' + esc(f) + ': ' + esc(st) + '</span>';
+      }
+      // Canary legs (AMUX-3430): one real API call per granted service every
+      // ~5min. A dot per service — green serves, red answered a failure,
+      // amber unreachable, gray not granted — with last-checked in the title.
+      const can = a.canary || {};
+      for (const svc of Object.keys(can)) {
+        const leg = can[svc] || {};
+        if (leg.status === 'not_granted') continue;
+        const c = leg.status === 'ok' ? '#1f8f4e' : leg.status === 'unreachable' ? '#8a6d3b' : '#c0392b';
+        const age = leg.checked_at ? Math.max(0, Math.round(Date.now() / 1000 - leg.checked_at)) + 's ago' : 'never';
+        const tip = svc + ' canary: ' + (leg.status || '?') + (leg.http ? ' (HTTP ' + leg.http + ')' : '') + ', checked ' + age;
+        h += '<span title="' + esc(tip) + '" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + c + ';margin-left:4px;vertical-align:middle"></span>';
+      }
+      if (a.needs_reauth) {
+        const fam = (a.reconnect || '').indexOf('/slack/') >= 0 ? 'slack' : 'google';
+        h += '<button class="conn-gmail-btn" onclick="_connReconnect(\'' + escJs(fam) + '\',\'' + escJs(a.account) + '\')">Reconnect ↗</button>';
+      }
+      h += '</div>';
+    }
+    h += '<div class="conn-note">Reconnect opens one consent tab; approving repairs email + every Google connector + worker token mints for that account at once.</div></div>';
+    host.innerHTML = h;
+  } catch (e) { host.innerHTML = ''; }
+}
+
+async function _connReconnect(family, account) {
+  try {
+    const r = await fetch('/api/connectors/' + encodeURIComponent(family) + '/auth?account=' + encodeURIComponent(account), { method: 'POST' });
+    const d = await r.json();
+    if (d && d.redirect_uri_registered === false) {
+      // The server live-probed Google and the grant WILL dead-end at the
+      // mismatch wall (AMUX-3427) — surface the one console fix instead of
+      // opening a tab that cannot succeed.
+      alert('Google rejects this app\'s redirect URI, so the grant cannot succeed yet.\n\nOne-time fix: ' + (d.fix_if_unregistered || 'register ' + d.redirect_uri + ' on the OAuth client'));
+      return;
+    }
+    if (d && d.authorize_url) {
+      window.open(d.authorize_url, '_blank');
+      showToast('Approve in the opened tab — one approval repairs every worker using ' + account);
+    } else {
+      showToast('Could not start the grant: ' + ((d && (d.error || d.detail)) || 'unknown'));
+    }
+  } catch (e) { showToast('Could not start the grant: ' + e); }
+}
+
+// ── Gmail accounts in the Connectors panel (AMUX-3389) ──
+// The backend already reports per-account health from a real getProfile round
+// trip (GET /api/gmail/accounts) and mints the OAuth URL (GET /api/gmail/auth
+// ?account=). This surfaces both: a token that died (needs_reauth) shows red with
+// a one-click Reconnect, and you can add a new account, without knowing a URL.
+async function _gmailAccountsLoad() {
+  const el = document.getElementById('conn-gmail-accounts');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/gmail/accounts');
+    const d = await r.json();
+    const accts = d.accounts || [];
+    const health = d.health || {};
+    let h = '<div class="conn-gmail-h">Connected Gmail accounts</div>';
+    if (!accts.length) {
+      h += '<div class="conn-gmail-empty">No accounts connected yet.</div>';
+    } else {
+      for (const a of accts) {
+        const st = health[a] || 'unknown';
+        const meta = st === 'ok' ? ['valid', '#1f8f4e']
+          : st === 'needs_reauth' ? ['token dead — reconnect', '#c0392b']
+          : st === 'not_connected' ? ['not connected', '#8a6d3b']
+          : [st, '#666'];
+        h += '<div class="conn-gmail-row">'
+          + '<span class="conn-gmail-addr">' + esc(a) + '</span>'
+          + '<span class="conn-gmail-badge" style="background:' + meta[1] + '">' + esc(meta[0]) + '</span>'
+          + '<button class="conn-gmail-btn" onclick="_gmailReconnect(\'' + escJs(a) + '\')">Reconnect ↗</button>'
+          + '<button class="conn-gmail-btn conn-gmail-del" onclick="_gmailRemove(\'' + escJs(a) + '\')">Remove</button>'
+          + '</div>';
+      }
+    }
+    h += '<button class="conn-gmail-add" onclick="_gmailAddAccount()">+ Add Gmail account</button>';
+    el.innerHTML = h;
+  } catch (e) {
+    el.innerHTML = '<div class="conn-gmail-empty">Failed to load Gmail accounts.</div>';
+  }
+}
+// Start (or repair) OAuth for one account: fetch the URL and open it. Google
+// redirects back to /api/gmail/callback which writes the token; then Refresh.
+async function _gmailReconnect(email) {
+  if (!email) return;
+  try {
+    const r = await fetch('/api/gmail/auth?account=' + encodeURIComponent(email));
+    const d = await r.json();
+    if (d && d.url) {
+      window.open(d.url, '_blank', 'noopener');
+      showToast('Approve access for ' + email + ' in the opened tab, then Refresh');
+      if (d.warning) showToast(d.warning);
+    } else if (d && d.error) {
+      showToast('Could not start reconnect: ' + d.error);
+    } else {
+      showToast('Could not start reconnect');
+    }
+  } catch (e) { showToast('Reconnect failed'); }
+}
+async function _gmailAddAccount() {
+  const email = (prompt('Gmail address to connect:') || '').trim();
+  if (email) _gmailReconnect(email);
+}
+async function _gmailRemove(email) {
+  if (!(await showConfirm('Remove ' + email + '?\n\nThe local token file is deleted; you can reconnect any time.', 'Remove', true))) return;
+  try {
+    await fetch('/api/gmail/account?account=' + encodeURIComponent(email), { method: 'DELETE' });
+    showToast('Removed ' + email);
+    _gmailAccountsLoad();
+  } catch (e) { showToast('Remove failed'); }
+}
+
+async function _connectorSave(id, btn) {
+  const card = btn.closest('.conn-card');
+  if (!card) return;
+  const body = {};
+  card.querySelectorAll('.conn-input').forEach(inp => {
+    const v = (inp.value || '').trim();
+    if (v) body[inp.getAttribute('data-env')] = v;
+  });
+  if (!Object.keys(body).length) { showToast('Nothing to save — paste a value first'); return; }
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/connectors/' + encodeURIComponent(id) + '/credentials', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (d && d.ok) { showToast('Saved ' + (d.written || []).join(', ') + ' to server.env'); _connectorsTabLoad(); }
+    else { showToast('Save failed: ' + (d && (d.error || (d.rejected && ('rejected ' + d.rejected.join(',')))) || '?')); btn.disabled = false; btn.textContent = 'Save keys'; }
+  } catch (e) { showToast('Save failed: ' + e); btn.disabled = false; btn.textContent = 'Save keys'; }
+}
+
+async function _connectorAuth(id) {
+  try {
+    const r = await fetch('/api/connectors/' + encodeURIComponent(id) + '/auth', { method: 'POST' });
+    const d = await r.json();
+    if (d && d.authorize_url) { window.open(d.authorize_url, '_blank', 'noopener'); showToast('Opened the sign-in page'); }
+    else if (d && d.ok) { showToast(d.note || 'No sign-in needed'); }
+    else { showToast('Connect failed: ' + (d && (d.error || d.need_env) || '?')); }
+  } catch (e) { showToast('Connect failed: ' + e); }
+}
+
+// Global writes straight through; group/worker open a searchable picker over the
+// real fleet instead of a raw prompt() (AMUX-3350).
+async function _connectorScope(id, level, enabled) {
+  if (level === 'global') { _connectorScopeWrite(id, 'global', '', enabled); return; }
+  _connScopePicker(id, level, enabled);
+}
+
+async function _connectorScopeWrite(id, level, name, enabled) {
+  const body = { level, name, capability: 'connectors', value: {} };
+  body.value[id] = { enabled: !!enabled };
+  try {
+    const r = await fetch('/api/scope', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (d && d.error) { showToast('Scope failed: ' + d.error); return; }
+    showToast((enabled ? 'Enabled ' : 'Disabled ') + id + ' at ' + level + (name ? (' ' + name) : ''));
+  } catch (e) { showToast('Scope failed: ' + e); }
+}
+
+// Fleet options for the scope picker: worker names + the groups derived from them
+// (GET /api/sessions is the real fleet). Cached for the session.
+let _connFleet = null;
+async function _connLoadFleet() {
+  if (_connFleet) return _connFleet;
+  try {
+    const arr = await (await fetch('/api/sessions')).json();
+    const list = Array.isArray(arr) ? arr : [];
+    const workers = list.filter(s => !s.archived).map(s => s.name).filter(Boolean).sort();
+    const gs = new Set();
+    list.forEach(s => (s.groups || []).forEach(g => g && gs.add(g)));
+    _connFleet = { workers, groups: [...gs].sort() };
+  } catch (e) { _connFleet = { workers: [], groups: [] }; }
+  return _connFleet;
+}
+
+function _connHl(text, q) {
+  if (!q) return esc(text);
+  const i = text.toLowerCase().indexOf(q);
+  if (i < 0) return esc(text);
+  return esc(text.slice(0, i)) + '<mark>' + esc(text.slice(i, i + q.length)) + '</mark>' + esc(text.slice(i + q.length));
+}
+
+// Searchable dropdown overlay: type-to-filter over the real workers/groups; Enter
+// takes the top match; a non-matching query can still be used verbatim (keeps the
+// old prompt()'s flexibility for a name the fleet snapshot lacks).
+async function _connScopePicker(id, level, enabled) {
+  const fleet = await _connLoadFleet();
+  const options = level === 'group' ? fleet.groups : fleet.workers;
+  document.querySelectorAll('.conn-picker-overlay').forEach(e => e.remove());
+  const ov = document.createElement('div');
+  ov.className = 'conn-picker-overlay';
+  ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
+  ov.innerHTML = '<div class="conn-picker">'
+    + '<div class="conn-picker-h"><span>' + (enabled ? 'Enable' : 'Disable') + ' <b>' + esc(id) + '</b> for a ' + esc(level) + '</span>'
+    + '<button class="conn-picker-x" onclick="this.closest(\'.conn-picker-overlay\').remove()">&#10005;</button></div>'
+    + '<input class="conn-picker-search" type="text" placeholder="Search ' + esc(level) + 's…" autocomplete="off">'
+    + '<div class="conn-picker-list"></div></div>';
+  document.body.appendChild(ov);
+  const search = ov.querySelector('.conn-picker-search');
+  const list = ov.querySelector('.conn-picker-list');
+  const render = (q) => {
+    const ql = (q || '').toLowerCase().trim();
+    const hits = options.filter(o => !ql || o.toLowerCase().includes(ql));
+    if (hits.length) {
+      list.innerHTML = hits.map(o => '<button class="conn-picker-item" data-name="' + esc(o) + '">' + _connHl(o, ql) + '</button>').join('');
+    } else {
+      list.innerHTML = '<div class="conn-picker-empty">No ' + esc(level) + 's match'
+        + (ql ? '. <button class="conn-picker-use" data-use>Use &quot;' + esc(q.trim()) + '&quot;</button>' : '.') + '</div>';
+    }
+  };
+  render('');
+  search.addEventListener('input', () => render(search.value));
+  search.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const first = list.querySelector('.conn-picker-item');
+      const name = first ? first.getAttribute('data-name') : search.value.trim();
+      if (name) { ov.remove(); _connectorScopeWrite(id, level, name, enabled); }
+    } else if (e.key === 'Escape') { ov.remove(); }
+  });
+  list.addEventListener('click', (e) => {
+    const item = e.target.closest('.conn-picker-item');
+    if (item) { ov.remove(); _connectorScopeWrite(id, level, item.getAttribute('data-name'), enabled); return; }
+    if (e.target.closest('[data-use]')) { const n = search.value.trim(); if (n) { ov.remove(); _connectorScopeWrite(id, level, n, enabled); } }
+  });
+  setTimeout(() => search.focus(), 30);
+}
+
+// Verify a connector actually WORKS (AMUX-3339): hits POST /api/connectors/<id>/test,
+// which makes one cheap authenticated call to the provider. ApiKey connectors test
+// live now; OAuth ones report "connect first" until the token exchange lands.
+async function _connectorTest(id, btn) {
+  const out = document.getElementById('conn-test-' + id);
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Testing…';
+  if (out) { out.textContent = ''; out.className = 'conn-test-result'; }
+  try {
+    const r = await fetch('/api/connectors/' + encodeURIComponent(id) + '/test', { method: 'POST' });
+    const d = await r.json();
+    if (out) {
+      out.textContent = (d.ok ? '✓ ' : '✗ ') + (d.detail || (d.ok ? 'works' : (d.status || 'failed')));
+      out.className = 'conn-test-result ' + (d.ok ? 'ok' : 'bad');
+    }
+  } catch (e) {
+    if (out) { out.textContent = '✗ ' + e; out.className = 'conn-test-result bad'; }
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
+}
+
 async function _mdaiTabLoad() {
   const list = document.getElementById('mdai-list');
   const cnt = document.getElementById('mdai-count');
   if (!list) return;
+  // The MDAI tab is a file-DIRECTORY view of the local.amux folder (Ethan,
+  // AMUX-3326): render that folder with the same Files-explorer component the
+  // rest of the app uses, so a .mdai opens in-place (routed to the MDAI viewer)
+  // like any other file. Falls back to the flat computed-node list when no
+  // mdai_root is configured.
+  if (_mdaiRootPath === undefined) {
+    try { const rr = await fetch(API + '/api/prefs?key=mdai_root'); _mdaiRootPath = ((await rr.json()).value || '').trim(); }
+    catch (e) { _mdaiRootPath = ''; }
+  }
+  if (_mdaiRootPath) {
+    list.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.85rem;">Loading…</div>';
+    try {
+      const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(_mdaiRootPath));
+      const data = await r.json();
+      if (!data.error && typeof _renderFilesEntries === 'function') {
+        const n = (data.entries || []).length;
+        if (cnt) cnt.textContent = n ? (n + (n === 1 ? ' item' : ' items')) : '';
+        _renderFilesEntries(list, _mdaiRootPath, data, false);
+        return;
+      }
+    } catch (e) { /* fall through to the flat node list */ }
+  }
   list.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:0.85rem;">Loading computed nodes…</div>';
   try {
     const r = await fetch(API + '/api/files/mdai');
@@ -15541,7 +16839,24 @@ async function openMdaiNode(path, opts) {
   } catch (e) {}
   await _mdaiLoadHistory();
   if (opts.autorun === false) { _mdaiRender(); }
-  else { await _mdaiRun({ fromOpen: true }); }
+  else {
+    // SHOW THE LAST RESULT FIRST, then refresh behind it (Ethan, 2026-08-22:
+    // "Running the chain… takes forever").
+    //
+    // Measured on Priorities.mdai: 53 runs, `cached:false` on EVERY one, each
+    // 102-115s server-side. The cache cannot help here and it is not broken —
+    // the only source is `amux:messages?days=7`, whose content moves whenever
+    // any lane sends a message, so `inputs_hash` changes between any two runs
+    // on a live fleet. A time-windowed source is uncacheable by construction.
+    //
+    // So every open paid a full model call while the body showed a spinner and
+    // nothing else, for roughly two minutes. The previous output was already
+    // in hand — `_mdaiLoadHistory()` above just fetched it — and was being
+    // thrown away in favour of an empty box. Render it, then let the refresh
+    // land on top: the run is unchanged, only the waiting is.
+    if (_mdaiHist.length) { _mdaiRender(); _mdaiRun({ fromOpen: false }); }
+    else { await _mdaiRun({ fromOpen: true }); }
+  }
 }
 function closeMdaiNode() {
   document.getElementById('mdai-overlay').classList.remove('active');
@@ -15564,13 +16879,42 @@ async function _mdaiRun(opts) {
   opts = opts || {};
   const btn = document.getElementById('mdai-run-btn');
   if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = 'Running…'; }
+  // The button label IS the refresh indicator, and it is deliberately the only
+  // one: a background refresh over a rendered result must be visible, or stale
+  // content reads as current. I nearly added a separate #mdai-stale element
+  // here — there is no such element, so the line would have been a silent
+  // no-op under a comment claiming it said something. The button exists and is
+  // already on screen.
   const bodyEl = document.getElementById('mdai-body');
   if (opts.fromOpen && bodyEl) bodyEl.innerHTML = '<div style="padding:18px;color:var(--dim);">Running the chain…</div>';
   try {
-    const r = await fetch(API + '/api/files/mdai/run', {
-      method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ path: _mdaiCur.abs })
-    });
+    // Bound the run so it cannot hang the UI forever (AMUX-3371: Priorities.mdai
+    // sat on "Running the chain…" with no error and no way out). A real chain —
+    // even a self-fetch + a synthesis model call over weeks of messages —
+    // finishes well inside 3 min; past that it is a stuck source or a wedged
+    // model call, and a timeout that surfaces an error beats an infinite spinner.
+    const _ctrl = new AbortController();
+    // AF-141: this bounds the WHOLE RUN; the server bounds each NODE
+    // (MODEL_TIMEOUT_S, 150s). Both were 180 — two different quantities wearing
+    // the same number — so this abort always won the race and the server's
+    // specific error, which names the CLI and the budget, could never reach the
+    // user. They got the guess below instead. And a legitimate two-node chain of
+    // 100s each was killed here having exceeded no server limit at all.
+    //
+    // 600s is deliberately generous because this is a BACKSTOP against a hung
+    // server, not a quality bar: the server now fails each node at 150s and
+    // answers, so a run reaching 600s means the server itself stopped talking.
+    // A long wait is affordable now that it is not a blank one — the previous
+    // result renders immediately and this refresh lands behind it.
+    const _to = setTimeout(() => _ctrl.abort(), 600000);
+    let r;
+    try {
+      r = await fetch(API + '/api/files/mdai/run', {
+        method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ path: _mdaiCur.abs }),
+        signal: _ctrl.signal
+      });
+    } finally { clearTimeout(_to); }
     const d = await r.json().catch(() => ({}));
     if (!r.ok || d.error) {
       _mdaiRunError = d.error || ('HTTP ' + r.status);
@@ -15580,7 +16924,10 @@ async function _mdaiRun(opts) {
       await _mdaiLoadHistory();
     }
   } catch (e) {
-    _mdaiRunError = (e && e.message) || 'run failed'; _mdaiRunCycle = null;
+    _mdaiRunError = (e && e.name === 'AbortError')
+      ? 'No answer from the server for 10 minutes, so the run was stopped. Each step is capped at 150s server-side and reports its own error, so reaching this means the server stopped responding rather than one step being slow — check that amux is up, then retry.'
+      : ((e && e.message) || 'run failed');
+    _mdaiRunCycle = null;
   }
   if (btn) btn.disabled = false;
   _mdaiRender();
@@ -15590,6 +16937,62 @@ function _mdaiHistNav(delta) {
   const n = Math.max(0, Math.min(_mdaiHist.length - 1, _mdaiHistIdx + delta));
   if (n === _mdaiHistIdx) return;
   _mdaiHistIdx = n; _mdaiRender();
+}
+
+// Ellipsis menu on the MDAI viewer: download / copy / read aloud the currently
+// shown rendered version (Ethan, AMUX-3320). Read-aloud reuses _ttsSpeak.
+function _mdaiCurrentText() {
+  const cur = _mdaiHist[_mdaiHistIdx] || null;
+  return (cur && cur.output) ? cur.output : '';
+}
+function _mdaiMenu(btn) {
+  document.querySelectorAll('.explore-menu-popup').forEach(el => el.remove());
+  const text = _mdaiCurrentText();
+  const popup = document.createElement('div');
+  popup.className = 'explore-menu-popup';
+  const item = (label, fn) => {
+    const b = document.createElement('button');
+    b.className = 'explore-menu-item';
+    b.textContent = label;
+    b.onclick = () => { popup.remove(); fn(); };
+    popup.appendChild(b);
+  };
+  item('Download', () => _mdaiDownload(text));
+  item('Copy', () => {
+    if (!text) { showToast('Nothing to copy — run the node first'); return; }
+    navigator.clipboard.writeText(text).then(() => showToast('Copied'), () => showToast('Copy failed'));
+  });
+  item('Read aloud', () => {
+    if (!text) { showToast('Nothing to read — run the node first'); return; }
+    _ttsSpeak(text);
+  });
+  document.body.appendChild(popup);
+  const r = btn.getBoundingClientRect();
+  popup.style.position = 'fixed';
+  popup.style.top = (r.bottom + 4) + 'px';
+  popup.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+  popup.style.zIndex = '400';
+  setTimeout(() => {
+    const close = (e) => {
+      if (!popup.contains(e.target) && e.target !== btn) {
+        popup.remove();
+        document.removeEventListener('click', close);
+      }
+    };
+    document.addEventListener('click', close);
+  }, 0);
+}
+function _mdaiDownload(text) {
+  if (!text) { showToast('Nothing to download — run the node first'); return; }
+  const title = (document.getElementById('mdai-title') || {}).textContent || 'mdai';
+  const name = title.replace(/\.mdai$/i, '') + '.md';
+  const blob = new Blob([text], { type: 'text/markdown' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  showToast('Downloaded ' + name);
 }
 // Write the current parsed state back to disk (used by every structured edit).
 // Uses the upload endpoint (see _mdaiRootRel) because PUT /api/file rejects .mdai.
@@ -15611,8 +17014,15 @@ async function _mdaiWriteFile() {
 async function _mdaiSavePrompt(idx) {
   const ta = document.getElementById('mdai-prompt-' + idx);
   if (!ta || !_mdaiCur || !_mdaiCur.sources[idx]) return;
+  // The source PATH is editable too now (Ethan 2026-08-19: "make it so i can edit
+  // this" pointing at `amux:messages?days=14`). The same "Save & re-run" persists
+  // a changed path — e.g. days=14 -> days=28, or swapping a file for an amux: ref —
+  // alongside the edge prompt, then re-runs so the new source takes effect. Round-
+  // trips through the same _mdaiYq quoting the prompt save has always used.
+  const pathInp = document.getElementById('mdai-path-' + idx);
+  if (pathInp) _mdaiCur.sources[idx].path = pathInp.value.trim();
   _mdaiCur.sources[idx].prompt = ta.value;
-  if (await _mdaiWriteFile()) { showToast('Edge prompt saved'); await _mdaiRun(); }
+  if (await _mdaiWriteFile()) { showToast('Source saved'); await _mdaiRun(); }
 }
 async function _mdaiRemoveSource(idx) {
   if (!_mdaiCur || !_mdaiCur.sources[idx]) return;
@@ -15673,20 +17083,44 @@ function _mdaiRender() {
   else if (!_mdaiRunError) html += '<div style="color:var(--dim);font-size:0.85rem;">This node has no output yet. Press Run to compute it.</div>';
   html += '</div></div>';
 
-  // Sources & instruction editor.
-  html += '<div class="mdai-section mdai-edit">';
+  // Bottom tabs (Ethan, AMUX-3322): (1) Diagram — the node's DAG of sources,
+  // the synthesis prompt and the output; (2) List — the same graph as an
+  // editable list. View lives in Diagram, edit in List; both always reachable.
+  html += '<div class="mdai-btabs">'
+    + '<button class="mdai-btab' + (_mdaiBottomTab === 'diagram' ? ' active' : '') + '" onclick="_mdaiSetBottomTab(\'diagram\')">&#9672; Diagram</button>'
+    + '<button class="mdai-btab' + (_mdaiBottomTab === 'list' ? ' active' : '') + '" onclick="_mdaiSetBottomTab(\'list\')">&#8801; List</button>'
+    + '</div>';
+  html += '<div class="mdai-btab-content">'
+    + (_mdaiBottomTab === 'diagram' ? _mdaiDiagramHtml(cur) : _mdaiListHtml())
+    + '</div>';
+
+  el.innerHTML = html;
+  _bindMdFileLinks(el);
+}
+
+let _mdaiBottomTab = 'diagram';   // 'diagram' | 'list' (Ethan, AMUX-3322)
+function _mdaiSetBottomTab(t) { _mdaiBottomTab = t; _mdaiRender(); }
+
+// The List tab: the editable sources + instruction (the old inline editor).
+function _mdaiListHtml() {
+  const c = _mdaiCur;
+  if (!c) return '';
+  let html = '<div class="mdai-section mdai-edit">';
   html += '<div class="mdai-edit-h">Sources</div>';
-  if (!_mdaiCur.parseOk) {
+  if (!c.parseOk) {
     html += '<div class="mdai-note">This node\'s frontmatter uses a form the inline editor will not rewrite safely. '
       + '<a href="#" onclick="event.preventDefault();_mdaiOpenRaw()">Open the raw file</a> to edit its sources.</div>';
   }
-  if (!_mdaiCur.sources.length) {
-    html += '<div class="mdai-note">No sources connected. Use a file\'s &#8942; menu in the Files tab (Connect to .mdai) to add one.</div>';
+  if (!c.sources.length) {
+    html += '<div class="mdai-note">No source files connected — this node is <b>prompt-only</b>. Its instruction fetches its own data at run time '
+      + '(e.g. Priorities pulls the last two weeks of amux messages). Add a file source via a file\'s &#8942; menu (Connect to .mdai) if you want one.</div>';
   } else {
-    _mdaiCur.sources.forEach((s, idx) => {
+    c.sources.forEach((s, idx) => {
       html += '<div class="mdai-edge">'
-        + '<div class="mdai-edge-path" title="' + esc(s.path) + '">' + esc(s.path || '(unnamed source)') + '</div>';
-      if (_mdaiCur.parseOk) {
+        + (c.parseOk
+            ? '<input class="mdai-edge-path mdai-edge-path-input" id="mdai-path-' + idx + '" value="' + esc(s.path || '') + '" placeholder="source — a file path or an amux: ref (e.g. amux:messages?days=14)" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off">'
+            : '<div class="mdai-edge-path" title="' + esc(s.path) + '">' + esc(s.path || '(unnamed source)') + '</div>');
+      if (c.parseOk) {
         html += '<textarea class="mdai-prompt" id="mdai-prompt-' + idx + '" rows="2" placeholder="Edge prompt">' + esc(s.prompt || '') + '</textarea>'
           + '<div class="mdai-edge-actions">'
           + '<button class="mdai-sbtn" onclick="_mdaiSavePrompt(' + idx + ')">Save &amp; re-run</button>'
@@ -15699,16 +17133,52 @@ function _mdaiRender() {
     });
   }
   html += '<div class="mdai-edit-h" style="margin-top:12px;">Instruction (node body)</div>';
-  if (_mdaiCur.parseOk) {
-    html += '<textarea class="mdai-body-ta" id="mdai-body-ta" rows="5" placeholder="What should this node synthesize from its sources?">' + esc(_mdaiCur.body || '') + '</textarea>'
+  if (c.parseOk) {
+    html += '<textarea class="mdai-body-ta" id="mdai-body-ta" rows="5" placeholder="What should this node synthesize from its sources?">' + esc(c.body || '') + '</textarea>'
       + '<div class="mdai-edge-actions"><button class="mdai-sbtn" onclick="_mdaiSaveBody()">Save &amp; re-run</button></div>';
   } else {
-    html += '<div class="mdai-edge-prompt-ro">' + esc(_mdaiCur.body || '') + '</div>';
+    html += '<div class="mdai-edge-prompt-ro">' + esc(c.body || '') + '</div>';
   }
   html += '</div>';
+  return html;
+}
 
-  el.innerHTML = html;
-  _bindMdFileLinks(el);
+// The Diagram tab: the node's DAG as a vertical flow — source(s) -> synthesis
+// (model + instruction) -> output. Clicking a node jumps to the List tab to edit
+// it. A prompt-only node shows a self-fetch source instead of a file.
+function _mdaiDiagramHtml(cur) {
+  const c = _mdaiCur;
+  if (!c) return '';
+  let h = '<div class="mdai-diagram">';
+  if (c.sources.length) {
+    h += '<div class="mdai-dg-row">';
+    c.sources.forEach((s) => {
+      h += '<div class="mdai-dg-node mdai-dg-src" onclick="_mdaiSetBottomTab(\'list\')" title="Edit in List">'
+        + '<div class="mdai-dg-kind">source</div>'
+        + '<div class="mdai-dg-title">' + esc(s.path || '(unnamed)') + '</div>'
+        + (s.prompt ? '<div class="mdai-dg-sub">' + esc(s.prompt.slice(0, 90)) + '</div>' : '')
+        + '</div>';
+    });
+    h += '</div>';
+  } else {
+    h += '<div class="mdai-dg-node mdai-dg-src mdai-dg-selffetch" title="Prompt-only: fetches its own data at run time">'
+      + '<div class="mdai-dg-kind">prompt-only source</div>'
+      + '<div class="mdai-dg-sub">no source file — the instruction fetches its own data at run time</div>'
+      + '</div>';
+  }
+  h += '<div class="mdai-dg-arrow">&#8595;</div>';
+  const model = (cur && cur.model) || c.model || 'model';
+  h += '<div class="mdai-dg-node mdai-dg-synth" onclick="_mdaiSetBottomTab(\'list\')" title="Edit the instruction in List">'
+    + '<div class="mdai-dg-kind">synthesis &middot; ' + esc(model) + '</div>'
+    + '<div class="mdai-dg-sub">' + (esc((c.body || '').slice(0, 160)) || '(no instruction)') + '</div>'
+    + '</div>';
+  h += '<div class="mdai-dg-arrow">&#8595;</div>';
+  h += '<div class="mdai-dg-node mdai-dg-out">'
+    + '<div class="mdai-dg-kind">output' + (cur ? (cur.cached ? ' &middot; cached' : ' &middot; fresh') : '') + '</div>'
+    + '<div class="mdai-dg-sub">' + (cur && cur.output ? esc(cur.output.slice(0, 120)) + '&hellip;' : 'not run yet') + '</div>'
+    + '</div>';
+  h += '</div>';
+  return h;
 }
 
 // ── Connect picker: make a file/folder a source of a chosen .mdai node ──
@@ -16570,6 +18040,8 @@ function openCreate() {
   document.getElementById('create-provider-gemini').classList.remove('selected');
   const _grokBtn0 = document.getElementById('create-provider-grok');
   if (_grokBtn0) _grokBtn0.classList.remove('selected');
+  const _iso0 = document.getElementById('create-isolated');
+  if (_iso0) { _iso0.checked = false; _toggleIsolated(false); }
   const _ollamaBtn0 = document.getElementById('create-provider-ollama');
   if (_ollamaBtn0) _ollamaBtn0.classList.remove('selected');
   const _omField0 = document.getElementById('create-ollama-model-field');
@@ -16751,6 +18223,16 @@ function _toggleCreateBranch(on) {
     setTimeout(() => inp.focus({preventScroll: true}), 50);
   }
 }
+// Isolation is the one create-time choice that cannot be changed later without
+// relaunching: spawn injects no AMUX_SESSION/AMUX_URL and no --mcp-config for an
+// isolated lane (AMUX-3232), so a worker isolated after the fact has already
+// started with the harness attached. The panel spells out what it gives up,
+// because "isolated" reads like a mild sandbox and it is not.
+function _toggleIsolated(on) {
+  const el = document.getElementById('create-isolated-info');
+  if (el) el.style.display = on ? '' : 'none';
+}
+
 function _toggleWorktree(on) {
   document.getElementById('create-worktree-info').style.display = on ? '' : 'none';
   if (on) {
@@ -16833,6 +18315,11 @@ async function submitCreate() {
     if (_m) createBody.model = _m;
   }
   if (worktreeEnabled) createBody.worktree = true;
+  // ISOLATED (Ethan, 2026-08-27). Sent only when true: the server writes
+  // CC_ISOLATED=1 and absence already means "not isolated" to every reader, so
+  // an explicit false would be a second spelling of the default.
+  const _isoEl = document.getElementById('create-isolated');
+  if (_isoEl && _isoEl.checked) createBody.isolated = true;
   let r;
   try {
     r = await fetch(API + '/api/sessions', {
@@ -16884,6 +18371,9 @@ async function submitCreate() {
         body: JSON.stringify({branch: 'none'}),
       }).catch(() => {});
     }
+    // If YOLO-by-default is on, enable it BEFORE start so the worker launches in
+    // YOLO mode (adds the flag to CC_FLAGS; keeps the resolved --model).
+    await _applyYoloDefault(name);
     // Start session — pass prompt to server so it waits for Claude to be ready
     const startBody = prompt ? { prompt } : {};
     await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/start', {
@@ -17983,6 +19473,295 @@ function _mergeArchived(data) {
   const have = new Set(data.map(i => i.id));
   return data.concat(boardArchived.filter(i => !have.has(i.id)));
 }
+// ARCHIVED AS A VISIBLE GROUP (AMUX-3715, requested by tubescience).
+//
+// `amux board archive` sets archived=1 and leaves `status` alone, so archived
+// work keeps its old status and scatters — they archived 81 cards in one
+// session and the group became invisible. The data was already reachable
+// (`is:archived` triggers _ensureArchived below), but only by knowing the query
+// syntax. What was missing is a discoverable, persistent affordance.
+//
+// A read-only collapsible SECTION, not a column: they archive deliberately and
+// in bulk via the CLI, never by dragging, so a drop target would be a footgun
+// for the actual usage and would add a mutation path nobody asked for. Their
+// words: "drag-to-archive would be a footgun for exactly my usage."
+//
+// COLLAPSED BY DEFAULT and the count comes from ?count=1, because the archived
+// set was MEASURED at 445KB raw / 87KB gzipped — +38% on the board poll. Paying
+// that on every load of a mobile-first dashboard to render a number is the
+// wrong trade; the rows load only when someone opens it.
+let boardArchivedOpen = false;
+try { boardArchivedOpen = localStorage.getItem('amuxArchivedOpen') === '1'; } catch (e) {}
+// 200: measured. `archived=1&limit=200&full=1` is 142KB gzipped, against 2.9MB
+// for the unbounded query the `is:archived` path uses.
+const _ARCHIVED_SLICE = 200;
+let _archivedCountN = null;
+let _archivedCountAt = 0;
+
+// The server scope the Archived section should fetch with, derived from the
+// board's OWN parsed query (AMUX-3716, found by tubescience co-verifying 3715).
+//
+// The section used to fetch a global head-200 of 3008 archived cards, so which
+// lane's cards you saw was an accident of archive ordering. tubescience's 81
+// all landed inside the slice (last index 145) purely because theirs were the
+// most recently archived — the moment another lane bulk-archives 200, theirs
+// fall off and the section stops answering the question it exists for.
+//
+// Uses `_bqParse`, the board's own parser, rather than a second regex over the
+// query string. A private parse here would drift from the one the rows are
+// filtered by, and then the section would fetch one population and display a
+// filter over a different one (ethos rule 1).
+//
+// Positive `session:`/`worker:` facets only. A NEGATED facet (-session:x) does
+// not narrow to anything the server can scope by — it excludes — so it stays a
+// client-side filter over the unscoped fetch, which is correct rather than a
+// limitation: narrowing the fetch on an exclusion would drop rows the board is
+// still showing.
+function _archivedScope() {
+  const parsed = _bqParse(boardSearchQuery || '');
+  const names = [];
+  (parsed.terms || []).forEach(function (t) {
+    if (t.neg) return;
+    if (t.key !== 'session' && t.key !== 'worker') return;
+    (t.vals || []).forEach(function (v) { if (v && names.indexOf(v) < 0) names.push(v); });
+  });
+  // One session -> scope the fetch. Several -> the server takes one value, so
+  // scoping to the first would silently drop the others; stay unscoped and let
+  // the client filter, with the cap notice saying so.
+  return names.length === 1 ? names[0] : null;
+}
+
+function _archivedQuery(extra) {
+  const sc = _archivedScope();
+  // `done_limit=0` HERE TOO, or the count and the list describe different
+  // populations (found while verifying tubescience's co-verification numbers).
+  //
+  // The count query already passed it. This one did not, and unscoped that is a
+  // real disagreement: the count returns 3008 (uncapped) while the list is drawn
+  // from 662 (the fleet-wide terminal cap), so the header would have said
+  // "Showing 200 of 3008" about 200 rows taken from a different set. That is
+  // precisely the failure ?count=1 was built to prevent, reintroduced one query
+  // string away from it.
+  //
+  // The scoped branch was already correct by accident: a scoped query is not
+  // capped by default (the ts-gke fix — "A SCOPED query must answer
+  // completely"), which is exactly why scoping surfaced 154 of tubescience's
+  // cards where the fleet view showed 81. Correct-by-accident in one branch is
+  // still wrong in the other.
+  return '/api/board?archived=1' + (sc ? '&session=' + encodeURIComponent(sc) : '')
+    + '&done_limit=0&limit=' + _ARCHIVED_SLICE + (extra || '');
+}
+
+let _archivedScopeAt = null;
+async function _ensureArchivedCount() {
+  // KEYED ON THE SCOPE, not just on time. Without this, typing session:x into
+  // the board would keep serving the previous scope's cached count for up to a
+  // minute — a header describing a population the rows below no longer are.
+  const sc = _archivedScope();
+  const fresh = _archivedCountN !== null
+    && sc === _archivedScopeAt
+    && (Date.now() - _archivedCountAt) < 60000;
+  if (fresh) return;
+  try {
+    // The SAME scope + limit the expand fetches with, so the header cannot
+    // promise a number the section then contradicts. `count` is computed
+    // server-side from the same filter+cap the list runs; `_ARCHIVED_SLICE` is
+    // NOT applied to it, so this is the TRUE size of the filtered population
+    // and the rows may be a slice of it — which the cap notice then states.
+    const r = await fetch(API + '/api/board?archived=1'
+      + (sc ? '&session=' + encodeURIComponent(sc) : '') + '&done_limit=0&count=1');
+    const d = await r.json();
+    if (typeof d.count === 'number') {
+      _archivedCountN = d.count;
+      _archivedCountAt = Date.now();
+      _archivedScopeAt = sc;
+      renderBoard();
+    }
+  } catch (e) { console.error('archived count:', e); }
+}
+
+// ITS OWN BOUNDED FETCH, not _ensureArchived.
+//
+// _ensureArchived exists for the `is:archived` QUERY and fetches
+// `archived=1&done_limit=0&full=1` — measured live at 8.9MB raw / 2.9MB
+// gzipped across 3008 archived cards fleet-wide. Wiring a one-tap section to
+// that would have put a 2.9MB pull one thumb away on a mobile-first dashboard.
+//
+// I nearly shipped exactly that. The +38% figure I used to justify the design
+// was measured on `archived=1&slim=1` (87KB gzip) — a DIFFERENT QUERY from the
+// one the code runs. Measuring the wrong thing and reasoning from the number is
+// the same failure as verifying a boundary in the wrong language; the fix is
+// the same too, which is to measure the call the code actually makes.
+//
+// 200 rows with prose is 142KB gzipped and is roughly the limit of what a human
+// reviews in one sitting, so the bound is a UX bound that happens to be a
+// payload bound. `full=1` because slim DROPS source_ref, and the trigger is the
+// one field tubescience said they would act on.
+let _archivedSliceAt = 0;
+let _archivedSliceScope = null;
+async function _loadArchivedSlice() {
+  if (_archivedLoading) return _archivedLoading;
+  const sc = _archivedScope();
+  // Same scope-keying as the count: a cached slice from a different scope is
+  // rows that do not belong to the filter the board is showing.
+  if (boardArchived.length && sc === _archivedSliceScope
+      && (Date.now() - _archivedSliceAt) < 60000) return;
+  _archivedLoading = (async () => {
+    try {
+      const r = await fetch(API + _archivedQuery('&full=1'));
+      const d = await r.json();
+      if (Array.isArray(d)) {
+        boardArchived = d.filter(i => i.archived);
+        _archivedSliceAt = Date.now();
+        _archivedSliceScope = sc;
+        renderBoard();
+      }
+    } catch (e) { console.error('archived slice:', e); }
+    finally { _archivedLoading = null; }
+  })();
+  return _archivedLoading;
+}
+
+function _toggleArchivedSection() {
+  boardArchivedOpen = !boardArchivedOpen;
+  try { localStorage.setItem('amuxArchivedOpen', boardArchivedOpen ? '1' : '0'); } catch (e) {}
+  if (boardArchivedOpen) _loadArchivedSlice();
+  renderBoard();
+}
+
+// Render the section. Grouped BY UNDERLYING STATUS, because tubescience's
+// second answer was explicit that a flat list is the visibility problem
+// relocated rather than solved: "79 flat is the visibility problem relocated".
+//
+// Each row carries status + title + the TRIGGER, and the trigger is the
+// load-bearing field — archiving de-arms it (archived is excluded from every
+// autonomy loop), so for a card parked on a condition this view is the only
+// path back to it when that condition lands. Their HK-04/HK-01/ADM-16 are in
+// exactly that state.
+function _renderBoardArchivedSection(container) {
+  const wrap = document.createElement('div');
+  wrap.className = 'board-archived-section';
+  const n = _archivedCountN === null ? '…' : _archivedCountN;
+  const caret = boardArchivedOpen ? '▾' : '▸';
+  let html = '<button class="board-archived-header" onclick="_toggleArchivedSection()" '
+    + 'aria-expanded="' + (boardArchivedOpen ? 'true' : 'false') + '">'
+    + caret + ' Archived (' + esc(String(n)) + ')</button>';
+  if (boardArchivedOpen) {
+    // ASKING FOR IT IS WHAT LOADS IT (AMUX-2271's rule, which I broke).
+    //
+    // The fetch used to live ONLY in the toggle handler, so the open state
+    // persisting in localStorage produced a section that renders expanded on the
+    // next page load and never fetches — permanently empty, no request, no
+    // error. Caught by reloading with the section already open, which no
+    // data-layer check reaches and no first visit reproduces.
+    //
+    // `_bqHideArchived` states the rule for the query path: "The ONE place that
+    // decides archived visibility is also the right place to make sure the data
+    // exists... Hooking the trigger anywhere else would be a second mechanism."
+    // This render is that place for the section, so the trigger belongs here and
+    // not only in the toggle. `_loadArchivedSlice` is idempotent and TTL-guarded.
+    // UNCONDITIONAL. `_loadArchivedSlice` already decides — it returns early
+    // when a fetch is in flight, and when the cached slice is BOTH the current
+    // scope and fresh. Guarding it here with `if empty` re-implemented half of
+    // that decision and got it wrong: with 200 unscoped rows cached, typing
+    // session:x left the array non-empty, so the scoped refetch never fired and
+    // the section filtered the STALE unscoped slice forever — 86 rows under a
+    // header that correctly said 154. Two mechanisms deciding one thing, and
+    // the outer one could not see scope at all.
+    _loadArchivedSlice();
+    // THE SAME CLIENT FILTERS THE ACTIVE COLUMNS USE. The server scope narrows
+    // the FETCH (session only); everything else in the board's query — owner,
+    // type, tag, negations, free text — is client-side, and the section must
+    // apply it too or it shows a different population than the columns beside
+    // it under the same query. `_bqFilter` is shared rather than re-derived.
+    let rows = (boardArchived || []).slice();
+    // THE OWNER TOGGLE IS NOT APPLIED HERE, and this file already records why.
+    //
+    // Rendered, the first version showed "Archived (3008)" above ONE row. The
+    // count comes from ?count=1 (unfiltered by owner, because owner filtering is
+    // client-side and the server cannot do it), while the rows were being run
+    // through the Human/Sessions toggle — which defaults to Human, and archived
+    // cards are almost all agent-owned. Header and body describing different
+    // populations, which is the defect this whole section was built to fix.
+    //
+    // renderBoard's own comment, twelve thousand lines up, is the same bug:
+    // "Stacking made the chip counts lie: 'Rotting 5' rendered 0 cards, because
+    // all 5 are agent-owned and the toggle defaults to Human. The count is
+    // computed over the same unfiltered set, so a chip that says 5 must show 5.
+    // The toggle is the browse default; the query is the filter."
+    //
+    // So the same rule: the QUERY filters this section (a user asked for it),
+    // the TOGGLE does not (it is a browse default for active work, and archive
+    // review is not about ownership). Only rendering it caught this — every
+    // data-layer check passed, because the mismatch is between a server count
+    // and a client filter and neither side is wrong alone.
+    // SAVE/RESTORE `_bqRankActive` around the shared filter. `_bqFilter` sets
+    // that global, and `_boardCardSort`'s own comment says it must reflect "the
+    // _bqFilter call that produced this render's `visible` set" — which is the
+    // columns' call, made earlier in renderBoard. Reusing the shared predicate
+    // is right; silently repointing the ranking flag it owns is not, and it
+    // would surface as columns losing relevance order on any later re-sort
+    // (a drag, the peek board) rather than here, where it would be found.
+    const _rankWas = _bqRankActive;
+    rows = _bqFilter(rows, boardSearchQuery);
+    _bqRankActive = _rankWas;
+    if (!rows.length) {
+      html += '<div class="board-archived-empty">'
+        + (_archivedCountN === 0 ? 'Nothing archived.' : 'Loading…') + '</div>';
+    } else {
+      const groups = {};
+      rows.forEach(function (i) {
+        const st = _statusCanon(i.status || 'todo');
+        (groups[st] = groups[st] || []).push(i);
+      });
+      // NO SILENT CAP. The header count is the TRUE total; this list is a
+      // bounded slice of it, and a section that showed 200 of 3008 without
+      // saying so would read as "this is everything archived" — which is the
+      // same false completeness the whole feature exists to fix.
+      // NO SILENT CAP, AND NAME THE FILTER (AMUX-3716's acceptance criterion,
+      // tubescience's words: a scoped view that silently truncates is the same
+      // false-completeness bug one scope down).
+      //
+      // The count is the true size of the SCOPED population; the rows are a
+      // slice of it, further narrowed client-side. Saying "200 of 3008" while
+      // scoped to one session would describe the fleet and mislead in the
+      // other direction, so the scope is named either way.
+      const _sc = _archivedScope();
+      const _scopeTxt = _sc ? ' in session:' + esc(_sc) : ' fleet-wide';
+      if (_archivedCountN !== null && _archivedCountN > rows.length) {
+        html += '<div class="board-archived-empty">Showing ' + rows.length + ' of '
+          + _archivedCountN + _scopeTxt + '.'
+          + (_sc ? '' : ' Add <code>session:&lt;lane&gt;</code> to the search box to scope this'
+                       + ' to one lane and see all of its archived cards.')
+          + '</div>';
+      } else if (_archivedCountN !== null) {
+        html += '<div class="board-archived-empty">All ' + rows.length + _scopeTxt
+          + '.</div>';
+      }
+      Object.keys(groups).sort().forEach(function (st) {
+        const g = groups[st];
+        html += '<div class="board-archived-group"><div class="board-archived-group-h">'
+          + esc(st) + ' (' + g.length + ')</div>';
+        g.forEach(function (i) {
+          const trig = String(i.source_ref || '').trim();
+          html += '<div class="board-archived-row" onclick="openBoardDetail(\'' + esc(i.id) + '\')">'
+            + '<span class="board-archived-id">' + esc(i.id) + '</span> '
+            + '<span class="board-archived-title">' + esc(i.title || '') + '</span>'
+            + (trig
+                ? '<div class="board-archived-trigger" title="archiving DE-ARMS this trigger — '
+                  + 'archived cards are excluded from every autonomy loop, so it will not fire">'
+                  + '⚑ ' + esc(trig) + '</div>'
+                : '')
+            + '</div>';
+        });
+        html += '</div>';
+      });
+    }
+  }
+  wrap.innerHTML = html;
+  container.appendChild(wrap);
+}
+
 async function _ensureArchived() {
   // One in-flight fetch at a time; refresh at most once a minute, since the
   // age-archive sweep only moves cards every few hours.
@@ -17990,7 +19769,7 @@ async function _ensureArchived() {
   if (boardArchived.length && (Date.now() - _archivedAt) < 60000) return;
   _archivedLoading = (async () => {
     try {
-      const r = await fetch(API + '/api/board?archived=1&done_limit=0');
+      const r = await fetch(API + '/api/board?archived=1&done_limit=0&full=1');
       const d = await r.json();
       if (Array.isArray(d)) {
         boardArchived = d.filter(i => i.archived);
@@ -18226,11 +20005,11 @@ function switchView(view) {
   // Persist the tab to localStorage so it survives iOS evicting the backgrounded
   // PWA (which wipes sessionStorage but keeps localStorage) — restored on load.
   try { localStorage.setItem('amux_ui_view', JSON.stringify({ v: view, ts: Date.now() })); } catch(e) {}
-  const _svIds = ['session', 'board', 'groups', 'calendar', 'scheduler', 'files', 'mdai', 'proxies', 'logs', 'messages', 'skills', 'sql', 'map', 'metrics', 'cost', 'torrents', 'terminal', 'browser', 'graph'];
-  const _svNames = ['sessions', 'board', 'groups', 'calendar', 'scheduler', 'files', 'mdai', 'proxies', 'logs', 'messages', 'skills', 'sql', 'map', 'metrics', 'cost', 'torrents', 'terminal', 'browser', 'graph'];
-  // MUST stay index-aligned with _svIds/_svNames above (19 entries). It once had
+  const _svIds = ['session', 'board', 'groups', 'calendar', 'scheduler', 'files', 'mdai', 'proxies', 'logs', 'messages', 'skills', 'sql', 'map', 'metrics', 'cost', 'torrents', 'terminal', 'browser', 'graph', 'connectors'];
+  const _svNames = ['sessions', 'board', 'groups', 'calendar', 'scheduler', 'files', 'mdai', 'proxies', 'logs', 'messages', 'skills', 'sql', 'map', 'metrics', 'cost', 'torrents', 'terminal', 'browser', 'graph', 'connectors'];
+  // MUST stay index-aligned with _svIds/_svNames above (20 entries). It once had
   // 18 for 19 ids, so 'graph' ran off the end and took the '' fallback by accident.
-  const _svDisplay = ['', '', '', 'flex', '', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', '', 'flex', 'flex'];
+  const _svDisplay = ['', '', '', 'flex', '', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', 'flex', '', 'flex', 'flex', 'flex'];
   for (let i = 0; i < _svIds.length; i++) {
     const ve = document.getElementById(_svIds[i] + '-view');
     if (ve) ve.style.display = view === _svNames[i] ? (_svDisplay[i] || '') : 'none';
@@ -18259,6 +20038,7 @@ function switchView(view) {
   if (view === 'messages') _messagesLoad(true, '');
   if (view === 'files') { loadFiles(_filesPath); _filesRenderBookmarks(); }
   if (view === 'mdai') _mdaiTabLoad();
+  if (view === 'connectors') _connectorsTabLoad();
   if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
   if (view !== 'files') {
     try { if (location.hash.startsWith('#path=')) history.replaceState({}, '', location.pathname); } catch(e) {}
@@ -19985,6 +21765,20 @@ function toggleSchedExpand(id) {
   if (btn) btn.textContent = showing ? 'View' : 'Hide';
 }
 
+// The last-run cell for a schedule row, shared by the enabled AND disabled
+// templates (and therefore by both the global scheduler and the worker-details
+// peek, which render through the same renderScheduler). `last_run` arrives either
+// as an epoch int/string or an ISO wall-clock string, so normalise both; the
+// title carries the absolute local time, the label the relative one. Extracted so
+// the two row templates cannot drift on "when did this last run" (Ethan 2026-08-19).
+function _schedLastRunHTML(s) {
+  if (!s || !s.last_run) return '<span style="color:var(--dim);">never</span>';
+  const abs = /^\d+$/.test(String(s.last_run))
+    ? new Date((+s.last_run > 2e9 ? +s.last_run : +s.last_run * 1000)).toLocaleString()
+    : new Date(s.last_run).toLocaleString();
+  return `<span style="color:var(--dim);" title="last run: ${esc(abs)}">&#x2713; ${relTime(s.last_run)}</span>`;
+}
+
 function renderScheduler(opts) {
   opts = opts || {};
   const listEl = document.getElementById(opts.listId || 'scheduler-list');
@@ -20072,8 +21866,7 @@ function renderScheduler(opts) {
       const fireBadge = fpd
         ? `<span class="sched-fires${share >= 20 ? ' hot' : ''}" title="${fpd} fires in 24h = ${share}% of fleet">${fpd}/day${share >= 5 ? ` \u00B7 ${share}%` : ''}</span>`
         : '';
-      const _lrTitle = s.last_run ? (/^\d+$/.test(String(s.last_run)) ? new Date((+s.last_run > 2e9 ? +s.last_run : +s.last_run * 1000)).toLocaleString() : new Date(s.last_run).toLocaleString()) : '';
-      const lastRel = s.last_run ? `<span style="color:var(--dim);" title="${esc(_lrTitle)}">&#x2713; ${relTime(s.last_run)}</span>` : `<span style="color:var(--dim);">never</span>`;
+      const lastRel = _schedLastRunHTML(s);
       // The ⚡trigger / 👁watch / "stop:" badges lived here. They advertised
       // behaviour this server does not have — the pane-polling watcher and the
       // event-trigger loop were never ported from Python — so a badge could
@@ -20135,9 +21928,10 @@ function renderScheduler(opts) {
               <span style="font-weight:600;font-size:0.82rem;">${esc(s.title)}</span>
               <code class="sched-cadence-pill">${esc(recLabel)}</code>
             </div>
-            <div style="font-size:0.7rem;color:var(--dim);display:flex;align-items:center;gap:6px;">
+            <div style="font-size:0.7rem;color:var(--dim);display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
               ${s.session ? `<span style="color:var(--accent);">${esc(s.session)}</span>` : ''}
-              <span>&#xD7;${s.run_count || 0}</span>
+              ${_schedLastRunHTML(s)}
+              <span title="Total runs">&#xD7;${s.run_count || 0}</span>
               ${dots ? `<span style="display:flex;align-items:center;gap:2px;">${dots}</span>` : ''}
             </div>
             <div class="sched-actions">
@@ -20522,7 +22316,7 @@ async function fetchBoard() {
       // save guard. The edit modal is the one that mattered: it filled its
       // textarea from the list item and saved that back, so flipping this line
       // first would have blanked the description of every card anyone opened.
-      fetch(API + '/api/board?archived=0&slim=1', _boardEtag ? { headers: boardHeaders } : undefined),
+      fetch(API + '/api/board?archived=0&slim=1&quota=1', _boardEtag ? { headers: boardHeaders } : undefined),
       fetch(API + '/api/board/statuses'),
       fetch(API + '/api/board/session-gates'),
     ]);
@@ -21461,7 +23255,7 @@ function _bqEnsureFullText(items) {
   if (!items.length || items[0].desc !== undefined) return;   // not slim — nothing to do
   if (_bqFullPending || Date.now() - _bqFullAt < 60000) return;
   _bqFullPending = true;
-  fetch(API + '/api/board?archived=0')
+  fetch(API + '/api/board?archived=0&full=1')
     .then(r => (r.ok ? r.json() : null))
     .then(full => {
       if (!Array.isArray(full)) return;
@@ -21477,7 +23271,93 @@ function _bqEnsureFullText(items) {
     .finally(() => { _bqFullPending = false; });
 }
 
+// ── BM25 relevance ranking (Ethan 2026-08-18) ───────────────────────────────
+// Board free-text search MATCHES across every field (see _bqMatch's _hay); this
+// RANKS the matches by BM25F so the most relevant card is first rather than
+// whatever pos it happened to carry. Fields are boosted — a term in the title or
+// id is a stronger signal than one buried in the History/log — and df/idf are
+// taken over the whole loaded board (the corpus), so a rare term lifts the few
+// cards that carry it while tf saturation (k1) + length normalization (b) order
+// the matches among themselves. Standard BM25F: legitimately ranking, not a
+// popularity heuristic, so it compounds with more/better fields rather than
+// capping on a hand-tuned weight.
+const _BM25_K1 = 1.2, _BM25_B = 0.75;
+// The SAME fields _bqMatch searches, each with a boost. Keep this list in step
+// with _bqMatch's _hay: a field searched but not ranked here still filters a
+// card IN, it just contributes 0 to its score.
+const _BM25_FIELDS = [
+  ['title', 6], ['id', 8], ['tags', 3], ['desc', 2], ['session', 1.5],
+  ['creator', 1], ['reviewer', 1], ['shepherd', 1], ['type', 1], ['status', 1],
+  ['source_ref', 1], ['due', 1], ['gate_note', 1], ['log', 1],
+  ['depends_on', 1], ['gate', 1],
+];
+let _bqRankActive = false;
+
+function _bqFieldStr(item, f) {
+  const v = item[f];
+  if (v == null) return '';
+  return Array.isArray(v) ? v.join(' ') : String(v);
+}
+// Lowercased tokens of a card's whole searchable text, memoized on the item and
+// invalidated by the concatenated length (which changes when _bqEnsureFullText
+// fills desc/log). Used for df + document length; the per-field pass below reads
+// fields directly so a boost applies to the field the term actually hit.
+function _bqTokens(item) {
+  let all = '';
+  for (const [f] of _BM25_FIELDS) { const s = _bqFieldStr(item, f); if (s) all += ' ' + s; }
+  all = all.toLowerCase();
+  if (item._bqTokStamp === all.length && item._bqTok) return item._bqTok;
+  const toks = all.split(/[^a-z0-9]+/).filter(Boolean);
+  item._bqTok = toks; item._bqTokStamp = all.length;
+  return toks;
+}
+// Substring-aware term frequency: counts tokens CONTAINING the term, preserving
+// the substring semantics _bqMatch uses ("auth" finds "authentication"), and the
+// field's token count for length normalization.
+function _bqFieldTf(item, field, term) {
+  const toks = _bqFieldStr(item, field).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  let tf = 0;
+  for (const tk of toks) if (tk.includes(term)) tf++;
+  return tf;
+}
+// Rank `cands` (the matches) by BM25F over `terms`, df/idf from `corpus` (the
+// whole loaded set). Writes item._bm25, read by _boardCardSort.
+function _bqRankBm25(cands, corpus, terms) {
+  const N = corpus.length || 1;
+  let totalLen = 0;
+  const df = {};
+  for (const t of terms) df[t] = 0;
+  for (const d of corpus) {
+    const toks = _bqTokens(d);
+    totalLen += toks.length;
+    for (const t of terms) if (toks.some(tk => tk.includes(t))) df[t]++;
+  }
+  const avgdl = totalLen / N || 1;
+  const idf = {};
+  for (const t of terms) idf[t] = Math.log(1 + (N - df[t] + 0.5) / (df[t] + 0.5));
+  for (const c of cands) {
+    const dl = _bqTokens(c).length || 1;
+    let score = 0;
+    for (const t of terms) {
+      let wtf = 0;
+      for (const [field, boost] of _BM25_FIELDS) {
+        const tf = _bqFieldTf(c, field, t);
+        if (tf) wtf += boost * tf;
+      }
+      if (wtf) {
+        const denom = wtf + _BM25_K1 * (1 - _BM25_B + _BM25_B * dl / avgdl);
+        score += idf[t] * (wtf * (_BM25_K1 + 1)) / denom;
+      }
+      // An exact id term is "take me to THAT card" — a large constant keeps it
+      // first, folding the old id-first behaviour into the ranking.
+      if ((c.id || '').toLowerCase() === t) score += 1000;
+    }
+    c._bm25 = score;
+  }
+}
+
 function _bqFilter(items, q) {
+  _bqRankActive = false;
   const s = (q || '').trim();
   if (!s) return items;
   const ast = _bqParse(s);
@@ -21485,9 +23365,19 @@ function _bqFilter(items, q) {
   if (ast.text.length) _bqEnsureFullText(items);
   const ix = _bqSessionIndex();
   const out = items.filter(i => _bqMatch(i, ast, ix));
-  // If the query names a card exactly, that card goes first. Searching an id
-  // also matches every card that REFERENCES it (desc, History), which is
-  // usually wanted — but not at the cost of burying the card you typed.
+  // Free text present: rank the matches by BM25F. The corpus is the whole loaded
+  // set (`items`) so idf is meaningful; column sort then reads _bm25 (below), and
+  // this pre-sort orders the List view + any flat consumer.
+  const posTerms = ast.text.filter(x => !x.neg).map(x => x.t);
+  if (posTerms.length) {
+    _bqRankBm25(out, items, posTerms);
+    _bqRankActive = true;
+    out.sort((a, b) => (b._bm25 || 0) - (a._bm25 || 0));
+    return out;
+  }
+  // Pure structured/id query (no free text): keep the exact-id-first behaviour.
+  // Searching an id also matches every card that REFERENCES it, usually wanted,
+  // but not at the cost of burying the card you typed.
   const _idm = s.match(_BQ_ID_RE);
   if (_idm) {
     const want = _idm[0].toLowerCase();
@@ -21872,17 +23762,17 @@ function _issueRowHTML(item, opts) {
     : '';
   const badge = '<span class="status-badge" style="background:' + sty.bg + ';color:' + sty.color + ';border:1px solid ' + sty.border + ';font-size:0.7rem;padding:1px 6px;border-radius:10px;">' + esc(item.status || 'todo') + '</span>';
   const dot = '<span class="board-status-dot" style="background:' + sty.dot + ';flex:0 0 auto;"></span>';
+  const _rq = (typeof _peekIssuesQuery !== 'undefined' && _peekIssuesQuery)
+    ? _peekIssuesQuery
+    : (typeof boardSearchQuery !== 'undefined' ? boardSearchQuery : '');
   return '<div class="peek-issue-item" style="min-height:44px;" onclick="openBoardDetail(\'' + esc(item.id) + '\')">' +
     dot +
-    '<span class="peek-issue-key">' + esc(item.id) + '</span>' +
+    '<span class="peek-issue-key">' + _hlSearch(esc(item.id), _rq) + '</span>' +
     // The PEEK query, not the global board query. This read boardSearchQuery,
     // so typing in a session's Board tab highlighted nothing — the search
     // filtered correctly and looked broken, which is the failure Ethan
     // reported for messages, sitting one tab over.
-    '<span class="peek-issue-title">' + owner + _hlSearch(esc(item.title),
-        (typeof _peekIssuesQuery !== 'undefined' && _peekIssuesQuery)
-          ? _peekIssuesQuery
-          : (typeof boardSearchQuery !== 'undefined' ? boardSearchQuery : '')) + '</span>' +
+    '<span class="peek-issue-title">' + owner + _hlSearch(esc(item.title), _rq) + '</span>' +
     '<span class="peek-issue-meta">' + badge + due + '</span>' +
     '</div>';
 }
@@ -21908,9 +23798,23 @@ function _renderBoardCard(item) {
   let h = '<div class="board-card' + (pinned ? ' board-card-pinned' : '') + (_liveNow ? ' board-card-live' : '') + '" data-id="' + item.id + '"' + (_liveNow ? ' title="' + esc(item.session) + ' is working on this right now"' : '') + ' onclick="openBoardDetail(\'' + item.id + '\')">';
   h += '<div class="board-drag-handle" onclick="event.stopPropagation()" title="Drag to move"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="3.5" cy="2.5" r="1.25"/><circle cx="8.5" cy="2.5" r="1.25"/><circle cx="3.5" cy="6" r="1.25"/><circle cx="8.5" cy="6" r="1.25"/><circle cx="3.5" cy="9.5" r="1.25"/><circle cx="8.5" cy="9.5" r="1.25"/></svg></div>';
   h += '<button class="board-pin-btn' + (pinned ? ' active' : '') + '" onclick="event.stopPropagation();_togglePin(\'' + item.id + '\')" title="' + (pinned ? 'Unpin' : 'Pin to top') + '">&#x1F4CC;</button>';
-  h += '<div class="board-card-key">' + esc(item.id) + '</div>';
+  const _bq = typeof boardSearchQuery !== 'undefined' ? boardSearchQuery : '';
+  h += '<div class="board-card-key">' + _hlSearch(esc(item.id), _bq) + '</div>';
   if (item.doing_rot) h += '<div class="board-card-rot" title="Rotting: ' + item.doing_rot_days + 'd in doing with no board update and no commit/PR evidence. Evidence it forward or demote it.">&#x26A0; ' + Math.round(item.doing_rot_days) + 'd no evidence</div>';
   if (item.no_executor) h += '<div class="board-card-noexec" title="In doing, but nobody is executing it: ' + esc(item.no_executor) + '. Shepherding is not ownership.">&#x1F6A8; no executor</div>';
+  // ISOLATED OWNER (AMUX-3728). The server computes owner_isolated and a
+  // written-out owner_reach for every card whose owning session is a raw agent,
+  // precisely so consumers do not each re-derive what isolation implies — and
+  // nothing rendered it, on any surface, since the day it shipped.
+  //
+  // It belongs HERE, beside `no executor`, because it is the same class of fact:
+  // the standard advice on half the cards on this board is "route it to its
+  // session", and for these cards that advice is unfollowable — the owner is not
+  // in the peer fleet list and peer sends to it are refused. The server's own
+  // sentence is used verbatim rather than paraphrased; that is what the field is
+  // for and re-wording it here would be the second spelling the comment warns
+  // against.
+  if (item.owner_isolated) h += '<div class="board-card-isolated" title="' + esc(item.owner_reach || 'The owning session is an isolated raw agent.') + '">&#x1F512; isolated owner</div>';
   h += '<div class="board-card-title">';
   if (boardViewMode === 'worker') { const _st = item.status || 'todo'; h += '<span class="board-status-dot" style="background:' + statusStyle(_st).dot + '"></span>'; }
   h += _hlSearch(esc(item.title), typeof boardSearchQuery !== 'undefined' ? boardSearchQuery : '') + '</div>';
@@ -21920,12 +23824,12 @@ function _renderBoardCard(item) {
   // right and the feedback was missing.
   if (firstLine) h += '<div class="board-card-desc">' + _hlSearch(esc(firstLine), typeof boardSearchQuery !== 'undefined' ? boardSearchQuery : '') + (((item.desc !== undefined ? item.desc.length : (item.desc_len || 0)) > 80) ? '\u2026' : '') + '</div>';
   h += '<div class="board-card-footer">';
-  if (boardViewMode !== 'worker' && item.session) h += '<span class="board-card-session" data-session="' + esc(item.session) + '">' + (_liveNow ? '<span class="board-live-dot"></span>' : '') + esc(item.session) + '</span>';
-  if (item.shepherd) h += '<span class="board-card-shepherd" data-session="' + esc(item.shepherd) + '" title="Shepherd: watching this for the owner. NOT accountable for executing it.">&#x1F441; watched by ' + esc(item.shepherd) + '</span>';
-  groups.forEach(function(t) { h += '<span class="board-card-tag" data-tag="' + esc(t) + '">' + esc(t) + '</span>'; });
+  if (boardViewMode !== 'worker' && item.session) h += '<span class="board-card-session" data-session="' + esc(item.session) + '">' + (_liveNow ? '<span class="board-live-dot"></span>' : '') + _hlSearch(esc(item.session), _bq) + '</span>';
+  if (item.shepherd) h += '<span class="board-card-shepherd" data-session="' + esc(item.shepherd) + '" title="Shepherd: watching this for the owner. NOT accountable for executing it.">&#x1F441; watched by ' + _hlSearch(esc(item.shepherd), _bq) + '</span>';
+  groups.forEach(function(t) { h += '<span class="board-card-tag" data-tag="' + esc(t) + '">' + _hlSearch(esc(t), _bq) + '</span>'; });
   if (item.due) { const today = new Date().toISOString().slice(0,10); const overdue = item.due < today && item.status !== 'done'; h += '<span class="board-card-time" style="' + (overdue ? 'color:var(--red)' : 'color:var(--accent)') + '">&#x1F4C5; ' + item.due + '</span>'; }
   h += '<span class="board-card-time">' + timeAgo(item.updated || item.created) + '</span>';
-  if (item.creator) h += '<span class="board-card-time">' + esc(item.creator) + '</span>';
+  if (item.creator) h += '<span class="board-card-time">' + _hlSearch(esc(item.creator), _bq) + '</span>';
   h += '</div></div>';
   return h;
 }
@@ -21960,6 +23864,13 @@ async function _togglePin(id) {
 function _boardCardSort(a, b) {
   const pp = (b.pinned || 0) - (a.pinned || 0);
   if (pp !== 0) return pp;
+  // A free-text search orders each column by RELEVANCE (BM25); pos/recency only
+  // break ties. Pinned still wins so a pinned card stays put. _bqRankActive is
+  // set by the _bqFilter call that produced this render's `visible` set.
+  if (_bqRankActive) {
+    const sc = (b._bm25 || 0) - (a._bm25 || 0);
+    if (sc !== 0) return sc;
+  }
   const ap = a.pos || 0, bp = b.pos || 0;
   // Items without a pos (=0) sort to the bottom, ordered by recency
   if (ap === 0 && bp === 0) return (b.updated || 0) - (a.updated || 0);
@@ -22282,7 +24193,7 @@ function _boardEnsureFull() {
   const hasText = q && _bqParse(q).text.length > 0;
   if (!hasText || _boardFullLoading || Date.now() - _boardFullTs < 60000) return;
   _boardFullLoading = true;
-  fetch(API + '/api/board?done_limit=0', { headers: _authHeaders() })
+  fetch(API + '/api/board?done_limit=0&full=1', { headers: _authHeaders() })
     .then(r => r.json())
     .then(d => {
       if (Array.isArray(d)) { boardItems = d; _boardFullTs = Date.now(); renderBoard(); _nudgeWorkersOnBoardChange(); }
@@ -22447,6 +24358,13 @@ function renderBoard() {
     },
   });
   const cols = bucket.cols;
+
+  // ARCHIVED SECTION (AMUX-3715). Appended AFTER the columns rather than being
+  // one of them: it is read-only and must never be a drop target, and it must
+  // not participate in the column-reorder Sortable below (which is filtered to
+  // `.board-col`, so `.board-archived-section` is excluded by construction).
+  _ensureArchivedCount();
+  _renderBoardArchivedSection(container);
 
   // Column reorder Sortable — drag columns by their header (global only:
   // reordering rewrites boardStatuses, which no narrower scope may do)
@@ -22673,6 +24591,9 @@ function schedModeOf(s) {
 function openSchedModal(editId) {
   _schedEditId = editId || null;
   const overlay = document.getElementById('sched-overlay');
+  // AMUX-3509: the command editor gets the same @-worker dropdown as the
+  // main composer (idempotent — _atAttach wires once per element).
+  _atAttach(document.getElementById('sched-command'));
   // Populate session list
   const sel = document.getElementById('sched-session');
   sel.innerHTML = (sessions || []).map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
@@ -23058,11 +24979,21 @@ function boardDetailTab(tab) {
   const editBtn = document.getElementById('bd-tab-edit');
   const previewBtn = document.getElementById('bd-tab-preview');
   const histBtn = document.getElementById('bd-tab-history');
+  const linBtn = document.getElementById('bd-tab-lineage');
   const desc = document.getElementById('bd-desc');
   const preview = document.getElementById('bd-preview');
   const log = document.getElementById('bd-log');
+  const lin = document.getElementById('bd-lineage');
   if (!editBtn || !previewBtn || !desc || !preview) return;
-  [editBtn, previewBtn, histBtn].forEach(bt => bt && bt.classList.remove('active'));
+  [editBtn, previewBtn, histBtn, linBtn].forEach(bt => bt && bt.classList.remove('active'));
+  if (lin) lin.style.display = 'none';
+  if (tab === 'lineage') {
+    if (linBtn) linBtn.classList.add('active');
+    desc.style.display = 'none'; preview.style.display = 'none';
+    if (log) log.style.display = 'none';
+    if (lin) { lin.style.display = ''; _bdRenderLineage(boardDetailId); }
+    return;
+  }
   if (tab === 'history') {
     if (histBtn) histBtn.classList.add('active');
     desc.style.display = 'none'; preview.style.display = 'none';
@@ -23082,6 +25013,173 @@ function boardDetailTab(tab) {
     desc.style.display = '';
     preview.style.display = 'none';
   }
+}
+
+// ── LINEAGE TAB (AMUX-2393) ────────────────────────────────────────────────
+//
+// Ethan: "we need more robust history so we have a full lineage trail — note it
+// should all come from logs which have request responses with the granular
+// control level based on action."
+//
+// The trail itself was already BUILT and unreachable. `GET /api/why/{kind}/{id}`
+// (RR-0109) correlates the durable trails — issues, issues.log, the state-event
+// journal, the structured request log, the turn ledger, interaction_log — and it
+// is good: it cites a table and row for every line and refuses to narrate when
+// the evidence does not support a story. It had 4 requests in 168 hours from one
+// client, its only consumer being `amux-rs why`, and ZERO call sites in this SPA.
+// So the work here is surfacing, not building: ethos rule 1, the mcp.json shape.
+// Nothing below re-implements any correlation — one place to be wrong is enough,
+// which the endpoint's own docstring says about its CLI printer.
+//
+// THIS RENDERER'S ONE JOB IS NOT TO UPGRADE A WEAK ANSWER. An explainer's
+// failure mode is confident narration from whatever it happened to find, and a
+// printer is exactly where that gets reintroduced after the API carefully avoided
+// it. So three things are non-negotiable here, each mirroring a guarantee the
+// endpoint makes:
+//
+//   - `verdict` and `verdict_reason` lead, never the timeline. `partial` and
+//     `cannot_tell` are answers, not degraded successes.
+//   - `gaps` are rendered in full. Dropping them turns "no turn ledger covers
+//     this card" into an apparently complete story with a quiet hole.
+//   - Sources that returned ZERO are shown WITH their predicate, because a zero
+//     from a probe that could have matched and a zero from a probe that never
+//     could look identical otherwise — and only the second is a gap.
+//
+// Truncation is surfaced too: the payload carries `rows` vs `rows_total` per
+// source and a `per_source_cap`, so a capped source says so rather than reading
+// as complete coverage.
+let _bdLineageFor = null;
+
+function _bdRenderLineage(id) {
+  const el = document.getElementById('bd-lineage');
+  if (!el || !id) return;
+  // Re-fetch per open: a card's trail changes as work happens, and this tab is
+  // opened deliberately rather than on every card open, so it is never on the
+  // hot path.
+  el.innerHTML = '<div class="bd-lin-note">Loading lineage for ' + esc(id) + '…</div>';
+  _bdLineageFor = id;
+  const path = '/api/why/task/' + encodeURIComponent(id);
+  // Plain fetch, NOT apiCall: apiCall is the MUTATION path — it returns null on
+  // failure after a toast, and queues to the offline outbox. Both are wrong
+  // here. A toast vanishes, and this panel's entire purpose is to state what it
+  // could and could not establish, so a failure has to render INTO the panel
+  // where the answer would have been. Returning null would have left the
+  // loading line up forever, which reads as a hang rather than an error.
+  fetch(API + path, { headers: _authHeaders({}) })
+    .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error('HTTP ' + r.status + (t ? ': ' + t.slice(0, 200) : '')); }))
+    .then(d => {
+      if (_bdLineageFor !== id) return;   // a different card was opened meanwhile
+      el.innerHTML = _bdLineageHtml(d, id);
+    })
+    .catch(e => {
+      if (_bdLineageFor !== id) return;
+      // Name the endpoint. "Could not load" sends the next person grepping the
+      // SPA for a view that was never the problem.
+      el.innerHTML = '<div class="bd-lin-note bd-lin-bad">Could not read the lineage trail: '
+        + esc(String(e && e.message ? e.message : e))
+        + '<br><span class="bd-lin-dim">GET ' + esc(path) + '</span></div>';
+    });
+}
+
+function _bdLineageHtml(d, id) {
+  if (!d || typeof d !== 'object') return '<div class="bd-lin-note bd-lin-bad">Empty response.</div>';
+  const verdict = d.verdict || 'unknown';
+  const cls = verdict === 'ok' ? 'ok' : (verdict === 'partial' ? 'warn' : 'bad');
+  let h = '';
+
+  // 1. THE VERDICT LEADS. Not the timeline — a reader who scrolls a plausible
+  //    timeline and never reaches a caveat has been misled by layout alone.
+  h += '<div class="bd-lin-verdict bd-lin-' + cls + '">'
+    + '<span class="bd-lin-vlabel">' + esc(verdict) + '</span>'
+    + (d.verdict_reason ? '<span class="bd-lin-vwhy">' + esc(d.verdict_reason) + '</span>' : '')
+    + '</div>';
+
+  // 2. GAPS, IN FULL, ABOVE the trail. What the trail cannot tell you outranks
+  //    what it can.
+  const gaps = Array.isArray(d.gaps) ? d.gaps : [];
+  if (gaps.length) {
+    h += '<div class="bd-lin-gaps"><div class="bd-lin-h">What this trail cannot tell you ('
+      + gaps.length + ')</div><ul>'
+      + gaps.map(g => '<li>' + esc(String(g)) + '</li>').join('')
+      + '</ul></div>';
+  }
+
+  // 3. SOURCES, INCLUDING THE ZEROS, each with the predicate it ran.
+  const srcs = Array.isArray(d.sources) ? d.sources : [];
+  if (srcs.length) {
+    h += '<div class="bd-lin-h">Sources consulted (' + srcs.length + ')</div><div class="bd-lin-srcs">';
+    srcs.forEach(s => {
+      const rows = Number(s.rows || 0);
+      const total = (s.rows_total === undefined || s.rows_total === null) ? rows : Number(s.rows_total);
+      const capped = total > rows;
+      h += '<div class="bd-lin-src' + (rows === 0 ? ' bd-lin-zero' : '') + '">'
+        + '<code>' + esc(String(s.table || '?')) + '</code>'
+        + '<span class="bd-lin-rows">' + rows + (capped ? ' of ' + total + ' shown' : ' row' + (rows === 1 ? '' : 's')) + '</span>'
+        + (capped ? '<span class="bd-lin-cap">capped'
+            + (d.per_source_cap ? ' at ' + esc(String(d.per_source_cap)) : '') + '</span>' : '')
+        + (s.query ? '<span class="bd-lin-dim">' + esc(String(s.query)) + '</span>' : '')
+        // The endpoint attaches a `note` to a source whenever the row count
+        // alone would mislead — a reaped journal whose floor postdates the card,
+        // events that record THAT something changed but not into what, or the
+        // receipt that says a trail really is complete. Dropping it recreated
+        // the exact defect one layer up that the note exists to prevent: the
+        // panel looked careful and printed a number with no caveat attached.
+        + (s.note ? '<div class="bd-lin-srcnote">' + esc(String(s.note)) + '</div>' : '')
+        + '</div>';
+    });
+    h += '</div>';
+  }
+
+  // 4. THE TRAIL. Every line carries where it came from, so any claim here is
+  //    one SELECT away from being re-checked.
+  const tl = Array.isArray(d.timeline) ? d.timeline : [];
+  h += '<div class="bd-lin-h">Trail (' + tl.length + ')</div>';
+  if (!tl.length) {
+    h += '<div class="bd-lin-note">No trail lines. The sources above name what was searched'
+      + ' and with which predicate.</div>';
+  } else {
+    h += '<div class="bd-lin-tl">' + tl.map(t => {
+      const src = t.source || {};
+      const where = [src.table, src.column].filter(Boolean).join('.');
+      // `ordering` distinguishes a line PLACED BY TIME from one appended in
+      // source order because its record carries no date (issues.log is HH:MM
+      // only). Rendering them identically would invent a chronology.
+      const untimed = t.ordering && t.ordering !== 'timestamped';
+      return '<div class="bd-lin-line' + (untimed ? ' bd-lin-untimed' : '') + '">'
+        + '<div class="bd-lin-when">' + esc(t.at ? String(t.at).replace('T', ' ').replace(/\+.*$/, '') : '—')
+        + (untimed ? '<span class="bd-lin-badge" title="This record carries no date; placed in source order, not by time">order</span>' : '')
+        + '</div>'
+        + '<div class="bd-lin-what">'
+        + '<span class="bd-lin-sum">' + esc(String(t.summary || t.kind || '(no summary)')) + '</span>'
+        + (t.actor ? '<span class="bd-lin-actor">' + esc(String(t.actor)) + '</span>' : '')
+        + (where ? '<span class="bd-lin-dim">' + esc(where) + '</span>' : '')
+        + '</div></div>';
+    }).join('') + '</div>';
+  }
+
+  // 5. PART 3 OF THE REQUIREMENT IS NOT BUILT, AND SAYS SO HERE.
+  //    "granular control level based on action" — which permission scope
+  //    authorised each action, with global/worker/group layers individually
+  //    logged. The per-layer resolution exists at READ time (_gate_layers and
+  //    the scope/env/memory resolvers all return every layer with an `applied`
+  //    flag) but is not PERSISTED with the action, so no trail can answer it
+  //    yet. Stating that in the view is the point: a lineage panel that simply
+  //    omitted authorisation would read as though authorisation were covered.
+  // AMUX-3607 landed the board-transition half of part 3, so this notice no
+  // longer says "not covered" — it says WHAT is covered. Deleting it outright
+  // would have been the over-claim: the directive is "every action a worker
+  // takes" and only board transitions carry a trail today, so a reader seeing
+  // authz lines on a card would reasonably assume the same holds for scope
+  // writes and messages. Naming the boundary is the honest version, and it is
+  // worded to name the card so it cannot outlive the remaining gap.
+  h += '<div class="bd-lin-note bd-lin-todo">Authorisation trail: board status'
+    + ' transitions record which permission layer allowed them, every tier, on'
+    + ' the card log (look for <code>authz:</code> lines above &mdash;'
+    + ' <code>outranked</code> means a rule existed at that tier and lost).'
+    + ' Other actions a worker takes (scope writes, messages, session starts) do'
+    + ' NOT carry one yet, so their absence here is unrecorded rather than'
+    + ' unrestricted (AMUX-3607).</div>';
+  return h;
 }
 
 function _renderDetailStatusBtns() {
@@ -23348,11 +25446,45 @@ async function _gateResolve(item, statusId) {
   const id = item && item.id;
   if (id) {
     try {
-      const r = await fetch(API + '/api/board/gate?item=' + encodeURIComponent(id)
-                            + '&status=' + encodeURIComponent(statusId));
+      // AMUX-3573. This asked `/api/board/gate?item=...` and that route HAS
+      // NEVER EXISTED: only /api/board/session-gates and /api/board/contract are
+      // mounted, so the request fell through to `/api/board/:id` with id="gate"
+      // and came back 404 {"error":"item not found","id":"gate"}. r.ok was false
+      // every single time, so EVERY gate dialog in the SPA silently used
+      // _effectiveGate — the local fallback whose own comment says it is
+      // "MISSING the TYPE layer the server enforces" and that this is "why the
+      // dialog showed the global gate for 9 of 13 live card types". AMUX-2330's
+      // fix has been inert since it shipped.
+      //
+      // Nothing could catch it: `route.callers_have_routes` asks whether a route
+      // MATCHES the path, and `/api/board/:id` does match, so the check passes
+      // while the handler 404s. A static segment colliding with a `:param` route
+      // is invisible to it by construction.
+      //
+      // /api/board/contract?card= is the endpoint that actually answers this,
+      // and it carries the SOURCE as well, which is the rest of this card.
+      const r = await fetch(API + '/api/board/contract?card=' + encodeURIComponent(id));
       if (r.ok) {
         const d = await r.json();
-        if (Array.isArray(d.gate)) return { gate: d.gate, source: d.source || '', stale: false };
+        const ce = (d && d.card_effective_gates) || {};
+        const g = ce.gates && ce.gates[statusId];
+        if (Array.isArray(g)) {
+          const src = (ce.gate_sources && ce.gate_sources[statusId]) || {};
+          return {
+            gate: g,
+            source: src.source || '',
+            scope: src.scope || '',
+            explain: src.explain || '',
+            retypeHelps: !!src.retype_would_change_it,
+            stale: false,
+          };
+        }
+        // A card with NO gate for this status is a real answer, not a miss.
+        // Falling through here would show the local resolver's invented gate
+        // for a transition the server would have waved straight through.
+        if (ce.gates && typeof ce.gates === 'object') {
+          return { gate: [], source: 'server', scope: '', stale: false };
+        }
       }
     } catch (e) { /* offline — fall through, and SAY so rather than lying */ }
   }
@@ -23380,7 +25512,18 @@ async function _gateConfirm(item, targetStatusId) {
       // A dialog that silently shows the wrong checklist is exactly AMUX-2330.
       + (_res.stale
           ? '<div style="font-size:0.75rem;color:var(--warn,#e0a33e);border:1px solid var(--warn,#e0a33e);border-radius:7px;padding:7px 9px;margin-bottom:10px;">Offline — these are the column defaults, not the criteria the server will enforce for this card&rsquo;s type. The move may still be refused.</div>'
-          : (_res.source ? '<div style="font-size:0.72rem;color:var(--dim);margin:-6px 0 10px;">criteria from: '+esc(_res.source)+'</div>' : ''))
+          // AMUX-3573: a gate the card INHERITED from its worker or group is the
+          // case a human needs told, and it was the one case nothing told them.
+          // The type default is the unremarkable majority and stays a quiet
+          // line; worker/group/column/card get a badge naming the scope, because
+          // those are the tiers retyping cannot move and "change the type" is
+          // the first thing anyone reaches for when a gate looks wrong.
+          : (_res.source === 'worker' || _res.source === 'group' || _res.source === 'column' || _res.source === 'card'
+              ? '<div style="font-size:0.75rem;color:var(--accent);border:1px solid var(--accent);border-radius:7px;padding:7px 9px;margin-bottom:10px;">'
+                + 'These criteria come from the <b>' + esc(_res.source) + '</b> scope'
+                + (_res.scope ? ' (<b>' + esc(_res.scope) + '</b>)' : '')
+                + ', not from this card&rsquo;s type. Retyping the card will not change them.</div>'
+              : (_res.source ? '<div style="font-size:0.72rem;color:var(--dim);margin:-6px 0 10px;">criteria from: '+esc(_res.source === 'type' ? 'the item type' : _res.source)+'</div>' : '')))
       + '<div id="_gate-list" style="margin-bottom:14px;">'+rows+'</div>'
       + '<div class="amux-modal-foot" style="display:flex;gap:8px;justify-content:space-between;align-items:center;">'
       + '<span id="_gate-count" style="font-size:0.75rem;color:var(--dim);"></span>'
@@ -25237,6 +27380,8 @@ let _sseRetries = 0;
 let _sseFallback = false;
 let _pollTimer = null;
 
+let _invBoardTimer = null;
+let _invSessTimer = null;
 function connectSSE() {
   if (_sseFallback || _sse) return;
   _sse = new EventSource(_authUrl(API + '/api/events'));
@@ -25256,7 +27401,7 @@ function connectSSE() {
     }
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'workers') {
+      if (msg.type === 'workers' || msg.type === 'sessions') {
         const j = JSON.stringify(msg.payload);
         if (j !== lastSessionsJSON) {
           const firstLoad = !lastSessionsJSON;
@@ -25339,6 +27484,18 @@ function connectSSE() {
           if (key === 'journal') {
             if (activeView === 'journal') _journalLoad();
           }
+          // AMUX-3503: the server no longer pushes full board/sessions lists
+          // over SSE (1,060KB raw per connect + per change); it sends these
+          // keys and the client refetches through the gzipped, ETag'd path.
+          // Coalesced per key so an event burst is one fetch.
+          if (key === 'board') {
+            clearTimeout(_invBoardTimer);
+            _invBoardTimer = setTimeout(fetchBoard, 400);
+          }
+          if (key === 'sessions') {
+            clearTimeout(_invSessTimer);
+            _invSessTimer = setTimeout(fetchSessions, 400);
+          }
         }
       } else if (msg.type === 'ping') {
         // Liveness signal — _lastDataTime already updated above. Also carries the
@@ -25412,6 +27569,38 @@ function _sseLooksStale() {
 }
 function _forceSseReconnect(reason) {
   _dbgLog('SSE reconnect: ' + reason);
+  // BEACON THE GIVE-UP (AF-262). This is the single choke point where a client
+  // decides the realtime backbone has failed it, and until now that decision
+  // was invisible to the server: /api/events is excluded from the request log
+  // by design, so a fleet-wide SSE degradation showed up only as a rise in
+  // ordinary poll traffic — indistinguishable from more browser tabs being
+  // open, which is exactly the call that could not be made on 2026-08-27.
+  //
+  // The server half (a live-connection gauge) cannot see this on its own: from
+  // there a reconnect looks like one stream closing and another opening, which
+  // is also what a laptop lid does. Only the CLIENT knows it declared the
+  // stream stale. Joined at /api/debug/sse.
+  //
+  // Rides the existing /api/client-debug beacon rather than a new endpoint —
+  // same primitive the peek-poller lifecycle already uses.
+  try {
+    fetch(API + '/api/client-debug', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        kind: 'sse-stale-reconnect', reason: reason || '?',
+        // How long the stream had actually been silent. `stale_ms` past
+        // _SSE_STALE_MS is a zombie; well under it means something else forced
+        // the bounce (a resume, an `online` event) and is NOT backbone trouble.
+        // Without it every reconnect reads the same and the counter would
+        // conflate the two.
+        stale_ms: Math.round(Date.now() - (_lastDataTime || _pageLoadTime)),
+        had_data: _lastDataTime ? 1 : 0,
+        retries: _sseRetries,
+        ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?'),
+        hidden: document.hidden ? 1 : 0
+      })
+    }).catch(() => {});
+  } catch (e) {}
   if (_sse) { try { _sse.close(); } catch(e) {} _sse = null; }
   _sseRetries = 0;
   _liveSSE = false;
@@ -25463,7 +27652,11 @@ if (window._peekEmbed) {
   // Verified by hand on the stuck page: one fetchSessions() cleared the spinner and
   // rendered the workers immediately — the client was correct, nothing had ever
   // invoked it. The peek-embed branch above already did exactly this.
+  // fetchBoard too (AMUX-3503): the initial board used to arrive as an SSE
+  // full push; the server now sends hello + invalidates only, so a fresh
+  // boot must fetch or it renders the cached board until something changes.
   fetchSessions();
+  fetchBoard();
   connectSSE();
   fetchSchedules().then(() => render());
 }
@@ -26380,12 +28573,20 @@ async function _offlineInfoRefresh() {
 }
 // Settings controls for the offline caps. Both persist to /api/prefs, so the
 // limits follow you to every device instead of each phone keeping its own.
-// Icon-only tabs. Persisted to /api/prefs rather than localStorage so the
-// choice follows you to the phone, where the space actually matters — a
-// per-device setting would mean setting it again on every client.
+// Icon-only tabs. Persisted to /api/prefs so the choice follows you to the
+// phone, AND cached in localStorage so it is saved on the client too
+// (AMUX-3432): the cache applies instantly on load (no flash of the default
+// while the async pref fetch is in flight) and survives the pref endpoint
+// being unreachable — the old catch reset to 'both', so going offline or a
+// slow start visibly wiped the setting. Server value wins on reconcile.
 const _TABS_MODES = ['both', 'icons', 'text'];
 const _TABS_LABEL = { both: 'Icons and text', icons: 'Icons only', text: 'Text only' };
-let _tabsDisplay = 'both';
+let _tabsDisplay = (function () {
+  try {
+    const v = localStorage.getItem('amux_tabs_display');
+    return _TABS_MODES.includes(v) ? v : 'both';
+  } catch (e) { return 'both'; }
+})();
 function _tabsDisplayApply() {
   document.body.classList.toggle('tabs-icons', _tabsDisplay === 'icons');
   document.body.classList.toggle('tabs-text',  _tabsDisplay === 'text');
@@ -26411,11 +28612,17 @@ async function _tabsDisplayLoad() {
       v = String((old && old.value) || '') === '1' ? 'icons' : 'both';
     }
     _tabsDisplay = _TABS_MODES.includes(v) ? v : 'both';
-  } catch (e) { _tabsDisplay = 'both'; }
+    try { localStorage.setItem('amux_tabs_display', _tabsDisplay); } catch (e2) {}
+  } catch (e) {
+    // Prefs unreachable (offline PWA, slow start): KEEP the client-cached
+    // choice. Resetting to 'both' here was the visible "my setting did not
+    // save" (AMUX-3432) — the save had worked; this reset undid it.
+  }
   _tabsDisplayApply();
 }
 async function _tabsDisplaySet(mode) {
   _tabsDisplay = _TABS_MODES.includes(mode) ? mode : 'both';
+  try { localStorage.setItem('amux_tabs_display', _tabsDisplay); } catch (e) {}
   _tabsDisplayApply();
   try {
     await fetch(API + '/api/prefs', { method: 'POST', headers: {'Content-Type':'application/json'},
@@ -26426,8 +28633,11 @@ async function _tabsDisplaySet(mode) {
 function toggleTabsIcons() {   // header button: cycle both -> icons -> text
   _tabsDisplaySet(_TABS_MODES[(_TABS_MODES.indexOf(_tabsDisplay) + 1) % _TABS_MODES.length]);
 }
-if (document.body) _tabsDisplayLoad();
-else document.addEventListener('DOMContentLoaded', _tabsDisplayLoad);
+// Apply the cached choice synchronously (no flash of the default), then
+// reconcile with the server pref so the choice still roams across devices.
+function _tabsDisplayInit() { _tabsDisplayApply(); _tabsDisplayLoad(); }
+if (document.body) _tabsDisplayInit();
+else document.addEventListener('DOMContentLoaded', _tabsDisplayInit);
 
 function _offlineSettingsHTML() {
   const mb = _OFFLINE_MB_CHOICES.map(v =>
@@ -26565,8 +28775,16 @@ async function loadUsage() {
       const col = used >= 90 ? 'var(--red)' : (used >= 70 ? '#f0a020' : 'var(--green)');
       return '<div style="margin-bottom:9px;">'
         + '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px;">'
-        +   '<span style="font-size:0.8rem;color:var(--fg);">' + esc(label(l)) + '</span>'
-        +   '<span style="font-size:0.74rem;color:var(--dim);">' + rem + '% left · ' + esc(resetTxt(l.resets_at)) + '</span>'
+        // THE LABEL SHRINKS, THE NUMBER DOES NOT. Capping the menu width alone
+        // would clip these rows one layer in: both spans were nowrap by default
+        // in a space-between flex, so the row's intrinsic width was 445px on a
+        // 375px screen and something had to be cut. The reading order decides
+        // WHICH: "78% left · resets in <1h" is the answer, "5-hour session" is
+        // the question and is recoverable from position. So the label gets
+        // min-width:0 + ellipsis (a flex item will not shrink below its content
+        // without min-width:0) and the value gets flex-shrink:0.
+        +   '<span style="font-size:0.8rem;color:var(--fg);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(label(l)) + '</span>'
+        +   '<span style="font-size:0.74rem;color:var(--dim);flex-shrink:0;white-space:nowrap;">' + rem + '% left · ' + esc(resetTxt(l.resets_at)) + '</span>'
         + '</div>'
         + '<div style="height:6px;border-radius:4px;background:var(--border);overflow:hidden;">'
         +   '<div style="height:100%;width:' + used + '%;background:' + col + ';"></div>'
@@ -26574,6 +28792,87 @@ async function loadUsage() {
     }).join('');
   } catch (e) {
     el.innerHTML = '<span style="color:var(--dim);">Could not load usage</span>';
+  }
+  // The bars say HOW MUCH is gone. This says WHAT SPENT IT (AMUX-3544/3550).
+  // Appended as its own node and loaded separately on purpose: if attribution
+  // fails, the meter above must still render.
+  let attr = document.getElementById('settings-spend-attr');
+  if (!attr) {
+    attr = document.createElement('div');
+    attr.id = 'settings-spend-attr';
+    attr.style.marginTop = '14px';
+    el.parentNode.insertBefore(attr, el.nextSibling);
+  }
+  loadSpendAttribution();
+}
+// WHAT SPENT THE PLAN, by why the turn happened.
+//
+// A customer on the $20 plan: "I sent 2-3 prompts today and my credits ran out
+// ... going to investigate what's using all the credits." They could not. The
+// usage bars above report the plan's own utilization and cannot attribute one
+// point of it, so the only signal was the credits being gone.
+//
+// The headline is the BACKGROUND SHARE rather than the total, because that is
+// the complaint: not that amux is expensive, but that it spent the window the
+// person was about to type into. Named origins follow, since "a schedule fired"
+// is actionable only when it says which schedule.
+async function loadSpendAttribution() {
+  const box = document.getElementById('settings-spend-attr');
+  if (!box) return;
+  try {
+    const r = await fetch(API + '/api/usage/attribution?hours=24');
+    const d = await r.json();
+    if (!d || d.error || !Array.isArray(d.by_source)) { box.innerHTML = ''; return; }
+    if (!d.by_source.length) {
+      box.innerHTML = '<div style="font-size:0.74rem;color:var(--dim);">No spend recorded in the last 24h.</div>';
+      return;
+    }
+    const usd = n => '$' + (n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(2));
+    const bgPct = Math.max(0, Math.min(100, Math.round(d.background_pct || 0)));
+    // Red when background dominates: that is the state that empties a small
+    // plan before its owner has typed anything.
+    const col = bgPct >= 70 ? 'var(--red)' : (bgPct >= 40 ? '#f0a020' : 'var(--green)');
+    const rows = d.by_source
+      .filter(x => (x.cost_usd || 0) > 0)
+      .map(x =>
+        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;padding:2px 0;">'
+        + '<span style="font-size:0.76rem;color:' + (x.is_background ? 'var(--dim)' : 'var(--fg)') + ';min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+        +   esc(x.label || x.source) + '</span>'
+        + '<span style="font-size:0.74rem;color:var(--dim);white-space:nowrap;">'
+        +   usd(x.cost_usd) + ' · ' + (x.turns || 0).toLocaleString() + ' turns</span>'
+        + '</div>').join('');
+    // `=== true`, NOT `!== false` (AMUX-3550). The loose form kept every row
+    // whose `is_background` was ABSENT — which was all of them, because the
+    // field shipped only on by_source. A filter that matches everything reads
+    // as a deliberate exclusion and returns a confident wrong answer; this one
+    // listed the human's own typing under "biggest background sources".
+    // The strict form fails CLOSED: against a server that does not send the
+    // field it shows nothing, which is safer than showing the wrong rows under
+    // a heading that asserts what they are.
+    const top = (d.top_origins || []).filter(x => x.is_background === true).slice(0, 4).map(x =>
+        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;padding:2px 0;">'
+        + '<span style="font-size:0.74rem;color:var(--dim);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+        +   esc(x.origin || x.session || '?') + '</span>'
+        + '<span style="font-size:0.72rem;color:var(--dim);white-space:nowrap;">' + usd(x.cost_usd) + '</span>'
+        + '</div>').join('');
+    box.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">'
+      +   '<span style="font-size:0.8rem;color:var(--fg);">What spent it (24h)</span>'
+      +   '<span style="font-size:0.74rem;color:var(--dim);">' + usd(d.total_cost_usd || 0) + '</span>'
+      + '</div>'
+      + '<div style="height:6px;border-radius:4px;background:var(--border);overflow:hidden;margin-bottom:6px;">'
+      +   '<div style="height:100%;width:' + bgPct + '%;background:' + col + ';"></div>'
+      + '</div>'
+      + '<div style="font-size:0.74rem;color:' + col + ';margin-bottom:6px;">'
+      +   bgPct + '% of spend was background work, not you'
+      + '</div>'
+      + rows
+      + (top ? '<div style="font-size:0.72rem;color:var(--dim);margin:8px 0 2px;">Biggest background sources</div>' + top : '');
+  } catch (e) {
+    // Silent by design: this is a supplementary panel and the meter above is
+    // the load-bearing one. A failure here must not replace a working meter
+    // with an error.
+    box.innerHTML = '';
   }
 }
 async function loadAlertConfig() {
@@ -27207,11 +29506,31 @@ async function _handleDeeplink(hash) {
   // #issue=<id> — open a board card directly from anywhere (AMUX-2165), the
   // shareable twin of the task-label id chip.
   if (hash && hash.startsWith('#issue=')) {
-    const id = decodeURIComponent(hash.slice(7));
+    // Optional `:<tab>` suffix — `#issue=AMUX-1:lineage` opens the card ON that
+    // tab. Two reasons, and the second is why it is here rather than in a
+    // backlog: a card's lineage is the thing you want to SEND someone ("look at
+    // how this card got here"), and a tab reachable only by tapping cannot be
+    // linked, screenshotted by the simulator rig, or deep-linked from a nudge.
+    // The rig drives UI states by deeplink because simctl has no tap primitive,
+    // so an untargetable tab is also an unverifiable one.
+    const raw = decodeURIComponent(hash.slice(7));
+    const cut = raw.lastIndexOf(':');
+    // Card ids contain no colon, so a colon can only be the tab separator — but
+    // validate against the known tabs anyway rather than trusting position, or a
+    // future id format silently loses everything after its last colon.
+    const TABS = ['edit', 'preview', 'history', 'lineage'];
+    const maybeTab = cut > 0 ? raw.slice(cut + 1) : '';
+    const tab = TABS.includes(maybeTab) ? maybeTab : '';
+    const id = tab ? raw.slice(0, cut) : raw;
     const tryOpen = (attempt) => {
       if (typeof boardItems !== 'undefined' && boardItems.some(i => i.id === id)) {
         switchView('board');
-        setTimeout(() => { try { openBoardDetail(id); } catch (e) {} }, 250);
+        setTimeout(() => {
+          try {
+            openBoardDetail(id);
+            if (tab) boardDetailTab(tab);
+          } catch (e) {}
+        }, 250);
         return;
       }
       if (attempt < 20) setTimeout(() => tryOpen(attempt + 1), 400);
@@ -27325,6 +29644,16 @@ function _restoreScreen() {
   if (_ps && _ps.session) {
     setTimeout(() => {
       openPeek(_ps.session);
+      // Restore the tab WITHIN the peek — guarded on the button still
+      // existing, because localStorage outlives removed tabs (the notes-view
+      // lesson above applies one level down).
+      if (_ps.tab && _ps.tab !== 'terminal') {
+        setTimeout(() => {
+          if (peekSession === _ps.session && document.getElementById('peek-tab-' + _ps.tab)) {
+            try { setPeekTab(_ps.tab); } catch(e) {}
+          }
+        }, 350);
+      }
       if (_ps.split && window.innerWidth > 600) {
         setTimeout(() => {
           const wrap = document.getElementById('peek-split-wrap');
@@ -28788,6 +31117,17 @@ async function _reclaimRestore(batchId) {
   _reclaimLoad();
 }
 
+// The exit condition for a learned skip. A filesystem that hung once may
+// answer next week, and without a way back the scan's coverage only ever
+// shrinks — silently, which is the part that makes it worse than the hang.
+async function _reclaimUnskip(path) {
+  const r = await fetch(API + '/api/reclaim/skipped?path=' + encodeURIComponent(path), { method: 'DELETE' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { showToast(d.error || 'Could not clear that skip'); return; }
+  showToast('Will be scanned again next run');
+  _reclaimLoad();
+}
+
 async function _reclaimPurge(batchId, bytes) {
   const msg = 'PERMANENTLY DELETE this quarantine batch?\n\n'
     + 'Size: ' + _fmtBytes(bytes) + '\n\n'
@@ -28906,7 +31246,24 @@ function _reclaimRender() {
         <div style="font-size:0.75rem;color:var(--dim);">
           ${(scan.dirs_walked||0).toLocaleString()} folders · ${(scan.files_walked||0).toLocaleString()} files · ${_fmtBytes(scan.bytes_seen)} seen
         </div>
-        <div class="reclaim-curpath">${esc(scan.current_path || '')}</div>
+        <div class="reclaim-curpath">${scan.current_phase ? `<b>${esc(scan.current_phase)}</b> · ` : ''}${esc(scan.current_path || '')}</div>
+      </div>
+    </div>`;
+  }
+
+  // A scan the watchdog declared stuck. This is a different failure from
+  // "interrupted" and must not be shown as one: nothing restarted, a directory
+  // stopped answering, and the walk thread is still parked in the kernel on it.
+  if (scan.status === 'stalled') {
+    html += `<div class="reclaim-warn">
+      <div style="font-weight:600;margin-bottom:4px;">⚠ Scan stalled on one directory</div>
+      <div style="font-size:0.78rem;line-height:1.55;">
+        ${esc(scan.error || '')}
+        <div style="margin-top:6px;">
+          Recorded below. A directory is only stepped over after it hangs a second scan,
+          because one quiet spell on a loaded machine is contention rather than a broken folder.
+          Results cover ${(scan.dirs_walked||0).toLocaleString()} folders walked before the stall.
+        </div>
       </div>
     </div>`;
   }
@@ -28936,6 +31293,23 @@ function _reclaimRender() {
         <div style="margin-top:6px;">Release them from a terminal (needs sudo, so amux will not run it for you):</div>
         <code class="reclaim-code">sudo tmutil thinlocalsnapshots / 21474836480 4</code>
       </div>
+    </div>`;
+  }
+
+  // What the scan did NOT look at. Shown next to the results rather than
+  // behind a separate view, because a home-directory total that silently omits
+  // a subtree is a confident wrong answer — the reader has to be able to see
+  // the hole to weigh the number.
+  const skipped = _reclaimScan?.skipped || [];
+  if (skipped.length) {
+    html += `<div class="reclaim-skips">
+      <div style="font-weight:600;margin-bottom:4px;">Coverage notes (${skipped.length})</div>
+      ${skipped.map(s => `<div class="reclaim-skip-row">
+        <span class="reclaim-skip-reason ${s.active ? 'bad' : ''}">${esc(s.active ? 'skipped' : 'watching')}</span>
+        <code>${esc(s.path)}</code>
+        <span class="reclaim-skip-why">${esc(s.detail || '')}</span>
+        <button class="reclaim-minibtn" onclick="_reclaimUnskip('${escJs(s.path)}')" title="Try this directory again on the next scan">Re-include</button>
+      </div>`).join('')}
     </div>`;
   }
 
@@ -31605,14 +33979,45 @@ async function _bwLoadProfiles() {
     const cur = sel.value;
     // Rebuild: Auto (empty) + registered profiles + real Chrome profiles
     sel.innerHTML = '<option value="">Auto profile</option>';
-    (d.profiles || []).forEach(p => {
+    // SAVED PROFILES FIRST (AMUX-3670, Ethan: "i have saved profiles in amux
+    // browser… i want it to be simple").
+    //
+    // This listed every DIRECTORY under playwright-auth/profiles, flat and in
+    // one style. Measured 2026-08-24: 48 entries, of which 4 are registered in
+    // `profiles.json` — the ones actually saved via the Save button. The other
+    // 44 are scratch left by tests and probes (`rawtest-13181`,
+    // `resolver-test`, `godmode-verify`, `anonymous-1776924814739`…), and they
+    // rendered identically to the real ones. Picking your own saved login meant
+    // finding it among 92% noise.
+    //
+    // Split, never FILTERED: an unregistered dir may still hold a login
+    // somebody staged without pressing Save, and silently hiding it would lose
+    // real work (it is the user's data, not ours to judge). They move below a
+    // separator and keep their names.
+    const all = d.profiles || [];
+    const saved = all.filter(p => p.registered);
+    const scratch = all.filter(p => !p.registered);
+    const opt = (p, icon) => {
       const o = document.createElement('option');
       o.value = p.name;
       const doms = (p.domains || []).join(', ');
-      o.textContent = '🔓 ' + p.name + (doms ? ' — ' + doms : '');
+      // The LABEL is what the user typed when saving, so it is the best name to
+      // show; the directory name stays alongside because it is what the API and
+      // AMUX_PROFILE take.
+      const lbl = (p.label || '').trim();
+      o.textContent = icon + ' ' + (lbl ? lbl + ' (' + p.name + ')' : p.name)
+                    + (doms ? ' — ' + doms : '');
       if (doms) o.title = doms;
-      sel.appendChild(o);
-    });
+      return o;
+    };
+    saved.forEach(p => sel.appendChild(opt(p, '⭐')));
+    if (saved.length && scratch.length) {
+      const sep = document.createElement('option');
+      sep.disabled = true;
+      sep.textContent = '─── unsaved / scratch profiles (' + scratch.length + ') ───';
+      sel.appendChild(sep);
+    }
+    scratch.forEach(p => sel.appendChild(opt(p, '🔓')));
     (d.chrome_profiles || []).forEach(p => {
       const o = document.createElement('option');
       o.value = p; o.textContent = '🌐 ' + p;
@@ -31675,9 +34080,38 @@ async function _bwGo() {
     const r = await fetch('/api/browser/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const d = await r.json();
     if (d.error) { _bwStatus('Error: ' + d.error); return; }
-    _bwCurrentUrl = (d.data && d.data.url) || url;
+    // SAY WHERE IT LANDED, and say so when that is not where you asked.
+    //
+    // This read `(d.data && d.data.url) || url`. `/api/browser/start` has no
+    // `data` object, so the first term was ALWAYS undefined and the fallback
+    // recorded the url we REQUESTED as though it were the current page. Then
+    // "Navigated" printed unconditionally on the mere absence of d.error. One
+    // word for two states: "you are on the page you typed" and "Chrome started
+    // and went somewhere else entirely".
+    //
+    // Reported 2026-08-25: google.com typed, "Navigated" shown, and the only
+    // page target was a session-restored app.hubspot.com/login. The server now
+    // returns `launch_url` — where the page tab actually is — so the mismatch
+    // is a fact we can show instead of one the user has to notice.
+    //
+    // A DIFFERENCE IS NOT A FAILURE. launch_url is read immediately after
+    // launch, so a slow page can still be about:blank and a redirect may not
+    // have resolved; hosts also legitimately differ (google.com -> www.google.com).
+    // Compare the HOST and only when we have a real one, or this becomes a
+    // false alarm on every redirect.
+    const _landed = d.launch_url || (d.data && d.data.url) || '';
+    _bwCurrentUrl = _landed || url;
     _bwShowProfile(d.profile, d.auto_profile);
-    _bwStatus('Navigated' + (d.profile_fallback ? ' (no profile — Chrome busy)' : ''));
+    let _msg = 'Navigated' + (d.profile_fallback ? ' (no profile — Chrome busy)' : '');
+    if (_landed && !/^about:/.test(_landed)) {
+      const _host = u => { try { return new URL(u).host.replace(/^www\./, ''); } catch (e) { return ''; } };
+      const _want = _host(url), _got = _host(_landed);
+      if (_want && _got && _want !== _got) {
+        _msg = 'Started, but the page is ' + _got + ' — not ' + _want
+             + '. The profile may have restored a session; navigate again or pick a different profile.';
+      }
+    }
+    _bwStatus(_msg);
     // We navigated → we now EXPECT a live frame; a blank viewport from here is a
     // failure, not the initial state (drives _bwViewportFail).
     _bwWantFrame = true; _bwHasFrame = false; _bwShotFails = 0;

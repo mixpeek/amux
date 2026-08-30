@@ -22,7 +22,7 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Devin","item":"https://amux.io/compare/amux-vs-devin/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Devin 2026","description":"Full comparison of amux open-source AI agent fleet and Devin managed autonomous engineer — cost, control, parallelism, and use cases.","datePublished":"2026-07-29","dateModified":"2026-07-29","author":{"@type":"Organization","name":"amux"},"about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","applicationCategory":"DeveloperApplication"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Devin 2026","description":"Full comparison of amux open-source AI agent fleet and Devin managed autonomous engineer — cost, control, parallelism, and use cases.","datePublished":"2026-07-29","dateModified":"2026-08-22","author":{"@type":"Organization","name":"amux"},"about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","applicationCategory":"DeveloperApplication"}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is amux cheaper than Devin?","acceptedAnswer":{"@type":"Answer","text":"Yes, significantly. Devin costs $500/month for the Teams plan (250 Agent Compute Units). amux is free and open source — you pay only for the underlying API tokens (Claude Code, Codex, or Gemini CLI). Heavy parallel use typically costs $10–50/month in API tokens. For the same $500 Devin budget, amux users run 50–200 agent-sessions per month."}},{"@type":"Question","name":"What is the open-source alternative to Devin?","acceptedAnswer":{"@type":"Answer","text":"amux is the leading open-source alternative for teams that want autonomous AI engineering at scale. Instead of one managed agent in a cloud sandbox, amux runs a fleet of 10–50 Claude Code, Codex, or Gemini CLI sessions simultaneously on your own machine — with a shared kanban board, self-healing watchdog, and iOS app for phone management. MIT licensed, single Rust binary, zero external dependencies."}},{"@type":"Question","name":"Can amux run as many tasks as Devin?","acceptedAnswer":{"@type":"Answer","text":"amux runs significantly more tasks in parallel than Devin. Devin handles one task at a time per session. amux runs 10–50 parallel agent sessions simultaneously — each an independent coding agent working on a different task from the shared kanban board. With amux, a solo developer can wake up to 20-50 completed tasks instead of one."}},{"@type":"Question","name":"Does amux have the same level of autonomy as Devin?","acceptedAnswer":{"@type":"Answer","text":"amux provides comparable autonomy through Claude Code, Codex, or Gemini CLI agents — which are themselves state-of-the-art autonomous coding systems. The key difference is that amux adds fleet orchestration, self-healing (auto-compact, auto-restart, NEEDS INPUT watchdog), and overnight operation on top of these agents. Devin provides a more turnkey managed experience with built-in Slack/Jira integrations. For raw coding autonomy, Claude Code via amux matches or exceeds Devin on most benchmark tasks."}},{"@type":"Question","name":"Can I use amux and Devin together?","acceptedAnswer":{"@type":"Answer","text":"Yes. A common pattern: use Devin for high-stakes, client-facing tasks where you want a fully managed, auditable record with Slack notifications. Run amux with 20 background agents simultaneously on the rest of your backlog — feature work, tests, documentation, refactors. Both can share a GitHub repo. The fleet output from amux often exceeds what Devin produces in the same time window, at a fraction of the cost."}}]}</script>
 </head>
 <body>
@@ -42,7 +42,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Devin</span></div>
 
     <h1>amux vs Devin 2026</h1>
-    <p class="subtitle">Open-source AI agent fleet vs. managed autonomous engineer — cost, control, and parallel output compared. Updated July 2026.</p>
+    <p class="subtitle">Open-source AI agent fleet vs. managed autonomous engineer — cost, control, and parallel output compared. Updated August 2026.</p>
 
     <!-- Answer box -->
     <div style="background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:1.125rem 1.25rem;margin:1.5rem 0">
@@ -262,6 +262,17 @@
       </table>
     </div>
 
+    <!-- August 2026 updates -->
+    <h2>What's changed in August 2026</h2>
+    <p>amux shipped several updates this month relevant to the amux vs Devin comparison:</p>
+    <ul>
+      <li><strong>OAuth broker:</strong> The new Connectors tab lets you authorize a third-party service once. Every agent in the fleet shares the OAuth grant automatically — no per-session credential setup. Devin handles this in its managed environment; amux now matches it for self-hosted deployments.</li>
+      <li><strong>Server self-adoption (zero-downtime deploys):</strong> The Rust binary now swaps in place when a new build lands. Sessions keep running through updates — no maintenance window.</li>
+      <li><strong>Board progress notes with owner notifications:</strong> Agents can now post mid-task progress notes to board cards. The card owner receives an in-app alert. Addresses one of Devin's perceived advantages (built-in Slack notifications) for teams monitoring overnight runs.</li>
+      <li><strong>Disk watchdog:</strong> Weekly scan warns before build caches fill the drive — useful for teams running amux on a shared server with heavy multi-session usage.</li>
+    </ul>
+    <p>amux is now at 363★ on GitHub (up from 336★ in July 2026). See the full <a href="/changelog/">amux changelog</a>.</p>
+
     <!-- FAQ section -->
     <h2>Frequently asked questions</h2>
 
@@ -296,7 +307,7 @@
     <div class="cta-box">
       <h3>Try amux — free and open source</h3>
       <p>Run an AI engineering team from one dashboard. Claude Code, Codex, Gemini CLI — all from your phone or browser. Self-healing built in.</p>
-      <pre><code>brew install amux
+      <pre><code>brew install mixpeek/amux/amux
 amux register myproject --dir ~/Dev/myproject
 amux start myproject
 amux serve  # → https://localhost:8824</code></pre>

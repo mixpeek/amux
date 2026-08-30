@@ -64,6 +64,9 @@ pub fn routes() -> Router<AppState> {
         .route("/search", any(search))
         .route("/list", any(list_dir))
         .route("/delete", any(delete_path))
+        // NATIVE addition, not a Python port (AMUX-3511): existence-checked
+        // resolution of a relative path a worker printed in its output.
+        .route("/resolve", any(resolve_rel))
         // Anything else under /api/fs — including the bare namespace root —
         // is Python's generic 404. EXPLICIT wildcard, not `.fallback()`: in
         // the full composition the static SPA catch-all out-competes a
@@ -327,6 +330,76 @@ const BLOCKED_SYSTEM_PREFIXES: &[&str] =
 /// macOS/APFS is case-insensitive by default and a case-sensitive check let
 /// `~/.SSH/id_ed25519` through (Python's own docstring records the
 /// incident). Casefolding errs toward denying on case-sensitive volumes.
+/// GET /api/fs/resolve?cwd=..&rel=.. — NATIVE addition (AMUX-3511).
+///
+/// Workers print paths relative to whatever root THEY think in — the vault
+/// root, the repo root — not necessarily their cwd. The dashboard's blind
+/// `cwd + rel` join turned `NYC/Events/Galas.md` printed from
+/// `/Users/ethan/Vault/NYC` into `.../Vault/NYC/NYC/Events/...` and the
+/// Files browser answered "not a directory" (Ethan's 08-22 screenshots).
+/// The server can do what the client cannot: CHECK. Candidates are cwd/rel
+/// and each ancestor/rel up to four levels; first that exists wins. Nothing
+/// existing returns the blind join with `exists:false` — the caller still
+/// navigates somewhere honest, and `tried` says what was ruled out.
+async fn resolve_rel(method: Method, RawQuery(q): RawQuery) -> Response {
+    if method != Method::GET {
+        return not_found().await;
+    }
+    let pairs = parse_qs(q.as_deref().unwrap_or(""));
+    let get = |k: &str| {
+        pairs
+            .iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+    let cwd = get("cwd");
+    let rel = get("rel");
+    if cwd.trim().is_empty() || rel.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "cwd and rel are required" })),
+        )
+            .into_response();
+    }
+    // Containment rides the SAME deny sets as every other fs verb: a denied
+    // candidate is treated as absent, so this endpoint cannot be used to
+    // probe existence inside paths the Files surface refuses to serve.
+    let (resolved, exists, tried) =
+        resolve_rel_candidates(&cwd, &rel, &|p| is_path_allowed(p) && p.exists());
+    Json(json!({ "resolved": resolved, "exists": exists, "tried": tried })).into_response()
+}
+
+/// The candidate walk, pure over an injected existence probe so every cell —
+/// the doubled-segment specimen included — is testable without a live tree.
+fn resolve_rel_candidates(
+    cwd: &str,
+    rel: &str,
+    exists: &dyn Fn(&Path) -> bool,
+) -> (String, bool, Vec<String>) {
+    let rel = rel.trim();
+    if rel.starts_with('/') {
+        let p = PathBuf::from(rel);
+        let ok = exists(&p);
+        return (rel.to_string(), ok, vec![rel.to_string()]);
+    }
+    let rel_clean = rel.trim_start_matches("./");
+    let mut tried: Vec<String> = Vec::new();
+    let mut base = PathBuf::from(cwd.trim_end_matches('/'));
+    for _ in 0..=4 {
+        let cand = base.join(rel_clean);
+        let s = cand.display().to_string();
+        tried.push(s.clone());
+        if exists(&cand) {
+            return (s, true, tried);
+        }
+        if !base.pop() {
+            break;
+        }
+    }
+    (tried[0].clone(), false, tried)
+}
+
 pub fn is_path_allowed(p: &Path) -> bool {
     let resolved = resolve_nonstrict(p);
     let resolved_lower = resolved.to_string_lossy().to_lowercase();
@@ -1521,6 +1594,54 @@ mod tests {
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         (status, v)
+    }
+
+    // ---- output-path resolution (AMUX-3511) ----
+
+    /// Rebuilt from Ethan's 08-22 screenshots: worker in /Users/ethan/Vault/NYC
+    /// printed vault-root-relative links (NYC/Events/Galas.md); the blind join
+    /// produced .../Vault/NYC/NYC/Events and "not a directory". The ancestor
+    /// walk must find the real file one level up — and must NOT walk when the
+    /// cwd-join already exists (a genuine NYC/NYC nesting stays reachable).
+    #[test]
+    fn output_path_resolution_walks_ancestors_only_when_the_cwd_join_is_absent() {
+        let vault = "/Users/ethan/Vault";
+        let cwd = "/Users/ethan/Vault/NYC";
+        // The specimen: only the vault-rooted spelling exists.
+        let exists = |p: &Path| p == Path::new("/Users/ethan/Vault/NYC/Events/Galas.md");
+        let (resolved, ok, tried) = resolve_rel_candidates(cwd, "NYC/Events/Galas.md", &exists);
+        assert!(ok);
+        assert_eq!(resolved, format!("{vault}/NYC/Events/Galas.md"));
+        assert_eq!(tried[0], "/Users/ethan/Vault/NYC/NYC/Events/Galas.md", "the blind join was ruled out first");
+
+        // CONTROL — a genuinely nested NYC/NYC: the cwd join exists and WINS;
+        // walking anyway would hijack real nesting.
+        let both = |p: &Path| {
+            p == Path::new("/Users/ethan/Vault/NYC/NYC/Events/Galas.md")
+                || p == Path::new("/Users/ethan/Vault/NYC/Events/Galas.md")
+        };
+        let (resolved, ok, _) = resolve_rel_candidates(cwd, "NYC/Events/Galas.md", &both);
+        assert!(ok);
+        assert_eq!(resolved, "/Users/ethan/Vault/NYC/NYC/Events/Galas.md");
+
+        // Plain cwd-relative (./ included) resolves at level zero.
+        let plain = |p: &Path| p == Path::new("/Users/ethan/Vault/NYC/Events/x.md");
+        let (r, ok, _) = resolve_rel_candidates(cwd, "./Events/x.md", &plain);
+        assert!(ok);
+        assert_eq!(r, "/Users/ethan/Vault/NYC/Events/x.md");
+
+        // Nothing exists anywhere: the blind join comes back, honestly flagged,
+        // with the whole walk on the record.
+        let (r, ok, tried) = resolve_rel_candidates(cwd, "no/such.md", &|_| false);
+        assert!(!ok);
+        assert_eq!(r, "/Users/ethan/Vault/NYC/no/such.md");
+        assert!(tried.len() >= 4, "the ancestor walk must have actually walked: {tried:?}");
+
+        // Absolute paths pass through untouched — no walk.
+        let (r, ok, tried) = resolve_rel_candidates(cwd, "/etc/hosts", &|_| true);
+        assert!(ok);
+        assert_eq!(r, "/etc/hosts");
+        assert_eq!(tried.len(), 1);
     }
 
     // ---- path guards ----

@@ -11,6 +11,19 @@
 # the state anyway with tokens omitted. A liveness report is worth more than a
 # token count, and this must never be the reason a hook fails.
 STATE="${1:-idle}"; SRC="${2:-stop-hook}"
+DERIVED=0
+if [ -z "$AMUX_SESSION" ]; then
+  # MR-43: the var can go missing INSIDE a lane that IS running in its
+  # amux-launched pane (spawn always injects it — session_verbs.rs — so this
+  # is loss in-process, not absence at launch). Recover it from tmux so the
+  # lane is not invisible to its own liveness report, and flag the recovery
+  # in the body so /api/logs/analyze can count how often this happens instead
+  # of a human noticing a lane that silently never reported.
+  TNAME=$(tmux display-message -p '#S' 2>/dev/null)
+  case "$TNAME" in
+    amux-*) export AMUX_SESSION="${TNAME#amux-}"; DERIVED=1 ;;
+  esac
+fi
 [ -n "$AMUX_SESSION" ] || exit 0
 IN=$(cat 2>/dev/null)
 E="$HOME/.amux/endpoint.json"
@@ -104,26 +117,47 @@ if not out.get("model") or not out.get("tokens"):
 print(json.dumps(out))
 ' "$STATE" "$SRC" 2>/dev/null)
 [ -n "$BODY" ] || BODY="{\"state\":\"$STATE\",\"source\":\"$SRC\"}"
+# Surgery, not a third JSON encoder: BODY is always a flat object ending in
+# "}" (python's json.dumps above, or the fallback literal on this same line),
+# so appending before the final brace is safe and avoids a second place this
+# script can break on stdin shape (MR-43).
+[ "$DERIVED" = "1" ] && BODY="${BODY%\}}, \"amux_session_derived\": true}"
 # X-Amux-Session stamps the write server-side (AMUX-1768). report_post's own
 # comment names its absence as the standing residual: "the shipped hooks send no
 # header, so an UNSTAMPED write is still accepted". This IS the shipped hook.
-if ! curl -sk -m 3 -X POST -H 'Content-Type: application/json' \
+# Status, NOT exit code (AF-100). `curl -s` exits 0 for an HTTP 404 — a 404 is a
+# successful HTTP transaction — so `if ! curl` caught only TRANSPORT failures and
+# treated every server REJECTION as a delivered report. On 2026-08-19 a lane ran
+# for 4h15m with AMUX_SESSION=amax-gtm (a typo for amux-gtm): 138 reports, every
+# one a 404 "session not found", zero 200s, and nothing logged here. The block
+# below calls itself "THE ONE FAILURE NOTHING ELSE CAN SEE" and could not see it.
+#
+# `%{http_code}` prints 000 when the transfer never completed, so one branch now
+# covers both classes: 000 = could not reach the server (the AMUX-3046 stranded-
+# port case this was written for), 4xx/5xx = reached it and was refused.
+CODE=$(curl -sk -m 3 -o /dev/null -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' \
   -H "X-Amux-Session: $AMUX_SESSION" -d "$BODY" \
-  "$U/api/sessions/$AMUX_SESSION/report" >/dev/null 2>&1
-then
-  # THE ONE FAILURE NOTHING ELSE CAN SEE. A successful report is visible twice
-  # over — in the structured request log and in the stored report's `source` —
-  # but a FAILED curl reaches no server, so "the hook never ran" and "the hook
-  # ran and could not connect" are the same silence. That silence is exactly
-  # what a lane stranded on the retired port looks like (AMUX-3046), and it is
-  # the reason AMUX-2936 sat unmeasurable: the degraded verdict went back to the
-  # hook and was recorded nowhere.
+  "$U/api/sessions/$AMUX_SESSION/report" 2>/dev/null) || CODE=000
+case "$CODE" in
+  2*) ;;
+  *)
+  # A successful report is visible twice over — in the structured request log and
+  # in the stored report's `source` — but a report that never landed reaches no
+  # server, so "the hook never ran" and "the hook ran and was refused" are the
+  # same silence. That is what a lane stranded on the retired port looks like
+  # (AMUX-3046), and it is the reason AMUX-2936 sat unmeasurable: the degraded
+  # verdict went back to the hook and was recorded nowhere.
+  #
+  # Still fails OPEN — this logs and exits 0. A hook that blocks a turn because
+  # amux is unreachable would be worse than the silence it replaces.
   D="$HOME/.amux/logs"; [ -d "$D" ] || mkdir -p "$D" 2>/dev/null
   F="$D/hook-report-failures.log"
-  printf '%s %s source=%s url=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    "$AMUX_SESSION" "$SRC" "$U" >> "$F" 2>/dev/null
+  printf '%s %s source=%s url=%s http=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    "$AMUX_SESSION" "$SRC" "$U" "$CODE" >> "$F" 2>/dev/null
   if [ "$(wc -l < "$F" 2>/dev/null || echo 0)" -gt 2000 ]; then
     tail -n 500 "$F" > "$F.tmp" 2>/dev/null && mv "$F.tmp" "$F" 2>/dev/null
   fi
-fi
+  ;;
+esac
 exit 0

@@ -22,7 +22,7 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Use Cases","item":"https://amux.io/use-cases/"},{"@type":"ListItem","position":3,"name":"AI Agent Business Automation","item":"https://amux.io/use-cases/ai-agent-business-automation/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agents for Business Automation Beyond Coding (2026)","description":"amux turns AI agents into a complete business operations stack — CRM, Gmail API email, browser automation, notes, and scheduled tasks, all running unattended.","url":"https://amux.io/use-cases/ai-agent-business-automation/","datePublished":"2026-07-14","dateModified":"2026-07-14","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agents for Business Automation Beyond Coding (2026)","description":"amux turns AI agents into a complete business operations stack — CRM, Gmail API email (with attachments), browser automation, notes, and scheduled tasks, all running unattended.","url":"https://amux.io/use-cases/ai-agent-business-automation/","datePublished":"2026-07-14","dateModified":"2026-08-19","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Automate Your Business Operations with AI Agents","description":"Use amux to run CRM, email, browser automation, notes, and scheduled tasks through AI agents — your full business ops stack, unattended.","step":[{"@type":"HowToStep","name":"Install amux","text":"Install via Homebrew (brew install mixpeek/amux/amux), pipx (pipx install amux), or run directly (uvx amux serve). Start the dashboard at https://localhost:8824."},{"@type":"HowToStep","name":"Register a business operations session","text":"Run: amux register biz-ops --dir ~/Dev/ops --yolo. This creates a dedicated session for business automation tasks separate from your coding agents."},{"@type":"HowToStep","name":"Connect your Gmail account","text":"Connect Gmail via the amux email API — agents can then send, reply, search, and read email through the Gmail API with full threading and your account signature."},{"@type":"HowToStep","name":"Add tasks to the board","text":"Create board tasks for business automation: 'Follow up with leads from last week', 'Draft investor update', 'Research 5 competitors'. Agents claim and execute tasks from the shared kanban board."},{"@type":"HowToStep","name":"Launch and monitor from your phone","text":"Start agents with amux start biz-ops. Monitor progress from the iOS app — see live output, check the board, and steer agents via the Messages tab without sitting at your desk."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can AI agents automate business tasks beyond coding?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux includes built-in APIs for CRM contact management, Gmail API email (send, reply, search, read), browser automation via Playwright, notes/documents, and a scheduler for recurring tasks. AI agents running in amux sessions can access all of these capabilities through the REST API at $AMUX_URL, making them effective for sales follow-ups, investor updates, lead research, and document drafting — not just software development."}},{"@type":"Question","name":"How does amux handle email automation for AI agents?","acceptedAnswer":{"@type":"Answer","text":"amux includes a Gmail API integration at /api/email/*. Agents can send new emails, reply in-thread (with correct In-Reply-To/References headers), search by query, and read individual messages. The Gmail API backend auto-appends your account signature. Connected accounts (ethan@mixpeek.com, info@mixpeek.com) use the Gmail API directly — robust threading, no Mail.app fragility. Connect a new account with GET /api/gmail/auth?account=<email>."}},{"@type":"Question","name":"What is the amux CRM and how do AI agents use it?","acceptedAnswer":{"@type":"Answer","text":"amux includes a lightweight CRM at /api/crm/contacts with auto-assigned PPL-N IDs. AI agents can add contacts (name, company, email, phone, LinkedIn), update fields, log interactions (call, email, meeting, DM), and check pending follow-ups. Agents use this for tasks like 'add all speakers from last week's conference as CRM contacts' or 'log a follow-up interaction with every lead we emailed this month.'"}},{"@type":"Question","name":"How do AI agents do browser automation in amux?","acceptedAnswer":{"@type":"Answer","text":"amux includes a Playwright-based browser API at /api/browser/*. Agents start a browser session with a saved auth profile (no re-login needed), navigate to URLs, take screenshots, click, type, scroll, and evaluate JavaScript. The browser API uses persistent auth profiles from ~/.amux/playwright-auth/, so agents can access sites where you're already logged in — LinkedIn, Stripe, GitHub, internal tools."}},{"@type":"Question","name":"Can I schedule AI agents to run business tasks automatically?","acceptedAnswer":{"@type":"Answer","text":"Yes. The amux scheduler at /api/schedules runs tasks on a cron or natural-language schedule ('daily at 9am', 'every weekday at 8:30am'). Each schedule specifies which amux session receives the prompt and what it says. Example: daily at 9am, send 'Check the inbox, reply to any leads from the last 24 hours, and update CRM' to the biz-ops session."}}]}</script>
 </head>
@@ -77,7 +77,7 @@
       </thead>
       <tbody>
         <tr><td class="row-label">CRM / Contacts</td><td><code>/api/crm/contacts</code></td><td>Add, update, search contacts; log interactions; check follow-ups</td></tr>
-        <tr><td class="row-label">Email</td><td><code>/api/email/*</code></td><td>Send new emails, reply in-thread, search inbox, read messages (Gmail API)</td></tr>
+        <tr><td class="row-label">Email + Attachments</td><td><code>/api/email/*</code></td><td>Send new emails, reply in-thread, attach files (PDF, CSV, images), search inbox, read messages (Gmail API)</td></tr>
         <tr><td class="row-label">Browser</td><td><code>/api/browser/*</code></td><td>Navigate with saved auth, click, type, screenshot, run JS, AI-driven tasks</td></tr>
         <tr><td class="row-label">Notes / Docs</td><td><code>/api/notes/*</code></td><td>Create, read, update, delete documents (plain text or rich HTML)</td></tr>
         <tr><td class="row-label">Scheduler</td><td><code>/api/schedules</code></td><td>Run prompts on cron or natural-language schedules (daily at 9am, every weekday)</td></tr>
@@ -106,16 +106,17 @@ curl $AMUX_URL/api/crm/contacts/PPL-12/interactions -X POST \
 <span class="comment"># Check who needs follow-up</span>
 curl $AMUX_URL/api/crm/contacts/follow-ups</code></pre>
 
-    <h2 id="email">Email: Gmail API Integration</h2>
-    <p>amux connects directly to Gmail via the Gmail API — not Mail.app or SMTP. This means robust threading, no AppleScript fragility, and your real Gmail signature is auto-appended. AI agents can send new emails, reply in-thread, search by query, and read individual messages.</p>
+    <h2 id="email">Email: Gmail API Integration (with File Attachments)</h2>
+    <p>amux connects directly to Gmail via the Gmail API — not Mail.app or SMTP. This means robust threading, no AppleScript fragility, and your real Gmail signature is auto-appended. As of August 2026, agents can also attach files (PDFs, CSVs, images, any MIME type) to outgoing emails and replies.</p>
 
     <h3>Connected accounts</h3>
     <p>Connect a Gmail account once with <code>GET /api/gmail/auth?account=your@email.com</code>. Tokens are stored in <code>~/.amux/gmail-tokens/</code>. Multiple accounts are supported — pass <code>"from": "info@mixpeek.com"</code> to specify which account sends.</p>
 
     <h3>What agents do with email</h3>
     <ul>
-      <li><strong>Send new email:</strong> <code>POST /api/email/send</code> with to, subject, body, from, optional cc</li>
-      <li><strong>Reply in-thread:</strong> <code>POST /api/email/reply</code> with message_id (from /inbox or /search) — sets In-Reply-To/References correctly</li>
+      <li><strong>Send new email:</strong> <code>POST /api/email/send</code> with to, subject, body, from, optional cc, optional attachments</li>
+      <li><strong>Reply in-thread:</strong> <code>POST /api/email/reply</code> with message_id (from /inbox or /search) — sets In-Reply-To/References correctly, supports attachments</li>
+      <li><strong>Attach files:</strong> pass an <code>attachments</code> array: <code>[{"filename":"report.pdf","content":"&lt;base64&gt;","mime_type":"application/pdf"}]</code></li>
       <li><strong>Search inbox:</strong> <code>GET /api/email/search?q=investor&amp;days=30</code></li>
       <li><strong>Read a message:</strong> <code>GET /api/email/message/&lt;rfc822_id&gt;</code></li>
     </ul>
@@ -125,7 +126,19 @@ MESSAGES=$(curl -s $AMUX_URL/api/email/search?q=pricing+question&days=7)
 
 <span class="comment"># For each message_id, reply with a personalized response</span>
 curl $AMUX_URL/api/email/reply -X POST \
-  -d '{"message_id":"<abc@gmail.com>","body":"Thanks for reaching out! Here is our pricing...","from":"ethan@mixpeek.com"}'</code></pre>
+  -d '{"message_id":"<abc@gmail.com>","body":"Thanks for reaching out! Here is our pricing...","from":"ethan@mixpeek.com"}'
+
+<span class="comment"># Send with a file attachment (August 2026)</span>
+curl $AMUX_URL/api/email/send -X POST \
+  -d '{
+    "to":"board@startup.com",
+    "subject":"Weekly metrics",
+    "body":"This week'\''s numbers attached.",
+    "from":"ceo@startup.com",
+    "attachments":[{"filename":"metrics.csv","content":"<base64>","mime_type":"text/csv"}]
+  }'</code></pre>
+
+    <p>For a full walkthrough, see the <a href="/guides/ai-agent-email-automation/">AI agent email automation guide</a>.</p>
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:1.5rem 0;">
       <strong style="font-size:0.82rem;color:var(--muted);">Why not SMTP or osascript?</strong>
@@ -220,7 +233,7 @@ curl $AMUX_URL/api/schedules -X POST \
       </thead>
       <tbody>
         <tr><td class="row-label">AI coding agents</td><td>Native — core use case</td><td>Limited via API calls</td><td>Claude Code / Cursor (no orchestration)</td></tr>
-        <tr><td class="row-label">Email automation</td><td>Built-in Gmail API, threading</td><td>Gmail node (Zapier/n8n)</td><td>SMTP / manual</td></tr>
+        <tr><td class="row-label">Email automation</td><td>Built-in Gmail API, threading, file attachments (Aug 2026)</td><td>Gmail node (Zapier/n8n)</td><td>SMTP / manual</td></tr>
         <tr><td class="row-label">CRM</td><td>Built-in, SQLite, no SaaS</td><td>HubSpot / Salesforce node</td><td>HubSpot, Notion, etc.</td></tr>
         <tr><td class="row-label">Browser automation</td><td>Built-in Playwright, saved auth</td><td>Puppeteer node (complex)</td><td>Playwright / Selenium scripts</td></tr>
         <tr><td class="row-label">Scheduling</td><td>Built-in, natural language</td><td>Cron trigger node</td><td>cron / Launchd</td></tr>

@@ -168,12 +168,46 @@ pub trait SessionBackend: Send + Sync {
     async fn agent_states(&self) -> Result<std::collections::BTreeMap<String, String>> {
         Ok(std::collections::BTreeMap::new())
     }
+    /// Type literal text into the session's terminal and submit it.
+    ///
+    /// This is KEYSTROKE DELIVERY, not the control plane — the same category
+    /// as `capture`, and D1 still stands: a provider that speaks OpenCode gets
+    /// its prompts through `AgentProtocol`, and nothing here interprets the
+    /// text. It exists because a backend ref is the only handle to the
+    /// terminal that hosts a provider WITHOUT a structured protocol, and the
+    /// caller (session_verbs) has no other way to reach the pane.
+    ///
+    /// Default = unsupported, so a backend with no delivery verb reports that
+    /// instead of silently dropping a message; herdr overrides it. tmux keeps
+    /// its own delivery path in session_verbs (the escape/C-u/paste-buffer
+    /// discipline and its read-back verification), which this must not
+    /// duplicate.
+    async fn send_text(&self, _proc: &ProcessRef, _text: &str) -> Result<()> {
+        Err(BackendError::CommandFailed(format!(
+            "backend '{}' cannot deliver text",
+            self.name()
+        )))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// A backend with no delivery verb must REFUSE and name itself. The one
+    /// thing the default must never do is answer `Ok` — a caller reads that as
+    /// "delivered" and the message is gone with nobody told.
+    #[tokio::test]
+    async fn default_send_text_refuses_and_names_the_backend() {
+        let tmux = tmux::TmuxBackend::new();
+        let proc = ProcessRef { backend_ref: "amux-wrk_x".into(), pid: None };
+        let err = tmux
+            .send_text(&proc, "hello")
+            .await
+            .expect_err("tmux keeps its own delivery path in session_verbs");
+        assert!(err.to_string().contains("tmux"), "{err}");
+    }
 
     #[test]
     fn herdr_backend_joins_only_when_a_session_is_named() {

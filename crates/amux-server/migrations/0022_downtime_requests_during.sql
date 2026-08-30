@@ -1,0 +1,24 @@
+-- Did the server actually STOP, or did the heartbeat stop? (AF-99)
+--
+-- server_downtime rows were filed purely on "the last beat is older than
+-- min_gap", which cannot tell an absent server from a running server whose
+-- heartbeat is not beating. On 2026-08-19 that produced a row reading
+-- 09:04:20 -> 21:43:38, 759.3 minutes — during which the server served 33,455
+-- requests, continuously, at up to 4,108 per 15-minute bucket.
+--
+-- It matters because this table is built to be SUBTRACTED.
+-- heartbeat::downtime_within() exists so steer-queue age, rot timers and missed
+-- schedules can discount the part that was not a lane's fault. Wiring those
+-- readers up — named as the obvious follow-up in AEAB-29's own entry — would
+-- have silently removed 12.6 hours of REAL uptime from every duration spanning
+-- that row, making wedged lanes look freshly stuck and overdue schedules look
+-- on time.
+--
+-- The discriminator was always available and in this same database: a gap with
+-- request rows inside it is not downtime.
+--
+--   NULL -> not measured (rows filed before this column existed; 0023 backfills)
+--   0    -> nothing was served: the server really was absent
+--   > 0  -> the server was UP and the heartbeat stopped, which is a different
+--           fault and must never be subtracted as downtime
+-- ADDCOL: server_downtime requests_during INTEGER

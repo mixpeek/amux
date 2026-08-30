@@ -15,6 +15,19 @@ use axum::http::{header, HeaderMap, Request, StatusCode};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+fn app_with_store() -> (axum::Router, std::sync::Arc<Store>, tempfile::TempDir) {
+    std::env::set_var("AMUX_DONE_LINK_REQUIRED", "1");
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(Store::open(&dir.path().join("amux-test.db")).unwrap());
+    let state = AppState {
+        store: store.clone(),
+        started: std::time::Instant::now(),
+        build_hash: "test".into(),
+        auth_token: None,
+    };
+    (router(state), store, dir)
+}
+
 fn app() -> (axum::Router, tempfile::TempDir) {
     // Pin the global done-link gate ON so this suite is hermetic (not dependent
     // on whether the real ~/.amux disables it): the gate tests here provide a
@@ -150,22 +163,25 @@ async fn create_list_detail_lifecycle() {
     assert_eq!(v["creator"], json!("orch"));
 }
 
-// ---- Python-parity list payload: full desc + full log --------------------
+// ---- List payload shapes: slim by default, prose on request --------------
 //
-// The earlier L1 slimming (first-line desc + log_n instead of log) diverged
-// from the Python oracle, whose plain list serves both whole — and the SPA
-// renders `item.desc` and reads `item.log` (folded badge) straight off the
-// LIST payload, so both were silently blank on the Rust dashboard
-// (AMUX-2586 fix #4, measured live 2026-08-09). slim=1 stays the diet.
+// History, because this contract moved TWICE and each move was deliberate.
+// The earlier L1 slimming (first-line desc + log_n) broke the Python-era SPA,
+// which read prose off the LIST payload (AMUX-2586 fix #4) — so the plain
+// list went full-prose. AMUX-2840 then gave slim the derived facts the SPA
+// actually renders, the poll moved to slim=1, and AMUX-3496 flipped the
+// DEFAULT: 1,657 live cards were carrying 6MB of prose to consumers that
+// render three fields. A reader that needs desc/log asks with ?full=1 (or
+// legacy slim=0); `.desc` on a default row is a loud KeyError, not a
+// silently empty string. Detail is unchanged.
 
 #[tokio::test]
-async fn plain_list_serves_full_desc_and_log_slim_stays_the_diet() {
+async fn list_is_slim_by_default_and_serves_prose_only_on_request() {
     let (app, _dir) = app();
     let long_desc = format!("first line {}\nsecond line body", "x".repeat(300));
     let v = create(&app, json!({ "title": "Big desc", "desc": long_desc })).await;
     let id = v["id"].as_str().unwrap().to_string();
-    // Give the card a log line via a desc_append-style PATCH (log is
-    // system-appended); a direct edit note lands in the card's log.
+    // Give the card a log line via a desc-edit PATCH (log is system-appended).
     let (_, _, _) = send(
         &app,
         "PATCH",
@@ -174,26 +190,45 @@ async fn plain_list_serves_full_desc_and_log_slim_stays_the_diet() {
     )
     .await;
 
+    // DEFAULT: slim-shaped — no prose, all four derived facts.
     let (_, _, list) = send(&app, "GET", "/api/board", None).await;
     let item = &list.as_array().unwrap()[0];
-    // Python's plain list: the WHOLE desc, the WHOLE log (string or null),
-    // no desc_truncated / log_n / desc_len keys.
-    assert!(item["desc"].as_str().unwrap().contains("second line"));
-    assert!(item.get("desc_truncated").is_none());
-    assert!(item.get("log_n").is_none());
-    assert!(item.get("desc_len").is_none());
-    assert!(
-        item.get("log").is_some(),
-        "log must be present in the plain list (SPA folded badge reads it)"
-    );
+    assert!(item.get("desc").is_none(), "default list must not carry desc");
+    assert!(item.get("log").is_none(), "default list must not carry log");
+    assert!(item["desc_len"].as_u64().is_some());
+    assert!(item["log_n"].as_u64().is_some());
+    assert!(item["desc_head"].as_str().unwrap().starts_with("first line"));
+    assert!(item.get("folded_n").is_some());
 
-    // slim=1 drops desc AND log, declaring desc_len + log_n instead.
+    // ?full=1: the WHOLE desc, the WHOLE log (string or null), none of the
+    // slim-only keys.
+    for fat in ["/api/board?full=1", "/api/board?slim=0"] {
+        let (_, _, full) = send(&app, "GET", fat, None).await;
+        let item = &full.as_array().unwrap()[0];
+        assert!(
+            item["desc"].as_str().unwrap().contains("second line"),
+            "{fat} must serve full desc"
+        );
+        assert!(item.get("desc_truncated").is_none());
+        assert!(item.get("log_n").is_none());
+        assert!(item.get("desc_len").is_none());
+        assert!(
+            item.get("log").is_some(),
+            "{fat}: log must be present (prose consumers hydrate from it)"
+        );
+    }
+
+    // ?slim=1 explicitly: same diet as the default (the dashboard poll).
     let (_, _, slim) = send(&app, "GET", "/api/board?slim=1", None).await;
     let item = &slim.as_array().unwrap()[0];
     assert!(item.get("desc").is_none());
     assert!(item.get("log").is_none());
     assert!(item["desc_len"].as_u64().is_some());
     assert!(item["log_n"].as_u64().is_some());
+
+    // full=1 beats a stray slim=1 (explicit prose request wins).
+    let (_, _, both) = send(&app, "GET", "/api/board?slim=1&full=1", None).await;
+    assert!(both.as_array().unwrap()[0].get("desc").is_some());
 
     // Detail: the whole desc, as ever.
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
@@ -631,6 +666,76 @@ async fn force_bypasses_the_gate_and_leaves_the_audit_line() {
     assert_eq!(detail["status"], json!("doing"));
 }
 
+/// AMUX-3464: an ATTRIBUTED force with a BLANK reason is refused too.
+///
+/// The measurement that motivated this: 41 force audit lines existed on the
+/// live board and 41 read `reason=` with nothing after it. Attribution was
+/// enforced (41/41 named an actor) and the judgment half was never once
+/// populated, so the ledger recorded that something happened and nothing about
+/// why — ethos rule 6's "audited bypass" that audits nothing.
+///
+/// The case above cannot catch this: it is UNATTRIBUTED, so it fails on the
+/// older check and would stay green if the reason requirement were deleted.
+/// This one supplies a valid session precisely so the reason is the only thing
+/// under test.
+#[tokio::test]
+async fn force_with_a_blank_reason_is_refused_even_when_properly_attributed() {
+    let (app, _dir) = app();
+
+    // Three spellings of "no judgment supplied", because the production
+    // specimens arrived as the first two: `amux board --force` omitted the
+    // field entirely, and raw PATCHes sent it empty.
+    for body in [
+        json!({ "status": "done", "force": true }),
+        json!({ "status": "done", "force": true, "reason": "" }),
+        json!({ "status": "done", "force": true, "reason": "   " }),
+    ] {
+        let card = create(&app, json!({ "title": "blank", "status": "doing" })).await;
+        let id = card["id"].as_str().unwrap().to_string();
+        let (st, _, v) = send_with(
+            &app,
+            "PATCH",
+            &format!("/api/board/{id}"),
+            Some(body.clone()),
+            &[("X-Amux-Session", "tester")],
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "body {body} should be refused: {v}");
+        assert_eq!(v["error"], json!("force requires a reason"), "{v}");
+        // The 409/400 body must name the SANCTIONED command, not just the HTTP
+        // shape. AMUX-2325: an error that publishes the escape purely in
+        // protocol terms sends a correct, literal-minded agent off-trail into a
+        // hand-rolled curl, which is where 25 of those 41 came from.
+        let how = v["how"].as_str().unwrap_or_default();
+        assert!(how.contains("amux board"), "refusal must name the CLI escape: {how}");
+
+        // The card did not move — a refused force must not half-apply.
+        let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+        assert_eq!(detail["status"], json!("doing"), "{detail}");
+    }
+
+    // POSITIVE CONTROL, in the same test so a build that refuses EVERY force
+    // cannot pass. Without this the assertions above are satisfied by breaking
+    // force outright.
+    let ok = create(&app, json!({ "title": "with reason", "status": "doing" })).await;
+    let ok_id = ok["id"].as_str().unwrap().to_string();
+    let (st, _, v) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{ok_id}"),
+        Some(json!({ "status": "done", "force": true, "reason": "gate does not fit; judged by hand" })),
+        &[("X-Amux-Session", "tester")],
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "a force WITH a reason must still work: {v}");
+    let (_, _, detail) = send(&app, "GET", &format!("/api/board/{ok_id}"), None).await;
+    let log = detail["log"].as_str().unwrap();
+    assert!(
+        log.contains("reason=gate does not fit; judged by hand"),
+        "the reason must reach the permanent audit line, not just the request: {log}"
+    );
+}
+
 // ---- archive / restore (RR-0055) -----------------------------------------
 
 #[tokio::test]
@@ -736,13 +841,15 @@ async fn archive_restore_round_trip_preserves_every_field() {
     assert_eq!(v2["rev"].as_i64().unwrap(), rev_after_archive);
 
     // A status PATCH on an archived card is refused (restore it first).
-    // Attributed force: this cell tests archived-immutability, not the
-    // force-attribution refusal (which would 400 first and mask it).
+    // Attributed force WITH a reason: this cell tests archived-immutability,
+    // and BOTH force preconditions 400 before the 409 can be reached, so
+    // either one missing masks the property under test. Attribution was the
+    // first (ts-gke 2026-08-03); `reason` joined it in AMUX-3464.
     let (st, _, v3) = send_with(
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "status": "done", "force": true })),
+        Some(json!({ "status": "done", "force": true, "reason": "testing immutability" })),
         &[("X-Amux-Session", "orch")],
     )
     .await;
@@ -1631,14 +1738,21 @@ async fn force_accepts_x_amux_worker_attribution_like_every_other_module() {
     )
     .await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "unattributed force must refuse: {v}");
+    // ORDERING MATTERS, and this assertion pins it. This control omits BOTH a
+    // header and a reason, so it trips two checks; attribution must be the one
+    // that answers, or the test silently stops covering attribution at all and
+    // starts covering AMUX-3464's reason check while still passing.
     assert_eq!(v["error"], json!("force requires attribution"), "{v}");
 
-    // THE CASE: the spelling the bash CLI actually sends.
+    // THE CASE: the spelling the bash CLI actually sends. The `reason` is
+    // required since AMUX-3464 (an audit line reading `reason=` recorded no
+    // judgment) and the CLI sends it; it is incidental to what THIS test is
+    // about, which is that x-amux-worker counts as attribution.
     let (st, _, v) = send_with(
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "status": "done", "force": true })),
+        Some(json!({ "status": "done", "force": true, "reason": "gate does not fit" })),
         &[("x-amux-worker", "amux")],
     )
     .await;
@@ -1704,4 +1818,960 @@ async fn cross_lane_archive_guard_sees_x_amux_worker_callers() {
     )
     .await;
     assert_eq!(st, StatusCode::OK, "the owner may archive its own card: {v}");
+}
+
+// AVE-36: `amux board progress` reported success while notifying nobody, and
+// `ask` notified — nothing at the call site distinguished delivery from
+// intent, so three cross-group confirms went unread on a card the owner was
+// actively working. A non-owner's desc_append now earns the owner a notice,
+// and the RESPONSE says honestly whether one was sent. In tests no lane runs,
+// so the honest answer is the not-running reason — which is exactly the cell
+// the incident lived in from the sender's side.
+#[tokio::test]
+async fn a_peers_progress_note_reports_owner_notification_honestly() {
+    let (app, _dir) = app();
+    let v = create(&app, json!({ "title": "Handoff", "session": "ave36-nonexistent-owner" })).await;
+    let id = v["id"].as_str().unwrap().to_string();
+
+    // A DIFFERENT lane appends: the response must carry the notify verdict.
+    let (_, _, r) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "desc_append": "confirm: BOTH PASS" })),
+        &[("X-Amux-Session", "ai-video-editor")],
+    )
+    .await;
+    assert_eq!(r["applied"], json!(true), "{r}");
+    assert_eq!(r["owner_notified"], json!(false), "{r}");
+    assert!(
+        r["owner_notify_reason"].as_str().unwrap().contains("not running"),
+        "the reason must name WHY nobody was told: {r}"
+    );
+
+    // The owner's own append is a self-note: no notify verdict at all.
+    let (_, _, r) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "desc_append": "my own journal line" })),
+        &[("X-Amux-Session", "ave36-nonexistent-owner")],
+    )
+    .await;
+    assert_eq!(r["applied"], json!(true), "{r}");
+    assert!(r.get("owner_notified").is_none(), "a self-note must not claim a notice: {r}");
+
+    // An unattributed append (server-side automation) notifies nobody either.
+    let (_, _, r) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "desc_append": "automation outcome line" })),
+    )
+    .await;
+    assert!(r.get("owner_notified").is_none(), "{r}");
+}
+
+// ---- AF-137 / AMUX-3464: discarding an auto-filed report RE-ARMS its detector
+
+/// The filing dedupe is a PERMANENT session_events idem row, so a discarded
+/// report whose idem survives suppresses every future recurrence of that
+/// signature — the signal dies with the card. The discard transition must
+/// clear it (and ONLY the autofix idem: a non-autofix source_ref card must
+/// touch nothing).
+/// AMUX-3472: OCCURRENCE-class reports are judged forever. The outlier
+/// signature names specific requests, so its idem must SURVIVE the discard —
+/// re-arming it refiled the identical specimen while it sat in the scan
+/// window. New occurrences mint new signatures and file regardless.
+#[tokio::test]
+async fn discarding_an_outlier_report_does_not_rearm() {
+    let (app, store, _dir) = app_with_store();
+    let made = create(
+        &app,
+        serde_json::json!({"title": "outlier report", "session": "amux",
+                            "type": "investigation",
+                            "desc": "Filed automatically by amux (runtime_jobs/autofix)"}),
+    )
+    .await;
+    let id = made["id"].as_str().unwrap().to_string();
+    store
+        .write({
+            let id = id.clone();
+            move |conn| {
+                conn.execute(
+                    "UPDATE issues SET source_ref='autofix:latency|outlier|PATCH|/api/x|123' WHERE id=?1",
+                    rusqlite::params![id],
+                )?;
+                conn.execute(
+                    "INSERT OR IGNORE INTO session_events (ts, session, type, data, idem, source) \
+                     VALUES (1, 'amux', 'autofix.filed', '{}', 'autofix:latency|outlier|PATCH|/api/x|123', 'autofix')",
+                    [],
+                )?;
+                Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+            }
+        })
+        .unwrap();
+    let (st, _h, _b) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(serde_json::json!({"status": "discarded", "gate_ack": true,
+                            "desc_append": "judged: churn-window specimen"})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert!(st.is_success(), "discard must apply: {st}");
+    let n: i64 = store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM session_events WHERE idem='autofix:latency|outlier|PATCH|/api/x|123'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1, "an occurrence-class idem must SURVIVE the discard — deleting it refiles the same specimen");
+}
+
+#[tokio::test]
+async fn discarding_an_autofix_report_rearms_the_detector() {
+    let (app, store, _dir) = app_with_store();
+    let made = create(
+        &app,
+        serde_json::json!({"title": "auto report", "session": "amux",
+                            "type": "investigation",
+                            "desc": "Filed automatically by amux (runtime_jobs/autofix)"}),
+    )
+    .await;
+    let id = made["id"].as_str().unwrap().to_string();
+    // Arm: source_ref + the idem row, exactly as the filer writes them.
+    store
+        .write({
+            let id = id.clone();
+            move |conn| {
+                conn.execute(
+                    "UPDATE issues SET source_ref='autofix:sig-x' WHERE id=?1",
+                    rusqlite::params![id],
+                )?;
+                conn.execute(
+                    "INSERT OR IGNORE INTO session_events (ts, session, type, data, idem, source) \
+                     VALUES (1, 'amux', 'autofix.filed', '{}', 'autofix:sig-x', 'autofix')",
+                    [],
+                )?;
+                Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+            }
+        })
+        .unwrap();
+    let idem_count = |store: &std::sync::Arc<Store>| -> i64 {
+        store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM session_events WHERE idem='autofix:sig-x'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(idem_count(&store), 1, "fixture must actually be armed");
+    // Discard through the REAL handler (gate_ack: a report retirement is the
+    // worker's judgment, which is exactly what the ack asserts).
+    let (st, _h, _b) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(serde_json::json!({"status": "discarded", "gate_ack": true,
+                            "desc_append": "retired: condition re-checked, recovered"})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert!(st.is_success(), "discard must apply: {st}");
+    assert_eq!(
+        idem_count(&store),
+        0,
+        "the discard transition must clear the autofix idem — a surviving row \
+         suppresses every future recurrence of this signature"
+    );
+}
+
+
+// ---- AF-160: a gate that says "name them" must collect the name -----------
+
+/// The gate's second criterion is `Peer-reviewed by a DIFFERENT worker in group
+/// `amux` (name them)`. Acking it asserted a peer reviewed the work and recorded
+/// WHO nowhere, so the assertion was unfalsifiable — measured 2026-08-23, 148 of
+/// 1632 live verified cards named a peer and 45 of 1381 archived ones. 91% of the
+/// board passed this gate with nothing machine-readable behind it.
+///
+/// The predicate is reviewer != the card's OWNER, never reviewer != whoever is
+/// typing. The first draft compared against the ACTING session and would have
+/// refused both real verifications made on this board within the hour (AF-161:
+/// owner amux, reviewer and actor amux-frustrations; AF-16: the mirror). The peer
+/// signing off IS the one acting — criterion 3 says they verify it themselves.
+#[tokio::test]
+async fn a_gate_that_asks_you_to_name_the_peer_refuses_until_a_peer_is_named() {
+    let (app, _dir) = app();
+    let gate = json!([
+        "Functionality change is live and exercised, not just merged",
+        "Peer-reviewed by a DIFFERENT worker in group `amux` (name them)",
+    ]);
+    let card = create(
+        &app,
+        json!({
+            "title": "named-peer gate",
+            "status": "review",
+            "session": "amux",
+            "desc": "artifact: crates/amux-server/src/api/board.rs",
+            "gate": gate,
+        }),
+    )
+    .await;
+    let id = card["id"].as_str().unwrap().to_string();
+    let ack = json!([
+        "Functionality change is live and exercised, not just merged",
+        "Peer-reviewed by a different worker in group amux (amux-frustrations)",
+    ]);
+
+    // 1. The ack NOW MATCHES — the name is filled into the parenthetical, the
+    //    case differs and the backticks are gone, all three of which used to
+    //    refuse. Getting past it to the named-peer check is itself the proof.
+    let (st, _, v) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "verified", "gate_checked": ack })),
+        &[("X-Amux-Session", "amux-frustrations")],
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert_ne!(
+        v["error"], json!("gate_checked does not match the gate"),
+        "the filled-in ack must be ACCEPTED as matching — refusing it here is the original bug"
+    );
+    assert_eq!(v["ok"], json!(false));
+    assert_eq!(v["blocked"], json!(true));
+    assert!(
+        v["error"].as_str().unwrap().contains("no reviewer is recorded"),
+        "the refusal must name the real reason: {v}"
+    );
+    // The remedy must be reachable with sanctioned tooling, or this gate
+    // manufactures the hand-rolled curls the audit trail depends on not existing.
+    assert!(v["how_to_fix"]["cli"].as_str().unwrap().starts_with("amux board reviewer "));
+
+    // 2. A SELF-REVIEW is refused: reviewer == the card's owner.
+    let (st, _, _) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "reviewer": "amux" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _, v) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "verified", "gate_checked": ack })),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("self-review"),
+        "owner reviewing their own card must be refused: {v}"
+    );
+
+    // 3. THE MIRROR CASE, which the first draft of this rule would have refused:
+    //    reviewer is a different session from the OWNER, and is also the one
+    //    acting. That is correct and must pass.
+    let (st, _, _) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "reviewer": "amux-frustrations" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _, v) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "verified", "gate_checked": ack })),
+        &[("X-Amux-Session", "amux-frustrations")],
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "the peer signing off themselves must pass: {v}");
+    assert_eq!(v["status"], json!("verified"));
+}
+
+/// A gate with NO named-peer criterion is untouched — the check must not leak
+/// onto every other card on the board.
+#[tokio::test]
+async fn a_gate_without_a_named_peer_criterion_needs_no_reviewer() {
+    let (app, _dir) = app();
+    let card = create(
+        &app,
+        json!({
+            "title": "ordinary code card",
+            "status": "doing",
+            "session": "amux",
+            "desc": "artifact: crates/amux-server/src/api/board.rs",
+        }),
+    )
+    .await;
+    let id = card["id"].as_str().unwrap().to_string();
+    let (st, _, v) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({
+            "status": "done",
+            "gate_checked": ["Implemented and merged", "Tests / lint pass"]
+        })),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "no reviewer required when nothing asks for one: {v}");
+    assert_eq!(v["status"], json!("done"));
+}
+
+// ---- AF-169: a hint that cannot apply must not print ----------------------
+
+/// The 409 said "set its type — the gate is DERIVED from the type" on EVERY
+/// refusal. That is true only when the type default is what refused. For a card
+/// in a worker- or group-scoped gate, retyping changes nothing: AF-168's
+/// reporter retyped TUBES-2053 code -> research, watched the done gate not move,
+/// and concluded the override was pinned per-card. The hint sent them there.
+///
+/// Both branches are asserted. A fix that simply deleted `wrong_type?` would
+/// pass the scoped case and fail the type-default one, where the advice is
+/// correct and useful.
+#[tokio::test]
+async fn the_retype_hint_prints_only_when_retyping_would_actually_help() {
+    let (app, _dir) = app();
+
+    // (a) TYPE DEFAULT refused -> the hint is right, and must still appear.
+    // `artifact:` in the desc satisfies done_requires_asset_link, which fires
+    // BEFORE the ack gate — without it this test never reaches the hint at all.
+    let card = create(&app, json!({
+        "title": "plain code card", "status": "doing",
+        "desc": "artifact: crates/amux-server/src/api/board.rs",
+    })).await;
+    let id = card["id"].as_str().unwrap().to_string();
+    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({ "status": "done" }))).await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert!(
+        v["how_to_ack"]["wrong_type?"].is_string(),
+        "a type-derived gate is exactly when retyping helps: {v}"
+    );
+    assert!(v["how_to_ack"]["gate_source"].is_null());
+
+    // (b) A CARD-SCOPED gate refused -> retyping cannot clear it, so the hint
+    //     must be REPLACED by one that names where the bar came from.
+    let scoped = create(
+        &app,
+        json!({
+            "title": "card with its own gate",
+            "status": "doing",
+            "desc": "artifact: crates/amux-server/src/api/board.rs",
+            "gate": ["Something only this card demands"],
+        }),
+    )
+    .await;
+    let sid = scoped["id"].as_str().unwrap().to_string();
+    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{sid}"), Some(json!({ "status": "done" }))).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v["how_to_ack"]["wrong_type?"].is_null(),
+        "retyping cannot clear a card-scoped gate, so the hint must NOT print: {v}"
+    );
+    let src = v["how_to_ack"]["gate_source"].as_str().unwrap_or("");
+    assert!(
+        src.contains("gate` override") || src.contains("not what refused"),
+        "the refusal must say WHERE the bar came from instead: {v}"
+    );
+}
+
+// ---- AMUX-3567: the contract says WHERE each gate came from ---------------
+
+/// Nothing surfaced that a worker or group carries a custom gate until you
+/// tripped it. The contract already served the RESOLVED gate; it did not say
+/// which tier produced it, so a reader could not tell a type default (which
+/// retyping changes) from a scoped override (which it cannot).
+///
+/// Per TRANSITION, not per card: `group:amux` pins only `verified`,
+/// `tubescience` only `done`. A card-level summary would be wrong for every
+/// transition it did not describe.
+#[tokio::test]
+async fn the_contract_says_which_tier_each_gate_came_from() {
+    let (app, _dir) = app();
+    let card = create(
+        &app,
+        json!({ "title": "plain", "status": "todo", "desc": "artifact: x/y.rs" }),
+    )
+    .await;
+    let id = card["id"].as_str().unwrap().to_string();
+
+    let (st, _, v) = send(&app, "GET", &format!("/api/board/contract?card={id}"), None).await;
+    assert_eq!(st, StatusCode::OK);
+    let src = &v["card_effective_gates"]["gate_sources"];
+    assert!(src.is_object(), "the contract must name the source per transition: {v}");
+
+    // A card with no override anywhere resolves from the TYPE, and there the
+    // retype advice is correct — this is the cell that fails if the field is
+    // hardcoded to "scoped".
+    let done = &src["done"];
+    assert_eq!(
+        done["retype_would_change_it"], json!(true),
+        "a type-derived gate IS changed by retyping: {v}"
+    );
+    assert!(done["explain"].as_str().unwrap().contains("TYPE"), "{v}");
+
+    // Now pin the card's own gate and the same transition must flip — the
+    // control that stops this being a constant. A fix that always reported
+    // "type default" passes the assertions above and fails here.
+    let (st, _, _) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "gate": ["Something only this card demands"] })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let (_, _, v2) = send(&app, "GET", &format!("/api/board/contract?card={id}"), None).await;
+    let done2 = &v2["card_effective_gates"]["gate_sources"]["done"];
+    assert_eq!(
+        done2["retype_would_change_it"], json!(false),
+        "a card-scoped gate is NOT changed by retyping, and the contract must say so: {v2}"
+    );
+}
+
+/// AF-187: the refusal names `desc_append` and must SHOW it, not just say it.
+///
+/// A lane POSTed /api/board/BACKE-3531/desc-append twice, 33s apart, and got 404
+/// both times. That path is not routed and should not be — `desc_append` is a
+/// PATCH field. But the guess is not careless: this API's board resource has six
+/// real POST sub-paths (archive, restore, status-request, status-update, claim),
+/// so a bare field name reads as a path here.
+///
+/// ASSERTING ON THE TEXT IS CORRECT IN THIS ONE CASE. The general rule is that a
+/// text mutation measures coupling rather than correctness — but that holds when
+/// the string is incidental to the thing under test. Here the refusal body IS
+/// the product: its whole job is to be readable and copyable. So the artifact
+/// under test is the text, and mutating it is the right instrument.
+///
+/// The structured half is the part a machine can use, and it is asserted
+/// separately so the test does not rest on prose alone.
+#[tokio::test]
+async fn the_desc_shrink_refusal_shows_how_to_append_not_just_the_field_name() {
+    let (app, _dir) = app();
+    let long = "x".repeat(900);
+    let card = create(&app, json!({ "title": "long desc", "status": "todo", "desc": long })).await;
+    let id = card["id"].as_str().unwrap().to_string();
+
+    // A replace dropping a strict majority of a 500+ char desc trips the SIZE rule.
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "desc": "tiny" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "a 900 -> 4 char replace must be refused: {v}");
+    assert_eq!(v["kind"], json!("desc_shrink_blocked"), "{v}");
+
+    // THE MACHINE-READABLE HALF: a caller can build the request without prose.
+    let ex = &v["append_example"];
+    assert_eq!(ex["method"], json!("PATCH"), "{v}");
+    assert_eq!(ex["path"], json!(format!("/api/board/{id}")), "{v}");
+    assert!(
+        ex["body"]["desc_append"].is_string(),
+        "the example body must carry the FIELD, or it does not show the shape: {v}"
+    );
+
+    // THE PROSE HALF: the sentence a human reads must carry the shape too, since
+    // that is the half that got guessed as a path.
+    let err = v["error"].as_str().unwrap_or("");
+    assert!(err.contains("desc_append"), "still name the field — it is what a reader greps: {err:?}");
+    assert!(
+        err.contains(&format!("/api/board/{id}")) || err.contains("in place of"),
+        "the sentence must show the invocation, not just the name: {err:?}"
+    );
+
+    // CONTROL: the bare field name stays where a machine already looked for it.
+    // Replacing it with the example would break every existing consumer.
+    assert_eq!(v["append_instead"], json!("desc_append"), "{v}");
+    assert_eq!(v["ack_field"], json!("desc_shrink_ack"), "{v}");
+
+    // THE OTHER BRANCH, and it is here because a mutation caught its absence.
+    // The block above trips the SIZE rule (a lane shrinking its own desc). The
+    // AUTHORSHIP rule is a different string on a different path, and dropping
+    // the shape from it left this test GREEN — a cell that could not fail on
+    // half the feature it claimed to cover.
+    let owned = create(
+        &app,
+        json!({ "title": "owned", "status": "todo", "session": "lane-a",
+                "desc": "y".repeat(900) }),
+    )
+    .await;
+    let oid = owned["id"].as_str().unwrap().to_string();
+    let (st2, _, v2) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{oid}"),
+        Some(json!({ "desc": "my review note" })),
+        &[("X-Amux-Session", "lane-b")],
+    )
+    .await;
+    assert_eq!(st2, StatusCode::CONFLICT, "a peer replacing the owner's prose must refuse: {v2}");
+    assert_eq!(v2["rule"], json!("authorship"), "this must be the OTHER branch: {v2}");
+    let err2 = v2["error"].as_str().unwrap_or("");
+    assert!(err2.contains("desc_append"), "{err2:?}");
+    assert!(
+        err2.contains("not a sub-path"),
+        "the authorship branch must show the shape too — it is the one a REVIEWER reads,          and reviewers are who guessed the path: {err2:?}"
+    );
+    assert_eq!(v2["append_example"]["method"], json!("PATCH"), "{v2}");
+
+    // AF-191: THE TWO SPECIMENS THE NUMERIC FLOORS LET THROUGH, end to end, so
+    // this pins the WRITE SITE and not only the predicate. Both were reproduced
+    // against the running server on scratch cards and both returned
+    // `applied: true` with the owner's text gone.
+    //
+    // (a) a LONGER replacement. The old rule required a 200-char net LOSS, and
+    // this one grows, so nothing fired while every character was destroyed.
+    let grew = create(
+        &app,
+        json!({ "title": "owned", "status": "todo", "session": "lane-a",
+                "desc": "their line one\ntheir line two\ntheir line three" }),
+    )
+    .await;
+    let gid = grew["id"].as_str().unwrap().to_string();
+    let (st3, _, v3) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{gid}"),
+        Some(json!({ "desc": "TOTALLY DIFFERENT CONTENT, and noticeably longer than what it \
+                             replaced, which is the point of this case." })),
+        &[("X-Amux-Session", "lane-b")],
+    )
+    .await;
+    assert_eq!(st3, StatusCode::CONFLICT, "a LONGER replacement destroys just as much: {v3}");
+    assert_eq!(v3["rule"], json!("authorship"), "{v3}");
+
+    // (b) a SHORT card. The old rule required `before >= 200`; amux-cloud's
+    // reported incident was 54 chars replaced by 17.
+    let small = create(
+        &app,
+        json!({ "title": "owned", "status": "todo", "session": "lane-a",
+                "desc": "their whole one-line description here" }),
+    )
+    .await;
+    let sid = small["id"].as_str().unwrap().to_string();
+    let (st4, _, v4) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{sid}"),
+        Some(json!({ "desc": "mine now" })),
+        &[("X-Amux-Session", "lane-b")],
+    )
+    .await;
+    assert_eq!(st4, StatusCode::CONFLICT, "a SHORT desc is not exempt: {v4}");
+
+    // CONTROL, and it carries the weight: a peer editing ONE line of a
+    // multi-line write-up keeps the rest and must still pass, or the guard
+    // becomes a refusal met during ordinary work, which is how a safety
+    // property turns into a reflexive ack.
+    let (st5, _, v5) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{gid}"),
+        Some(json!({ "desc": "their line one\ntheir line TWO (typo fixed)\ntheir line three" })),
+        &[("X-Amux-Session", "lane-b")],
+    )
+    .await;
+    assert_eq!(st5, StatusCode::OK, "a typo fix that keeps the other lines must pass: {v5}");
+}
+
+/// AMUX-3567 REVIEW (amux-frustrations): the same answer for the WORKER tier,
+/// which is the tier the card is named after and the one the original cell
+/// skipped. It went type-default -> card-override, so `GateSource::Worker` was
+/// never produced by any HTTP test; a mutation making `retype_would_help`
+/// return true for Worker and Group left the whole suite green.
+///
+/// TUBES-2053's shape exactly: a card owned by a worker that carries its own
+/// `done` gate. Retyping it does nothing, and reading the contract must say so
+/// BEFORE the transition is refused, which is the entire point of the card.
+#[tokio::test]
+async fn the_contract_names_a_worker_scoped_gate_before_you_trip_it() {
+    let (app, _dir) = app();
+    let card = create(
+        &app,
+        json!({
+            "title": "owned by a worker with its own bar",
+            "status": "todo",
+            "session": "tubes-like",
+            "desc": "artifact: x/y.rs",
+        }),
+    )
+    .await;
+    let id = card["id"].as_str().unwrap().to_string();
+
+    // BEFORE: nothing is scoped, so the gate is the type's and retyping helps.
+    let (_, _, v0) = send(&app, "GET", &format!("/api/board/contract?card={id}"), None).await;
+    assert_eq!(
+        v0["card_effective_gates"]["gate_sources"]["done"]["retype_would_change_it"],
+        json!(true),
+        "with nothing scoped the gate is the type's: {v0}"
+    );
+
+    // Give that worker a `done` gate through the endpoint the SPA uses.
+    let (st, _, _) = send(
+        &app,
+        "PATCH",
+        "/api/board/session-gates",
+        Some(json!({ "worker": "tubes-like", "status": "done", "gate": ["Worker-scoped bar"] })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    // AFTER: same card, same transition, and the advice must invert.
+    let (_, _, v1) = send(&app, "GET", &format!("/api/board/contract?card={id}"), None).await;
+    let done = &v1["card_effective_gates"]["gate_sources"]["done"];
+    assert_eq!(
+        done["retype_would_change_it"], json!(false),
+        "a worker-scoped gate ignores the item type — this is what AF-168's reporter \
+         was not told, and they concluded the override was pinned per-card: {v1}"
+    );
+    let explain = done["explain"].as_str().unwrap_or("");
+    assert!(
+        explain.contains("tubes-like") && explain.contains("WORKER"),
+        "name the worker and the tier, or the reader cannot go look: {explain:?}"
+    );
+    assert_eq!(
+        v1["card_effective_gates"]["gates"]["done"],
+        json!(["Worker-scoped bar"]),
+        "and the resolved gate itself must be the worker's: {v1}"
+    );
+
+    // A DIFFERENT transition on the SAME card stays type-derived. This is the
+    // per-transition claim the commit message makes, and without this cell a
+    // per-card summary would pass every assertion above.
+    let review = &v1["card_effective_gates"]["gate_sources"]["review"];
+    assert_eq!(
+        review["retype_would_change_it"], json!(true),
+        "only `done` was pinned — the other transitions are still the type's: {v1}"
+    );
+}
+
+// ---- AMUX-3686: a --trigger must not eat an autofix dedupe signature -------
+//
+// `source_ref` has two owners. autofix stores its fault signature there and
+// `open_card_for_fault` reads it to suppress a duplicate filing; `amux board
+// backlog --trigger` writes the external condition a parked card waits on, as
+// a plain overwrite.
+//
+// So parking an autofix card exactly as the board's own idle nudge prescribes
+// destroyed the dedupe key. Measured 2026-08-24: AMUX-3651 parked with a
+// trigger, AMUX-3685 filed minutes later for the same fault. The sanctioned
+// instruction is what caused it.
+//
+// Driven through the REAL router and a real PATCH, not a pure helper, because
+// the decision lives in the handler and a helper test would pin the property
+// one layer above where the defect enters.
+#[tokio::test]
+async fn a_trigger_cannot_overwrite_an_autofix_signature_but_can_replace_a_trigger() {
+    let (app, _dir) = app();
+
+    let (_s, _h, created) = send_with(
+        &app,
+        "POST",
+        "/api/board",
+        Some(json!({"title": "autofix card", "status": "todo", "session": "amux"})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // autofix stamps its signature, exactly as file_finding does.
+    let sig = "autofix:latency|outlier|ROLLUP|/api/board,/api/sessions";
+    let (st, _h, _b) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({"source_ref": sig})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert!(st.is_success(), "autofix must be able to stamp its signature");
+
+    // THE SPECIMEN: park it with a trigger, as the idle nudge prescribes.
+    let trigger = "560d40ba adopted by the running server";
+    let (st, _h, body) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({"status": "backlog", "source_ref": trigger, "gate_ack": true})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert!(st.is_success(), "parking must still succeed: {body}");
+
+    // 0. THE CALLER IS TOLD (AMUX-3791). Everything below asserts the value was
+    //    preserved somewhere; none of it reaches the operator who ran the
+    //    command. This is the one write where the field you NAMED is
+    //    deliberately not the field that changed, so a caller verifying the
+    //    obvious way reads back source_ref, sees the old value, and concludes
+    //    the trigger was silently dropped. That false negative cost a probe
+    //    against a live card and nearly a bug report against this very code.
+    let dv = &body["diverted_fields"][0];
+    assert_eq!(
+        dv["field"].as_str().unwrap_or(""),
+        "source_ref",
+        "the response must name the field the caller asked for: {body}"
+    );
+    assert_eq!(
+        dv["landed_in"].as_str().unwrap_or(""),
+        "desc",
+        "and where it actually went: {body}"
+    );
+    assert_eq!(
+        dv["value"].as_str().unwrap_or(""),
+        trigger,
+        "and the value, so the caller can confirm it without re-reading the card: {body}"
+    );
+    assert!(
+        dv["why"].as_str().unwrap_or("").contains("AMUX-3686"),
+        "and WHY, or the next reader re-derives the dedupe-signature reasoning: {body}"
+    );
+
+    let (_s, _h, card) = send_with(&app, "GET", &format!("/api/board/{id}"), None, &[]).await;
+    // 1. The dedupe key SURVIVES.
+    assert_eq!(
+        card["source_ref"].as_str().unwrap_or(""),
+        sig,
+        "a trigger must not overwrite an autofix signature"
+    );
+    // 2. And the card is still PARKED — the property --trigger exists for. A
+    //    fix that only preserved the dedupe would break this, which is why both
+    //    are asserted.
+    assert_eq!(card["status"].as_str().unwrap_or(""), "backlog");
+    // 3. The condition is not LOST: it goes where a human reads it.
+    assert!(
+        card["desc"].as_str().unwrap_or("").contains(trigger),
+        "the parked-on condition must be recorded, not dropped: {}",
+        card["desc"]
+    );
+
+    // CONTROL: a trigger replacing another TRIGGER is normal and must still
+    // work — only `autofix:` is protected. Narrowing this wrongly would freeze
+    // every parked card's condition at its first value.
+    let (_s, _h, plain) = send_with(
+        &app,
+        "POST",
+        "/api/board",
+        Some(json!({"title": "hand-parked", "status": "todo", "session": "amux"})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    let pid = plain["id"].as_str().unwrap().to_string();
+    for cond in ["waiting on vendor", "waiting on the deploy"] {
+        let (st, _h, pb) = send_with(
+            &app,
+            "PATCH",
+            &format!("/api/board/{pid}"),
+            Some(json!({"source_ref": cond})),
+            &[("X-Amux-Session", "amux")],
+        )
+        .await;
+        assert!(st.is_success());
+        // CONTROL for the diverted_fields assertions above: an ORDINARY trigger
+        // write went exactly where the caller asked, so there is nothing to
+        // announce. Without this, a version that emitted the advisory on every
+        // source_ref write would pass every cell above and train readers to
+        // ignore a line that cries wolf.
+        assert!(
+            pb.get("diverted_fields").is_none(),
+            "a trigger that landed in source_ref must NOT report a diversion: {pb}"
+        );
+    }
+    let (_s, _h, pcard) = send_with(&app, "GET", &format!("/api/board/{pid}"), None, &[]).await;
+    assert_eq!(
+        pcard["source_ref"].as_str().unwrap_or(""),
+        "waiting on the deploy",
+        "a trigger replacing a trigger must still work"
+    );
+}
+
+/// tsukimiya, reviewing #134: "a PATCH of item_type returns 200 with a bumped rev
+/// and silently does nothing — which cost you six mistyped cards in one night."
+///
+/// The rev-bump and the silence were already fixed. The STATUS CODE was not: a
+/// caller checking `r.ok` still read success, which is AC-227's trap (`d.get('ok',
+/// True)` defaulting True is how a refused write got reported as done).
+///
+/// Two of these three cells must STAY 200 — a 422 on every no-op is the opposite
+/// bug and would break every caller that PATCHes idempotently.
+#[tokio::test]
+async fn a_patch_whose_every_key_is_unwritable_is_422_and_a_real_noop_is_not() {
+    let (app, _dir) = app();
+    let card = create(&app, json!({ "title": "typo probe", "type": "chore" })).await;
+    let id = card["id"].as_str().unwrap().to_string();
+
+    // 1) EVERY key unwritable -> 422. `item_type` is the classic typo for `type`.
+    let (st, _, body) = send(
+        &app, "PATCH", &format!("/api/board/{id}"),
+        Some(json!({"item_type": "code"})),
+    ).await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "nothing sent was writable: {body}");
+    assert_eq!(body["applied"], json!(false));
+    assert_eq!(body["ignored_fields"], json!(["item_type"]));
+    assert_eq!(body["type"], json!("chore"), "and the card is untouched");
+
+    // 2) CONTROL — an ordinary no-op is a SUCCESSFUL request that changed nothing.
+    let (st, _, body) = send(
+        &app, "PATCH", &format!("/api/board/{id}"),
+        Some(json!({"type": "chore"})),
+    ).await;
+    assert_eq!(st, StatusCode::OK, "a writable field at its current value is not an error: {body}");
+    assert_eq!(body["applied"], json!(false));
+
+    // 3) CONTROL — a MIXED body must not 422. `type` is legitimate and merely
+    // unchanged; the typo is reported, not fatal. Without this cell the narrowing
+    // is untested and "all keys ignored" could quietly become "any key ignored".
+    let (st, _, body) = send(
+        &app, "PATCH", &format!("/api/board/{id}"),
+        Some(json!({"type": "chore", "item_type": "code"})),
+    ).await;
+    assert_eq!(st, StatusCode::OK, "one legitimate key means the request was usable: {body}");
+    assert_eq!(body["ignored_fields"], json!(["item_type"]), "still reported");
+}
+
+/// AMUX-3715: `?count=1` agrees with the list it describes, and refuses to look
+/// like one.
+///
+/// Requested by tubescience: they archive in bulk (81 cards in one session) and
+/// lost the ability to see that group, because `amux board archive` sets
+/// archived=1 and leaves `status` alone, so archived work scatters under its old
+/// status with nowhere to review it.
+///
+/// The count exists because the dashboard's "Archived (N)" header is collapsed
+/// by default and the archived set was MEASURED at 445KB raw / 87KB gzipped —
+/// +38% on the board poll — which is too much to ship on every load of a
+/// mobile-first dashboard to render a number.
+///
+/// THE PROPERTY THAT MATTERS is not the number, it is that the count and the
+/// list share a predicate. A count from its own SELECT would drift the moment
+/// either side changed, and the header would then confidently disagree with
+/// what expanding it shows (ethos rule 1). So the cells assert the two against
+/// EACH OTHER rather than against literals — a literal still passes if both
+/// drift the same way — and a final pair pins the values so a constant cannot
+/// satisfy the agreement cells.
+#[tokio::test]
+async fn count_agrees_with_the_list_and_is_not_shaped_like_one() {
+    let (app, _dir) = app();
+    // ARCHIVE VIA PATCH, not via create. The first draft passed `archived: 1`
+    // in the create body; POST /api/board ignores it, so nothing was archived
+    // and BOTH sides of every agreement cell were 0 — they passed on an empty
+    // set. The discriminating cells at the bottom are what caught it, which is
+    // the entire reason they are there.
+    for (i, arch) in [(1, 0), (2, 0), (3, 1), (4, 1), (5, 1)] {
+        let c = create(&app, json!({"title": format!("c{i}"), "session": "lane"})).await;
+        if arch == 1 {
+            let id = c["id"].as_str().expect("created id");
+            let (st, _, v) =
+                send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({"archived": 1}))).await;
+            assert_eq!(st, StatusCode::OK, "archive c{i} failed: {v}");
+        }
+    }
+    // PREMISE, asserted: the seeding actually archived something. Without this
+    // an empty board satisfies every "count equals list length" cell below.
+    let (_, _, seeded) = send(&app, "GET", "/api/board?archived=1", None).await;
+    assert_eq!(
+        seeded.as_array().map(Vec::len),
+        Some(3),
+        "premise: 3 cards must actually be archived, or the agreement cells compare 0 to 0"
+    );
+
+    for q in ["archived=1", "archived=0", "session=lane"] {
+        let (_, _, list) = send(&app, "GET", &format!("/api/board?{q}"), None).await;
+        let n_list = list.as_array().expect("the list is a bare array").len();
+        let (_, _, cnt) = send(&app, "GET", &format!("/api/board?{q}&count=1"), None).await;
+        assert_eq!(
+            cnt["count"].as_u64().expect("count is a number") as usize,
+            n_list,
+            "{q}: the count must equal the length of the list it describes: {cnt}"
+        );
+    }
+
+    // SHAPE. An object, not an array: a caller that drops `count=1` from its URL
+    // should get a shape error rather than a plausible one-element array, and
+    // `.length` on the count body must be undefined rather than 1.
+    let (_, _, cnt) = send(&app, "GET", "/api/board?archived=1&count=1", None).await;
+    assert!(cnt.is_object(), "count must not be array-shaped: {cnt}");
+    assert!(cnt.get("filter").is_some(), "it must echo the filter it counted: {cnt}");
+
+    // AND IT MUST DISCRIMINATE, or a constant would pass every agreement cell
+    // above.
+    let (_, _, a1) = send(&app, "GET", "/api/board?archived=1&count=1", None).await;
+    let (_, _, a0) = send(&app, "GET", "/api/board?archived=0&count=1", None).await;
+    assert_eq!(a1["count"], json!(3), "3 archived were seeded: {a1}");
+    assert_eq!(a0["count"], json!(2), "2 active were seeded: {a0}");
+}
+
+/// AMUX-3715: archiving a card that carries a live trigger says so, and one
+/// without a trigger does not.
+///
+/// tubescience's finding, and it is about the primitive rather than the view
+/// they asked for: `archived` hides a card from every board view AND every
+/// autonomy loop, so a `--trigger` in `source_ref` will never fire again. The
+/// card reads as parked-on-a-condition and is parked forever.
+///
+/// Measured when they reported it: 202 archived cards fleet-wide carry a
+/// non-empty source_ref across at least six lanes. Not one will fire.
+///
+/// RECORDED, NOT REFUSED — they archive trigger-bearing cards deliberately and
+/// keep the conditions in committed docs, so refusing would break a working
+/// flow to protect them from a deliberate choice. The log line outlives the
+/// response, which is what a future lane actually reads.
+///
+/// The negative cell is the one that keeps this useful: warning on EVERY
+/// archive would pass the first cell and train everyone to ignore the line.
+#[tokio::test]
+async fn archiving_a_trigger_bearing_card_records_that_it_de_arms_it() {
+    let (app, _dir) = app();
+
+    let armed = create(&app, json!({"title": "armed", "session": "lane"})).await;
+    let armed_id = armed["id"].as_str().unwrap().to_string();
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{armed_id}"),
+        Some(json!({"source_ref": "when the content_hash deploy lands"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "set trigger: {v}");
+    // PREMISE: the trigger actually stuck. Without this the cell below passes
+    // for a card that never had one.
+    assert_eq!(v["source_ref"], json!("when the content_hash deploy lands"), "{v}");
+
+    let (st, _, v) =
+        send(&app, "PATCH", &format!("/api/board/{armed_id}"), Some(json!({"archived": 1}))).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let log = v["log"].as_str().unwrap_or_default();
+    assert!(log.contains("DE-ARMS"), "the log must say archiving de-arms it: {log}");
+    assert!(
+        log.contains("when the content_hash deploy lands"),
+        "and must quote the trigger, so a future reader knows WHAT stopped firing: {log}"
+    );
+
+    // THE NEGATIVE: no trigger, no warning. A line on every archive is a line
+    // nobody reads.
+    let plain = create(&app, json!({"title": "plain", "session": "lane"})).await;
+    let plain_id = plain["id"].as_str().unwrap();
+    let (_, _, pv) =
+        send(&app, "PATCH", &format!("/api/board/{plain_id}"), Some(json!({"archived": 1}))).await;
+    let plog = pv["log"].as_str().unwrap_or_default();
+    assert!(plog.contains("ARCHIVED"), "it still records the archive: {plog}");
+    assert!(!plog.contains("DE-ARMS"), "but must not warn about a trigger it does not have: {plog}");
 }

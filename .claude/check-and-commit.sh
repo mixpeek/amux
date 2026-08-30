@@ -29,6 +29,54 @@ p = d.get('tool_input', {}).get('file_path', '')
 print(os.path.realpath(p) if p else '')
 " 2>/dev/null || echo "")
 
+# THE BASH CLI SHIPS ON SAVE, NOT ON COMMIT — so it needs a gate HERE or it has
+# none that fires in time (AMUX-3464, 2026-08-26). ~/.local/bin/amux is a 26-byte
+# SYMLINK to <repo>/amux, so an uncommitted edit is live to every session in the
+# fleet the instant the file is written: no install step, no builder cycle, no CI.
+# A comment containing an apostrophe was added inside a `python3 -c '...'` block,
+# which closed the quote early and left bash parsing garbage; the CLI died at load
+# with `syntax error near unexpected token ;;` for EVERY subcommand, fleet-wide,
+# until a peer reported it over the HTTP API.
+#
+# The failure mode is what makes this worth a hook rather than a test: a parse
+# error at LOAD means the CLI cannot print its own help, so a session that has
+# only ever used `amux send` has no way to discover that POST /api/sessions/<n>/send
+# exists. It is not degraded, it is mute. `bash -n` costs milliseconds and catches
+# the whole class structurally, apostrophes included.
+case "$FILE_PATH" in
+  "$REPO"/amux)
+    if ! ERR=$(bash -n "$FILE_PATH" 2>&1); then
+      echo "BASH SYNTAX ERROR in amux — the CLI is a symlink target, so this is LIVE" >&2
+      echo "to the whole fleet right now and every subcommand dies at load:" >&2
+      echo "$ERR" >&2
+      echo "Common cause: an apostrophe or single quote inside a python3 -c '...' block." >&2
+      exit 2
+    fi ;;
+esac
+
+# Shell artifacts whose ONLY gate is checks.yml get their paired CI suite run
+# at edit time. Rust has the builder and cargo; dashboard JS has node --check
+# below; but a hook script outside crates/ has no local gate at all, so its
+# first red is post-push CI (AMUX-3494: the freshness hook's pathspec fix
+# shipped, its fixture suite went red twice on origin/main, and the editor
+# only learned the suite existed from the CI failure). Same rule as the JS
+# gate: run the check the CI will run, where the edit happens. One line per
+# pair; add the pair when a checks.yml suite bites the same way.
+SUITE=""
+case "$FILE_PATH" in
+  "$REPO"/.claude/session-freshness.sh|"$REPO"/scripts/test-session-freshness.sh)
+    SUITE="scripts/test-session-freshness.sh" ;;
+esac
+if [ -n "$SUITE" ]; then
+  if ! (cd "$REPO" && "./$SUITE" >/tmp/amux-hook-suite.$$ 2>&1); then
+    echo "CI suite $SUITE FAILS after this edit — checks.yml will go red on push:" >&2
+    tail -20 "/tmp/amux-hook-suite.$$" >&2
+    rm -f "/tmp/amux-hook-suite.$$"
+    exit 2  # surface the failure to the editor now, not post-push
+  fi
+  rm -f "/tmp/amux-hook-suite.$$"
+fi
+
 # Only gate client JS under the dashboard's static dir.
 case "$FILE_PATH" in
   "$STATIC_REAL"/*.js|"$STATIC_REAL"/*.mjs) ;;

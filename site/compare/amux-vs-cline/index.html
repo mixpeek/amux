@@ -40,7 +40,7 @@
     "description": "Cline is an interactive VS Code AI coding assistant with per-step tool approval and multi-model support. amux is the headless fleet orchestrator for running dozens of parallel Claude Code, Codex, or Gemini CLI agents overnight — web dashboard, iOS app, self-healing watchdog. Complementary tools: use Cline for interactive feature work, amux for parallel batch fleet management.",
     "url": "https://amux.io/compare/amux-vs-cline/",
     "datePublished": "2026-07-15",
-    "dateModified": "2026-07-15",
+    "dateModified": "2026-08-27",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}
   }
   </script>
@@ -86,7 +86,7 @@
         "name": "Is Cline open source?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes — Cline is open source under the Apache 2.0 license, available at github.com/cline/cline with approximately 64,000 GitHub stars and around 2 million VS Code marketplace installs. amux is also open source (MIT + Commons Clause) with self-hosting via Homebrew or pip, and an optional $20/month cloud tier for teams that want a hosted dashboard."
+          "text": "Yes — Cline is open source under the Apache 2.0 license, available at github.com/cline/cline with approximately 64,000+ GitHub stars and around 2 million VS Code marketplace installs. amux is also open source (MIT + Commons Clause) as a single Rust binary with zero external dependencies, self-hosted via Homebrew (brew install mixpeek/amux/amux), and an optional cloud tier for teams."
         }
       }
     ]
@@ -121,7 +121,21 @@
       Fleet orchestrator for parallel headless agents vs interactive single-agent VS Code assistant —
       different problems, complementary solutions.
     </p>
-    <p style="color:var(--muted);font-size:0.85rem">Last updated: July 15, 2026</p>
+    <p style="color:var(--muted);font-size:0.85rem">Last updated: August 27, 2026</p>
+
+    <!-- EXP-064: cline compare top-of-page green CTA -->
+    <div style="background:linear-gradient(135deg,#064e3b,#065f46);border:1px solid #059669;border-radius:10px;padding:1.25rem 1.5rem;margin:1.5rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem"
+         data-exp="EXP-064">
+      <div>
+        <div style="font-weight:600;color:#d1fae5;font-size:1rem;margin-bottom:0.25rem">Add a fleet layer to your existing Cline setup</div>
+        <div style="color:#a7f3d0;font-size:0.875rem">amux runs dozens of Claude Code, Codex &amp; Gemini CLI agents overnight — open source, MIT licensed, 367+ stars.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"
+         onclick="if(window.posthog) posthog.capture('exp064_cline_compare_topofpage_cta_click', {page: window.location.pathname})"
+         style="display:inline-flex;align-items:center;gap:0.5rem;background:#059669;color:#fff;text-decoration:none;padding:0.625rem 1.25rem;border-radius:8px;font-size:0.9rem;font-weight:600;white-space:nowrap;flex-shrink:0">
+        View amux on GitHub ★
+      </a>
+    </div>
 
     <!-- EXP-007: compare pages GitHub CTA -->
     <div style="display:flex;align-items:center;gap:1rem;background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:0.875rem 1.125rem;margin:1.5rem 0;flex-wrap:wrap">
@@ -164,7 +178,7 @@
     </p>
 
     <p>
-      <strong>amux</strong> (~298 GitHub stars, much newer) is the open-source control plane for
+      <strong>amux</strong> (~367 GitHub stars) is the open-source control plane for
       running an AI engineering team from a single dashboard or your phone. It launches, monitors,
       and self-heals dozens of parallel
       <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a>,
@@ -173,8 +187,8 @@
       The iOS app gives you remote monitoring and approval from anywhere. A built-in kanban board
       lets agents atomically claim tasks so no two sessions duplicate work. Self-healing handles
       context exhaustion, crashes, and stuck prompts automatically. Install:
-      <code>brew install mixpeek/amux/amux</code> or <code>pipx install amux</code>.
-      Open source (MIT + Commons Clause) at
+      <code>brew install mixpeek/amux/amux</code>.
+      Open source (MIT + Commons Clause, single Rust binary, zero external dependencies) at
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>.
     </p>
 
@@ -303,8 +317,18 @@
           <td>VS Code Extensions marketplace — search "Cline" or "Roo Code"</td>
         </tr>
         <tr>
+          <td>Session cloning</td>
+          <td>Clone any live session via dashboard or API — run parallel experiments on the same context</td>
+          <td>No session cloning — each VS Code window is an independent session</td>
+        </tr>
+        <tr>
+          <td>GitHub integration</td>
+          <td>GitHub App token shim — every fleet <code>gh</code> call uses the App token automatically</td>
+          <td>No built-in GitHub App integration</td>
+        </tr>
+        <tr>
           <td>GitHub stars</td>
-          <td>298</td>
+          <td>367+</td>
           <td>~64,000</td>
         </tr>
       </tbody>
@@ -526,6 +550,15 @@
       </tbody>
     </table>
 
+    <h2>What's new in amux — August 2026</h2>
+
+    <ul>
+      <li><strong>Session cloning</strong> — duplicate any live session via the dashboard "Duplicate" button or <code>POST /api/sessions/&lt;name&gt;/clone</code>. Run parallel prompt experiments on the same agent context, then pick the better result.</li>
+      <li><strong>GitHub App token shim</strong> — every fleet <code>gh</code> call now uses your GitHub App token automatically. No per-session token setup; the token is injected at the fleet level.</li>
+      <li><strong>Age-weighted board pickup</strong> — the board drive scores todo items by age, so stale tasks surface before new ones rather than being buried by pos-LIFO ordering.</li>
+      <li><strong>SSE realtime health signal</strong> — the realtime backbone now publishes a health metric joining server-side connections and client-side reconnect beacons. Dashboard shows live connection health.</li>
+    </ul>
+
     <h2>FAQ</h2>
 
     <dl style="display:grid;gap:1.5rem">
@@ -593,11 +626,8 @@
 
     <h2>Quick start with amux</h2>
 
-    <pre><code># Install via Homebrew (recommended on macOS)
+    <pre><code># Install via Homebrew (macOS/Linux)
 brew install mixpeek/amux/amux
-
-# Or via PyPI
-pipx install amux
 
 # Or zero-install trial (no install needed)
 uvx amux serve
@@ -634,7 +664,7 @@ amux serve  # → https://localhost:8824</code></pre>
         at your desk.
       </p>
       <pre><code>brew install mixpeek/amux/amux
-amux register myproject --dir ~/Dev/myproject --yolo
+amux register myproject --dir ~/Dev/myproject
 amux start myproject
 amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>

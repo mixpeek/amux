@@ -1,0 +1,35 @@
+-- The index migration 0031 needed, shipped separately because 0031 had already
+-- been recorded as applied before the index was added to it, and an applied
+-- migration never runs again. 88af1ff3 edited 0031's body in place; that helps
+-- only a database created from scratch afterwards, which is no database anyone
+-- is running.
+--
+-- WHAT IT COST, recorded here because the next person to write a backfill needs
+-- the number and not the principle: `_amux_state_events` carried exactly ONE
+-- index, on `rev`. 0031's correlated lookup therefore full-scanned ~79,000 rows
+-- for each of 7,281 terminal cards, with two json_extract calls and a strftime
+-- on every visit, inside the exclusive transaction a migration runs in, at
+-- server startup. The server was unreachable for 186 seconds on 2026-08-24.
+--
+-- The test suite could not have caught it and still cannot: it applies 0031 to
+-- four fixture rows, where an index scan and a table scan are indistinguishable.
+-- Correctness and cost are different questions and a green suite answers only
+-- the first.
+--
+-- The index is owed independently of the backfill. `/api/why` selects
+-- `WHERE entity_type = ?1 AND entity_id = ?2` on every lineage load and has
+-- been full-scanning the journal every time; putting that trail on the card
+-- (AMUX-2393, 68d54aaf) is what made the path hot.
+CREATE INDEX IF NOT EXISTS idx_amux_state_events_entity
+    ON _amux_state_events(entity_type, entity_id);
+
+-- How long each migration took, so the NEXT one that costs an outage is a
+-- SELECT rather than a forensic exercise. `apply_all` had no logging at all: a
+-- migration holding the connection for three minutes was indistinguishable from
+-- a crash, a slow build, or a launchd problem, and the only visible symptom was
+-- /health not answering. That is the instrument-cannot-express-the-failure
+-- shape, and it is why nobody but the author could have diagnosed this one.
+--
+-- NULL for every migration applied before this column existed. As everywhere
+-- else in this schema, NULL means NOT RECORDED, not "instant".
+-- ADDCOL: _amux_migrations duration_ms INTEGER

@@ -79,7 +79,27 @@ const MAX_FOLDER_BYTES: usize = 256 * 1024;
 
 /// How long a single node's model call may take before the run fails loudly
 /// rather than hanging the request.
-const MODEL_TIMEOUT_S: u64 = 180;
+const MODEL_TIMEOUT_S: u64 = 150;
+/// The CLIENT's whole-RUN abort, in seconds (`app.js`, `_mdaiRun`). Kept here so
+/// the relation is checkable from one place — the two numbers live in different
+/// languages and drifted into being EQUAL, which is how AF-141 happened.
+const CLIENT_RUN_ABORT_S: u64 = 600;
+
+/// AF-141, enforced at COMPILE time rather than in a test: a per-node budget
+/// that leaves the client no room to receive the server's answer is not a
+/// configuration mistake to discover on a run, it is a build that should not
+/// exist. Clippy pointed this out by refusing the same assertion in a test as
+/// "constant value", and it was right — a constant relation belongs in a const.
+///
+/// The cross-file half CANNOT live here (it reads app.js at runtime) and stays
+/// in `the_two_budgets_cannot_collide`. That split is the point: the numeric
+/// relation is a fact about this file, the agreement with app.js is a claim
+/// about another one, and only the second can go stale silently.
+const _: () = assert!(
+    MODEL_TIMEOUT_S * 2 <= CLIENT_RUN_ABORT_S,
+    "per-node budget must leave the client's per-run backstop room to receive the \
+     server's answer — equal or near-equal budgets are AF-141"
+);
 
 // ---------------------------------------------------------------------------
 // Routes
@@ -101,11 +121,42 @@ pub fn routes() -> Router<AppState> {
 /// else `$HOME`. Deliberately the same root as `api/files.rs`, so a file browsed
 /// there and a node run here are the same file.
 fn mdai_root() -> PathBuf {
-    std::env::var("AMUX_FILES_ROOT")
+    // AMUX_FILES_ROOT is the EXPLICIT override (tests pin a temp root; the cloud
+    // container pins its own) and wins first, so a live `mdai_root` pref read
+    // from the real DB cannot leak into a test's isolated root (mdai_live_e2e).
+    if let Ok(r) = std::env::var("AMUX_FILES_ROOT") {
+        if !r.trim().is_empty() {
+            return PathBuf::from(r);
+        }
+    }
+    // Then a live `mdai_root` pref (set from the dashboard, no restart), so the
+    // MDAI scan can be scoped to the user's notes vault. The $HOME default walks
+    // the ENTIRE home tree (find_mdai_files, depth 12) and on a dev machine with
+    // a huge ~/Dev that is slow enough to time out the list request, so the MDAI
+    // tab shows nothing (AMUX-3310). Finally $HOME.
+    if let Some(p) = mdai_root_pref() {
+        return p;
+    }
+    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| "/".into())
+}
+
+/// The live `mdai_root` pref (a path), read with a short-lived read-only
+/// connection so this stays a sync free function; any error (no DB, no row,
+/// empty) returns None and the env/$HOME default applies.
+fn mdai_root_pref() -> Option<PathBuf> {
+    let db = std::env::var("AMUX_DB")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| "/".into())
+        .unwrap_or_else(|_| crate::config::amux_home().join("amux.db"));
+    let conn =
+        rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+    let v: String = conn
+        .query_row("SELECT value FROM prefs WHERE key='mdai_root'", [], |r| {
+            r.get(0)
         })
+        .ok()?;
+    let v = v.trim();
+    (!v.is_empty()).then(|| PathBuf::from(v))
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +179,18 @@ pub enum MdaiError {
     Model(String),
     /// A required request field was missing or empty.
     BadRequest(String),
+    /// The model did not answer inside MODEL_TIMEOUT_S (AMUX-3765).
+    ///
+    /// SPLIT OUT OF `Model` BECAUSE THE STATUS DIFFERS, and the difference is
+    /// what a reader does next. `Model` means the upstream answered with
+    /// something unusable — investigate the model or the parse, and 502 is
+    /// right. A TIMEOUT means it never answered — investigate the budget or the
+    /// load, and 504 is right by definition.
+    ///
+    /// `lookup.rs` already made this call for the identical error shape
+    /// (`GATEWAY_TIMEOUT` at its own model timeout). Two paths in one server
+    /// disagreeing about the same fact is the thing to remove.
+    ModelTimeout(String),
 }
 
 impl std::fmt::Display for MdaiError {
@@ -139,8 +202,40 @@ impl std::fmt::Display for MdaiError {
             MdaiError::Escape(p) => write!(f, "path escapes the files root: {p}"),
             MdaiError::Io(m) => write!(f, "io error: {m}"),
             MdaiError::Model(m) => write!(f, "model error: {m}"),
+            MdaiError::ModelTimeout(m) => write!(f, "model timeout: {m}"),
             MdaiError::BadRequest(m) => write!(f, "{m}"),
         }
+    }
+}
+
+/// The marker the timeout path writes, and the ONE place both halves agree on
+/// it (AMUX-3765).
+///
+/// `complete()` returns a bare String, so the caller cannot tell a timeout from
+/// any other model failure without reading the text. That is a weak seam and it
+/// is named rather than hidden: if the timeout wording changes, this const is
+/// what has to change with it, and `a_model_timeout_is_a_504_and_other_model_
+/// errors_are_502` fails if the two drift.
+pub(crate) const MODEL_TIMEOUT_MARKER: &str = "did not answer within";
+
+/// The timeout message itself, so the PRODUCER and the classifier's test share
+/// one definition instead of two copies of a format string.
+///
+/// The first version of that test rebuilt this string inline and called it a
+/// seam check. It was not: mutating the producer's wording left the test green,
+/// because the test was asserting against its own copy. A paraphrase cannot
+/// detect drift in the thing it paraphrases — the failure this whole session
+/// kept finding elsewhere, reproduced here by me.
+pub(crate) fn model_timeout_msg(cli: &str) -> String {
+    format!("{cli} {MODEL_TIMEOUT_MARKER} {MODEL_TIMEOUT_S}s")
+}
+
+/// Route a model failure to the variant whose STATUS is right for it.
+pub(crate) fn classify_model_err(m: String) -> MdaiError {
+    if m.contains(MODEL_TIMEOUT_MARKER) {
+        MdaiError::ModelTimeout(m)
+    } else {
+        MdaiError::Model(m)
     }
 }
 
@@ -155,6 +250,13 @@ impl MdaiError {
             MdaiError::BadRequest(_) => StatusCode::BAD_REQUEST,
             // The upstream (the model) failed, not this request: 502.
             MdaiError::Model(_) => StatusCode::BAD_GATEWAY,
+            // It did not fail, it did not ANSWER. 504 by definition, and the
+            // distinction is load-bearing: measured 2026-08-26, three sibling
+            // calls finished at 105-125s against a 150s budget and the fourth
+            // timed out. A 502 sent a reader hunting a model bug; the real
+            // subject is a budget ~20% above typical runtime, which will fail
+            // regularly under any load.
+            MdaiError::ModelTimeout(_) => StatusCode::GATEWAY_TIMEOUT,
             MdaiError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -176,6 +278,11 @@ impl IntoResponse for MdaiError {
                 tracing::warn!(cycle = %chain.join(" -> "), "mdai: dependency cycle")
             }
             MdaiError::Model(m) => tracing::warn!(error = %m, "mdai: model call failed"),
+            MdaiError::ModelTimeout(m) => tracing::warn!(
+                error = %m,
+                "mdai: model did not answer inside its budget — this is a TIMEOUT (504), not a \
+                 model fault (502); look at MODEL_TIMEOUT_S and host load before the model"
+            ),
             MdaiError::Io(m) => tracing::warn!(error = %m, "mdai: io error"),
             _ => {}
         }
@@ -325,6 +432,18 @@ pub fn resolve_model(per_file: Option<&str>) -> String {
 /// `claude`) invoked with `--print --model <resolved>`. Same mechanism the rest
 /// of the server's helper calls use. Bounded by [`MODEL_TIMEOUT_S`] so a wedged
 /// CLI fails the run instead of hanging the request.
+///
+/// AF-141: this budget is PER NODE and the client's abort is PER RUN, and both
+/// were 180. Two different quantities wearing the same number, so the client
+/// always won the race and this error — which names the CLI and the budget —
+/// could never reach a user; they got the client's guess ("a stuck source or a
+/// wedged model call") instead. Worse for a chain: two legitimate 100s nodes
+/// were killed by a budget that was never meant to bound the run.
+///
+/// The layering, now explicit: the SERVER bounds each node (it is the only side
+/// that knows how many there are), and the CLIENT's abort is a backstop against
+/// a hung server, so it must be generous enough that the server's specific
+/// answer always arrives first.
 pub struct CliModel;
 
 impl ModelClient for CliModel {
@@ -346,7 +465,7 @@ impl ModelClient for CliModel {
                 Ok(None) => {
                     if std::time::Instant::now() >= deadline {
                         let _ = child.kill();
-                        return Err(format!("{cli} did not answer within {MODEL_TIMEOUT_S}s"));
+                        return Err(model_timeout_msg(&cli));
                     }
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
@@ -559,14 +678,16 @@ struct RunRow {
     model: String,
     cached: bool,
     session: Option<String>,
+    /// Model-call wall time; None on cached rows (no call happened).
+    dur_ms: Option<i64>,
 }
 
 fn record_run(store: &Store, row: RunRow) -> Result<(), MdaiError> {
     store
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO mdai_runs (path, ts, inputs_hash, output, model, cached, session)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO mdai_runs (path, ts, inputs_hash, output, model, cached, session, dur_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 rusqlite::params![
                     row.path,
                     row.ts,
@@ -574,13 +695,129 @@ fn record_run(store: &Store, row: RunRow) -> Result<(), MdaiError> {
                     row.output,
                     row.model,
                     row.cached as i64,
-                    row.session
+                    row.session,
+                    row.dur_ms
                 ],
             )?;
             Ok(WriteOutcome { applied: true, events: vec![] })
         })
         .map(|_| ())
         .map_err(|e| MdaiError::Io(e.to_string()))
+}
+
+/// Format a millisecond timestamp as `MM-DD HH:MM` in local time.
+fn fmt_day_min(ts_ms: i64) -> String {
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_millis_opt(ts_ms)
+        .single()
+        .map(|dt| dt.format("%m-%d %H:%M").to_string())
+        .unwrap_or_default()
+}
+
+/// Per-message cap. The total cap below is checked after a push, so one message
+/// larger than the whole budget blows straight through it — and there is such a
+/// message in the live window right now (5,974 KB, sent today).
+const MSG_CAP: usize = 4_000;
+/// Total budget for the assembled message block.
+const MSGS_TOTAL_CAP: usize = 120_000;
+
+/// Assemble the `amux:messages` block: SELECT newest-first (the caller orders
+/// `ts DESC`), RENDER oldest-first. Returns the block and how many messages
+/// reached it.
+///
+/// AF-142. This used to take `ts ASC` and break at the byte cap, so the cap kept
+/// the OLDEST messages and dropped the newest — then said "(older messages
+/// truncated)", asserting the opposite of what it had done. Measured on the live
+/// DB: 512 user messages in the 7-day window, cap reached at message 240, so the
+/// most recent 272 never reached the prompt while the label claimed they were
+/// the ones kept. For a node asking "what am I trying to accomplish", that is
+/// the wrong half of the window by a wide margin.
+///
+/// Same defect the logs endpoint carried until this morning (AF-131): a cap
+/// whose DIRECTION is part of its correctness, quietly taking the end nobody
+/// wants. Pure so both properties are testable without a database.
+pub(crate) fn assemble_messages<I: IntoIterator<Item = (i64, String, String)>>(
+    newest_first: I,
+) -> (String, usize) {
+    let mut lines: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    let mut truncated = false;
+    for (ts_ms, session, text) in newest_first {
+        let line = format!(
+            "[{}] {session}: {}\n",
+            fmt_day_min(ts_ms),
+            cap_str(text.replace('\n', " ").trim(), MSG_CAP)
+        );
+        if used + line.len() > MSGS_TOTAL_CAP {
+            truncated = true;
+            break;
+        }
+        used += line.len();
+        lines.push(line);
+    }
+    let n = lines.len();
+    let mut out = String::with_capacity(used + 64);
+    if truncated {
+        out.push_str("… (older messages beyond this point were truncated)\n\n");
+    }
+    for line in lines.iter().rev() {
+        out.push_str(line);
+    }
+    (out, n)
+}
+
+/// Resolve an `amux:` data source (AMUX-3294). Grammar: `messages[?days=N]`
+/// (default 14, capped at 90). Reads `cmd_history` directly from the run's DB
+/// store and returns the recent user directives as text for the synthesis
+/// prompt. `cmd_history.ts` is in MILLISECONDS.
+fn resolve_amux_source(ctx: &RunCtx, spec: &str) -> Result<String, MdaiError> {
+    let (kind, query) = spec.split_once('?').unwrap_or((spec, ""));
+    let kind = kind.trim();
+    let days: i64 = query
+        .split('&')
+        .find_map(|kv| kv.trim().strip_prefix("days="))
+        .and_then(|v| v.parse().ok())
+        .filter(|d| *d > 0 && *d <= 90)
+        .unwrap_or(14);
+    match kind {
+        "messages" => {
+            let conn = ctx
+                .store
+                .read()
+                .map_err(|e| MdaiError::Io(format!("db read: {e}")))?;
+            let cutoff_ms = (now_secs() * 1000) - days * 86_400_000;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT ts, COALESCE(session,''), COALESCE(text,'') \
+                     FROM cmd_history \
+                     WHERE type='user' AND ts >= ?1 AND COALESCE(text,'') <> '' \
+                     ORDER BY ts DESC LIMIT 4000",
+                )
+                .map_err(|e| MdaiError::Io(format!("db prepare: {e}")))?;
+            let rows = stmt
+                .query_map(rusqlite::params![cutoff_ms], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|e| MdaiError::Io(format!("db query: {e}")))?;
+            let mut out = String::new();
+            let (body, n) = assemble_messages(rows.flatten());
+            out.push_str(&body);
+            if n == 0 {
+                return Ok(format!("(no user messages in the last {days} days)"));
+            }
+            Ok(format!(
+                "The last {days} days of amux user directives ({n} messages), oldest first:\n\n{out}"
+            ))
+        }
+        other => Err(MdaiError::Io(format!(
+            "unknown amux source '{other}' (supported: messages)"
+        ))),
+    }
 }
 
 /// Resolve and run a single node, recursing into upstream `.mdai` sources first.
@@ -617,13 +854,24 @@ fn run_node(ctx: &mut RunCtx, abs_path: &Path) -> Result<String, MdaiError> {
     ctx.visiting.push(canon.clone());
     let mut blocks: Vec<String> = Vec::new();
     for src in &doc.sources {
-        let src_abs = resolve_existing(&ctx.root_canon, &base, &src.path)?;
-        let resolved = if is_mdai(&src_abs) {
-            run_node(ctx, &src_abs)?
-        } else if src_abs.is_dir() {
-            expand_folder(&src_abs)?
+        // AMUX-3294: an `amux:` source pulls LIVE amux data (currently messages)
+        // from the DB at run time, so a prompt-only node like Priorities fetches
+        // its own context instead of a static file. The run is inside the server,
+        // so this reads the DB directly — which is why the model kept answering
+        // "I can't reach amux" (a one-shot LLM has no env, no tools; the DATA has
+        // to be injected here, not fetched by the model). Handled BEFORE the
+        // filesystem resolver, which would reject the pseudo-path.
+        let resolved = if let Some(spec) = src.path.strip_prefix("amux:") {
+            resolve_amux_source(ctx, spec)?
         } else {
-            read_capped(&src_abs)?
+            let src_abs = resolve_existing(&ctx.root_canon, &base, &src.path)?;
+            if is_mdai(&src_abs) {
+                run_node(ctx, &src_abs)?
+            } else if src_abs.is_dir() {
+                expand_folder(&src_abs)?
+            } else {
+                read_capped(&src_abs)?
+            }
         };
         blocks.push(source_block(&src.path, &src.prompt, &resolved));
     }
@@ -636,16 +884,31 @@ fn run_node(ctx: &mut RunCtx, abs_path: &Path) -> Result<String, MdaiError> {
 
     // Cache short-circuit: an unchanged node reuses its last output rather than
     // spending a model call to reproduce an identical result.
-    let (output, cached) = match latest_run(ctx.store, &rel) {
-        Some((prev_hash, prev_out)) if prev_hash == inputs_hash => (prev_out, true),
+    let (output, cached, dur_ms) = match latest_run(ctx.store, &rel) {
+        Some((prev_hash, prev_out)) if prev_hash == inputs_hash => (prev_out, true, None),
         _ => {
             let prompt = build_prompt(&doc.body, &assembled);
             ctx.calls += 1;
+            // The chain's latency used to be INVISIBLE (AMUX-3410): zero log
+            // lines and nothing in mdai_runs said where the time went, so a
+            // "why is this slow" was answered by reconstructing timings from
+            // adjacent rows' timestamps. Measured while fixing it: a bare CLI
+            // boot is ~10.6s and a 256KB-prompt haiku synthesis ~80s, so the
+            // prompt (source size), not the CLI spawn, is the cost to watch —
+            // which is exactly what prompt_bytes in this line lets a reader
+            // see without re-measuring.
+            let t0 = std::time::Instant::now();
             let out = ctx
                 .model
                 .complete(&model_name, &prompt)
-                .map_err(MdaiError::Model)?;
-            (out, false)
+                .map_err(classify_model_err)?;
+            let dur = t0.elapsed().as_millis() as i64;
+            tracing::info!(
+                path = %rel, model = %model_name,
+                prompt_bytes = prompt.len(), output_bytes = out.len(), dur_ms = dur,
+                "mdai node model call completed"
+            );
+            (out, false, Some(dur))
         }
     };
 
@@ -660,6 +923,7 @@ fn run_node(ctx: &mut RunCtx, abs_path: &Path) -> Result<String, MdaiError> {
             model: model_name.clone(),
             cached,
             session: ctx.session.clone(),
+            dur_ms,
         },
     )?;
 
@@ -730,9 +994,27 @@ pub fn run_dag(
 /// Recursively find every `.mdai` file under the root. Bounded traversal that
 /// skips dotdirs and common heavy directories so listing does not walk a whole
 /// home.
-fn find_mdai_files(root: &Path) -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
-        if depth > 12 || out.len() > 5000 {
+/// Wall-clock budget for the scan. AF-129: the $HOME default root makes this
+/// walk's size unknowable (the comment on `mdai_root` already records it
+/// timing out the live list request, AMUX-3310), and with NO time bound one
+/// slow or kernel-blocking directory turned `GET /api/files/mdai` into the
+/// route that silently wedged the whole pre-push gate — three orphaned test
+/// processes, the oldest 23h. A budget makes the walk answer with what it
+/// found; the `truncated` flag and the WARN below make the cut visible
+/// instead of reading as "that's all the files there are" (rule 4).
+const SCAN_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Returns the files found plus whether the scan was CUT (budget or caps).
+fn find_mdai_files(root: &Path) -> (Vec<PathBuf>, bool) {
+    fn walk(
+        dir: &Path,
+        out: &mut Vec<PathBuf>,
+        depth: usize,
+        deadline: std::time::Instant,
+        cut: &mut bool,
+    ) {
+        if depth > 12 || out.len() > 5000 || std::time::Instant::now() > deadline {
+            *cut = true;
             return;
         }
         let Ok(rd) = std::fs::read_dir(dir) else { return };
@@ -746,16 +1028,24 @@ fn find_mdai_files(root: &Path) -> Vec<PathBuf> {
                 if matches!(name.as_str(), "node_modules" | "target" | ".git" | "Library") {
                     continue;
                 }
-                walk(&p, out, depth + 1);
+                walk(&p, out, depth + 1, deadline, cut);
             } else if is_mdai(&p) {
                 out.push(p);
             }
         }
     }
     let mut out = Vec::new();
-    walk(root, &mut out, 0);
+    let mut cut = false;
+    walk(root, &mut out, 0, std::time::Instant::now() + SCAN_BUDGET, &mut cut);
     out.sort();
-    out
+    if cut {
+        tracing::warn!(
+            target: "amux::mdai", root = %root.display(), found = out.len(),
+            "mdai scan CUT (budget/depth/cap) — the list is partial; scope mdai_root \
+             (pref or AMUX_FILES_ROOT) to a real notes tree"
+        );
+    }
+    (out, cut)
 }
 
 // ---------------------------------------------------------------------------
@@ -780,7 +1070,8 @@ async fn list(State(state): State<AppState>) -> Response {
             Err(e) => return Err(e),
         };
         let mut items: Vec<Value> = Vec::new();
-        for path in find_mdai_files(&root_canon) {
+        let (found, truncated) = find_mdai_files(&root_canon);
+        for path in found {
             let rel = rel_key(&root_canon, &path);
             let (sources, model, title) = match std::fs::read_to_string(&path) {
                 Ok(text) => match parse_mdai(&text) {
@@ -822,11 +1113,15 @@ async fn list(State(state): State<AppState>) -> Response {
                 "last_run": last_run,
             }));
         }
-        Ok(items)
+        Ok((items, truncated))
     })
     .await;
     match res {
-        Ok(Ok(items)) => Json(json!({ "files": items })).into_response(),
+        // `truncated` rides in the response so a partial scan cannot read as
+        // "that is every file" (AF-129 / rule 4).
+        Ok(Ok((items, truncated))) => {
+            Json(json!({ "files": items, "truncated": truncated })).into_response()
+        }
         Ok(Err(e)) => e.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))
             .into_response(),
@@ -879,7 +1174,7 @@ async fn history(State(state): State<AppState>, Query(q): Query<HashMap<String, 
         let conn = store.read().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, path, ts, inputs_hash, output, model, cached, session
+                "SELECT id, path, ts, inputs_hash, output, model, cached, session, dur_ms
                  FROM mdai_runs WHERE path=?1 ORDER BY id DESC",
             )
             .map_err(|e| e.to_string())?;
@@ -893,6 +1188,7 @@ async fn history(State(state): State<AppState>, Query(q): Query<HashMap<String, 
                     "output": r.get::<_, String>(4)?,
                     "model": r.get::<_, String>(5)?,
                     "cached": r.get::<_, i64>(6)? != 0,
+                    "dur_ms": r.get::<_, Option<i64>>(8)?,
                     "session": r.get::<_, Option<String>>(7)?,
                 }))
             })
@@ -1014,6 +1310,45 @@ pub fn connect_edge(source: &str, target: &str, prompt: &str) -> Result<Value, M
 
 #[cfg(test)]
 mod tests {
+    /// AMUX-3765: a model TIMEOUT is a 504, a model FAULT is a 502, and the two
+    /// send a reader to different places.
+    ///
+    /// The filed card was `POST /api/files/mdai/run -> HTTP 502` with the body
+    /// "claude did not answer within 150s". 502 says the upstream answered with
+    /// something unusable, so it points at the model or the parse. The evidence
+    /// said otherwise: three sibling calls the same minute finished at 105-125s
+    /// against a 150s budget and the fourth ran out of clock. The subject is the
+    /// BUDGET, and 504 is the code that says so.
+    ///
+    /// `lookup.rs` already returns GATEWAY_TIMEOUT for the identical shape. Two
+    /// paths in one server disagreeing about the same fact is what this removes.
+    #[test]
+    fn a_model_timeout_is_a_504_and_other_model_errors_are_502() {
+        let t = classify_model_err(format!("claude {MODEL_TIMEOUT_MARKER} 150s"));
+        assert!(matches!(t, MdaiError::ModelTimeout(_)), "the timeout shape must classify as one");
+        assert_eq!(t.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert!(t.to_string().contains("model timeout"), "and read as one: {t}");
+
+        // CONTROL: a genuine model fault keeps 502. Without this the classifier
+        // could route everything to 504 and the assertion above would pass,
+        // which would hide real model faults behind a timeout label.
+        let e = classify_model_err("claude exited 1: bad JSON".to_string());
+        assert!(matches!(e, MdaiError::Model(_)));
+        assert_eq!(e.status(), StatusCode::BAD_GATEWAY);
+
+        // THE SEAM IS A STRING MATCH, so pin that the PRODUCER still writes what
+        // the classifier reads — by calling the producer, not by rebuilding its
+        // format string. The first version of this did rebuild it, and mutating
+        // the producer's wording left the test green: a paraphrase cannot detect
+        // drift in the thing it paraphrases.
+        let produced = model_timeout_msg("claude");
+        assert!(
+            produced.contains(MODEL_TIMEOUT_MARKER),
+            "the timeout message and its classifier have drifted: {produced}"
+        );
+        assert!(matches!(classify_model_err(produced), MdaiError::ModelTimeout(_)));
+    }
+
     use super::*;
     use std::sync::Mutex;
 
@@ -1143,6 +1478,86 @@ mod tests {
         assert_eq!(fake.count(), 2, "a changed source MUST recompute");
         assert!(!r3.cached);
         assert_ne!(r1.output, r3.output, "changed input produces a new output");
+    }
+
+    /// AF-141. The server bounds each NODE; the client bounds the whole RUN.
+    /// They were both 180 — the same number for two different quantities — so
+    /// the client always won the race and this server's specific error could
+    /// never reach a user.
+    ///
+    /// The second half is the load-bearing one. Asserting only that the two
+    /// Rust constants differ would pass forever while `app.js` said something
+    /// else entirely, because CLIENT_RUN_ABORT_S is a CLAIM ABOUT ANOTHER FILE.
+    /// So read that file and check the claim is still true. Same pattern as
+    /// board_contract_filters.rs reading the shipped `amux` CLI.
+    #[test]
+    fn the_two_budgets_cannot_collide() {
+        let app_js = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../amux-dashboard/static/app.js"),
+        )
+        .expect("dashboard app.js not found");
+        let needle = "_ctrl.abort(), ";
+        let at = app_js
+            .find(needle)
+            .unwrap_or_else(|| panic!("no mdai run abort found in app.js — did it move?"));
+        let ms: u64 = app_js[at + needle.len()..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .expect("abort budget in app.js is not a plain integer of milliseconds");
+        assert_eq!(
+            ms / 1000,
+            CLIENT_RUN_ABORT_S,
+            "app.js aborts the run at {}s but CLIENT_RUN_ABORT_S here says {CLIENT_RUN_ABORT_S}s \
+             — this constant is a claim about that file and it has gone stale",
+            ms / 1000
+        );
+    }
+
+    /// AF-142. Two properties, and the first is the one that was wrong in
+    /// production: when the budget forces a choice, keep the NEWEST messages.
+    #[test]
+    fn the_message_block_keeps_the_newest_and_caps_each_one() {
+        // Caller supplies ts DESC. 400 messages of ~500 bytes each overflows the
+        // 120,000-byte budget, so the cap must bite and choose a side.
+        let rows: Vec<(i64, String, String)> = (0..400)
+            .map(|i| {
+                let ts = 1_700_000_000_000i64 + (i as i64) * 60_000;
+                (ts, "lane".to_string(), format!("m{i:04}-{}", "x".repeat(480)))
+            })
+            .rev() // newest first, as the SQL now returns
+            .collect();
+        let (block, n) = assemble_messages(rows);
+
+        assert!(n > 0 && n < 400, "the cap must actually bite: n={n}");
+        assert!(block.len() <= MSGS_TOTAL_CAP + 200, "over budget: {}", block.len());
+
+        // THE REGRESSION: the newest message must be present and the oldest gone.
+        // Reversed, this test still passes on the broken version — which is why
+        // both halves are asserted, not just "some messages survived".
+        assert!(block.contains("m0399-"), "the NEWEST message must survive the cap");
+        assert!(!block.contains("m0000-"), "the OLDEST must be the one dropped");
+
+        // Rendered oldest-first among those kept, which is what the prompt says.
+        let first = block.find("m0").expect("no message rendered");
+        let newest = block.find("m0399-").expect("newest missing");
+        assert!(first < newest, "kept messages must render oldest-first");
+        assert!(block.starts_with("… (older messages"), "truncation must be announced: {}", &block[..40]);
+
+        // PER-MESSAGE CAP: one message larger than the entire budget must not
+        // blow through it. The old code pushed first and checked after, so a
+        // single 5,974 KB message (there is one in the live window) produced a
+        // ~6MB block from a 120KB cap.
+        let huge = vec![(1_700_000_000_000i64, "lane".into(), "y".repeat(6_000_000))];
+        let (block, n) = assemble_messages(huge);
+        assert_eq!(n, 1, "the huge message should still be included, capped");
+        assert!(
+            block.len() < MSG_CAP + 200,
+            "one oversized message must be capped, not passed through: {}",
+            block.len()
+        );
     }
 
     // resolve_model: per-file override wins, then AMUX_HELPER_MODEL, then the

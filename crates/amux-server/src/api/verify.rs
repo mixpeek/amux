@@ -117,7 +117,7 @@ async fn verify_task(
             if passed {
                 row.last_verified_at = Some(chrono::Utc::now().timestamp());
             }
-            board_store::save_patched(conn, &row)?;
+            board_store::save_patched(conn, &mut row)?;
             Ok(crate::db::WriteOutcome {
                 applied: true,
                 events: vec![crate::db::PendingEvent {

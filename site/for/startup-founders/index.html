@@ -45,7 +45,7 @@
     "description": "Startup founders use amux to run a 5–10 person AI engineering team without headcount. Launch parallel coding agents, manage from your phone, and ship overnight.",
     "url": "https://amux.io/for/startup-founders/",
     "datePublished": "2026-07-04",
-    "dateModified": "2026-07-04",
+    "dateModified": "2026-08-19",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "image": "https://amux.io/og-image.png",
@@ -105,6 +105,14 @@
           "@type": "Answer",
           "text": "amux works with any coding agent that runs in a terminal: Claude Code, OpenAI Codex CLI, Antigravity CLI (formerly Gemini CLI), or any other tool. You register a session with amux, and amux manages the tmux pane — it does not care what runs inside. This lets you run a mixed fleet: a Claude Code agent for complex reasoning, a Codex agent for fast code generation, and compare output quality and cost across providers."
         }
+      },
+      {
+        "@type": "Question",
+        "name": "Can my AI agents send emails with file attachments?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. As of August 2026, amux's email integration supports file attachments on both /send and /reply. Agents can attach PDFs, spreadsheets, images, or any file to outgoing emails via the Gmail API — your domain, your signature, real threading. Attachments are sent as multipart/mixed MIME and are available via a download endpoint for later retrieval. This means an agent can generate a report, compile a CSV, or export a document and email it to a customer or investor without any manual step."
+        }
       }
     ]
   }
@@ -126,8 +134,13 @@
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For Developers</a> <span class="sep">›</span> <span>Startup Founders</span></div>
 
+    <div class="cta-banner" style="background:var(--accent-green,#1a7a4a);color:#fff;border-radius:8px;padding:1rem 1.25rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem;">
+      <span style="font-size:0.95rem;">amux is open-source and free to self-host. Install in minutes, run your first agent today.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:#fff;color:#1a7a4a;font-weight:600;padding:0.5rem 1rem;border-radius:6px;text-decoration:none;white-space:nowrap;font-size:0.9rem;" onclick="if(window.posthog)posthog.capture('exp048_startup_founders_topofpage_cta_click')">View on GitHub &rarr;</a>
+    </div>
+
     <h1>Run an AI Engineering Team Without Hiring</h1>
-    <p class="subtitle">Startup founders use amux to coordinate a fleet of Claude Code, Codex, or Gemini CLI agents that build features, fix bugs, write tests, and draft docs in parallel — managed from one dashboard or their phone. Updated July 2026.</p>
+    <p class="subtitle">Startup founders use amux to coordinate a fleet of Claude Code, Codex, or Gemini CLI agents that build features, fix bugs, write tests, and draft docs in parallel — managed from one dashboard or their phone. Updated August 2026.</p>
 
     <p>In 2026, the constraint on a startup's engineering output is no longer team size — it is the quality of your task definitions and the discipline of your review process. <strong>amux is an open-source control plane for AI agent teams</strong>: it runs, monitors, and self-heals dozens of parallel coding sessions so a founder can ship what previously required a 5–10 person engineering team.</p>
 
@@ -189,7 +202,7 @@
     <p>amux is designed for founders who need to run a business, not just ship code. Alongside the coding agent infrastructure, every amux installation includes:</p>
     <ul>
       <li><strong>CRM</strong> — contacts with interaction logs, company, role, email, follow-up reminders. Log customer calls, track investor relationships, follow up on partnership conversations — all in the same dashboard where you manage your agents.</li>
-      <li><strong>Email (Gmail API)</strong> — send and reply to email directly from amux. Connected Gmail accounts get full threading, sent-from-your-domain delivery, and your real Gmail signature. Read inbox, search messages, compose replies without switching apps.</li>
+      <li><strong>Email with attachments (Gmail API)</strong> — send and reply to email directly from amux, with file attachments. Connected Gmail accounts get full threading, sent-from-your-domain delivery, and your real Gmail signature. Agents can attach reports, CSVs, or documents to outgoing emails via the same API call. Read inbox, search messages, compose replies without switching apps.</li>
       <li><strong>Browser automation</strong> — a shared Playwright browser with saved auth profiles. Use it to automate repetitive web tasks: pulling reports, scraping competitor pricing, submitting forms, checking dashboard metrics.</li>
       <li><strong>Notes</strong> — full Markdown documents accessible across all agent sessions via API. Your CLAUDE.md specs, product roadmaps, and meeting notes all live here.</li>
       <li><strong>Scheduler</strong> — recurring jobs with cron expressions. Daily standups, weekly competitive analyses, nightly batch operations — define them once and they run automatically.</li>
@@ -312,6 +325,15 @@ amux serve  # → https://localhost:8824</code></pre>
       </div>
     </div>
 
+    <h2>What's New in August 2026</h2>
+    <p>amux ships updates continuously. Here are the three biggest additions relevant to founders since the July 2026 update:</p>
+    <ul>
+      <li><strong>Email with file attachments</strong> — agents can now send and reply to email with attached files via the Gmail API. Generate a report, export a CSV, create a PDF, and email it to a customer or investor — no manual step required. Available on both <code>/api/email/send</code> and <code>/api/email/reply</code>. Inline attachments and a download endpoint are included.</li>
+      <li><strong>Connectors tab</strong> — paste API credentials once into the amux dashboard and scope them to a group or individual worker. Agents receive the credentials as environment variables at launch — no more per-session credential wrangling, no secrets in prompts. Works with any API key-based service: Stripe, SendGrid, Twilio, your own internal APIs.</li>
+      <li><strong>BM25 board search</strong> — full-text relevance search across every board card (title, description, notes, session tags) with match highlighting. Find the task you need in a fleet of dozens of running cards without scrolling.</li>
+    </ul>
+    <p>See the full <a href="/changelog/">amux changelog</a> for the complete release history.</p>
+
     <h2>Frequently Asked Questions</h2>
 
     <h3>Can a non-technical founder use amux?</h3>
@@ -331,6 +353,9 @@ amux serve  # → https://localhost:8824</code></pre>
 
     <h3>Can my co-founder or contractors see what the agents are doing?</h3>
     <p>Yes. The amux dashboard is a web app — any browser on your local network (or via Tailscale for remote access) can view session statuses, peek at agent output, and update the shared kanban board. There is no per-seat pricing. You can give a contractor read access to specific sessions without exposing your full codebase or SSH credentials.</p>
+
+    <h3>Can my AI agents send emails with file attachments?</h3>
+    <p>Yes. As of August 2026, amux's email integration supports file attachments on both send and reply endpoints. Agents can attach PDFs, spreadsheets, images, or any file to outgoing emails via the Gmail API — your domain, your signature, full threading. Attachments are sent as multipart/mixed and available via a download endpoint for retrieval. A typical use case: an agent generates a weekly metrics report, exports it as a PDF, and emails it to your investors automatically via a scheduled job.</p>
 
     <h2>Related Resources</h2>
     <ul>

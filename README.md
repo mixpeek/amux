@@ -30,7 +30,57 @@ CLI         amux-rs --url https://localhost:8824 health
 
 Open **https://localhost:8824**, accept the self-signed cert warning once, and add your first worker from the dashboard. Re-running `./install.sh` upgrades in place and never touches your data; `./uninstall.sh` removes the binaries and agents and leaves `~/.amux` alone.
 
-**Requirements:** macOS (primary; on Linux the installer builds and installs the binaries and prints how to run the server), tmux 3.2+, and at least one of Claude Code, Codex CLI, or Gemini CLI. The Rust toolchain is installed via rustup if you don't have it (with your confirmation).
+### After first install
+
+Once installed, day-to-day commands are short:
+
+```bash
+make run        # rebuild + reinstall; the running server self-adopts in ~5s
+make dev        # run against a scratch DB (safe for testing migrations)
+make status     # launchd + /health at a glance
+make restart    # kick the launchd-managed server
+make check      # cargo check + JS syntax (fast, no link)
+make test       # clippy + cargo test
+```
+
+`make run` is the command after `git pull` — it rebuilds release, installs the binary, and the launchd-managed server picks it up automatically. `make dev` is for working on migrations or features you don't want touching the live DB.
+
+**Requirements:** tmux 3.2+, and at least one of Claude Code, Codex CLI, or Gemini CLI. The Rust toolchain is installed via rustup if you don't have it (with your confirmation).
+
+### Linux: systemd user services
+
+On Linux with systemd (Ubuntu 22.04+, Debian 11+, Fedora 36+), `./install.sh` automatically creates and enables three user-level services:
+
+- `amux-server.service` — the main server
+- `amux-builder.service` — auto-rebuild on code changes  
+- `amux-builder.timer` — periodic rebuild check (every 60s)
+
+After `./install.sh` completes, the services are ready to start:
+
+```bash
+systemctl --user enable amux-server amux-builder.timer
+systemctl --user start amux-server
+```
+
+View logs and status:
+
+```bash
+journalctl --user -u amux-server -f      # follow logs
+systemctl --user status amux-server      # service status
+```
+
+See [docs/systemd-setup.md](docs/systemd-setup.md) for complete documentation: troubleshooting, multi-user setup, environment overrides, and migration between versions.
+
+For other Linux distributions without systemd, run the server manually:
+
+```bash
+AMUX_RS_PORT=8824 ~/.local/bin/amux-server-rs
+```
+
+**Platform support:**
+- **macOS** (primary) — `./install.sh` sets up launchd agents for automatic startup and rebuild
+- **Linux** (systemd) — `./install.sh` creates systemd user services (Ubuntu 22.04+, Debian 11+, Fedora 36+)
+- **Other Linux** — `./install.sh` builds and installs binaries; run the server manually or wrap in your process manager
 
 > **License:** [MIT + Commons Clause](LICENSE) — free to use, modify, and self-host. Commercial resale requires a separate license.
 

@@ -412,7 +412,7 @@ fn note_untouched_card(
     next.rev += 1;
     next.version += 1;
     next.updated = now.timestamp();
-    crate::db::board_store::save_patched(conn, &next)?;
+    crate::db::board_store::save_patched(conn, &mut next)?;
     events.push(PendingEvent {
         entity_type: EntityType::Task,
         entity_id: next.id.clone(),

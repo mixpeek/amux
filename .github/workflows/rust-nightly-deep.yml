@@ -128,7 +128,16 @@ jobs:
         # broken filter for weeks, by turning "my selector matched nothing"
         # into a green run of the wrong thing. If the projects below stop
         # existing, this must go red.
+        #
+        # AMUX_E2E_WORKING_TREE=1 is load-bearing (AMUX-2872): a CI checkout
+        # IS the commit, and without it serve-head.sh builds HEAD into a
+        # SEPARATE worktree with a cold target dir — three per-project
+        # servers each cold-building the same code, starving the webServer
+        # boots into ERR_CONNECTION_REFUSED. rust.yml's green e2e job has
+        # always set this; this job was born without it and never passed.
         run: npx playwright test --config e2e/playwright.config.ts ${{ matrix.projects }}
+        env:
+          AMUX_E2E_WORKING_TREE: '1'
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -141,6 +150,39 @@ jobs:
     name: performance benchmarks + regression thresholds (RR-0117b)
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      # The RSS ceiling for THIS context, read by both perf-baseline.sh's
+      # assert and perf-compare.py's ABSOLUTE_MAX. Two runs 30 minutes apart
+      # on the SAME frozen corpus and code measured 220MB and 281MB
+      # (2026-08-22, runs 32579799804 / 32581179735) — shared-runner noise is
+      # ±28%, so a ceiling at measured+27% flaps on weather. 350 clears the
+      # observed max by 25% and still fires on anything leak-shaped. The
+      # script default stays 280 so a LOCAL run keeps failing on the real
+      # 310MB fresh-boot debt (AMUX-3488) instead of absorbing it.
+      PERF_RSS_MAX_MB: '350'
+      # THE DIRTY CEILING IS THE RSS CEILING ON LINUX, because here they are the
+      # same measurement (AMUX-3790). perf-baseline.sh's 250 default was set
+      # from macOS `vmmap` MALLOC-DIRTY readings of 30-45MB and called
+      # "deliberately generous until the first CI (Linux) reading lands;
+      # tighten it then". The readings landed and said something else: Linux
+      # reads Private_Dirty from smaps_rollup, which counts EVERY private dirty
+      # page — heap, stack, .data/.bss, COW — not just malloc arenas. Measured
+      # across the five nightly runs that produced a number:
+      #
+      #   dirty 254/268/224/239/227   rss 257/270/226/241/229
+      #
+      # dirty is rss minus 2-3MB every single time (ratio 0.987-0.993). So the
+      # leak gate, whose whole premise is that it does NOT inherit allocator
+      # weather, inherits all of it on the platform CI actually runs — and a
+      # ceiling of 250 sits inside the ±28% band the comment above pins RSS at
+      # 350 to escape. It passed three nights (227/239/224) and failed the next
+      # two (268/254) on the same code shape. That is weather, not a leak.
+      #
+      # Matching RSS keeps the gate able to fire on anything leak-shaped while
+      # not flapping on the noise it demonstrably shares. The script default
+      # stays 250 for macOS, where dirty really is independent (30-45MB against
+      # an RSS of 220+) and 250 is genuinely generous.
+      PERF_DIRTY_MAX_MB: '350'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

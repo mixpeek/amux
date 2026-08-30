@@ -78,6 +78,7 @@ pub fn routes() -> Router<AppState> {
         // that contract (same convention as api/fs.rs).
         .route("/", any(file_root))
         .route("/raw", any(raw))
+        .route("/xlsx", any(xlsx))
         .route("/vtt", any(vtt))
         .route("/prepare", any(prepare))
         .route("/transcode", any(transcode))
@@ -433,6 +434,75 @@ async fn put_file(req: Request) -> Response {
 // ---------------------------------------------------------------------------
 // GET /api/file/vtt — SRT → WebVTT for <track> elements (py:67858-67877)
 // ---------------------------------------------------------------------------
+
+/// GET /api/file/xlsx?path=... — parse a spreadsheet (.xlsx/.xls/.ods) and return
+/// its sheets as JSON rows, so the Files viewer renders it as a table instead of
+/// forcing a download (AMUX-3343). Caps sheets/rows/cols/cell-length so a huge
+/// workbook cannot blow the payload; `truncated` says when a cap was hit. Parsing
+/// is blocking IO, so it runs on a blocking thread.
+async fn xlsx(req: Request) -> Response {
+    use calamine::{open_workbook_auto, DataType, Reader};
+    if req.method() != Method::GET {
+        return not_found().await;
+    }
+    let qs = parse_qs(req.uri().query().unwrap_or(""));
+    let p = match qpath(&qs) {
+        Ok(p) => p,
+        Err(r) => return *r,
+    };
+    if !is_path_allowed(&p) {
+        return j(403, json!({"error": "access denied"}));
+    }
+    if !std::fs::metadata(&p).map(|m| m.is_file()).unwrap_or(false) {
+        return j(404, json!({"error": "file not found"}));
+    }
+    const MAX_SHEETS: usize = 30;
+    const MAX_ROWS: usize = 1000;
+    const MAX_COLS: usize = 60;
+    const MAX_CELL: usize = 500;
+    let parsed = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        let mut wb = open_workbook_auto(&p).map_err(|e| e.to_string())?;
+        let names = wb.sheet_names().to_owned();
+        let mut truncated = names.len() > MAX_SHEETS;
+        let mut sheets = Vec::new();
+        for name in names.into_iter().take(MAX_SHEETS) {
+            let range = match wb.worksheet_range(&name) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if range.rows().count() > MAX_ROWS {
+                truncated = true;
+            }
+            let mut rows = Vec::new();
+            for row in range.rows().take(MAX_ROWS) {
+                if row.len() > MAX_COLS {
+                    truncated = true;
+                }
+                let cells: Vec<String> = row
+                    .iter()
+                    .take(MAX_COLS)
+                    .map(|c| {
+                        let s = if c.is_empty() { String::new() } else { c.to_string() };
+                        if s.chars().count() > MAX_CELL {
+                            s.chars().take(MAX_CELL).collect::<String>() + "…"
+                        } else {
+                            s
+                        }
+                    })
+                    .collect();
+                rows.push(cells);
+            }
+            sheets.push(json!({ "name": name, "rows": rows }));
+        }
+        Ok(json!({ "sheets": sheets, "truncated": truncated }))
+    })
+    .await;
+    match parsed {
+        Ok(Ok(v)) => j(200, v),
+        Ok(Err(e)) => j(422, json!({"error": format!("could not parse spreadsheet: {e}")})),
+        Err(e) => j(500, json!({"error": format!("parse task failed: {e}")})),
+    }
+}
 
 async fn vtt(method: Method, RawQuery(q): RawQuery) -> Response {
     if method != Method::GET {

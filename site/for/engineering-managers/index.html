@@ -45,7 +45,7 @@
     "description": "Engineering managers use amux to give each developer a parallel AI teammate. Run dozens of Claude Code, Codex, or Gemini CLI agents from a shared dashboard with built-in kanban, real-time output, phone monitoring, and self-healing overnight runs.",
     "url": "https://amux.io/for/engineering-managers/",
     "datePublished": "2026-07-09",
-    "dateModified": "2026-08-02",
+    "dateModified": "2026-08-24",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "image": "https://amux.io/og-image.png",
@@ -150,12 +150,30 @@
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For Developers</a> <span class="sep">›</span> <span>Engineering Managers</span></div>
 
+    <div class="top-cta-banner" style="background:rgba(110,231,183,.08);border:1px solid rgba(110,231,183,.25);border-radius:8px;padding:1rem 1.25rem;margin-bottom:1.75rem;display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center;">
+      <div style="flex:1;min-width:200px;">
+        <strong style="color:#6ee7b7;">Give every developer a parallel AI teammate today</strong>
+        <span style="color:var(--muted);margin-left:0.5rem;">amux — open-source fleet control plane for Claude Code, Codex, and Gemini CLI. Shared board, mobile dashboard, overnight self-healing. MIT licensed.</span>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="btn btn-primary" style="white-space:nowrap;" onclick="posthog&&posthog.capture('exp059_eng_managers_topofpage_cta_click')">View amux on GitHub ★</a>
+    </div>
+
     <h1>Give Your Dev Team AI Teammates</h1>
     <p class="subtitle">Engineering managers use amux to deploy a fleet of Claude Code, Codex, or Gemini CLI agents alongside their engineers — each developer gains a parallel AI teammate that handles the backlog while they focus on architecture and review. Monitored from one dashboard or your phone. Updated August 2026.</p>
 
     <p>Engineering managers use amux to multiply team velocity without adding headcount. Instead of each developer working on one task at a time, amux lets every engineer run 3–5 parallel AI agent sessions — tackling the backlog, writing tests, fixing bugs, and drafting docs simultaneously. <strong>amux is the open-source control plane that makes running an AI-augmented engineering team possible at the team level, not just the individual level.</strong></p>
 
     <p>The result: your developers spend their time on the work that requires human judgment — architecture decisions, code review, customer conversations — while agents handle the parallel execution work that currently creates context-switching bottlenecks.</p>
+
+    <h2>What's New — August 2026</h2>
+    <p>Recent releases that matter for engineering managers running agent fleets:</p>
+    <ul>
+      <li><strong>Board analytics: closed_at timestamp.</strong> Every task now records exactly when it closed. Query sprint velocity, throughput per agent, and backlog burn rate without exporting to a separate tool. Ask "what did this agent close this sprint?" and get a precise answer.</li>
+      <li><strong>Permission audit trail.</strong> Board transitions now record which permission layer approved each move — agent-auto, human-review, or force-override. Full governance visibility for the EM without adding process overhead to the team.</li>
+      <li><strong>Connectors tab: centralized OAuth tokens.</strong> Share Slack, Gmail, GitHub, and Jira tokens across all agent sessions from one interface. Agents can post notifications, open issues, and push to external services without credential sprawl. The EM configures once; every session inherits.</li>
+      <li><strong>Live config updates.</strong> server.env changes now reach a running server without restart. Update shared fleet config mid-sprint — change a token, add a new Connector, update agent defaults — and agents pick it up within seconds.</li>
+      <li><strong>Gmail inbox 4x faster.</strong> The email Connector loads large inboxes in 5 round-trips instead of 480. Agents monitoring email for customer signals or CI alerts no longer block waiting for slow inbox loads.</li>
+    </ul>
 
     <h2>What Does the Team Look Like When Running amux?</h2>
     <p>Here is a snapshot of what a 4-person engineering team might have active on a given sprint day:</p>

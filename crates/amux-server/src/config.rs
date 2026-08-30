@@ -62,11 +62,141 @@ pub struct ServerConfig {
     pub env: BTreeMap<String, String>,
 }
 
+/// Names the keys THIS server exported from `server.env`, carried across the
+/// self-adoption exec so the successor can tell its own exports apart from
+/// values the process genuinely supplied (AMUX-3612).
+///
+/// Internal plumbing, not configuration: stripped from [`ServerConfig::env`] so
+/// it never reaches a worker environment.
+pub const ENV_FROM_FILE_MARKER: &str = "AMUX_ENV_FROM_FILE";
+
+/// What one load should do to the process environment, computed WITHOUT
+/// touching it.
+///
+/// Separated from [`ServerConfig::load`] on this file's own standing advice:
+/// `set_var` is global and `cargo test` runs in parallel, so the rules are
+/// tested over injected inputs rather than by mutating the environment and
+/// hoping no sibling test reads it mid-flight.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct EnvPlan {
+    /// Keys to `set_var`, with the value server.env currently gives them.
+    pub export: BTreeMap<String, String>,
+    /// Keys we exported on an earlier boot that server.env no longer sets.
+    pub unset: Vec<String>,
+    /// The new marker value for the successor.
+    pub marker: String,
+}
+
+impl EnvPlan {
+    /// Keys whose value comes from the FILE rather than from the process, so
+    /// the "process wins" overlay must leave them alone.
+    fn file_owned(&self) -> std::collections::BTreeSet<&str> {
+        self.export.keys().map(String::as_str).collect()
+    }
+
+    /// The subset of [`export`](Self::export) that actually needs writing.
+    ///
+    /// `load` is NOT a boot-only function: `invariants::monitor` calls
+    /// `from_process_env()` on every sweep just to find the home dir, so this
+    /// runs every ~15s for the life of the process. Before the marker existed
+    /// that was harmless, because every key was already present and the
+    /// setdefault guard skipped it; refreshing marked keys unconditionally
+    /// would have turned a boot-time mutation into a periodic one.
+    ///
+    /// That matters beyond tidiness: `setenv` concurrent with another thread's
+    /// `getenv` is a data race in the platform libc, and this server is heavily
+    /// threaded. Writing only on a real change puts the steady state back to
+    /// zero mutations and confines the exposure to the moment somebody actually
+    /// edits server.env.
+    ///
+    /// The upside is real and was not designed for: because the monitor reloads
+    /// on a timer, a server.env edit to a marked key now takes effect within
+    /// about 30 seconds, with no redeploy and no restart. Verified live on
+    /// 2026-08-24 with `/health`'s `build` bracketed to prove no redeploy
+    /// happened, against the two unmarked keys as a paired control.
+    fn writes<'a>(&'a self, live: &dyn Fn(&str) -> Option<String>) -> Vec<(&'a str, &'a str)> {
+        self.export
+            .iter()
+            .filter(|(k, v)| live(k).as_deref() != Some(v.as_str()))
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect()
+    }
+}
+
+/// # Why a marker exists at all
+///
+/// Self-adoption re-execs in place (`lib.rs`, AMUX-3458) and
+/// `Command::new(exe)` inherits the parent's whole environment. Combined with
+/// the setdefault rule below, that pinned every exported value for the lifetime
+/// of the process LINEAGE: a key exported on some earlier boot is "already
+/// present" forever after, so editing server.env and waiting for the builder to
+/// redeploy changed nothing, indefinitely, with the file plainly showing the new
+/// value. `config.env_reaches_process` had been failing on AMUX_OWNER_PHONE and
+/// GRANOLA_API_KEY with no way to self-heal.
+///
+/// The marker restores the distinction the inherited env destroys. A key the
+/// PROCESS supplies still wins, which is the property setdefault exists to
+/// protect; a key WE exported is refreshed from the file on every load.
+///
+/// # The limit, stated because it is not fixable from here
+///
+/// A lineage that started before this shipped carries no marker, so its
+/// pre-existing exports are indistinguishable from launchd's own environment and
+/// are left alone. Those need one real `launchctl kickstart` to clear. Guessing
+/// instead would mean treating every server.env key as ours on an unmarked boot,
+/// which would flip `AMUX_RS_PORT` out from under a launchd agent that sets it
+/// explicitly. Going forward is worth having; a one-time restart is cheap; a
+/// port change nobody asked for is not.
+pub(crate) fn plan_env(
+    file: &BTreeMap<String, String>,
+    file_exists: bool,
+    process_env: &BTreeMap<String, String>,
+    live: &dyn Fn(&str) -> bool,
+    prev_marker: Option<&str>,
+) -> EnvPlan {
+    let prev: std::collections::BTreeSet<&str> = prev_marker
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .collect();
+    let mut plan = EnvPlan::default();
+    for (k, v) in file {
+        if k == ENV_FROM_FILE_MARKER {
+            continue;
+        }
+        let elsewhere = process_env.contains_key(k) || live(k);
+        // Export when nothing else supplies it, OR when the only thing
+        // supplying it is our own earlier export.
+        if !elsewhere || prev.contains(k.as_str()) {
+            plan.export.insert(k.clone(), v.clone());
+        }
+    }
+    // A key we exported that server.env no longer sets must be withdrawn, or
+    // DELETING a line is exactly as ineffective as changing one, which is the
+    // same bug pointing the other way.
+    //
+    // Gated on the file existing: `parse_env_file` returns an empty map for a
+    // missing file and for an empty one alike, and an unreadable server.env
+    // must never silently wipe the process config. The loud direction is to
+    // leave things as they are.
+    if file_exists {
+        plan.unset = prev
+            .iter()
+            .filter(|k| !file.contains_key(**k))
+            .map(|k| k.to_string())
+            .collect();
+    }
+    plan.marker = plan.export.keys().cloned().collect::<Vec<_>>().join(",");
+    plan
+}
+
 impl ServerConfig {
     /// Load configuration. Pure given its inputs — callers pass the home dir
     /// and process env so tests can drive it hermetically.
     pub fn load(home: PathBuf, process_env: &BTreeMap<String, String>) -> Self {
-        let mut env = parse_env_file(&home.join("server.env"));
+        let env_path = home.join("server.env");
+        let mut env = parse_env_file(&env_path);
         // PYTHON-PARITY SETDEFAULT, for real: export server.env values into
         // the PROCESS env when the process doesn't already set them. The doc
         // above always claimed setdefault semantics, but values only reached
@@ -74,15 +204,46 @@ impl ServerConfig {
         // AMUX_RS_SCHEDULER gate, AMUX_HERDR_SESSION, the caps/knobs) saw
         // nothing, so server.env flags silently didn't work (live incident
         // 2026-08-09: scheduler stayed in shadow mode with the flag set).
-        for (k, v) in env.iter() {
-            if !process_env.contains_key(k) && std::env::var_os(k).is_none() {
-                std::env::set_var(k, v);
+        //
+        // ...with one correction: "the process doesn't already set them" was
+        // measuring the wrong thing across a self-adoption exec. See
+        // [`plan_env`] for what the marker restores and what it cannot.
+        let prev_marker = process_env
+            .get(ENV_FROM_FILE_MARKER)
+            .cloned()
+            .or_else(|| std::env::var(ENV_FROM_FILE_MARKER).ok());
+        let plan = plan_env(
+            &env,
+            env_path.exists(),
+            process_env,
+            &|k| std::env::var_os(k).is_some(),
+            prev_marker.as_deref(),
+        );
+        // Only real changes are written — see `EnvPlan::writes`. This function
+        // runs on a timer, not just at boot.
+        for (k, v) in plan.writes(&|k| std::env::var(k).ok()) {
+            std::env::set_var(k, v);
+        }
+        for k in &plan.unset {
+            if std::env::var_os(k).is_some() {
+                std::env::remove_var(k);
             }
         }
-        // Process env wins over server.env (same rule as Python's setdefault).
-        for (k, v) in process_env {
-            env.insert(k.clone(), v.clone());
+        if std::env::var(ENV_FROM_FILE_MARKER).ok().as_deref() != Some(plan.marker.as_str()) {
+            std::env::set_var(ENV_FROM_FILE_MARKER, &plan.marker);
         }
+        // Process wins over server.env (same rule as Python's setdefault) —
+        // EXCEPT for keys the process only holds because we put them there.
+        let ours = plan.file_owned();
+        for (k, v) in process_env {
+            if !ours.contains(k.as_str()) {
+                env.insert(k.clone(), v.clone());
+            }
+        }
+        // Never let the marker reach a worker environment: it is this server's
+        // bookkeeping about its own exec, and a lane inheriting it would report
+        // its own env as file-owned.
+        env.remove(ENV_FROM_FILE_MARKER);
         let port = env
             .get("AMUX_RS_PORT")
             .and_then(|p| p.parse().ok())
@@ -158,6 +319,13 @@ pub fn amux_home() -> PathBuf {
 /// most of them. A test that must run single-threaded to be correct is one
 /// that will be made green by `--test-threads=1` and quietly stop
 /// discriminating (ethos rule 7).
+///
+/// SCOPE OF THE MITIGATIONS, stated so this warning is not read as
+/// fully-handled (AMUX-3415): `test_env::set_home`'s LOCK closes the
+/// mutator-vs-mutator half only — reader sites do not take it, so a
+/// guardless concurrent reader can still observe a guard's fixture home.
+/// This injected-lookup seam is the full fix where it can be used; the
+/// guard is the accepted fallback where it cannot.
 fn resolve_home(get: impl Fn(&str) -> Option<String>) -> PathBuf {
     for var in ["AMUX_HOME", "CC_HOME"] {
         match get(var) {
@@ -260,6 +428,145 @@ pub fn parse_env_file(path: &Path) -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+    /// Nothing in the live process env, so only the injected maps decide.
+    fn no_live(_: &str) -> bool {
+        false
+    }
+
+    /// AMUX-3612. The bug: self-adoption re-execs with the parent's whole
+    /// environment, so setdefault saw every previously-exported key as
+    /// "already present" and server.env edits could never land, forever.
+    ///
+    /// All four arms in one test on one set of inputs, because the value of the
+    /// marker is precisely that it TELLS TWO IDENTICAL-LOOKING CASES APART. A
+    /// test of the refresh alone would pass against a version that clobbers
+    /// genuine process env, which is the property setdefault exists to protect
+    /// and the one thing worse than the bug.
+    #[test]
+    fn a_key_we_exported_is_refreshed_but_a_key_the_process_owns_is_not() {
+        let file = map(&[
+            ("STALE", "new-from-file"),  // we exported it last boot: refresh
+            ("THEIRS", "file-value"),    // launchd set it: leave alone
+            ("FRESH", "brand-new"),      // nobody has it: export
+        ]);
+        // What the successor inherited across the exec. STALE and THEIRS look
+        // IDENTICAL here: both are simply present. Only the marker separates
+        // them, which is the whole point.
+        let inherited = map(&[("STALE", "old-value"), ("THEIRS", "launchd-value")]);
+
+        let plan = plan_env(&file, true, &inherited, &no_live, Some("STALE"));
+
+        assert_eq!(
+            plan.export.get("STALE").map(String::as_str),
+            Some("new-from-file"),
+            "a key WE exported must be refreshed from the file, or a server.env edit never lands"
+        );
+        assert!(
+            !plan.export.contains_key("THEIRS"),
+            "a key the PROCESS supplies must still win — that is what setdefault is for"
+        );
+        assert_eq!(
+            plan.export.get("FRESH").map(String::as_str),
+            Some("brand-new"),
+            "the original setdefault behaviour must survive"
+        );
+        // The overlay must leave our own keys alone, or the refresh above is
+        // undone one loop later and the struct reports the stale value while
+        // the process env holds the new one.
+        let ours = plan.file_owned();
+        assert!(ours.contains("STALE") && ours.contains("FRESH"));
+        assert!(!ours.contains("THEIRS"));
+    }
+
+    /// `load` runs on a TIMER, not just at boot: `invariants::monitor` calls
+    /// `from_process_env()` every sweep to find the home dir. So refreshing
+    /// marked keys unconditionally would `setenv` every ~15s forever, and
+    /// `setenv` racing another thread's `getenv` is a data race in the platform
+    /// libc on a server this threaded.
+    ///
+    /// Steady state must be ZERO writes; a genuine edit must be exactly one.
+    #[test]
+    fn a_refresh_writes_only_when_the_value_actually_changed() {
+        let file = map(&[("A", "v1"), ("B", "v2")]);
+        let inherited = map(&[("A", "v1"), ("B", "v2")]);
+        let plan = plan_env(&file, true, &inherited, &no_live, Some("A,B"));
+
+        // Both are ours, so both must stay file-owned or the overlay clobbers
+        // them — ownership and writing are different questions.
+        assert_eq!(plan.file_owned().len(), 2);
+
+        let settled = |k: &str| inherited.get(k).cloned();
+        assert!(
+            plan.writes(&settled).is_empty(),
+            "steady state must write nothing: {:?}",
+            plan.writes(&settled)
+        );
+
+        // One key edited in the file: exactly one write, and it is that key.
+        let drifted = |k: &str| if k == "B" { Some("stale".to_string()) } else { inherited.get(k).cloned() };
+        assert_eq!(plan.writes(&drifted), vec![("B", "v2")]);
+    }
+
+    /// Deleting a line from server.env has to work too, or this is the same
+    /// bug pointing the other way.
+    #[test]
+    fn a_key_removed_from_the_file_is_withdrawn_but_only_if_the_file_is_readable() {
+        let file = map(&[("KEPT", "v")]);
+        let inherited = map(&[("KEPT", "v"), ("GONE", "old")]);
+
+        let plan = plan_env(&file, true, &inherited, &no_live, Some("KEPT,GONE"));
+        assert_eq!(plan.unset, vec!["GONE".to_string()], "a key the file no longer sets must be withdrawn");
+
+        // THE DESTRUCTIVE CASE. `parse_env_file` returns an empty map for a
+        // MISSING file and an EMPTY one alike, so without the existence gate an
+        // unreadable server.env would withdraw every key the server had ever
+        // exported. Same inputs, file_exists=false, and nothing may be unset.
+        let plan = plan_env(&BTreeMap::new(), false, &inherited, &no_live, Some("KEPT,GONE"));
+        assert!(
+            plan.unset.is_empty(),
+            "an unreadable server.env must not wipe the process config: {:?}",
+            plan.unset
+        );
+    }
+
+    /// An unmarked lineage is one that started before this shipped. Its exports
+    /// are indistinguishable from launchd's own environment, so they are left
+    /// alone and need a real restart. Pinned so nobody "fixes" it into guessing:
+    /// treating every file key as ours on an unmarked boot would flip
+    /// AMUX_RS_PORT out from under the launchd agent that sets it explicitly.
+    #[test]
+    fn an_unmarked_lineage_is_left_alone_rather_than_guessed_at() {
+        let file = map(&[("AMUX_RS_PORT", "9999"), ("AMUX_OWNER_PHONE", "new")]);
+        let inherited = map(&[("AMUX_RS_PORT", "8824"), ("AMUX_OWNER_PHONE", "stale")]);
+        let plan = plan_env(&file, true, &inherited, &no_live, None);
+        assert!(
+            plan.export.is_empty(),
+            "with no marker, nothing may be assumed ours: {:?}",
+            plan.export
+        );
+        assert!(plan.unset.is_empty());
+    }
+
+    /// The marker has to survive the exec naming exactly what we exported, or
+    /// the next load is unmarked again and the fix lasts one boot.
+    #[test]
+    fn the_marker_names_what_was_exported_and_nothing_else() {
+        let file = map(&[("A", "1"), ("B", "2"), ("THEIRS", "3")]);
+        let inherited = map(&[("THEIRS", "set-by-launchd")]);
+        let plan = plan_env(&file, true, &inherited, &no_live, None);
+        assert_eq!(plan.marker, "A,B");
+        // Feeding the marker back in must be stable: the same file and an env
+        // that now carries our exports yields the same answer, not a shrinking
+        // set that forgets a key every boot.
+        let after = map(&[("THEIRS", "set-by-launchd"), ("A", "1"), ("B", "2")]);
+        let plan2 = plan_env(&file, true, &after, &no_live, Some(&plan.marker));
+        assert_eq!(plan2.marker, "A,B", "the export set must be stable across generations");
+        assert_eq!(plan2.export.get("A").map(String::as_str), Some("1"));
+    }
 
     #[test]
     fn parses_env_file_shapes() {

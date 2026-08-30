@@ -2,6 +2,17 @@
 
 Status: proposed (AMUX-3101). Owner: `amux`. Captured from Ethan's 2026-08-14 vision, block 3.
 
+> **2026-08-20 update (AMUX-3418/AMUX-3192):** build-order step 4 — the OAuth broker —
+> is LIVE in `api/connectors.rs`: `auth` (state + PKCE + pending), the public
+> `callback` (code→token exchange, per-account store at
+> `~/.amux/connectors/<family>/<account>.json`), `token` (SA or stored user grant,
+> broker-owned refresh), and `GET /api/connectors/accounts` (per-account health +
+> the one reconnect action). One refinement over the text below: Google tokens are
+> stored per FAMILY, not per provider — a single union-scope grant (gmail + calendar
+> + drive/docs) per account covers every Google connector and is mirrored into
+> `~/.amux/gmail-tokens/` so the email subsystem is repaired by the same approval.
+> Token rot auto-files one board card per account (autofix `connector-auth` detector).
+
 A "connector" is amux's word for a configured third-party integration: Gmail, Slack,
 Google Drive, a Mixpeek API, an MCP tool server. Today these are scattered across
 bespoke code paths. This doc defines one coherent surface for them, built entirely from

@@ -1,0 +1,6 @@
+-- AMUX-3410: mdai chain latency was invisible — zero log lines and nothing in
+-- mdai_runs said how long a node's model call took, so "why is this slow" was
+-- answered by reconstructing timings from adjacent rows' timestamps. dur_ms is
+-- the model call's wall time; NULL on cached rows (no call happened) and on
+-- every legacy row.
+-- ADDCOL: mdai_runs dur_ms INTEGER

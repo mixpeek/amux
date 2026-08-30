@@ -45,7 +45,7 @@
     "description": "Solopreneurs use amux to run a 5-10 agent engineering team from their phone — writing code, reviewing PRs, running tests, managing customers, and automating business operations, all in parallel.",
     "url": "https://amux.io/for/solopreneurs/",
     "datePublished": "2026-07-03",
-    "dateModified": "2026-07-03",
+    "dateModified": "2026-08-18",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "image": "https://amux.io/og-image.png",
@@ -92,10 +92,18 @@
       },
       {
         "@type": "Question",
+        "name": "How do I give my agents access to external APIs without exposing credentials?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Use the Connectors tab in the amux dashboard. Paste your API key once and set the scope: global (all agents), group, or per-worker. amux stores credentials server-side and injects them as environment variables when the agent runs — they never appear in your CLAUDE.md or git history."
+        }
+      },
+      {
+        "@type": "Question",
         "name": "What is the amux Concierge service?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "The amux Concierge is a managed onboarding service for teams and solopreneurs who want amux configured end-to-end — server setup, agent workflows, CRM import, email integration, and scheduler configuration. See amux.io/concierge/ for details."
+          "text": "The amux Concierge is a managed onboarding service for teams and solopreneurs who want amux configured end-to-end — server setup, agent workflows, CRM import, email integration, Connectors setup, and scheduler configuration. See amux.io/concierge/ for details."
         }
       }
     ]
@@ -288,12 +296,29 @@
       <span>Solopreneurs</span>
     </div>
 
+    <div class="cta-banner" style="background:linear-gradient(90deg,#1a2a1a,#1e3020);border:1px solid #2d5a2d;border-radius:8px;padding:1rem 1.5rem;margin:0 0 1.5rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+      <span style="flex:1;min-width:200px;font-size:0.95rem">Run an AI engineering team solo — open source, MIT licensed, self-hosted.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp047_solopreneurs_topofpage_cta_click')" style="background:#2d7a2d;color:#fff;padding:0.5rem 1.25rem;border-radius:6px;text-decoration:none;font-weight:600;white-space:nowrap;font-size:0.9rem">View amux on GitHub &#x2605;</a>
+    </div>
+
     <h1>Run a 10-Person AI Engineering Team by Yourself</h1>
-    <p class="subtitle">One person. A dozen agents. A full software business, running while you sleep.</p>
+    <p class="subtitle">One person. A dozen agents. A full software business, running while you sleep. <span style="font-size:0.85em;color:var(--text-muted)">Updated August 2026.</span></p>
 
     <div class="answer-box">
       <p>With amux, a solopreneur can simultaneously deploy a developer agent writing new features, a reviewer agent checking every PR, a test agent ensuring coverage, a docs agent keeping documentation current, and a bug-triage agent clearing the backlog — all orchestrated from a single dashboard or their iPhone. The CRM, email, browser automation, and scheduler handle the business side: customer relationships, status updates, Stripe reports, and recurring overnight tasks. You become the architect and decision-maker; the agents handle execution at a pace no small human team can match.</p>
     </div>
+
+    <!-- ============================================================ -->
+    <h2>What's New in August 2026</h2>
+
+    <p>The gap between a solopreneur running amux and a small engineering team keeps widening. Four features shipped this month that are particularly valuable for solo operators:</p>
+
+    <ul>
+      <li><strong>Connectors tab — paste API keys once, use them everywhere.</strong> The new Connectors tab lets you configure credentials for external services (Google, Granola, custom APIs) at global, group, or per-worker scope. Agents pick them up automatically — no more scattering API keys across shell profiles or CLAUDE.md files. See the <a href="/guides/ai-agent-connectors/">connector setup guide</a>.</li>
+      <li><strong>Owner alerts — push, email, and iMessage when your fleet needs you.</strong> Set up <code>amux alert</code> in any agent's CLAUDE.md instructions, and the agent calls home the moment it hits something that needs your attention: a failing test it can't debug, a payment that needs approval, a deploy that finished overnight. Your phone buzzes; you decide; the agent continues. See the <a href="/guides/ai-agent-owner-alerts/">owner alerts guide</a>.</li>
+      <li><strong>Computed files (.mdai) — multi-step research pipelines in plain Markdown.</strong> Define a knowledge DAG where one agent's output is another agent's input — automatically, without a coordination script. A solopreneur using this for competitor research can have one agent pull pricing data, a second summarize changes, and a third file a board card, all triggered by a single scheduled run. Guide: <a href="/guides/ai-agent-automations/">.mdai and computed files</a>.</li>
+      <li><strong>Voice dictation + TTS — assign tasks by speaking, hear summaries in the car.</strong> Tap the microphone on the iOS app and dictate a task while walking. Have your review agent read back a diff summary on your AirPods during your commute. The full agent fleet is now genuinely phone-first, not just phone-accessible.</li>
+    </ul>
 
     <!-- ============================================================ -->
     <h2>What Can a Solopreneur Do with an AI Agent Fleet?</h2>
@@ -476,8 +501,8 @@
       </li>
       <li>
         <div class="step-body">
-          <strong>Connect your Gmail and CRM</strong>
-          <span>Authenticate your Gmail account via the API. Import existing contacts into the CRM. Now agents can act on email and customer data, not just code.</span>
+          <strong>Connect your Gmail, CRM, and external services</strong>
+          <span>Authenticate your Gmail account via the API. Import existing contacts into the CRM. Use the <strong>Connectors tab</strong> to paste API credentials for any external service (Stripe, analytics tools, custom APIs) at global scope — every agent gets them automatically. Now agents can act on email, customer data, and your full SaaS stack, not just code.</span>
         </div>
       </li>
       <li>
@@ -515,6 +540,10 @@
       <div class="faq-item">
         <h3>Do I need to be technical to use amux?</h3>
         <p>You need to be comfortable running a terminal command for the initial install. After that, most daily use — assigning tasks, reviewing outputs, managing the board, checking email — happens through the browser dashboard or the iOS app. If you want zero setup friction, the <a href="/concierge/">Concierge service</a> configures everything for you.</p>
+      </div>
+      <div class="faq-item">
+        <h3>How do I give my agents access to external APIs without exposing credentials?</h3>
+        <p>Use the Connectors tab in the amux dashboard. Paste your API keys there once and choose scope: global (all agents see them), group (only agents in a specific group), or per-worker (one agent only). amux stores the credentials server-side and injects them as environment variables when the agent runs — they never appear in your CLAUDE.md, your prompt history, or your git repository. See the <a href="/guides/ai-agent-connectors/">connector setup guide</a>.</p>
       </div>
       <div class="faq-item">
         <h3>What is the amux Concierge service?</h3>

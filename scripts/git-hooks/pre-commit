@@ -201,7 +201,137 @@ if [ -n "$STAGED_RS" ]; then
   fi
 fi
 
-if echo "$STAGED" | grep -qE '^(crates/.*\.rs|Cargo\.(toml|lock))$'; then
+# ONE IMPLEMENTATION FOR BOTH BUILD GATES (AMUX-3726).
+#
+# The clippy branch and the clippy-absent `cargo check` fallback had the same
+# defect and the fallback's own comment says it "matters MORE, not less" there —
+# the failure that reaches it is a COMPILE error rather than a lint. Fixing only
+# the branch I happened to be reading would leave the identical hazard beside it
+# for whoever hits the other one, which is the fix-only-the-survivor shape.
+#
+# $1 = raw build output (for blame), $2 = the build command to re-run on the index.
+# Returns 0 ONLY when a clean build of the INDEX proves the staged content sound.
+_amux_staged_recheck() {
+  local _out="$1" _cmd="$2" _blame_rc=0 _sw _staged_rc=0 _bpid _wpid
+  CLIPPY_OUT="$_out" STAGED="$STAGED" \
+    python3 "$ROOT/scripts/git-hooks/lint-blame.py" >&2 || _blame_rc=$?
+  # ASK THE QUESTION THE TREE CANNOT (AF-182's structural half).
+  #
+  # Everything above builds the WORKING TREE, which on a shared checkout is not
+  # what anyone is committing. lint-blame can now say "none of the offenders are
+  # staged" (exit 10) — but knowing that still left the committer refused, and
+  # the only exit was AMUX_SKIP_RUST_GATE, an ASSERTION they make rather than an
+  # answer anyone verified.
+  #
+  # WHY THIS IS SAFE ON EVERY LANE'S COMMIT PATH, which is what kept it unwritten:
+  #   - UNREACHABLE unless the build already FAILED. The green path — very nearly
+  #     every commit — creates no worktree and is not touched at all.
+  #   - it can only turn a REFUSAL into a pass, never a pass into a refusal, so
+  #     the worst correctness outcome is a commit CI would have caught anyway.
+  #   - only exit 10 enables it; a crashed, missing or confused aid returns
+  #     something else and we refuse exactly as before.
+  #   - hard watchdog, so it can never hang a commit; on timeout we refuse.
+  #   - the worktree is removed in a trap and pruned. A leaked one is a
+  #     15GB-class hazard here (CLAUDE.md: 37 abandoned target dirs took the
+  #     volume to 741MB free).
+  #
+  # Cost, measured before writing it: ~22s warm, and it does NOT amortise —
+  # cargo re-fingerprints the workspace crates when the path differs. That 22s
+  # is spent only in the case that today costs the committer their commit.
+  [ "$_blame_rc" -eq 10 ] || return 1
+  [ "${AMUX_STAGED_RECHECK:-1}" = "1" ] || return 1
+  echo "" >&2
+  echo "amux: none of the offenders are staged — building the INDEX to check what you" >&2
+  echo "      are ACTUALLY committing (~22s; set AMUX_STAGED_RECHECK=0 to skip)..." >&2
+  _sw=$(mktemp -d "${TMPDIR:-/tmp}/amux-staged-XXXXXX" 2>/dev/null) || return 1
+  # shellcheck disable=SC2064
+  trap "git -C '$ROOT' worktree remove --force '$_sw' >/dev/null 2>&1; rm -rf '$_sw'; git -C '$ROOT' worktree prune >/dev/null 2>&1" EXIT
+  rm -rf "$_sw"
+  if ! git -C "$ROOT" worktree add --detach -q "$_sw" HEAD >/dev/null 2>&1 \
+     || ! git -C "$ROOT" --work-tree="$_sw" checkout-index -a -f >/dev/null 2>&1; then
+    echo "amux: could not materialise the index (worktree/checkout-index failed) —" >&2
+    echo "      refusing, exactly as before. Nothing is skipped on your behalf." >&2
+    return 1
+  fi
+  # No `timeout` on macOS by default, so bound it with a watchdog: a wedged
+  # build must cost 5 minutes, not the session.
+  ( cd "$_sw" && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.amux/rust-build-target}" \
+      eval "$_cmd" >/dev/null 2>&1 ) &
+  _bpid=$!
+  ( sleep 300; kill -9 "$_bpid" >/dev/null 2>&1 ) & _wpid=$!
+  # `disown` the watchdog: killing it below is the NORMAL path (the build
+  # finished first), and without this bash prints "Terminated: 15" to the
+  # committer's terminal every single time. A gate that cries wolf on its happy
+  # path is one people stop reading, which is the failure this whole card is
+  # about, one layer over.
+  disown "$_wpid" 2>/dev/null || true
+  wait "$_bpid" 2>/dev/null || _staged_rc=$?
+  kill "$_wpid" >/dev/null 2>&1
+  if [ "$_staged_rc" -eq 0 ]; then
+    echo "" >&2
+    echo "amux: YOUR STAGED CONTENT IS CLEAN — the red is entirely someone else's" >&2
+    echo "      uncommitted work. Allowing this commit; the workspace stays red for" >&2
+    echo "      them to fix, and CI gates the push." >&2
+    return 0
+  fi
+  echo "" >&2
+  echo "amux: the staged content is ALSO red (exit $_staged_rc) — this is not just" >&2
+  echo "      the peer's edit. Refusing." >&2
+  return 1
+}
+
+# AMUX_SKIP_RUST_GATE=1 — the NARROW escape, so nobody has to reach for the
+# wide one (AF-182, third instance 2026-08-26).
+#
+# The Rust gate compiles the WORKING TREE, which on this shared checkout is not
+# the question anyone is asking. It cannot distinguish "what you are committing
+# is broken" from "a peer is mid-edit two files away", and `lint-blame.py`
+# exists precisely because that partition is invisible from clippy's output.
+#
+# But attribution alone does not unblock you: the hook refuses either way, and
+# until now the ONLY way past it was `--no-verify` — which also drops the
+# security scan, the staged-guard, the append-only guard and the JS checks.
+# Three AF-182 instances ended that way, most recently a peer whose own files
+# were clean and whose commit was refused by MY half-finished edit. A gate whose
+# refusal is routinely answered by disabling every gate is worse than a gate
+# that refuses precisely (ethos rule 6: a constraint whose sanctioned escape is
+# unwalkable gets walked from an unaudited one).
+#
+# So this skips exactly ONE gate and keeps the rest. It is deliberately not
+# something the blame analysis can set for you: the aid still cannot change a
+# verdict, a human or agent decides, and the skip announces itself in the commit
+# output so it is visible in the transcript rather than silent.
+if [ "${AMUX_SKIP_RUST_GATE:-}" = "1" ] && echo "$STAGED" | grep -qE '^(crates/.*\.rs|Cargo\.(toml|lock))$'; then
+  echo "amux: RUST GATE SKIPPED (AMUX_SKIP_RUST_GATE=1) — cargo clippy/check did NOT run." >&2
+  echo "      Every other gate still ran. Use this only when lint-blame attributed the" >&2
+  echo "      failure to another session's in-flight work; if your own staged files are" >&2
+  echo "      in the offender list, this is a false green you are giving yourself." >&2
+elif echo "$STAGED" | grep -qE '^(crates/.*\.rs|Cargo\.(toml|lock))$'; then
+  # ONE SHARED TARGET DIR — and until now this hook was the single biggest
+  # violator of the rule CLAUDE.md states for everyone else.
+  #
+  # That rule exists because the opposite instruction filled the disk: a debug
+  # target tree is 10-15GB, ~37 of them accumulated under /private/tmp, and on
+  # 2026-08-10 the volume hit 741MB free with a 50-session fleet running and
+  # writes failing with ENOSPC. Every session is told to export
+  # CARGO_TARGET_DIR=~/.amux/rust-build-target so the fleet shares one warm
+  # cache instead of paying 15GB and a full rebuild each.
+  #
+  # This hook inherited whatever the committing shell happened to have, which
+  # for a git GUI, an editor, a cron job, or any session that did not export it
+  # is NOTHING — so it built into a repo-local ./target. Measured 2026-08-26 in
+  # a fresh worktree with no CARGO_TARGET_DIR exported: 631MB of ./target in the
+  # 2 minutes before the commit was killed, on its way to a second full tree,
+  # for a check that completes in seconds against the shared one. Nothing said
+  # so; the hook just looked slow, which is the shape people wait on rather than
+  # investigate.
+  #
+  # SETDEFAULT, NOT OVERRIDE (same discipline as server.env): a shell that has
+  # already chosen a target dir keeps it, and the flag CI passes is untouched.
+  # The builder's own spelling is copied rather than re-derived
+  # (scripts/rust-auto-build.sh:301) so the two cannot drift into two dirs.
+  : "${CARGO_TARGET_DIR:=$HOME/.amux/rust-build-target}"
+  export CARGO_TARGET_DIR
   echo "Checking Rust (cargo check --workspace --all-targets)..."
   # --all-targets IS THE POINT, not a flourish (AMUX-2807).
   #
@@ -240,11 +370,68 @@ if echo "$STAGED" | grep -qE '^(crates/.*\.rs|Cargo\.(toml|lock))$'; then
   # Falls back to check where clippy is absent: a missing component must not
   # block commits, and check is what this gate did before.
   if cargo clippy --version >/dev/null 2>&1; then
-    cargo clippy --workspace --all-targets --quiet -- -D warnings
+    # WHOSE FAILURE IS IT? (AF-182)
+    #
+    # This lints the WORKSPACE, which is right — a denial in any file turns
+    # `clippy --workspace --all-targets` red for every lane on this shared
+    # checkout and queues a CI failure for whoever pushes next. But it lints the
+    # WORKING TREE, so another session's uncommitted work refuses YOUR commit,
+    # and clippy names their file and nothing names them.
+    #
+    # Hit twice in one hour on 2026-08-23: a transient checks.rs/monitor.rs
+    # window failed a peer's build, then 170 uncommitted lines in board_drive.rs
+    # refused a commit of two unrelated clean files. The diagnostic is TRUE about
+    # the repo and FALSE about the committer, and the output cannot say which was
+    # meant — a workspace-scoped fact in a session-scoped sentence (amux's
+    # phrasing). Both natural readings are wrong: "I broke this" and "this gate
+    # is noise".
+    #
+    # The dangerous one is not the wait. It is that the cheap wrong move is right
+    # there: fix the peer's file. That is how a session commits another session's
+    # half-finished work, which is the class the staged-guard above exists to
+    # prevent, reached from a direction the staged-guard cannot see.
+    #
+    # So: still refuse, always — a red workspace is a red workspace. But
+    # PARTITION the offenders, because the next action is completely different
+    # and the committer cannot work it out from clippy's output alone.
+    if ! _clippy_out=$(cargo clippy --workspace --all-targets --quiet -- -D warnings 2>&1); then
+      printf '%s\n' "$_clippy_out" >&2
+      # NEVER let the blame analysis change the verdict: it runs after the raw
+      # output, its failure is swallowed, and the exit is unconditional. A
+      # diagnostic aid that can suppress a refusal is a worse bug than the one
+      # it explains.
+      _amux_staged_recheck "$_clippy_out" "cargo clippy --workspace --all-targets --quiet -- -D warnings" \
+        && _rust_gate_ok=1
+      [ "${_rust_gate_ok:-0}" = "1" ] || exit 1
+    fi
     echo "cargo clippy passed (test targets + lints)."
   else
     echo "clippy not installed - falling back to cargo check (lints NOT enforced)" >&2
-    cargo check --workspace --all-targets --quiet
+    # SAME BLAME ANALYSIS AS THE CLIPPY BRANCH ABOVE (AF-182 follow-up).
+    #
+    # This branch had the identical defect the branch above just fixed, sitting
+    # immediately beside it: a peer's uncommitted work refuses your commit and
+    # nothing says it is theirs. It matters MORE here, not less. The failure
+    # that reaches this branch is a COMPILE error rather than a lint, and the
+    # incident that motivated AF-182 was exactly that — a transient
+    # checks.rs/monitor.rs window where a struct gained a field in one file and
+    # its initializer had not been updated in the other yet, which is what a
+    # multi-file change looks like from a peer's build for the seconds between
+    # two writes. Attribution being available or not must not depend on whether
+    # a toolchain component happens to be installed.
+    #
+    # lint-blame parses `--> file:line` spans, which rustc emits in the same
+    # form clippy does, so an E0063 partitions exactly like a lint denial.
+    if ! _check_out=$(cargo check --workspace --all-targets --quiet 2>&1); then
+      printf '%s\n' "$_check_out" >&2
+      # SAME PATH AS THE CLIPPY BRANCH, via the shared helper. This branch's own
+      # comment says it matters MORE there, since the failure reaching it is a
+      # COMPILE error; fixing only the other one would leave the hazard beside it.
+      _rust_gate_ok=0
+      _amux_staged_recheck "$_check_out" "cargo check --workspace --all-targets --quiet" \
+        && _rust_gate_ok=1
+      [ "${_rust_gate_ok:-0}" = "1" ] || exit 1
+    fi
     echo "cargo check passed (including test targets)."
   fi
 fi
@@ -256,4 +443,39 @@ if [ -n "$JS_STAGED" ]; then
     node --check "$ROOT/$f"
   done
   echo "JS syntax checks passed."
+fi
+
+# ── 4. frustrations.md structural audit (AF-120) ─────────────────────────────
+#
+# The audit existed, detected exactly this failure (an entry appended with no
+# `## ` heading folds into the previous entry and vanishes from every census),
+# named the delta, and NOTHING RAN IT — so a check built after this exact
+# incident sat unread while the incident recurred six times, all via bash
+# heredoc appends that no Edit-tool hook ever sees. Commit time is the one
+# gate every append passes through; this is the audit's consumer. Structure
+# drift blocks; the informational card-title CHECK lines do not (the audit's
+# own exit code makes that distinction).
+if echo "$STAGED" | grep -qx 'frustrations.md' && [ -f "$ROOT/scripts/frustrations_audit.py" ]; then
+  echo "Checking frustrations.md structure..."
+  # Exit contract (the script's docstring): 0 clean, 1 structural problems,
+  # 2 board unreachable with structure CLEAN. Structural problems are
+  # decidable without a board, so only 1 blocks; 2 happens whenever the amux
+  # server is mid-restart (which on this checkout is every builder adoption)
+  # and blocking a structurally-clean commit on it would train bypassing.
+  AUDIT_RC=0
+  python3 "$ROOT/scripts/frustrations_audit.py" >/dev/null 2>&1 || AUDIT_RC=$?
+  if [ "$AUDIT_RC" != "0" ] && [ "$AUDIT_RC" != "2" ]; then
+    python3 "$ROOT/scripts/frustrations_audit.py" 2>&1 | head -12
+    echo ""
+    echo "BLOCKED: frustrations.md fails its own structural audit (usually an entry"
+    echo "appended without a '## <title>' heading — the parser folds it into the"
+    echo "previous entry and every census undercounts it, AF-120). The format lives"
+    echo "in the file's own header. Fix the entry, restage, retry."
+    exit 1
+  fi
+  if [ "$AUDIT_RC" = "2" ]; then
+    echo "frustrations.md structure ok (board unreachable — card pointers unchecked)."
+  else
+    echo "frustrations.md structure ok."
+  fi
 fi

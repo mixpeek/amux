@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 test('read-aloud plays through the shared bottom player', async ({ page }) => {
   await page.route('**/api/tts', r => r.fulfill({ contentType: 'application/json',
     body: JSON.stringify({ engine: 'stub', size: 44,

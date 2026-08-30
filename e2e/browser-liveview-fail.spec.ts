@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 // Both server states, so the panel is asserted to DISCRIMINATE, not merely render.
 for (const [label, running] of [['not-running', false], ['wedged', true]] as [string, boolean][]) {
   test(`browser live-view failure panel: ${label}`, async ({ page }) => {

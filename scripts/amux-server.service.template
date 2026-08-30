@@ -1,0 +1,20 @@
+[Unit]
+Description=amux Server (Rust)
+Documentation=https://amux.dev/docs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$BIN_DIR/amux-server-rs
+Environment="AMUX_RS_PORT=$PORT"
+Environment="CARGO_TARGET_DIR=$HOME/.amux/rust-build-target"
+WorkingDirectory=$AMUX_HOME
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=amux-server
+
+[Install]
+WantedBy=default.target

@@ -101,3 +101,17 @@ Expect hits that are **pattern mentions, not secrets** — the pre-commit hook's
 list, and the `site/guides/*` pages that document detection regexes. Confirm each hit is a
 mention before reporting a leak, and confirm the probe can still find a real one before
 trusting a clean result.
+
+## Connectors (OAuth broker)
+
+| Key | Purpose |
+|---|---|
+| `GOOGLE_OAUTH_CLIENT_ID` | Optional override for the shared Google OAuth client the connectors broker uses. When unset, the broker reuses `~/.amux/gmail-oauth-client.json` (the client Gmail already authorizes with), so normally NOTHING goes in server.env for Google. |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | Its secret (same override/fallback rule). |
+| `SLACK_CLIENT_ID` | Slack app client id for the Slack connector (AMUX-3104). No fallback file — paste via the Connectors tab. |
+| `SLACK_CLIENT_SECRET` | Its secret. |
+| `GRANOLA_API_KEY` | Granola key-only connector (`grn_...`). |
+
+Grant TOKENS (not credentials) live per account under `~/.amux/connectors/<family>/<account>.json`
+and `~/.amux/gmail-tokens/<account>.json` — written by the broker callbacks, chmod 600, never
+committed. `GET /api/connectors/accounts` enumerates them with live health.

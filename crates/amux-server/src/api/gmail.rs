@@ -105,6 +105,7 @@ async fn send(
             &reply_id, // References defaults to In-Reply-To (python parity)
             &s("thread_id"),
             false, // signature OFF — see module docs
+            &[],   // legacy contract carries no attachments
         )
         .await;
     match result {

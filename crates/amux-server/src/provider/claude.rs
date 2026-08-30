@@ -73,6 +73,14 @@ impl ProviderAdapter for ClaudeAdapter {
         Self::provider_id()
     }
 
+    /// Verified, not assumed: `/compact` is what the auto-compact trigger has
+    /// been typing into Claude lanes all along, and gtm-videos' pane shows it
+    /// executing (`⎿ Compacted (ctrl+o to see full summary)`). This move only
+    /// changes WHERE the string lives, not what Claude receives.
+    fn compaction(&self) -> crate::provider::Compaction {
+        crate::provider::Compaction::Command("/compact")
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             // `/model` switches models mid-session without a restart.

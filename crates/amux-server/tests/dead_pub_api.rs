@@ -30,13 +30,12 @@ use std::path::{Path, PathBuf};
 /// Known-unreferenced, with the reason — same contract as
 /// `legacy_port_guard.rs`'s ALLOW: a row must carry why it is exempt, and the
 /// test below fails if a row stops being true, so the list cannot go stale.
-const ALLOW: &[(&str, &str)] = &[(
-    "from_env",
-    "HerdrBackend::from_env — the herdr backend (ethos D6) is the one path CI cannot \
-     exercise, and backends_from_env() constructs via new(). Left rather than deleted \
-     because D6's exit is the AgentRuntime seam adopting these backends, and that \
-     adoption is what would call it",
-)];
+// The list is EMPTY today. Its one row ("from_env", the herdr backend's) left
+// on 2026-08-22: the guard keys on the bare fn name, and CliS3Publisher::from_env
+// (SA-124) is genuinely referenced — so the name is now called somewhere and the
+// row is stale by the guard's own rule. If the herdr from_env goes unreferenced
+// again after a rename, it re-earns its row with its reason.
+const ALLOW: &[(&str, &str)] = &[];
 
 fn rs_files(root: &str) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {

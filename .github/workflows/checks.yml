@@ -16,7 +16,49 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Full history: the client-version guard below diffs against the push's
+      # base, which a shallow clone cannot reach.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # AF-148 / AMUX-3524 follow-up: a client JS change that ships WITHOUT a
+      # version bump reaches no browser holding the cached script, and nothing
+      # said so. dashboard_assets.rs pins that APP_VER and CACHE AGREE — but
+      # 25ba8ea changed app.js and bumped NEITHER, so they still agreed and the
+      # test stayed green. The silent shape is worse than a mismatch: the
+      # author's find-and-replace bump no-opped (a peer had already moved the
+      # version), the functional edits in the same pass succeeded, and the
+      # script printed success. Diffing is the only way to see it.
+      - name: Client JS changes carry a version bump (CLAUDE.md, enforced)
+        run: |
+          set -uo pipefail
+          BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "no reachable base ($BASE) — first push or force-push; guard SKIPPED, honestly"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD -- \
+            crates/amux-dashboard/static/app.js crates/amux-dashboard/static/sw.js)
+          [ -n "$CHANGED" ] || { echo "no client JS in this range — nothing to check"; exit 0; }
+          echo "client JS changed:"; echo "$CHANGED" | sed 's/^/  /'
+          # The VERSION LINES specifically, not the files: a file can change
+          # while its version does not, which is exactly the defect.
+          APP_MOVED=$(git diff "$BASE" HEAD -- crates/amux-dashboard/static/app.js \
+            | grep -c '^[+-].*APP_VER *=' || true)
+          SW_MOVED=$(git diff "$BASE" HEAD -- crates/amux-dashboard/static/sw.js \
+            | grep -c '^[+-].*CACHE *=' || true)
+          if [ "$APP_MOVED" -eq 0 ] || [ "$SW_MOVED" -eq 0 ]; then
+            echo
+            echo "FAIL: client JS shipped without bumping both versions."
+            echo "  APP_VER line changed: $([ "$APP_MOVED" -gt 0 ] && echo yes || echo NO)"
+            echo "  sw.js CACHE changed:  $([ "$SW_MOVED" -gt 0 ] && echo yes || echo NO)"
+            echo "A browser holding the cached script never fetches this change."
+            echo "Bump BOTH (read-then-increment; a literal find-and-replace can"
+            echo "silently no-op when a peer moved the version first - AF-148)."
+            exit 1
+          fi
+          echo "both version lines moved — cached clients will refetch"
       - name: Secret scan (the pre-commit hook, in CI)
         run: |
           set -euo pipefail
@@ -56,11 +98,21 @@ jobs:
       # first run: an entry using `FIX-NOTE:` where the contract says `FIX:`, which
       # `grep '^FIX:'` silently skipped.
       #
-      # Exit codes are load-bearing: 0 clean, 1 real problems, 2 board unreachable.
-      # 2 is EXPECTED in CI (no localhost board) and must not fail the build — the
-      # structural half still ran and is what we are gating on. Only 1 fails, so a
-      # green run here means "every entry has its required fields", never "the
-      # board agreed", which CI cannot check and should not claim.
+      # Exit codes are load-bearing: 0 clean, 1 real problems, 2 board unreachable
+      # AND nothing structural wrong. 2 is EXPECTED in CI (no localhost board) and
+      # must not fail the build. Only 1 fails, so a green run here means "every entry
+      # has its required fields", never "the board agreed", which CI cannot check and
+      # should not claim.
+      #
+      # AEAB-19: the sentence above USED TO BE TRUE ONLY IN INTENT. The script's
+      # unreachable branch returned a bare 2, discarding whether it had found
+      # problems — and it always takes that branch in CI — so this step could not
+      # fail, and the older wording of this comment ("the structural half still ran
+      # and is what we are gating on") asserted a gate that did not exist. It ran; it
+      # was not gated on. A frustrations entry with no `## ` heading reached main
+      # green through this step on 2026-08-17. The script now returns 1 for a
+      # structural problem regardless of board reachability, which is what makes the
+      # claim above real; scripts/test-frustrations-audit.sh pins it.
       # The `|| rc=$?` is LOAD-BEARING, not style. GitHub runs this with
       # `shell: bash -e {0}`, and `set -uo pipefail` does NOT clear `-e` — so
       # the previous form (`python3 …` on its own line, then `rc=$?`) aborted
@@ -79,3 +131,161 @@ jobs:
           echo "frustrations_audit exit=$rc (0 clean, 1 real problems, 2 board unreachable)"
           if [ "$rc" = "1" ]; then exit 1; fi
           exit 0
+
+      # AEAB-19. This step exists because the step above could not fail, and a gate
+      # nobody can trip is worse than none — it is trusted. Same self-test logic as
+      # the secret scan at the top of this job: prove the instrument catches a planted
+      # defect before believing a clean run. Every case runs with the board pointed at
+      # a closed port, which is this job's real condition and the condition under
+      # which the gate was broken; a version run against a live board would pass
+      # against the old code and prove nothing.
+      #
+      # Runs under its own shebang and `set -uo pipefail`, so the `bash -e {0}`
+      # wrapper does not leak in and no `|| rc=$?` dance is needed.
+      - name: frustrations audit can actually fail (AEAB-19)
+        run: |
+          set -uo pipefail
+          ./scripts/test-frustrations-audit.sh
+      # The RETIREMENT tool (AF-243). frustrations-archive.py is the only sanctioned
+      # way an entry leaves the ledger, it DELETES from the source file, and it shipped
+      # with no coverage at all — then gained the whole `--superseded` disposition on
+      # 2026-08-26, still with none. The cells pin the survivors by name on both sides
+      # of the target, because "the entry reached the archive" and "the entry left the
+      # ledger" are both satisfied by a tool that also ate its neighbour.
+      - name: frustrations retirement removes exactly one entry (AF-243)
+        run: |
+          set -uo pipefail
+          ./scripts/test-frustrations-archive.sh
+      # The frustration SCANNER's own cells (AF-255). The harness existed and was
+      # never wired here, so the classifier the sweep depends on had 6 tests that
+      # nobody ran. Its false positives are expensive in a specific way: a wrong
+      # candidate spends a session's judgment, and a wrong MARKER attributes a
+      # mood to Ethan from words he did not write.
+      - name: frustration scanner classifies Ethan's words, not what he pasted (AF-255)
+        run: |
+          set -uo pipefail
+          ./scripts/test-frustration-scan.sh
+      # CLI dispatch tests (AEAB-17). Language-agnostic like the two steps above,
+      # and they belong HERE rather than in rust.yml because rust.yml is
+      # path-filtered to `crates/**`, `Cargo.*` and `e2e/**` — so a change to
+      # `./amux`, which is where both of these bugs lived, triggers NOTHING there.
+      # A test that never runs on the file it covers is decoration (ethos rule 1),
+      # and `scripts/test-amux-url.sh` had already been sitting unwired since it
+      # was written, which is why it is added here too rather than left for later.
+      #
+      # Both scripts run the SHIPPED dispatch path as a subprocess with HOME and
+      # AMUX_API controlled — not a paraphrase of it — and both point AMUX_API at
+      # a port nothing listens on, so a case that reaches the network fails loudly
+      # instead of mutating a real board. (That isolation is not hypothetical: the
+      # first cut of the add-flags test exported AMUX_URL instead of AMUX_API and
+      # filed three junk cards on a live board while still reporting green.)
+      #
+      # These scripts exit non-zero on failure and that is intended to fail the
+      # step. Each runs under its own shebang and its own `set -uo pipefail`, so
+      # the workflow's `bash -e {0}` wrapper does not leak into them — unlike the
+      # frustrations step above, no `|| rc=$?` dance is needed.
+      - name: CLI dispatch tests (board add flags, amux url resolver)
+        run: |
+          set -uo pipefail
+          ./scripts/test-board-add-flags.sh
+          ./scripts/test-amux-url.sh
+      # AEAB-22. Lives here, not in rust.yml, for the same reason as the other
+      # CLI/asset gates: rust.yml is path-filtered to `crates/**` + `Cargo.*` +
+      # `e2e/**`, and while app.js IS under crates/, this test also guards
+      # scripts/ and needs no Rust toolchain. It loads the SHIPPED functions out
+      # of app.js and runs them, so it fails if the linkifier is removed OR if a
+      # render path stops calling it — the second being the actual defect it was
+      # written for (the previous linkifier was perfect and had zero callers).
+      - name: SPA path linkifier (AEAB-22)
+        run: |
+          set -uo pipefail
+          node scripts/test-linkify-paths.mjs
+
+      # AEAB-18. The freshness hook is a SHELL script outside crates/, so
+      # rust.yml's path filter never sees it. It also guards a silent,
+      # write-shaped failure — appending to a shared append-only file from a
+      # diverged checkout succeeds and reaches nobody — which means the only way
+      # to know the warning still fires is to fire it. The test builds real git
+      # repos and runs the shipped hook against them.
+      #
+      # Its control cases matter as much as its positive one: a hook that warned
+      # unconditionally would pass the incident case while being pure noise, and
+      # the hook's own header names silence-when-current as the reason it gets
+      # read at all.
+      # The disk-clear case is ORDERING, not behaviour: the builder used to delete
+      # the cache it was about to fill while a 4x larger idle one sat beside it,
+      # so it burned a cold build every 60s and never relieved the pressure.
+      # Its control (nothing cleared above the floor) and its last-resort case
+      # (the shared dir must STILL be reachable) are what stop the fix becoming
+      # either a no-op or a reintroduction of the disk-full outage.
+      - name: SessionStart freshness hook (AEAB-18) + build provenance (AEAB-12) + disk clear (AEAB-34)
+        run: |
+          set -uo pipefail
+          ./scripts/test-session-freshness.sh
+          ./scripts/test-build-provenance.sh
+          ./scripts/test-build-disk-clear.sh
+          # AEAB-36: a board write that never reached the server must say so,
+          # and must never be confused with one the server refused. Its (c)/(d)
+          # controls are the load-bearing half — a CLI that shouted "cannot
+          # reach the board" at every error would pass the failure cases while
+          # destroying the retry/do-not-retry distinction.
+          ./scripts/test-board-transport-failure.sh
+          # AEAB-48: the push-guard must count what a push ACTUALLY ships. Its
+          # case B is the load-bearing one — a guard hollowed out to walk
+          # nothing would sail through the rebase case and let genuinely
+          # foreign, unpushed work straight past. Both directions are pinned,
+          # and both mutations were confirmed to fail before this was wired in.
+          ./scripts/test-push-guard-range.sh
+          # AF-234: the append-only guard must not accuse a FORK contributor of
+          # deleting work they never touched. Cells B and C are the ones that
+          # matter — a "fix" that silenced the guard on forks, or reached for a
+          # merge-base, would pass the reported case perfectly and stop catching
+          # the stale-graft republish the guard exists for. Verified against the
+          # pre-fix guard: A and D fail, B and C stay green.
+          ./scripts/test-push-guard-fork-base.sh
+          # AMUX-3726: the pre-commit gate must answer "is what I am COMMITTING
+          # sound", not "is the tree sound". Cell 4 is the load-bearing one —
+          # a version that always built the index passes every other cell and
+          # taxes the fleet ~22s on every red commit. Verified by mutation, and
+          # cell 4's FIRST draft counted worktrees (which the trap cleans up)
+          # and missed exactly that mutant; it now asserts on a build marker.
+          ./scripts/test-staged-recheck.sh
+          # AEAB-52: the e2e harness must SET the seam it depends on. The Rust
+          # half is unit-tested; this pins the half that rots silently — a seam
+          # nobody sets is decoration (ethos rule 1), and an export placed after
+          # serve-head.sh's `exec` would look correct in a diff and never run.
+          ./scripts/test-e2e-no-self-adopt.sh
+          # AMUX-3782: a GRAFTED commit must be as attributable as a committed
+          # one. Cell B is the control — every other cell asserts a trailer is
+          # present, so without B a version that stamped nothing would pass.
+          # Cell D is the one that decides the design: it is green for "call the
+          # shipped hook" and red for a hand-rolled interpret-trailers line,
+          # because a second producer of the trailer block had already drifted
+          # past Amux-Conversation before it was written. All three mutants were
+          # confirmed to fail the intended cell and only that cell.
+          ./scripts/test-graft-stamp.sh
+          # AMUX-3789: the gh shim decides which IDENTITY every fleet gh call
+          # uses, so its two failure directions are both expensive. Cell 5 is the
+          # control — a shim that always injected would pass every other cell and
+          # silently replace a CI token. Cell 4 pins FAIL-OPEN: a broken minter
+          # must still run gh, because a shim that can take gh away from the
+          # fleet on a bad network is worse than the contention it fixes. Runs
+          # against a fake gh and a fake minter, so no cell touches GitHub.
+          ./scripts/test-gh-shim.sh
+          # AMUX-3797: "which commits were never compiled as committed" must be
+          # answerable, and must REFUSE when it cannot be. Cell 3 is the control
+          # - with no builder log the naive version reports EVERY commit as
+          # unbuilt, which is absence read as emptiness. Cell 5 pins the
+          # non-Rust exclusion: the builder targets `git log -1 -- crates/
+          # Cargo.toml Cargo.lock`, so counting docs commits as misses read
+          # 83-of-235 against a true 0-of-152. Cell 2 pins that a SKIP line is
+          # the dedupe, not a missed build.
+          ./scripts/test-unbuilt-commits.sh
+          # install-hooks.sh must work FROM A LINKED WORKTREE — CLAUDE.md tells
+          # every session to develop in one, and `.git` is a FILE there, so the
+          # hardcoded "$ROOT/.git/hooks" died mid-run and left the checkout with
+          # NO guards. Its case B is the load-bearing half: a test that only
+          # asserts "installing works" passes against the pre-fix script from a
+          # normal checkout, which is exactly how this went unnoticed. Both
+          # directions confirmed to fail before wiring in.
+          ./scripts/test-install-hooks-worktree.sh

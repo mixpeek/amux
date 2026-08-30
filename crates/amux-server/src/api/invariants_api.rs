@@ -127,15 +127,22 @@ async fn debug(State(state): State<AppState>) -> Response {
         .filter(|l| l["age_s"].as_f64().unwrap_or(0.0) > 300.0)
         .cloned()
         .collect();
+    // The log's own size, in the payload a human already reads (AMUX-3489:
+    // it reached 8M rows / ~2GB with no surface anywhere — rule 4, the tag
+    // in a store the reader never opens).
+    let (log_rows, log_oldest) = store::result_log_stats(&state.store).unwrap_or((0, 0.0));
     Json(json!({
         "live_incidents": incidents,
         "latest_per_invariant": latest,
         "stale_checks": stale,
+        "result_log": { "rows": log_rows, "oldest_age_s": log_oldest },
         "notes": {
             "dedupe": "one incident per (invariant_id, entity); occurrences counts repeats",
             "stale_checks": "no evaluation in >300s — the check itself may be dead, which \
                              is worse than a failing check because silence reads as health",
             "unknown": "a probe that could not reach a verdict. NOT a pass.",
+            "result_log": "the evaluation log itself; store.result_log_bounded fails past \
+                           the row budget (AMUX_INVARIANT_RESULT_BUDGET, default 500k)",
         }
     }))
     .into_response()

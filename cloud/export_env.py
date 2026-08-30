@@ -198,7 +198,13 @@ def export(org, files_dir=None):
         })
 
     # ---- board columns + cards ----
-    _, board_raw = seed.gw_json("GET", "/api/board", org=org)
+    # ?full=1 is LOAD-BEARING (AMUX-3496 seam, found 2026-08-23): the default
+    # board list went slim, so `desc` stopped shipping — and the cards below
+    # read it. Without this every exported card carried desc:"" and seed.py
+    # (:562) writes that straight back on apply, so an export/re-seed cycle
+    # silently emptied every description. Producer correct, consumer correct,
+    # only the seam wrong.
+    _, board_raw = seed.gw_json("GET", "/api/board?full=1", org=org)
     cols = []
     seen = set()
     cards = []
@@ -210,6 +216,15 @@ def export(org, files_dir=None):
             seen.add(c)
             cols.append(c)
         # cards[] (AMUX-2977): live cards carry `session` = worker directly.
+        if "desc" not in it:
+            # An export that quietly drops prose is worse than one that stops:
+            # the EnvSpec looks complete and apply overwrites live cards with
+            # empty descriptions.
+            raise SystemExit(
+                "REFUSING to export: /api/board?full=1 returned cards with no `desc` "
+                f"field (card {it.get('id')!r}). The list payload shape changed; "
+                "exporting now would write empty descriptions back on apply."
+            )
         cards.append({
             "worker": it.get("session") or "",
             "title": it.get("title", ""),

@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Reverse Tunnel — What It Is and Open-Source Options | amux Glossary</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="A reverse tunnel lets a server inside a private network receive inbound connections without opening a firewall port. How it works, when you need one, and open-source options including amux tunnel.">
+  <meta name="keywords" content="reverse tunnel, what is a reverse tunnel, reverse tunnel open source, reverse tunnel vs port forwarding, localhost tunnel, expose localhost internet, ngrok alternative open source, stable localhost url">
+  <link rel="canonical" href="https://amux.io/glossary/reverse-tunnel/">
+  <meta property="og:title" content="Reverse Tunnel — What It Is and Open-Source Options">
+  <meta property="og:description" content="A reverse tunnel lets a server inside a private network receive inbound connections without opening a firewall port. How it works, options, and when to use each.">
+  <meta property="og:url" content="https://amux.io/glossary/reverse-tunnel/">
+  <meta property="og:type" content="article">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Glossary","item":"https://amux.io/glossary/"},{"@type":"ListItem","position":3,"name":"Reverse Tunnel","item":"https://amux.io/glossary/reverse-tunnel/"}]}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"DefinedTerm","name":"Reverse Tunnel","description":"A reverse tunnel is a technique where a machine inside a private network initiates an outbound connection to a public relay server, allowing inbound traffic to reach the private machine without opening firewall ports or configuring NAT.","inDefinedTermSet":{"@type":"DefinedTermSet","name":"amux Glossary","url":"https://amux.io/glossary/"}}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Reverse Tunnel: What It Is and Open-Source Options","description":"A reverse tunnel lets a server inside a private network receive inbound connections without opening a firewall port. How it works, when you need one, and open-source options including amux tunnel.","url":"https://amux.io/glossary/reverse-tunnel/","datePublished":"2026-08-23","dateModified":"2026-08-23","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.svg"}}}</script>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is a reverse tunnel?","acceptedAnswer":{"@type":"Answer","text":"A reverse tunnel is a technique where a machine inside a private network initiates an outbound connection to a public relay server. The relay then forwards inbound traffic back to the private machine through that connection. The private machine never opens a firewall port — it dials out, the relay dials in through the established connection. The client sees a public URL; the relay server handles the NAT traversal."}},{"@type":"Question","name":"How is a reverse tunnel different from port forwarding?","acceptedAnswer":{"@type":"Answer","text":"Port forwarding requires you to control the router or firewall — you map an external port to an internal IP. A reverse tunnel requires no router access. The tunneled machine connects outbound to a relay it trusts, and the relay accepts inbound traffic on your behalf. This makes reverse tunnels useful in environments where you cannot change network settings: corporate networks, cloud VMs, shared hosting, or a developer's laptop on a coffee shop WiFi."}},{"@type":"Question","name":"What is a reverse tunnel used for?","acceptedAnswer":{"@type":"Answer","text":"Common uses: receiving webhooks from external services (Stripe, GitHub, Twilio) during local development without deploying; sharing a local development server with a client for feedback; giving a remote team member access to a service running on your machine; testing an IoT device's API from a cloud dashboard; and exposing a localhost AI agent's API endpoint for external tools during development."}},{"@type":"Question","name":"What are the best open-source reverse tunnel tools?","acceptedAnswer":{"@type":"Answer","text":"Four widely used open-source options: ngrok (freemium, largest ecosystem, best inspection UI and custom domain support), localtunnel (free Node.js tool, no auth required, unstable URLs), Cloudflare Tunnel (free, production-grade, requires Cloudflare account), and amux tunnel (built into amux, stable token-derived HTTPS URL, zero extra install for amux users, gated on amux cloud). Each has different trade-offs on URL stability, authentication, custom domains, and protocol support."}},{"@type":"Question","name":"Does amux have a built-in reverse tunnel?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux tunnel publishes any localhost port at a stable HTTPS URL derived from your account token. The URL stays consistent across restarts (unlike localtunnel). It is the only explicitly paid feature in amux — gated on amux cloud. Start it with: amux tunnel start 3000. No extra install needed if you are already running amux."}},{"@type":"Question","name":"Is a reverse tunneled service secure?","acceptedAnswer":{"@type":"Answer","text":"The URL is unguessable (derived from a token), not authenticated. Anyone who knows the URL can reach your service. Do not tunnel services with sensitive data without adding authentication at the application layer. For production use, Cloudflare Tunnel with access policies is more appropriate. For local development and webhook testing, the token-derived URL is sufficient."}}]}</script>
+
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/glossary/">Glossary</a> <span class="sep">›</span> <span>Reverse Tunnel</span></div>
+
+    <h1>Reverse Tunnel</h1>
+    <p class="subtitle">A technique for receiving inbound connections on a private machine without opening firewall ports — by having the private machine dial outbound to a public relay.</p>
+
+    <!-- EXP-056: /glossary/reverse-tunnel/ top-of-page green CTA -->
+    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:14px 20px;margin:1.5rem 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <span style="flex:1;min-width:200px;font-size:.92rem;color:var(--fg,#e2e8f0)">amux includes a built-in reverse tunnel — expose any localhost port at a stable HTTPS URL with one command: <code>amux tunnel start 3000</code>. No extra install, no ngrok subscription.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp056_reverse_tunnel_glossary_cta_click')" style="display:inline-flex;align-items:center;gap:6px;background:#10b981;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:.88rem;font-weight:600;white-space:nowrap">View amux on GitHub ★</a>
+    </div>
+
+    <!-- Direct answer -->
+    <article>
+      <section>
+        <h2>What is a reverse tunnel?</h2>
+        <p>
+          A <strong>reverse tunnel</strong> is a networking technique where a machine inside a private network — behind a firewall, NAT router, or corporate proxy — initiates an <em>outbound</em> connection to a public relay server. The relay then forwards <em>inbound</em> traffic back to the private machine through that established connection.
+        </p>
+        <p>
+          The result: the private machine gets a public-facing address (usually an HTTPS URL) without you opening any firewall port, configuring NAT rules, or exposing your IP. The client that reaches your service sees the relay's public address. The relay handles the NAT traversal invisibly.
+        </p>
+        <p>
+          Common uses: receiving webhooks from Stripe, GitHub, or Twilio during local development; sharing a development server with a client or remote team member; testing an IoT device's API from a cloud dashboard; exposing a local AI agent's HTTP API for external tools.
+        </p>
+      </section>
+
+      <section>
+        <h2>Reverse tunnel vs port forwarding</h2>
+        <p>Both techniques make a private machine reachable from the internet, but they require different permissions:</p>
+        <div style="overflow-x:auto">
+          <table>
+            <thead>
+              <tr><th>Technique</th><th>Who controls the network?</th><th>Setup required</th><th>Works on corporate WiFi?</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Port forwarding</strong></td>
+                <td>You (own the router/firewall)</td>
+                <td>Router admin panel — map external port to internal IP</td>
+                <td>No</td>
+              </tr>
+              <tr>
+                <td><strong>Reverse tunnel</strong></td>
+                <td>The relay service (you just need outbound HTTPS)</td>
+                <td>Run a client binary — no router access needed</td>
+                <td>Yes, if outbound HTTPS is allowed</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Port forwarding is simpler when you control the network (home lab, self-hosted server). A reverse tunnel is necessary everywhere else: corporate networks, cloud VMs behind NAT, shared hosting environments, or a laptop on public WiFi.
+        </p>
+      </section>
+
+      <section>
+        <h2>How a reverse tunnel works</h2>
+        <ol>
+          <li><strong>Your machine connects outbound</strong> to a relay server over HTTPS or SSH. No inbound port needed.</li>
+          <li><strong>The relay assigns a public URL</strong> — a subdomain like <code>xyz.tunnel.example.com</code> — mapped to your connection.</li>
+          <li><strong>When a request hits the relay's URL</strong>, the relay forwards it through the established outbound connection to your machine.</li>
+          <li><strong>Your local server handles the request</strong> as if the caller were on the same network, and the response travels back the same path.</li>
+        </ol>
+        <p>
+          The key invariant: your machine always dials out. The relay never initiates a connection to you. This is why reverse tunnels traverse NAT and firewalls that block inbound TCP while allowing outbound HTTPS.
+        </p>
+      </section>
+
+      <section>
+        <h2>Open-source reverse tunnel options compared</h2>
+        <div style="overflow-x:auto">
+          <table>
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>URL stability</th>
+                <th>Custom domains</th>
+                <th>Auth</th>
+                <th>Free tier</th>
+                <th>Best for</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>ngrok</strong></td>
+                <td>Stable (paid); random on free</td>
+                <td>Yes (paid)</td>
+                <td>Yes — ngrok account</td>
+                <td>Yes (1 tunnel, random URL)</td>
+                <td>Webhook testing, sharing with clients, request inspection UI</td>
+              </tr>
+              <tr>
+                <td><strong>localtunnel</strong></td>
+                <td>Random per session</td>
+                <td>No</td>
+                <td>No</td>
+                <td>Fully free</td>
+                <td>Quick one-off sharing, no account needed</td>
+              </tr>
+              <tr>
+                <td><strong>Cloudflare Tunnel</strong></td>
+                <td>Stable</td>
+                <td>Yes (your own domain)</td>
+                <td>Yes — Cloudflare account + optional access policies</td>
+                <td>Yes (free plan, requires Cloudflare DNS)</td>
+                <td>Production-grade, persistent tunnels, teams with Cloudflare already</td>
+              </tr>
+              <tr>
+                <td><strong>amux tunnel</strong></td>
+                <td>Stable (token-derived URL persists across restarts)</td>
+                <td>No</td>
+                <td>Token-derived URL (unguessable)</td>
+                <td>No (amux cloud subscription required)</td>
+                <td>amux users who want a built-in tunnel with no extra install</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Honest trade-offs: ngrok wins on custom domains, TCP protocol support, and a polished request-inspection UI. Cloudflare Tunnel wins on production security (access policies, zero-trust). localtunnel wins on zero friction. amux tunnel wins only if you are already running amux and want zero extra install — it does not offer custom domains, TCP tunneling, or an inspection UI.
+        </p>
+      </section>
+
+      <section>
+        <h2>amux tunnel</h2>
+        <p>
+          amux includes a reverse tunnel as a built-in feature — the only explicitly paid feature in the platform (gated on amux cloud). If you are already running amux to manage a fleet of AI coding agents, you do not need a separate tunnel install.
+        </p>
+        <pre><code>amux tunnel start 3000        # expose localhost:3000
+# → https://abc123.tunnel.amux.io (stable across restarts)</code></pre>
+        <p>
+          The tunnel URL is derived from your account token, so it stays consistent even if your machine restarts or the tunnel process crashes. The machine dials outbound; no inbound port is needed.
+        </p>
+        <p>
+          Common use within an amux fleet: an AI agent builds a local web app during an overnight run; you expose port 3000 so a client can preview the live development server from their phone — without deploying to a staging environment.
+        </p>
+        <p>
+          See also: <a href="/guides/expose-localhost-publicly/">how to expose localhost publicly</a>, <a href="/compare/amux-vs-ngrok/">amux tunnel vs ngrok</a>, <a href="/use-cases/webhook-testing/">webhook testing with amux tunnel</a>.
+        </p>
+      </section>
+
+      <section>
+        <h2>Security considerations</h2>
+        <ul>
+          <li><strong>The URL is public but unguessable</strong> — derived from a token, not sequential. Anyone with the URL can reach your service. Do not tunnel sensitive data without adding application-layer authentication.</li>
+          <li><strong>End-to-end encryption</strong> depends on the tool. ngrok and amux tunnel deliver HTTPS to the client; the relay-to-local segment runs over TLS on the control connection. Traffic is not end-to-end encrypted unless your local service also runs HTTPS.</li>
+          <li><strong>For production use</strong>, Cloudflare Tunnel with access policies is the appropriate choice. Reverse tunnels for development and testing do not need the same security posture as production services.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Frequently asked questions</h2>
+
+        <h3>What is a reverse tunnel?</h3>
+        <p>A technique where a machine inside a private network initiates an outbound connection to a public relay. The relay forwards inbound traffic back to the private machine through that connection. The private machine gets a public URL without opening any firewall ports.</p>
+
+        <h3>How is a reverse tunnel different from port forwarding?</h3>
+        <p>Port forwarding requires admin access to the router or firewall. A reverse tunnel requires only outbound HTTPS access — which most corporate networks, coffee shop WiFi, and cloud VMs allow. The tunneled machine dials out; the relay handles the inbound side.</p>
+
+        <h3>What is a reverse tunnel used for?</h3>
+        <p>Receiving webhooks from Stripe, GitHub, or Twilio during local development; sharing a dev server with a client or remote team; testing an IoT or AI agent API from an external dashboard; previewing a local app on a mobile device without deploying to staging.</p>
+
+        <h3>What are the best open-source reverse tunnel tools?</h3>
+        <p>ngrok (freemium, best ecosystem and inspection UI, custom domains on paid plan), localtunnel (free, no account, unstable URLs), Cloudflare Tunnel (free with Cloudflare account, production-grade access policies, custom domains), and amux tunnel (built-in for amux users, stable URL, no custom domains or TCP). Choose based on whether you need custom domains, URL stability, or zero configuration.</p>
+
+        <h3>Does amux have a built-in reverse tunnel?</h3>
+        <p>Yes. <code>amux tunnel start 3000</code> publishes <code>localhost:3000</code> at a stable HTTPS URL. The URL is token-derived and survives restarts. It is the only paid feature in amux — requires an amux cloud subscription. For custom domains, TCP tunneling, or an HTTP inspection UI, use ngrok or Cloudflare Tunnel instead.</p>
+
+        <h3>Is a reverse tunneled service secure?</h3>
+        <p>The URL is unguessable but not authenticated. Anyone who learns the URL can reach your service. For development and webhook testing this is generally acceptable. For production or sensitive data, add application-layer authentication or use Cloudflare Tunnel with access policies.</p>
+      </section>
+    </article>
+
+    <p style="margin-top:2rem">Also see: <a href="/glossary/agent-multiplexer/">agent multiplexer</a>, <a href="/glossary/ai-agent-control-plane/">AI agent control plane</a>, <a href="/compare/amux-vs-ngrok/">amux vs ngrok</a>, <a href="/guides/expose-localhost-publicly/">expose localhost publicly</a></p>
+  </main>
+
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-ngrok/">vs ngrok</a></li>
+            <li><a href="/compare/amux-vs-cmux/">vs cmux</a></li>
+            <li><a href="/compare/amux-vs-openhands/">vs OpenHands</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/webhook-testing/">Webhook testing</a></li>
+            <li><a href="/guides/expose-localhost-publicly/">Expose localhost</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

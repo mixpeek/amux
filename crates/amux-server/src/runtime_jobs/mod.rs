@@ -49,14 +49,20 @@
 
 pub mod autofix;
 pub mod board_drive;
+pub mod commit_mention_notes;
 pub mod commit_nudge;
+pub mod context_health;
+pub mod status_history;
+pub mod disk_watch;
 pub mod ghost_rescue;
+pub mod heartbeat;
 pub mod pane_size;
 /// The live registry of the jobs below — see [`registry`] for why it is
 /// derived from the spawn sites rather than declared alongside them.
 pub mod registry;
 pub mod scheduler;
 pub mod storage;
+pub mod tailnet_watch;
 pub mod token_ledger;
 
 pub use scheduler::{
@@ -158,7 +164,7 @@ fn isolation_reason_with<F: Fn(&str) -> Option<String>>(name: &str, get: F) -> O
 }
 
 /// [`isolation_reason_with`] against the live process environment.
-fn fleet_isolation_reason(name: &str) -> Option<String> {
+pub(crate) fn fleet_isolation_reason(name: &str) -> Option<String> {
     isolation_reason_with(name, |k| std::env::var(k).ok())
 }
 

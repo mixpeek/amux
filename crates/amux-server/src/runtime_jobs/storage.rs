@@ -555,6 +555,19 @@ pub fn last_report() -> Option<StorageReport> {
     last_report_cell().read().ok().and_then(|c| c.clone())
 }
 
+/// The directories the storage sweep REAPS BY AGE — the single authority on what
+/// "ephemeral" means on this box (nissan, AMUX-3386). Each entry is (dir name
+/// under home, retain-days env var, default days). `settings::is_ephemeral_path`
+/// reads the NAMES from here so a config value persisted into ANY of them is
+/// refused, and the reaper and the guard cannot drift: whatever gets pruned is,
+/// by definition, unsafe to point durable config at. Add a scratch dir here and
+/// both the reaper and the config-time-bomb guard pick it up at once.
+pub const AGE_PRUNED_DIRS: &[(&str, &str, u64)] = &[
+    ("media-cache", "AMUX_MEDIA_CACHE_RETAIN_DAYS", 30),
+    ("uploads", "AMUX_UPLOADS_RETAIN_DAYS", 7),
+    ("spin-dumps", "AMUX_SPIN_DUMPS_RETAIN_DAYS", 14),
+];
+
 pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
     let t0 = std::time::Instant::now();
     let now = unix_now();
@@ -591,22 +604,20 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
     let logs = home.join("logs");
     rep.rotated_bytes = rotate_server_log(&logs).unwrap_or(0);
 
-    // The two directories whose prune logic is correct but only fires while
-    // they are GROWING. Running them on a timer is the whole fix.
-    let media_days = env_u64("AMUX_MEDIA_CACHE_RETAIN_DAYS", 30);
-    let (n1, b1) =
-        prune_dir_by_age(&home.join("media-cache"), media_days * 86_400, "AMUX_MEDIA_CACHE_RETAIN_DAYS");
-    let up_days = env_u64("AMUX_UPLOADS_RETAIN_DAYS", 7);
-    let (n2, b2) =
-        prune_dir_by_age(&home.join("uploads"), up_days * 86_400, "AMUX_UPLOADS_RETAIN_DAYS");
-    // Incident holding areas. These exist to be read after a fault and then
-    // forgotten; nothing has ever removed one.
-    let dump_days = env_u64("AMUX_SPIN_DUMPS_RETAIN_DAYS", 14);
-    let (n3, b3) =
-        prune_dir_by_age(&home.join("spin-dumps"), dump_days * 86_400, "AMUX_SPIN_DUMPS_RETAIN_DAYS");
-
-    rep.files_removed = n1 + n2 + n3;
-    rep.bytes_freed = b1 + b2 + b3;
+    // Age-reaped dirs, driven by the AGE_PRUNED_DIRS authority (above) so the
+    // prune and settings::is_ephemeral_path read ONE list. media-cache/uploads
+    // prune logic was correct but only fired while GROWING; spin-dumps are
+    // incident holding areas nothing had ever removed. Running them on a timer is
+    // the whole fix.
+    let (mut files, mut bytes) = (0usize, 0u64);
+    for (name, env_key, default_days) in AGE_PRUNED_DIRS {
+        let days = env_u64(env_key, *default_days);
+        let (n, b) = prune_dir_by_age(&home.join(name), days * 86_400, env_key);
+        files += n;
+        bytes += b;
+    }
+    rep.files_removed = files;
+    rep.bytes_freed = bytes;
     rep.free_bytes = disk_free_bytes(home);
     rep.took_ms = t0.elapsed().as_secs_f64() * 1000.0;
     *last_report_cell().write().unwrap() = Some(rep.clone());

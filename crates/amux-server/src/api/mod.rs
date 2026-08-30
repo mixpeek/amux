@@ -15,14 +15,17 @@ pub mod board;
 pub mod criteria;
 pub mod browser;
 pub mod calendar;
+pub mod connectors;
 pub mod dictation;
 pub mod tts;
 pub mod email;
+pub mod email_approval;
 pub mod file_viewer;
 pub mod files;
 pub mod fs;
 pub mod git_guard;
 pub mod gmail_auth;
+pub mod google_sa;
 pub mod groups;
 pub mod crm;
 pub mod speedtest;
@@ -65,6 +68,7 @@ pub mod simple;
 pub mod config_iac;
 pub mod skin;
 pub mod commit_mentions;
+pub mod deleted_substrate;
 pub mod sessions_git;
 pub mod sessions_legacy;
 pub mod settings;
@@ -223,6 +227,7 @@ pub fn router(state: AppState) -> Router {
         .nest("/api/saved-messages", saved_messages::routes())
         .merge(habits::routes())
         .merge(observability::routes())
+        .merge(connectors::routes())
         .merge(self_update::routes())
         .nest("/api/proxies", proxies::routes())
         // Skills / slash-commands / map: the SPA tabs' data (AMUX-2586 #6).
@@ -288,12 +293,43 @@ pub fn router(state: AppState) -> Router {
             "/api/board/commit-mentions",
             axum::routing::get(commit_mentions::commit_mentions),
         )
+        // AMUX-3608's sibling of the line above: same data source (git joined to
+        // card ids), same discipline (surfaces candidates, closes nothing). It
+        // asks the opposite question — commit-mentions finds OPEN cards a commit
+        // already fixed; this finds CLOSED cards whose files no longer exist.
+        .route(
+            "/api/board/deleted-substrate",
+            axum::routing::get(deleted_substrate::deleted_substrate),
+        )
         // The shared-checkout staged-guard's endpoint. UNROUTED since the
         // rust cutover — 405, ~1,147 calls/hour, and the installed
         // .git/hooks/amux-staged-guard swallowed every one of them
         // (`except Exception: return 0`), so every commit on every shared
         // checkout has been unguarded and SILENT about it. See api/git_guard.rs.
-        .route("/api/git/staged-guard", axum::routing::post(git_guard::staged_guard))
+        // AF-133: scope a body limit to THIS route. `paths` is the staged file
+        // list, so the payload scales with the size of the commit, and axum's
+        // 2MB default answered a big staged set with a transport-layer 413 —
+        // 17 of them in ten minutes on 2026-08-22. The hook can only read a 413
+        // as an error and fail open, so cross-session sweep protection was
+        // absent on exactly the LARGEST commits, which are the ones most likely
+        // to sweep a peer's work. Same defect and same fix already reasoned for
+        // branding above: "the handler's own check must answer, not axum's 2MB
+        // default 413". Scoped on the MethodRouter rather than the Router so it
+        // covers this route only and does not silently widen its neighbours.
+        .route(
+            "/api/git/staged-guard",
+            axum::routing::post(git_guard::staged_guard)
+                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+        )
+        // AF-123: OBSERVED edit records from the Bash hook pair — mtimes that
+        // moved during a command, reported rather than parsed, so a heredoc
+        // or an extensionless path cannot hide a write from attribution.
+        .route("/api/git/observed-edits", axum::routing::post(git_guard::observed_edits))
+        // AF-127: the per-verdict OUTCOME instrument. The guard records its
+        // verdict as a row; the hook reports what resolved a block (declared
+        // override / observed trim); the debug read computes the mix.
+        .route("/api/git/guard-outcome", axum::routing::post(git_guard::guard_outcome))
+        .route("/api/debug/guard-outcomes", axum::routing::get(git_guard::guard_outcomes_debug))
         // Client diagnostic beacons (AR-128): the SPA sends geometry/tap
         // traces for mobile layout debugging.
         //
@@ -339,9 +375,18 @@ pub fn router(state: AppState) -> Router {
         // deviation). Advertised in ethos.md and the job registry but unrouted
         // until now. Public like its debug siblings (lane names and timings).
         .route("/api/debug/scan", axum::routing::get(health::debug_scan))
+        .route("/api/debug/sse", axum::routing::get(debug_sse))
+        .route("/api/debug/downtime", axum::routing::get(health::debug_downtime))
         // Per-session logging health + a computed stale verdict (AMUX-2628).
         // Public like its debug siblings: session names and byte counts only.
         .route("/api/debug/logs", axum::routing::get(session_verbs::debug_logs))
+        // Compaction generations per lane (AMUX-3742): the instrument that
+        // could not express "amux claude performs worse than raw claude".
+        // Public like its debug siblings — lane names and counts only.
+        .route(
+            "/api/debug/context-health",
+            axum::routing::get(session_verbs::debug_context_health),
+        )
         // The rust/python ownership registry, readable where a debugging
         // session already looks (ethos rule 4): which families answer
         // natively, which proxy to python and why, and the cutover exit for
@@ -378,6 +423,9 @@ pub fn router(state: AppState) -> Router {
         // such bypass, so the callback must sit outside it (single-use
         // server-minted state is the guard).
         .merge(gmail_auth::callback_routes())
+        // Same rationale: the connectors broker's callback receives provider
+        // redirects (Google/Slack), which cannot carry a bearer.
+        .merge(connectors::callback_routes())
         .merge(static_files::routes())
         .merge(protected)
         .with_state(state);
@@ -387,6 +435,26 @@ pub fn router(state: AppState) -> Router {
     // router. Auth is inside the wrapper — legacy paths are exactly as
     // protected as canonical ones.
     let app = aliases::alias_layer(app);
+
+    // A 405 MUST SAY SO IN ITS BODY (AF-211).
+    //
+    // axum's method-not-allowed is `405` + `allow:` + a ZERO-LENGTH body, which
+    // is correct HTTP and invisible to every recipe in this repo: CLAUDE.md's
+    // documented idiom is `curl -sk <url>`, with no `-i`, so a wrong method
+    // prints nothing at all. Measured 2026-08-24 on `GET /api/git/staged-guard`
+    // (POST-only): zero bytes out, and the natural reading of silence is "no
+    // such endpoint" rather than "wrong verb". That is the empty-grep shape in
+    // ethos rule 7, produced by the server instead of by the prober — and the
+    // answer was sitting in a header the idiom never shows.
+    //
+    // Wrapped rather than added per-route so it covers routes nobody has
+    // written yet; a `method_not_allowed_fallback` on the builder would apply
+    // only to what was registered before the call, which is the same
+    // exemption-list trap as ethos rule 1.
+    //
+    // Synthesizes ONLY into an empty body: a handler that returned its own 405
+    // with prose knows more than this layer does and must not be overwritten.
+    let app = app.layer(axum::middleware::from_fn(explain_method_not_allowed));
 
     // Transparent gzip compression for every response whose client sends
     // Accept-Encoding: gzip. Board slim drops from 690KB to 162KB,
@@ -398,6 +466,65 @@ pub fn router(state: AppState) -> Router {
     // with the RAW path the client sent. Never blocks or fails a request
     // (rows ride a bounded channel to the single-writer store).
     request_log::layer(app, store_for_reqlog)
+}
+
+/// Give an empty 405 a body that names the verb it wanted (AF-211).
+///
+/// The `allow` header is already correct — this renders it where `curl -sk`
+/// will actually show it, so "wrong method" stops being indistinguishable from
+/// "no such route". Same reason `/api/logs/analyze` annotates 405s with
+/// `routed_methods`: that endpoint had to exist because the response itself
+/// could not say it.
+async fn explain_method_not_allowed(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let res = next.run(req).await;
+    if res.status() != StatusCode::METHOD_NOT_ALLOWED {
+        return res;
+    }
+    // Content-Length 0 is what axum's own method fallback emits. Anything else
+    // is a handler's deliberate body and is left alone.
+    let empty = res
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim() == "0")
+        .unwrap_or(false);
+    if !empty {
+        return res;
+    }
+    let allow = res
+        .headers()
+        .get(header::ALLOW)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let (parts, _) = res.into_parts();
+    let body = serde_json::json!({
+        "ok": false,
+        "error": format!(
+            "{method} is not allowed on {path} — this route accepts {}",
+            if allow.is_empty() { "a different method".into() } else { allow.clone() }
+        ),
+        "allow": allow,
+        "method": method.as_str(),
+        "path": path,
+        "hint": "GET /api/debug/routes lists every path with the methods it accepts",
+    });
+    let mut res = (parts.status, axum::Json(body)).into_response();
+    // Preserve `allow`, which the reconstruction above drops and which is the
+    // half a correct HTTP client reads.
+    if let Ok(v) = axum::http::HeaderValue::from_str(&allow) {
+        if !allow.is_empty() {
+            res.headers_mut().insert(header::ALLOW, v);
+        }
+    }
+    res
 }
 
 // ---------------------------------------------------------------------------
@@ -461,6 +588,84 @@ pub(crate) fn py_truthy(v: &serde_json::Value) -> bool {
 /// written on every POST, and this ring exists so a session can ask a question
 /// instead of grepping. Do not promote it to a source of truth without giving
 /// it a table (D1: "in-memory state is fiction").
+/// GET /api/debug/sse — is the realtime backbone actually carrying the fleet?
+///
+/// AF-262. `.claude/rules/sse-realtime.md` states the failure mode plainly:
+/// clients declare SSE stale after 18s of silence and FALL BACK TO POLLING,
+/// and the fallback fetches both sessions and board. So an SSE degradation
+/// shows up as a rise in ordinary poll traffic, which is indistinguishable
+/// from "more browser tabs are open" — and it was, on 2026-08-27, when a 63%
+/// rise in `/api/sessions` with 90% of it unattributed could not be attributed
+/// to either cause because nothing anywhere counted SSE.
+///
+/// JOINED ON PURPOSE, rather than shipped as two numbers in two places. The
+/// server knows how many streams are attached; only the CLIENT knows it gave
+/// up and started polling. Either alone leaves the question open — a low live
+/// count could be a quiet night, and stale-reconnect beacons could be one bad
+/// phone. Together they separate "nobody is connected" from "everybody
+/// reconnects constantly" from "healthy". That is rule 4's second layer: the
+/// discriminator has to reach the reader in one place they already look.
+async fn debug_sse(
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::Json<serde_json::Value> {
+    let (live, opened) = crate::api::sse::conn_stats();
+    let since_h: f64 = q.get("since_h").and_then(|v| v.parse().ok()).unwrap_or(24.0);
+    let cutoff = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+        - since_h * 3600.0;
+    // The client half: stale-reconnect beacons already ride /api/client-debug,
+    // which is the existing primitive for "the browser wants to tell the server
+    // something". No new endpoint, no new store.
+    let (stale, sample) = match CLIENT_DEBUG_RING.lock() {
+        Ok(ring) => {
+            let hits: Vec<&serde_json::Value> = ring
+                .iter()
+                .filter(|v| {
+                    v.get("kind").and_then(|k| k.as_str()) == Some("sse-stale-reconnect")
+                        && v.get("ts").and_then(serde_json::Value::as_f64).unwrap_or(0.0) >= cutoff
+                })
+                .collect();
+            let n = hits.len();
+            (n, hits.into_iter().rev().take(5).cloned().collect::<Vec<_>>())
+        }
+        Err(_) => (0, Vec::new()),
+    };
+    axum::Json(serde_json::json!({
+        "live_connections": live,
+        "opened_total": opened,
+        // opened >> live within one process is reconnect churn, which is the
+        // shape a degrading backbone makes.
+        "reconnect_churn_ratio": if live > 0 { opened as f64 / live as f64 } else { 0.0 },
+        "stale_reconnects": stale,
+        "stale_window_h": since_h,
+        "recent_stale_beacons": sample,
+        // VOLATILE, and said out loud rather than left to be assumed: the
+        // builder swaps this binary on every commit and every SSE connection
+        // dies with it, so both counters are per-PROCESS. A zero here after a
+        // deploy is a restart, not an outage — read /health `uptime_s` beside
+        // it. (D1: in-memory state is fiction; this is a gauge, not a source of
+        // truth, and it is not allowed to become one without a table.)
+        // A ZERO HERE MEANS TWO THINGS UNTIL CLIENTS HAVE THE BEACON, and saying so
+        // is the point (AF-253). The client half shipped in app.js; a browser only
+        // starts sending it after the ping's APP_VER mismatch has driven it to
+        // self-reload. So `stale_reconnects: 0` immediately after a deploy means
+        // "no client running the beacon build has gone stale yet", NOT "SSE is
+        // healthy" — and those are the two states this whole card exists to
+        // separate. `live_connections` is the discriminator: clients attached to
+        // THIS process have already reloaded onto this build.
+        "note": "per-PROCESS and volatile — the builder restarts this binary on every \
+                 commit and all SSE connections die with it. Read /health uptime_s beside \
+                 a low live_connections before calling it an outage. stale_reconnects \
+                 counts client beacons in the volatile /api/client-debug ring (cap 500), \
+                 so it undercounts on a busy day rather than over — AND it only counts \
+                 clients running an app.js that HAS the beacon, so a 0 shortly after a \
+                 deploy is a ramp-up, not a verdict. live_connections is the \
+                 discriminator: those clients are on this build.",
+    }))
+}
+
 static CLIENT_DEBUG_RING: std::sync::Mutex<Vec<serde_json::Value>> =
     std::sync::Mutex::new(Vec::new());
 const CLIENT_DEBUG_RING_MAX: usize = 500;

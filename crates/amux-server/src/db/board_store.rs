@@ -377,32 +377,298 @@ pub fn effective_gate_scoped(
     target: TaskStatus,
     groups: &std::collections::BTreeSet<String>,
 ) -> Vec<String> {
-    let over = row.gate_criteria();
-    if !over.is_empty() {
-        return over;
+    effective_gate_with_source(conn, row, target, groups).0
+}
+
+/// WHICH TIER PRODUCED THE GATE (AF-169).
+///
+/// The refusal body has always told operators "the gate is DERIVED from the
+/// type — set its type", and that is true only when the TYPE DEFAULT is what
+/// refused. For a card in a scope with a custom gate, retyping changes nothing
+/// and the operator gets a retyped card and the same refusal. AF-168's reporter
+/// retyped TUBES-2053 code -> research, watched the done gate not re-derive, and
+/// concluded the override was pinned per-card; the hint is what sent them there.
+///
+/// The precedence walk already knows which tier won — it returns the moment one
+/// matches — so the source costs nothing to report and is returned alongside
+/// rather than re-derived by a second walk. Two walks would be two spellings of
+/// the precedence to keep in step, which is the duplication this file's own
+/// `KNOWN_TYPES` comment warns about one type over.
+///
+/// It varies by TRANSITION, not just by scope: measured 2026-08-23,
+/// `group:amux` pins only `verified`, `tubescience` only `done`, `amux-cloud`
+/// both `review` and `verified`. So the same card can have a type-derived gate
+/// at one transition and a scope-derived one at the next, and a hint keyed on
+/// "does this scope have an override" would be wrong half the time.
+pub fn effective_gate_with_source(
+    conn: &rusqlite::Connection,
+    row: &IssueRow,
+    target: TaskStatus,
+    groups: &std::collections::BTreeSet<String>,
+) -> (Vec<String>, GateSource) {
+    let t = effective_gate_trail(conn, row, target, groups);
+    (t.criteria, t.source)
+}
+
+/// One tier of the gate precedence, recorded AS CONSULTED (AMUX-3607).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct GateLayer {
+    /// `card` | `worker` | `group` | `column` | `type_default`.
+    pub layer: &'static str,
+    /// Which worker, which group, which type — the identity of the scope that
+    /// was asked, so a reader can go look at the same row.
+    pub scope: Option<String>,
+    /// `applied` | `outranked` | `silent` | `not_applicable`.
+    ///
+    /// `outranked` is the load-bearing one and the reason this type exists.
+    /// Under the old early-returning walk it was UNOBSERVABLE: when the card
+    /// override won, nothing ever asked the worker layer, so a layer that held
+    /// a real gate and a layer that held nothing were the same absence. An
+    /// authorisation trail that cannot say "this rule existed and lost" answers
+    /// "what applied" but not "why was this allowed", which is the question.
+    pub verdict: &'static str,
+    /// What this layer WOULD have imposed. Present on `outranked` too, because
+    /// the rejected rule is the content of the answer, not context for it.
+    pub criteria: Vec<String>,
+}
+
+/// The whole precedence walk, with every tier's verdict.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct GateTrail {
+    pub criteria: Vec<String>,
+    #[serde(skip)]
+    pub source: GateSource,
+    /// Highest precedence first, always all five tiers.
+    pub layers: Vec<GateLayer>,
+}
+
+impl GateTrail {
+    /// The trail as ONE line for `issues.log` (AMUX-3607).
+    ///
+    /// Goes on the card's own append-only history rather than into a new store,
+    /// deliberately. That log is where the transition is already recorded, it is
+    /// not reaped, `/api/why` already reads it, and the History tab already
+    /// renders it — so the authorisation record lands where someone asking "why
+    /// was this allowed" is already looking, instead of in a table they would
+    /// have to know to open. Ethos rule 4's second layer: a tag in a store the
+    /// reader never opens is the same failure as no tag.
+    ///
+    /// Compact and greppable on purpose. `grep 'authz:' ` finds every
+    /// authorisation decision on a card; `grep 'outranked'` finds every one
+    /// where a rule existed and lost, which is the question the winning layer
+    /// alone cannot answer.
+    ///
+    /// The count is the number of criteria that tier held, so a reader can tell
+    /// an outranked tier with a real bar from one with a trivial one without
+    /// the line carrying every criterion string.
+    pub fn log_line(&self) -> String {
+        let parts: Vec<String> = self
+            .layers
+            .iter()
+            .map(|l| {
+                let name = match (&l.scope, l.layer) {
+                    // The card tier's scope is the card's own id, which the log
+                    // line already lives on — repeating it is noise.
+                    (_, "card") | (_, "column") | (None, _) => l.layer.to_string(),
+                    (Some(s), "type_default") => format!("type:{s}"),
+                    (Some(s), n) => format!("{n}:{s}"),
+                };
+                match l.verdict {
+                    "silent" => format!("{name}=silent"),
+                    "not_applicable" => format!("{name}=n/a"),
+                    v => format!("{name}={v}({})", l.criteria.len()),
+                }
+            })
+            .collect();
+        format!("authz: {}", parts.join(" "))
     }
-    if let Some(session) = row.session.as_deref().filter(|s| !s.is_empty()) {
-        if let Some(g) = scoped_gate(conn, session, target) {
-            return g;
-        }
-        let mut merged: Vec<String> = Vec::new();
+}
+
+/// THE precedence walk. `effective_gate_with_source` is a projection of this,
+/// deliberately, so there is one implementation and not two spellings to keep in
+/// step (the duplication this file's own `KNOWN_TYPES` comment warns about, and
+/// the shape ethos rule 1's corollary names: a view that re-derives its
+/// predicate instead of sharing it drifts the moment either side changes).
+///
+/// It no longer early-returns. That costs, measured 2026-08-24 before writing
+/// it rather than after: `session_gates` holds 4 rows behind a PK autoindex on
+/// (session, status) and `statuses` holds 7, so consulting every tier is a
+/// handful of trivial indexed probes. The early return was saving nothing worth
+/// the blindness it caused.
+pub fn effective_gate_trail(
+    conn: &rusqlite::Connection,
+    row: &IssueRow,
+    target: TaskStatus,
+    groups: &std::collections::BTreeSet<String>,
+) -> GateTrail {
+    let session = row.session.as_deref().filter(|s| !s.is_empty());
+
+    // Consult everything FIRST, decide after. Interleaving the two is what made
+    // "consulted and empty" and "never asked" indistinguishable.
+    let card = row.gate_criteria();
+    let worker = session.and_then(|s| scoped_gate(conn, s, target));
+    let mut group_merged: Vec<String> = Vec::new();
+    let mut group_hits: Vec<String> = Vec::new();
+    if session.is_some() {
         for group in groups {
             if let Some(list) = scoped_gate(conn, &format!("group:{group}"), target) {
+                group_hits.push(group.clone());
                 for c in list {
-                    if !merged.contains(&c) {
-                        merged.push(c);
+                    if !group_merged.contains(&c) {
+                        group_merged.push(c);
                     }
                 }
             }
         }
-        if !merged.is_empty() {
-            return merged;
+    }
+    let column = configured_gate(conn, target);
+    // `default_gates_for`, NOT `effective_gate`: the latter returns the CARD
+    // OVERRIDE when one exists, so using it here made the type tier report the
+    // card's criteria as its own — a tier claiming a rule it does not hold, in
+    // the one record meant to say which rule came from where. Caught by
+    // asserting the audit line as a whole string; a substring check would have
+    // passed. Equivalent for the WINNER, which reaches this tier only when the
+    // override is empty and the two agree by definition.
+    let type_default = default_gates_for(&row.item_type, target);
+
+    let (criteria, source, winner) = if !card.is_empty() {
+        (card.clone(), GateSource::Card, "card")
+    } else if let Some(g) = worker.clone() {
+        (g, GateSource::Worker(session.unwrap_or("").to_string()), "worker")
+    } else if !group_merged.is_empty() {
+        (
+            group_merged.clone(),
+            GateSource::Group(groups.iter().cloned().collect::<Vec<_>>().join(", ")),
+            "group",
+        )
+    } else if let Some(c) = column.clone() {
+        (c, GateSource::Column, "column")
+    } else {
+        (type_default.clone(), GateSource::TypeDefault, "type_default")
+    };
+
+    // `held` = this tier actually had a rule. A tier that held one and did not
+    // win was OUTRANKED; one that held nothing was SILENT and could never have
+    // applied. Same row count, opposite meanings.
+    let layer = |name: &'static str, scope: Option<String>, held: Option<Vec<String>>| -> GateLayer {
+        let (verdict, criteria) = match held {
+            _ if name == winner => ("applied", criteria.clone()),
+            Some(c) => ("outranked", c),
+            None => ("silent", vec![]),
+        };
+        GateLayer { layer: name, scope, verdict, criteria }
+    };
+
+    let layers = vec![
+        layer("card", Some(row.id.clone()), (!card.is_empty()).then_some(card)),
+        // A card with no session has no worker or group tier to consult at all.
+        // Reporting that as `silent` would claim an empty answer from a scope
+        // nobody asked, which is the same over-claim one layer along.
+        match session {
+            Some(s) => layer("worker", Some(s.to_string()), worker),
+            None => GateLayer {
+                layer: "worker",
+                scope: None,
+                verdict: "not_applicable",
+                criteria: vec![],
+            },
+        },
+        match session {
+            Some(_) => layer(
+                "group",
+                (!group_hits.is_empty()).then(|| group_hits.join(", ")),
+                (!group_merged.is_empty()).then_some(group_merged),
+            ),
+            None => GateLayer {
+                layer: "group",
+                scope: None,
+                verdict: "not_applicable",
+                criteria: vec![],
+            },
+        },
+        layer("column", None, column),
+        layer("type_default", Some(row.item_type.clone()), Some(type_default)),
+    ];
+
+    GateTrail { criteria, source, layers }
+}
+
+/// Which tier of the precedence produced a card's gate for one transition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateSource {
+    /// The card's own `gate` column — one card, deliberately special.
+    Card,
+    /// A `session_gates` row for the card's own worker.
+    Worker(String),
+    /// One or more `group:<name>` rows, unioned.
+    Group(String),
+    /// The operator-authored column gate (`statuses.gate_custom`).
+    Column,
+    /// The item type's default — the ONLY tier retyping can change.
+    TypeDefault,
+}
+
+impl GateSource {
+    /// Can the operator change this gate by retyping the card? Only the type
+    /// default derives from the type; every other tier ignores it, which is
+    /// exactly what makes the `wrong_type?` hint false elsewhere.
+    pub fn retype_would_help(&self) -> bool {
+        matches!(self, GateSource::TypeDefault)
+    }
+
+    /// The tier as a stable token, for a CLIENT that must branch on it rather
+    /// than show it (AMUX-3573).
+    ///
+    /// `explain()` below is prose and it is the right thing for a refusal body,
+    /// but the SPA needs to decide whether to render a badge and which one, and
+    /// the only alternatives to a token are parsing that sentence or inferring
+    /// from `retype_would_help` — which cannot separate Worker from Group from
+    /// Column, the three tiers a human most needs told apart. Kept short and
+    /// lowercase because it is an identifier, not a label.
+    pub fn token(&self) -> &'static str {
+        match self {
+            GateSource::Card => "card",
+            GateSource::Worker(_) => "worker",
+            GateSource::Group(_) => "group",
+            GateSource::Column => "column",
+            GateSource::TypeDefault => "type",
         }
     }
-    if let Some(cfg) = configured_gate(conn, target) {
-        return cfg;
+
+    /// The named scope the gate came from (`amux`, `group:amux`, …), or empty
+    /// for tiers that have no scope to name. Separate from `token` so a client
+    /// can render "group amux" without string-splitting the token.
+    pub fn scope(&self) -> String {
+        match self {
+            GateSource::Worker(w) => w.clone(),
+            GateSource::Group(g) => g.clone(),
+            GateSource::Card | GateSource::Column | GateSource::TypeDefault => String::new(),
+        }
     }
-    effective_gate(row, target)
+
+    /// A sentence for the refusal body, so the operator learns WHERE the bar
+    /// came from instead of being sent to change something irrelevant.
+    pub fn explain(&self) -> String {
+        match self {
+            GateSource::Card => "this card carries its own `gate` override, so the type is \
+                 not what refused; edit the card's gate or ack it honestly"
+                .to_string(),
+            GateSource::Worker(w) => format!(
+                "this gate comes from the `{w}` WORKER scope, not from the item type — \
+                 retyping will NOT change it. See GET /api/board/session-gates."
+            ),
+            GateSource::Group(g) => format!(
+                "this gate comes from the GROUP scope ({g}), not from the item type — \
+                 retyping will NOT change it. See GET /api/board/session-gates."
+            ),
+            GateSource::Column => "this gate comes from the operator-authored COLUMN gate, \
+                 not from the item type — retyping will NOT change it"
+                .to_string(),
+            GateSource::TypeDefault => "this gate is the item TYPE's default, so correcting \
+                 the type is the honest fix if the type is wrong"
+                .to_string(),
+        }
+    }
 }
 
 /// One scope's gate row from `session_gates` (scope key is a session name or
@@ -436,7 +702,7 @@ fn scoped_gate(
 /// "cannot tell" answer falls back to the type defaults rather than to an empty
 /// gate. An empty gate would mean NO gate, so a malformed row must never read as
 /// permission (it would silently open the strictest transitions on the board).
-fn configured_gate(conn: &rusqlite::Connection, target: TaskStatus) -> Option<Vec<String>> {
+pub fn configured_gate(conn: &rusqlite::Connection, target: TaskStatus) -> Option<Vec<String>> {
     let id = status_to_db(target, "");
     let (gate, custom): (Option<String>, Option<i64>) = conn
         .query_row(
@@ -602,6 +868,15 @@ pub struct IssueRow {
     /// The epic this card rolls up under: the semantic id of a type=epic card,
     /// or NULL (AMUX-2992). Not a foreign key — a dangling id reads as no-epic.
     pub epic: Option<String>,
+    /// When this card entered a TERMINAL status (done/verified/discarded), unix
+    /// seconds; cleared when it leaves one (AMUX-3609).
+    ///
+    /// NULL means NOT RECORDED, never "not closed". Most of the board predates
+    /// the column and its journal rows were reaped at 14 days, so a consumer
+    /// that reads NULL as still-open will be wrong about almost every card.
+    /// Filter on `closed_at IS NOT NULL` when you need a date; `IS NULL` means
+    /// nothing.
+    pub closed_at: Option<i64>,
     /// Append-only history (see [`append_log`]); NULL until first line.
     pub log: Option<String>,
     /// The Python optimistic-concurrency counter (`expect_rev` checks this).
@@ -640,12 +915,20 @@ impl IssueRow {
     /// the caller's staging order — without one canonical order, replay
     /// verification would report phantom tag divergences on identical sets.
     pub fn snapshot(&self) -> serde_json::Value {
+        self.snapshot_fields(true)
+    }
+
+    /// The one serializer behind [`snapshot`](Self::snapshot) (prose included:
+    /// replay/journal/detail contract, unchanged) and
+    /// [`snapshot_slim`](Self::snapshot_slim) (prose never allocated). Map
+    /// equality in serde_json is key-set equality, so the split cannot change
+    /// what replay verification compares.
+    fn snapshot_fields(&self, with_prose: bool) -> serde_json::Value {
         let mut tags = self.tags.clone();
         tags.sort();
-        serde_json::json!({
+        let mut v = serde_json::json!({
             "id": self.id,
             "title": self.title,
-            "desc": self.desc,
             "status": self.status,
             "session": self.session,
             "shepherd": self.shepherd,
@@ -662,14 +945,35 @@ impl IssueRow {
             "depends_on": self.depends_on,
             "reviewer": self.reviewer,
             "epic": self.epic,
-            "log": self.log,
             "source_ref": self.source_ref,
             "last_verified_at": self.last_verified_at,
+            // In BOTH snapshots deliberately, i.e. NOT in `slim_omits`. The
+            // motivating question ("which cards closed in this window") is a
+            // LIST query, so omitting it from the list body would ship the
+            // column and withhold it from its only caller — the AF-161 shape,
+            // twice already (`desc` at c207339, `reviewer` at AF-161).
+            "closed_at": self.closed_at,
             "rev": self.rev,
             "gate": self.gate_criteria(),
             "tags": tags,
             "version": self.version,
-        })
+        });
+        if with_prose {
+            let obj = v.as_object_mut().expect("snapshot_fields is an object");
+            obj.insert("desc".into(), serde_json::json!(self.desc));
+            obj.insert("log".into(), serde_json::json!(self.log));
+        }
+        v
+    }
+
+    /// [`snapshot`](Self::snapshot) without the prose columns (AMUX-3496).
+    /// The slim list used to build the FULL snapshot per row — cloning desc
+    /// and log, 6MB+ across a live list — and then delete both keys. This
+    /// never allocates the prose at all. Both snapshots are the same
+    /// [`snapshot_fields`](Self::snapshot_fields) call, so they cannot drift;
+    /// `snapshot_slim_is_snapshot_minus_prose` pins it anyway.
+    pub fn snapshot_slim(&self) -> serde_json::Value {
+        self.snapshot_fields(false)
     }
 
     /// Bridge into the core [`Task`] so every status change runs through
@@ -743,7 +1047,7 @@ const COLS: &str = "i.id, i.title, i.\"desc\", i.status, i.session, i.creator, i
      i.gcal_event_id, COALESCE(i.pos,0), COALESCE(i.notified,0), i.gate, i.shepherd, \
      i.type, COALESCE(i.archived,0), i.depends_on, i.reviewer, i.log, \
      COALESCE(i.rev,0), i.source_ref, i.last_verified_at, COALESCE(i.version,0), \
-     i.epic, GROUP_CONCAT(t.tag)";
+     i.epic, i.closed_at, GROUP_CONCAT(t.tag)";
 
 fn issue_from_row(r: &Row<'_>) -> rusqlite::Result<IssueRow> {
     let depends_raw: Option<String> = r.get(19)?;
@@ -757,7 +1061,7 @@ fn issue_from_row(r: &Row<'_>) -> rusqlite::Result<IssueRow> {
                 .collect()
         })
         .unwrap_or_default();
-    let tags_csv: Option<String> = r.get(27)?;
+    let tags_csv: Option<String> = r.get(28)?;
     let tags = tags_csv
         .unwrap_or_default()
         .split(',')
@@ -789,9 +1093,49 @@ fn issue_from_row(r: &Row<'_>) -> rusqlite::Result<IssueRow> {
         log: r.get(21)?,
         rev: r.get(22)?,
         source_ref: r.get(23)?,
-        last_verified_at: r.get(24)?,
+        // Some Python-era databases stored this column as TEXT despite the
+        // schema saying INTEGER (legacy-data mismatch, not a live schema
+        // bug) — rusqlite's FromSql is strict per storage type, so EITHER
+        // `Option<i64>` alone (fails on legacy TEXT) or `Option<String>`
+        // alone (fails on the normal, correct INTEGER case — the majority)
+        // errors on one side or the other. Reading as the type-erased
+        // `Value` and matching both storage shapes is the only form that
+        // works for both; unparseable/other becomes None rather than
+        // crashing on startup.
+        last_verified_at: match r.get::<_, rusqlite::types::Value>(24)? {
+            rusqlite::types::Value::Integer(n) => Some(n),
+            rusqlite::types::Value::Text(s) => match s.trim().parse::<i64>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    // SAY THAT A VALUE WAS THERE AND COULD NOT BE READ. None
+                    // here renders as "never verified", which is a claim about
+                    // the card rather than about the read, and it is
+                    // indistinguishable from the honest NULL below. Any output
+                    // that can read empty has to publish whether the
+                    // measurement ran (.claude/rules/ethos.md rule 4).
+                    tracing::warn!(
+                        raw = %s,
+                        "last_verified_at holds text that is not an integer — reporting the \
+                         card as never verified, which may be wrong; this is legacy data, \
+                         not a live schema bug"
+                    );
+                    None
+                }
+            },
+            // Null is genuine absence: the card really has never been verified,
+            // and warning on it would fire for most of the board.
+            rusqlite::types::Value::Null => None,
+            other => {
+                tracing::warn!(
+                    kind = ?std::mem::discriminant(&other),
+                    "last_verified_at holds neither an integer, text nor null"
+                );
+                None
+            }
+        },
         version: r.get(25)?,
         epic: r.get(26)?,
+        closed_at: r.get(27)?,
         tags,
     })
 }
@@ -863,18 +1207,158 @@ pub fn list_issues(
     }
     // Python sort: pinned first, then explicitly-positioned (pos != 0) by pos
     // ascending, then the rest by updated descending.
-    rows.sort_by(|a, b| {
-        b.pinned
-            .cmp(&a.pinned)
-            .then_with(|| {
-                let za = i32::from(a.pos == 0.0);
-                let zb = i32::from(b.pos == 0.0);
-                za.cmp(&zb)
-            })
-            .then_with(|| a.pos.partial_cmp(&b.pos).unwrap_or(std::cmp::Ordering::Equal))
-            .then_with(|| b.updated.cmp(&a.updated))
-    });
+    rows.sort_by(|a, b| board_order(a.pinned, a.pos, a.updated, b.pinned, b.pos, b.updated));
     Ok(rows)
+}
+
+/// The one Python board ordering, shared by [`list_issues`] and the light pass
+/// in [`list_issues_capped`] so the two can never sort differently: pinned
+/// first, then explicitly-positioned (pos != 0) by pos ascending, then updated
+/// descending.
+fn board_order(
+    a_pinned: i64,
+    a_pos: f64,
+    a_updated: i64,
+    b_pinned: i64,
+    b_pos: f64,
+    b_updated: i64,
+) -> std::cmp::Ordering {
+    b_pinned
+        .cmp(&a_pinned)
+        .then_with(|| i32::from(a_pos == 0.0).cmp(&i32::from(b_pos == 0.0)))
+        .then_with(|| a_pos.partial_cmp(&b_pos).unwrap_or(std::cmp::Ordering::Equal))
+        .then_with(|| b_updated.cmp(&a_updated))
+}
+
+/// Filter/sort/cap fields only — what [`list_issues_capped`]'s first pass
+/// reads for every row, so the prose columns (desc 23MB+, log 3.5MB on the
+/// live table) are decoded only for rows that actually ship.
+struct LightRow {
+    id: String,
+    status: String,
+    session: Option<String>,
+    archived: i64,
+    pinned: i64,
+    pos: f64,
+    updated: i64,
+}
+
+/// [`list_issues`] + [`cap_terminal`] fused, decoding heavy columns only for
+/// survivors (AMUX-3491). The single-pass shape decoded EVERY undeleted row's
+/// desc+log — 8,335 rows / ~27MB of prose on the live DB — to ship the 1,657
+/// that survive the default filter+cap, and it did so on every list request:
+/// 215ms avg where 2026-08-09 measured 28ms, tracking table growth rather
+/// than payload size (30MB and 0.7MB responses cost the same ~250ms).
+///
+/// Pass 1 reads only [`LightRow`] columns, applies the same canon filters,
+/// the same [`board_order`], and the same cap; pass 2 hydrates the kept ids
+/// chunk-wise through the identical COLS+tags query [`get_issue`] uses.
+/// Returns `(kept, terminal_total, terminal_kept)` — [`cap_terminal`]'s exact
+/// contract. A row deleted between the passes is dropped, which is the same
+/// answer a request a moment later would give.
+pub fn list_issues_capped(
+    conn: &Connection,
+    status_filter: &[String],
+    session_filter: &[String],
+    archived: ArchivedFilter,
+    done_limit: i64,
+) -> rusqlite::Result<(Vec<IssueRow>, usize, usize)> {
+    let light = light_rows(conn, status_filter, session_filter, archived)?;
+    let (kept_light, term_total, term_kept) =
+        cap_terminal_by(light, done_limit, |r| &r.status, |r| r.updated);
+    Ok((hydrate_light(conn, &kept_light)?, term_total, term_kept))
+}
+
+/// [`list_issues_capped`]'s sibling with [`sse_terminal_quota`] semantics
+/// instead of the lumped cap (AMUX-3503): verified keeps its own 300-floor
+/// quota so a bulk-verify stays visible, done/discarded share `done_limit`.
+/// The dashboard poll uses this (`?quota=1`) now that it renders from the
+/// fetch path rather than the retired SSE full-push.
+pub fn list_issues_quota(
+    conn: &Connection,
+    status_filter: &[String],
+    session_filter: &[String],
+    archived: ArchivedFilter,
+    done_limit: usize,
+) -> rusqlite::Result<Vec<IssueRow>> {
+    let light = light_rows(conn, status_filter, session_filter, archived)?;
+    let kept_light = terminal_quota_by(light, done_limit, |r| &r.status, |r| r.updated);
+    hydrate_light(conn, &kept_light)
+}
+
+/// Pass 1 shared by the capped and quota lists: filter + sort over the
+/// no-prose columns. ONE loader on purpose — two spellings of the filter
+/// canon or the sort would drift exactly the way the predicate rule warns.
+fn light_rows(
+    conn: &Connection,
+    status_filter: &[String],
+    session_filter: &[String],
+    archived: ArchivedFilter,
+) -> rusqlite::Result<Vec<LightRow>> {
+    let canon = |s: &str| -> String {
+        parse_status(s)
+            .map(|st| db_status_spelling(st).to_string())
+            .unwrap_or_else(|| s.trim().to_lowercase())
+    };
+    let want_status: Vec<String> = status_filter.iter().map(|s| canon(s)).collect();
+    // ORDER BY i.id matches the practical row order of the joined GROUP BY
+    // query in list_issues, so ties in board_order break identically on both
+    // paths (sort_by is stable; the input order is the tiebreaker).
+    let mut stmt = conn.prepare(
+        "SELECT i.id, i.status, i.session, COALESCE(i.archived,0), COALESCE(i.pinned,0), \
+                COALESCE(i.pos,0), i.updated \
+         FROM issues i WHERE i.deleted IS NULL ORDER BY i.id",
+    )?;
+    let mut light: Vec<LightRow> = Vec::new();
+    for row in stmt.query_map([], |r| {
+        Ok(LightRow {
+            id: r.get(0)?,
+            status: r.get(1)?,
+            session: r.get(2)?,
+            archived: r.get(3)?,
+            pinned: r.get(4)?,
+            pos: r.get(5)?,
+            updated: r.get(6)?,
+        })
+    })? {
+        let row = row?;
+        if !want_status.is_empty() && !want_status.contains(&canon(&row.status)) {
+            continue;
+        }
+        if !session_filter.is_empty()
+            && !session_filter.contains(&row.session.clone().unwrap_or_default())
+        {
+            continue;
+        }
+        match archived {
+            ArchivedFilter::ActiveOnly if row.archived != 0 => continue,
+            ArchivedFilter::ArchivedOnly if row.archived == 0 => continue,
+            _ => {}
+        }
+        light.push(row);
+    }
+    light.sort_by(|a, b| board_order(a.pinned, a.pos, a.updated, b.pinned, b.pos, b.updated));
+    Ok(light)
+}
+
+/// Pass 2: hydrate survivors only, preserving pass-1 order. Chunked well
+/// under SQLITE_MAX_VARIABLE_NUMBER's historical floor of 999.
+fn hydrate_light(conn: &Connection, kept_light: &[LightRow]) -> rusqlite::Result<Vec<IssueRow>> {
+    let mut by_id: std::collections::HashMap<String, IssueRow> = std::collections::HashMap::new();
+    for chunk in kept_light.chunks(500) {
+        let marks = vec!["?"; chunk.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLS} FROM issues i LEFT JOIN issue_tags t ON t.issue_id = i.id \
+             WHERE i.deleted IS NULL AND i.id IN ({marks}) GROUP BY i.id"
+        ))?;
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            chunk.iter().map(|r| &r.id as &dyn rusqlite::types::ToSql).collect();
+        for row in stmt.query_map(params.as_slice(), issue_from_row)? {
+            let row = row?;
+            by_id.insert(row.id.clone(), row);
+        }
+    }
+    Ok(kept_light.iter().filter_map(|l| by_id.remove(&l.id)).collect())
 }
 
 /// The Python `_BOARD_TERMINAL` set for the done_limit cap. NOTE: this is
@@ -895,13 +1379,25 @@ fn cap_terminal_status(raw: &str) -> bool {
 /// `(kept, terminal_total, terminal_kept)`, `limit <= 0` -> uncapped with
 /// `(_, 0, 0)`. Active items are never capped; order is preserved.
 pub fn cap_terminal(items: Vec<IssueRow>, limit: i64) -> (Vec<IssueRow>, usize, usize) {
+    cap_terminal_by(items, limit, |r| &r.status, |r| r.updated)
+}
+
+/// The cap algorithm itself, generic over the two fields it reads so
+/// [`list_issues_capped`]'s light pass runs the IDENTICAL logic (not a
+/// re-derivation that can drift — the predicate-sharing rule).
+fn cap_terminal_by<T>(
+    items: Vec<T>,
+    limit: i64,
+    status_of: impl Fn(&T) -> &str,
+    updated_of: impl Fn(&T) -> i64,
+) -> (Vec<T>, usize, usize) {
     if limit <= 0 {
         return (items, 0, 0);
     }
     let term_idx: Vec<usize> = items
         .iter()
         .enumerate()
-        .filter(|(_, r)| cap_terminal_status(&r.status))
+        .filter(|(_, r)| cap_terminal_status(status_of(r)))
         .map(|(i, _)| i)
         .collect();
     let total = term_idx.len();
@@ -909,13 +1405,13 @@ pub fn cap_terminal(items: Vec<IssueRow>, limit: i64) -> (Vec<IssueRow>, usize, 
         return (items, total, total);
     }
     let mut by_updated = term_idx.clone();
-    by_updated.sort_by(|a, b| items[*b].updated.cmp(&items[*a].updated));
+    by_updated.sort_by(|a, b| updated_of(&items[*b]).cmp(&updated_of(&items[*a])));
     let keep: std::collections::HashSet<usize> =
         by_updated.into_iter().take(limit as usize).collect();
     let kept = items
         .into_iter()
         .enumerate()
-        .filter(|(i, r)| !cap_terminal_status(&r.status) || keep.contains(i))
+        .filter(|(i, r)| !cap_terminal_status(status_of(r)) || keep.contains(i))
         .map(|(_, r)| r)
         .collect();
     (kept, total, limit as usize)
@@ -929,15 +1425,31 @@ pub fn cap_terminal(items: Vec<IssueRow>, limit: i64) -> (Vec<IssueRow>, usize, 
 /// live 2026-08-09: ~130 cards were verified in bulk and the Rust SSE push
 /// (single lumped 100-cap) showed 9 of them while Python showed 141.
 pub fn sse_terminal_quota(items: Vec<IssueRow>, done_limit: usize) -> Vec<IssueRow> {
+    terminal_quota_by(items, done_limit, |r| &r.status, |r| r.updated)
+}
+
+/// The quota algorithm itself, generic over the two fields it reads — the
+/// same split as [`cap_terminal_by`], for the same reason: the light pass in
+/// [`list_issues_quota`] must run IDENTICAL logic, not a re-derivation.
+/// (AMUX-3503 moved the dashboard's board view from the SSE push onto the
+/// fetch path, so the quota had to follow the data or the 2026-08-09
+/// bulk-verify incident — 141 verified visible on Python, 9 on Rust —
+/// comes back through the front door.)
+fn terminal_quota_by<T>(
+    items: Vec<T>,
+    done_limit: usize,
+    status_of: impl Fn(&T) -> &str,
+    updated_of: impl Fn(&T) -> i64,
+) -> Vec<T> {
     let verified_limit = done_limit.max(300);
     let keep_top = |status_match: &dyn Fn(&str) -> bool, limit: usize| -> std::collections::HashSet<usize> {
         let mut idx: Vec<usize> = items
             .iter()
             .enumerate()
-            .filter(|(_, r)| status_match(&r.status.trim().to_lowercase()))
+            .filter(|(_, r)| status_match(&status_of(r).trim().to_lowercase()))
             .map(|(i, _)| i)
             .collect();
-        idx.sort_by(|a, b| items[*b].updated.cmp(&items[*a].updated));
+        idx.sort_by(|a, b| updated_of(&items[*b]).cmp(&updated_of(&items[*a])));
         idx.into_iter().take(limit).collect()
     };
     let keep_verified = keep_top(&|s: &str| s == "verified", verified_limit);
@@ -945,7 +1457,7 @@ pub fn sse_terminal_quota(items: Vec<IssueRow>, done_limit: usize) -> Vec<IssueR
     items
         .into_iter()
         .enumerate()
-        .filter(|(i, r)| match r.status.trim().to_lowercase().as_str() {
+        .filter(|(i, r)| match status_of(r).trim().to_lowercase().as_str() {
             "verified" => keep_verified.contains(i),
             "done" | "discarded" => keep_done.contains(i),
             _ => true,
@@ -1066,19 +1578,74 @@ pub fn soft_delete(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
 /// Python-owned column it does not understand (Phase 11 rollback safety).
 /// The caller is responsible for having bumped `rev`, `version` and
 /// `updated` on the struct (writes bump rev AND version).
-pub fn save_patched(conn: &Connection, row: &IssueRow) -> rusqlite::Result<usize> {
+/// The statuses that mean a card is closed. One list, used by the write rule
+/// and by migration 0031's backfill, so the two cannot disagree about what
+/// "closed" means.
+pub const TERMINAL_STATUSES: [&str; 3] = ["done", "verified", "discarded"];
+
+pub fn is_terminal_status(s: &str) -> bool {
+    TERMINAL_STATUSES.contains(&s)
+}
+
+/// `closed_at` for the row about to be written (AMUX-3609).
+///
+/// Lives INSIDE `save_patched` rather than at the nine call sites that change a
+/// status, deliberately. A rule spread across nine callers is a rule seven of
+/// them will eventually be written without — and ethos rule 6 is explicit that
+/// the fix for that shape is to make the honest path the only path, not to
+/// write a note asking people to remember.
+///
+/// It reads the PREVIOUS status from the database, because the transition is
+/// what the timestamp is about. The tempting stateless version — "if the status
+/// is terminal and `closed_at` is NULL, stamp now" — is wrong in the one case
+/// that matters most: almost every closed card on this board predates the
+/// column and backfilled to NULL, so the next unrelated `desc` append to a card
+/// closed in June would have stamped it closed today. That is a fabricated date
+/// wearing the authority of a real one, which is worse than the NULL it
+/// replaces.
+fn closed_at_for_write(conn: &Connection, row: &IssueRow) -> Option<i64> {
+    let prev: Option<String> = conn
+        .query_row("SELECT status FROM issues WHERE id = ?1", params![row.id], |r| r.get(0))
+        .ok();
+    let was = prev.as_deref().map(is_terminal_status);
+    let now_terminal = is_terminal_status(&row.status);
+    match (was, now_terminal) {
+        // Closing. Stamp the write time the caller already put on `updated`,
+        // so a card's close time and its last-touch agree at the moment of
+        // closing and diverge only afterwards, which is the whole point.
+        (Some(false), true) => Some(row.updated),
+        // Reopening. A card that leaves a terminal status is not closed, and
+        // leaving a stale timestamp behind would make `closed_at IS NOT NULL`
+        // mean "was closed once" while reading like "is closed".
+        (Some(true), false) => None,
+        // Not a transition across the boundary (including the row not existing
+        // yet, where `prev` is None): carry whatever the row holds. This is the
+        // arm that protects an old card's NULL from being overwritten by an
+        // unrelated edit.
+        _ => row.closed_at,
+    }
+}
+
+pub fn save_patched(conn: &Connection, row: &mut IssueRow) -> rusqlite::Result<usize> {
     let dep_json = if row.depends_on.is_empty() {
         None
     } else {
         Some(serde_json::to_string(&row.depends_on).unwrap_or_default())
     };
+    // Written back ONTO the row, not merely into the UPDATE. `replay_roundtrip`
+    // caught this: the state-event journal snapshots the caller's struct, so a
+    // value computed only for the SQL params was absent from the journal and
+    // replaying it could no longer reproduce the live row. Anything derived
+    // inside this function has to land on the row or the journal quietly stops
+    // being a faithful record — which is the one property replay depends on.
+    row.closed_at = closed_at_for_write(conn, row);
     conn.execute(
         "UPDATE issues SET title = ?1, \"desc\" = ?2, status = ?3, session = ?4, due = ?5, \
              due_time = ?6, owner_type = ?7, pinned = ?8, pos = ?9, gate = ?10, shepherd = ?11, \
              type = ?12, archived = ?13, depends_on = ?14, reviewer = ?15, log = ?16, \
              rev = ?17, version = ?18, updated = ?19, source_ref = ?20, last_verified_at = ?21, \
-             epic = ?22 \
-         WHERE id = ?23 AND deleted IS NULL",
+             epic = ?22, closed_at = ?23 \
+         WHERE id = ?24 AND deleted IS NULL",
         params![
             row.title,
             row.desc,
@@ -1102,6 +1669,7 @@ pub fn save_patched(conn: &Connection, row: &IssueRow) -> rusqlite::Result<usize
             row.source_ref,
             row.last_verified_at,
             row.epic,
+            row.closed_at,
             row.id,
         ],
     )
@@ -1255,6 +1823,79 @@ pub fn depends_on_cycle(
 mod tests {
     use super::*;
 
+    /// `last_verified_at` must read back from BOTH storage shapes.
+    ///
+    /// The naive fix for the legacy-TEXT crash is `Option<i64>`, and it is
+    /// wrong in a way that passes a legacy-only test: rusqlite's `FromSql` is
+    /// strict per stored type, so it handles the TEXT rows and breaks every
+    /// INTEGER one, which is the majority of installs. `Option<String>` fails
+    /// the mirror image. So a cell that only covers the legacy shape is GREEN
+    /// against the fix that breaks everyone else, which is why both directions
+    /// are here and why the integer cell is not decoration.
+    #[test]
+    fn last_verified_at_reads_back_from_both_integer_and_legacy_text_storage() {
+        let conn = Connection::open_in_memory().expect("memdb");
+        conn.execute_batch(
+            "CREATE TABLE issues (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', desc TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'todo', session TEXT, creator TEXT NOT NULL DEFAULT '',
+                due TEXT, created INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0,
+                owner_type TEXT NOT NULL DEFAULT 'agent', due_time TEXT, pinned INTEGER DEFAULT 0,
+                gcal_event_id TEXT, pos REAL DEFAULT 0, notified INTEGER DEFAULT 0, gate TEXT,
+                shepherd TEXT, type TEXT NOT NULL DEFAULT 'code', archived INTEGER DEFAULT 0,
+                depends_on TEXT, reviewer TEXT, log TEXT, rev INTEGER DEFAULT 0,
+                source_ref TEXT, last_verified_at INTEGER, version INTEGER DEFAULT 0,
+                epic TEXT, closed_at INTEGER, deleted INTEGER);
+             CREATE TABLE issue_tags (issue_id TEXT, tag TEXT, added_at REAL,
+                PRIMARY KEY (issue_id, tag));",
+        )
+        .expect("schema");
+
+        // SQLite is dynamically typed: binding an i64 stores INTEGER, binding a
+        // &str stores TEXT, in the same column. That is how the legacy rows
+        // exist at all, and it is what lets one table hold both here.
+        for (id, bind) in [
+            ("INT-1", &1787840686i64 as &dyn rusqlite::ToSql),
+            ("TXT-1", &"1787840686" as &dyn rusqlite::ToSql),
+            ("TXT-2", &" 1787840686 " as &dyn rusqlite::ToSql), // whitespace, trimmed
+        ] {
+            conn.execute(
+                "INSERT INTO issues (id, last_verified_at) VALUES (?1, ?2)",
+                params![id, bind],
+            )
+            .expect("insert");
+        }
+        // Genuine absence, and the unreadable case that must not be mistaken for it.
+        conn.execute("INSERT INTO issues (id) VALUES ('NUL-1')", []).expect("insert");
+        conn.execute(
+            "INSERT INTO issues (id, last_verified_at) VALUES ('BAD-1', 'yesterday')",
+            [],
+        )
+        .expect("insert");
+
+        // FIXTURE GUARD: prove the two storage shapes really are different in
+        // the table. Without this, a binding that quietly coerced everything to
+        // one type would make the whole test pass for the wrong reason.
+        let kinds: Vec<String> = conn
+            .prepare("SELECT typeof(last_verified_at) FROM issues ORDER BY id")
+            .and_then(|mut st| {
+                st.query_map([], |r| r.get::<_, String>(0))
+                    .map(|it| it.flatten().collect())
+            })
+            .expect("typeof");
+        assert!(
+            kinds.contains(&"integer".to_string()) && kinds.contains(&"text".to_string()),
+            "the fixture must actually hold both storage shapes, got {kinds:?}"
+        );
+
+        let at = |id: &str| get_issue(&conn, id).expect("read").expect("row").last_verified_at;
+        assert_eq!(at("INT-1"), Some(1787840686), "the normal INTEGER case");
+        assert_eq!(at("TXT-1"), Some(1787840686), "legacy TEXT must not crash or drop");
+        assert_eq!(at("TXT-2"), Some(1787840686), "legacy TEXT is trimmed");
+        assert_eq!(at("NUL-1"), None, "NULL is genuine absence");
+        assert_eq!(at("BAD-1"), None, "unreadable text degrades to None (and warns)");
+    }
+
     #[test]
     fn asset_link_detector_can_fail_and_accepts_real_pointers() {
         // Pure prose with no artifact reference must FAIL (ethos rule 7).
@@ -1371,13 +2012,156 @@ mod tests {
                 shepherd TEXT, type TEXT NOT NULL DEFAULT 'code', archived INTEGER DEFAULT 0,
                 depends_on TEXT, reviewer TEXT, log TEXT, rev INTEGER DEFAULT 0,
                 source_ref TEXT, last_verified_at INTEGER, version INTEGER DEFAULT 0,
-                epic TEXT, deleted INTEGER);
+                epic TEXT, closed_at INTEGER, deleted INTEGER);
              CREATE TABLE issue_tags (issue_id TEXT, tag TEXT, added_at REAL,
                 PRIMARY KEY (issue_id, tag));
              CREATE TABLE issue_counters (prefix TEXT PRIMARY KEY, next_n INTEGER NOT NULL);",
         )
         .unwrap();
         conn
+    }
+
+    /// AMUX-3609. The write rule lives in `save_patched`, so these drive the
+    /// real function rather than a paraphrase of it.
+    ///
+    /// The third case is the one that motivated putting the rule behind the
+    /// previous status instead of behind `closed_at IS NULL`: almost every
+    /// closed card on this board predates the column and backfilled to NULL, so
+    /// a stateless rule would stamp a card closed in June with today's date on
+    /// its next unrelated edit. A fabricated date wearing the authority of a
+    /// real one is worse than the NULL it replaces.
+    #[test]
+    fn closed_at_records_the_transition_not_the_touch() {
+        let conn = create_db();
+        let mut row = create_issue(&conn, &new_card("doing"), 1000).expect("create");
+        assert_eq!(row.closed_at, None, "an open card has no close time");
+
+        // 1. Closing stamps it.
+        row.status = "done".into();
+        row.updated = 2000;
+        save_patched(&conn, &mut row).unwrap();
+        let after_close = get_issue(&conn, &row.id).unwrap().unwrap();
+        assert_eq!(after_close.closed_at, Some(2000), "closing must stamp the close time");
+
+        // 2. An UNRELATED edit while already closed must not move it. This is
+        //    what makes the field mean "when it closed" rather than "when it
+        //    was last touched while closed", which would just be `updated`
+        //    again and would reproduce the whole bug one column over.
+        let mut touched = after_close.clone();
+        touched.desc = "a later comment".into();
+        touched.updated = 5000;
+        save_patched(&conn, &mut touched).unwrap();
+        assert_eq!(
+            get_issue(&conn, &row.id).unwrap().unwrap().closed_at,
+            Some(2000),
+            "commenting on a closed card must not restamp its close time"
+        );
+
+        // 3. THE FABRICATION CASE. A card that is already closed and carries a
+        //    NULL close time (every pre-column row whose journal was reaped)
+        //    must stay NULL through an unrelated edit. Honest ignorance beats a
+        //    confident wrong date.
+        conn.execute(
+            "UPDATE issues SET closed_at = NULL WHERE id = ?1",
+            params![row.id],
+        )
+        .unwrap();
+        let mut legacy = get_issue(&conn, &row.id).unwrap().unwrap();
+        assert_eq!(legacy.closed_at, None, "fixture must actually be NULL or this proves nothing");
+        legacy.desc = "another comment".into();
+        legacy.updated = 9000;
+        save_patched(&conn, &mut legacy).unwrap();
+        assert_eq!(
+            get_issue(&conn, &row.id).unwrap().unwrap().closed_at,
+            None,
+            "an unrelated edit must NOT invent a close date for a card that never recorded one"
+        );
+
+        // 4. Reopening clears it. Leaving a stale stamp would make
+        //    `closed_at IS NOT NULL` mean "was closed once" while reading like
+        //    "is closed".
+        // The card is currently `done` with a NULL stamp (case 3 left it there),
+        // so REOPEN first — setting `done` on a card that is already `done` is
+        // not a transition and would prove nothing. The first draft of this
+        // test did exactly that and went red, which is the check working.
+        let mut back = get_issue(&conn, &row.id).unwrap().unwrap();
+        back.status = "doing".into();
+        back.updated = 9_500;
+        save_patched(&conn, &mut back).unwrap();
+        assert_eq!(get_issue(&conn, &row.id).unwrap().unwrap().closed_at, None);
+
+        let mut reclosed = get_issue(&conn, &row.id).unwrap().unwrap();
+        reclosed.status = "done".into();
+        reclosed.updated = 10_000;
+        save_patched(&conn, &mut reclosed).unwrap();
+        assert_eq!(
+            get_issue(&conn, &row.id).unwrap().unwrap().closed_at,
+            Some(10_000),
+            "re-closing stamps the LATEST close, matching what the 0031 backfill picks (MAX, not MIN)"
+        );
+
+        let mut back2 = get_issue(&conn, &row.id).unwrap().unwrap();
+        back2.status = "doing".into();
+        back2.updated = 11_000;
+        save_patched(&conn, &mut back2).unwrap();
+        assert_eq!(
+            get_issue(&conn, &row.id).unwrap().unwrap().closed_at,
+            None,
+            "reopening must clear the close time"
+        );
+    }
+
+    /// All three terminal statuses stamp, and a non-terminal one does not.
+    /// Without the negative this passes just as well against `is_terminal_status`
+    /// returning true for everything, which would stamp every card on every
+    /// write and make the column another spelling of `updated`.
+    #[test]
+    fn every_terminal_status_closes_and_no_other_one_does() {
+        for st in ["done", "verified", "discarded"] {
+            let conn = create_db();
+            let mut row = create_issue(&conn, &new_card("doing"), 1000).expect("create");
+            row.status = st.into();
+            row.updated = 4242;
+            save_patched(&conn, &mut row).unwrap();
+            assert_eq!(
+                get_issue(&conn, &row.id).unwrap().unwrap().closed_at,
+                Some(4242),
+                "{st} is terminal and must stamp"
+            );
+        }
+        for st in ["todo", "doing", "review", "backlog"] {
+            let conn = create_db();
+            let mut row = create_issue(&conn, &new_card("todo"), 1000).expect("create");
+            row.status = st.into();
+            row.updated = 4242;
+            save_patched(&conn, &mut row).unwrap();
+            assert_eq!(
+                get_issue(&conn, &row.id).unwrap().unwrap().closed_at,
+                None,
+                "{st} is not terminal and must not stamp"
+            );
+        }
+    }
+
+    /// The column must reach the LIST, not only the full card. The board's slim
+    /// payload has now dropped a needed column twice (`desc` at c207339,
+    /// `reviewer` at AF-161), and the motivating question here — which cards
+    /// closed in this window — is a list query, so omitting it would ship the
+    /// column and withhold it from its only caller.
+    #[test]
+    fn closed_at_is_in_the_slim_list_payload_not_only_the_full_card() {
+        let conn = create_db();
+        let mut row = create_issue(&conn, &new_card("doing"), 1000).expect("create");
+        row.status = "done".into();
+        row.updated = 7777;
+        save_patched(&conn, &mut row).unwrap();
+        let closed = get_issue(&conn, &row.id).unwrap().unwrap();
+        assert_eq!(closed.snapshot()["closed_at"], 7777);
+        assert_eq!(
+            closed.snapshot_slim()["closed_at"],
+            7777,
+            "a list consumer must be able to read the close time without fetching every card"
+        );
     }
 
     fn new_card(status: &str) -> NewIssue {
@@ -1397,6 +2181,133 @@ mod tests {
             depends_on: vec![],
             tags: vec![],
         }
+    }
+
+    /// AMUX-3496 — snapshot_slim must be snapshot minus exactly {desc, log},
+    /// on a row where every optional field is POPULATED (an empty row would
+    /// pass with half the fields missing from both sides). If this fails,
+    /// someone added a field to one serialization path and not the other.
+    #[test]
+    fn snapshot_slim_is_snapshot_minus_prose() {
+        let conn = create_db();
+        conn.execute(
+            "INSERT INTO issues (id, title, desc, status, session, creator, due, created, \
+                                 updated, owner_type, due_time, pinned, gcal_event_id, pos, \
+                                 gate, shepherd, type, archived, depends_on, reviewer, log, \
+                                 rev, source_ref, last_verified_at, version, epic) \
+             VALUES ('F-1','t','prose body','doing','lane','me','2026-09-01', 100, 200, \
+                     'agent','09:00', 1, 'gcal-1', 2.5, '[\"g1\"]', 'shep', 'code', 0, \
+                     '[\"D-1\"]', 'rev-lane', 'log line', 3, 'src-ref', 150, 2, 'E-1')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO issue_tags VALUES ('F-1','b',1.0),('F-1','a',2.0)", []).unwrap();
+        let row = get_issue(&conn, "F-1").unwrap().unwrap();
+        let mut full = row.snapshot();
+        let slim = row.snapshot_slim();
+        // The prose keys exist in full (with real content — the fixture check)
+        // and nowhere in slim.
+        let fo = full.as_object_mut().unwrap();
+        assert_eq!(fo.remove("desc").unwrap(), serde_json::json!("prose body"));
+        assert!(fo.remove("log").unwrap().as_str().is_some());
+        assert_eq!(full, slim, "snapshot_slim drifted from snapshot minus prose");
+    }
+
+    /// AMUX-3491 — list_issues_capped is an OPTIMIZATION and must be
+    /// byte-equivalent to the single-pass it replaced, across every axis the
+    /// two passes could disagree on: filter canon, sort ties (shared
+    /// `updated`), pins, explicit pos, the terminal cap, archived scoping,
+    /// tags (the join only the hydration pass runs), and a deleted row.
+    /// Rows compare by (id, desc, tags, log) so a hydration that dropped or
+    /// misordered prose cannot pass on ids alone.
+    #[test]
+    fn capped_two_pass_equals_the_single_pass_it_replaced() {
+        let conn = create_db();
+        let statuses = ["todo", "done", "verified", "doing", "discarded", "backlog", "needsyou"];
+        for i in 0..40 {
+            let id = format!("C-{i:02}");
+            conn.execute(
+                "INSERT INTO issues (id, title, desc, status, session, updated, pos, pinned, \
+                                     archived, log, deleted) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    id,
+                    format!("card {i}"),
+                    format!("desc-{i} with prose"),
+                    statuses[i % statuses.len()],
+                    format!("lane{}", i % 3),
+                    1000 + ((i % 7) as i64) * 10, // deliberate updated ties
+                    if i % 5 == 0 { i as f64 } else { 0.0 },
+                    i64::from(i % 11 == 0),
+                    i64::from(i % 6 == 0),
+                    if i % 4 == 0 { Some(format!("log-{i}")) } else { None },
+                    if i == 39 { Some(1i64) } else { None },
+                ],
+            )
+            .unwrap();
+            if i % 3 == 0 {
+                conn.execute(
+                    "INSERT INTO issue_tags VALUES (?1, 'zeta', 1.0), (?1, 'alpha', 2.0)",
+                    params![format!("C-{i:02}")],
+                )
+                .unwrap();
+            }
+        }
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let cases: Vec<(Vec<String>, Vec<String>, ArchivedFilter, i64)> = vec![
+            (vec![], vec![], ArchivedFilter::All, 5), // cap must engage
+            (vec![], vec![], ArchivedFilter::All, 0), // uncapped
+            (s(&["done"]), vec![], ArchivedFilter::ActiveOnly, 3),
+            (vec![], s(&["lane1"]), ArchivedFilter::All, 2),
+            (s(&["needs_you"]), vec![], ArchivedFilter::All, 100), // canon spelling
+            (vec![], vec![], ArchivedFilter::ArchivedOnly, 1),
+        ];
+        let mut cap_engaged_somewhere = false;
+        for (status_f, session_f, archived, limit) in cases {
+            let (single, st, sk) =
+                cap_terminal(list_issues(&conn, &status_f, &session_f, archived).unwrap(), limit);
+            let (fused, ft, fk) =
+                list_issues_capped(&conn, &status_f, &session_f, archived, limit).unwrap();
+            let key =
+                |r: &IssueRow| (r.id.clone(), r.desc.clone(), r.tags.clone(), r.log.clone());
+            assert_eq!(
+                single.iter().map(key).collect::<Vec<_>>(),
+                fused.iter().map(key).collect::<Vec<_>>(),
+                "rows diverged for {status_f:?}/{session_f:?}/{archived:?}/limit={limit}"
+            );
+            assert_eq!((st, sk), (ft, fk), "cap counts diverged for limit={limit}");
+            if st > sk {
+                cap_engaged_somewhere = true;
+            }
+        }
+        // The equivalence means nothing if no case ever engaged the cap.
+        assert!(cap_engaged_somewhere, "fixture too small: the terminal cap never engaged");
+
+        // AMUX-3503: the QUOTA two-pass must equal quota-over-single-pass the
+        // same way. done_limit=2 engages the done/discarded quota (fixture
+        // holds ~11 such rows) while verified rides its 300-floor untrimmed —
+        // both branches exercised, asserted non-vacuously below.
+        let single_q = sse_terminal_quota(
+            list_issues(&conn, &[], &[], ArchivedFilter::All).unwrap(),
+            2,
+        );
+        let fused_q = list_issues_quota(&conn, &[], &[], ArchivedFilter::All, 2).unwrap();
+        let key = |r: &IssueRow| (r.id.clone(), r.desc.clone(), r.tags.clone(), r.log.clone());
+        assert_eq!(
+            single_q.iter().map(key).collect::<Vec<_>>(),
+            fused_q.iter().map(key).collect::<Vec<_>>(),
+            "quota rows diverged between single-pass and two-pass"
+        );
+        let done_kept =
+            fused_q.iter().filter(|r| matches!(r.status.as_str(), "done" | "discarded")).count();
+        let verified_kept = fused_q.iter().filter(|r| r.status == "verified").count();
+        assert_eq!(done_kept, 2, "the done/discarded quota must have engaged");
+        assert!(verified_kept > 2, "verified must ride its own floor, not the done quota");
+        // Nor if the deleted row leaked into either path.
+        let (all, _, _) =
+            list_issues_capped(&conn, &[], &[], ArchivedFilter::All, 0).unwrap();
+        assert!(all.iter().all(|r| r.id != "C-39"), "deleted row must stay invisible");
+        assert!(!all.is_empty());
     }
 
     /// CONTROL: the helpers must not be matching everything. An unrelated tag is
@@ -1486,6 +2397,7 @@ mod tests {
             rev: 0,
             source_ref: None,
             last_verified_at: None,
+            closed_at: None,
             version: 0,
             tags: vec![],
         };
@@ -1587,7 +2499,7 @@ mod configured_gate_tests {
             due_time: None, pinned: 0, gcal_event_id: None, pos: 0.0, notified: 0,
             gate: gate.map(String::from), shepherd: None, item_type: item_type.into(),
             archived: 0, depends_on: vec![], reviewer: None, epic: None, log: None, rev: 0,
-            source_ref: None, last_verified_at: None, version: 0, tags: vec![],
+            source_ref: None, last_verified_at: None, closed_at: None, version: 0, tags: vec![],
         }
     }
 
@@ -1687,6 +2599,217 @@ mod configured_gate_tests {
 
     fn groups(names: &[&str]) -> std::collections::BTreeSet<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// AMUX-3607. The trail must record every tier CONSULTED, not only the
+    /// winner, and must separate a tier that HELD a rule and lost from one that
+    /// held nothing.
+    ///
+    /// That distinction is the whole feature. Under the old early-returning
+    /// walk `outranked` was structurally unobservable: when the card override
+    /// won, nothing ever asked the worker layer, so "a worker gate existed and
+    /// was overridden" and "no worker gate exists" were the same silence. A
+    /// trail that only names the winner answers "what applied" and cannot
+    /// answer "why was this allowed", which is the question Ethan's directive
+    /// actually asks.
+    ///
+    /// One fixture, every verdict, because the claim is that the four are TOLD
+    /// APART. Asserting `applied` alone would pass against a trail that labels
+    /// every other tier identically, which is the version worth catching.
+    #[test]
+    fn the_trail_says_which_layers_lost_and_which_had_nothing_to_say() {
+        let c = conn_with(None, None);
+        add_session_gates(&c);
+        // A worker gate AND a group gate both exist and both LOSE to the card
+        // override. Under the old walk neither was ever read.
+        scope_gate(&c, "backend", "done", r#"["worker rule"]"#);
+        scope_gate(&c, "group:ops", "done", r#"["group rule"]"#);
+        let row = row_for("backend", "code", Some(r#"["card rule"]"#));
+
+        let t = effective_gate_trail(&c, &row, TaskStatus::Done, &groups(&["ops"]));
+        assert_eq!(t.criteria, vec!["card rule"], "the winner must not change");
+        assert_eq!(t.source, GateSource::Card);
+
+        let by = |n: &str| t.layers.iter().find(|l| l.layer == n).expect("every tier is present");
+        assert_eq!(t.layers.len(), 5, "all five tiers, always: {:?}", t.layers);
+
+        assert_eq!(by("card").verdict, "applied");
+        assert_eq!(by("card").criteria, vec!["card rule"]);
+
+        // THE POINT. Both held a real rule and lost, and the rule they held is
+        // reported — a rejected rule is the content of the answer to "why not
+        // something else", not context for it.
+        assert_eq!(by("worker").verdict, "outranked");
+        assert_eq!(by("worker").criteria, vec!["worker rule"]);
+        assert_eq!(by("worker").scope.as_deref(), Some("backend"), "name the scope so it can be re-read");
+        assert_eq!(by("group").verdict, "outranked");
+        assert_eq!(by("group").criteria, vec!["group rule"]);
+        assert_eq!(by("group").scope.as_deref(), Some("ops"));
+
+        // Consulted, held nothing: could never have applied. Different fact,
+        // different word.
+        assert_eq!(by("column").verdict, "silent");
+        assert!(by("column").criteria.is_empty());
+
+        // The type default always holds something, so it is outranked here
+        // rather than silent.
+        assert_eq!(by("type_default").verdict, "outranked");
+        assert!(!by("type_default").criteria.is_empty());
+
+        // A SESSIONLESS card never had a worker or group tier to ask. Calling
+        // that `silent` would report an empty answer from a scope nobody
+        // queried, which is the same over-claim one layer along.
+        let mut orphan = row_for("backend", "code", None);
+        orphan.session = None;
+        let t2 = effective_gate_trail(&c, &orphan, TaskStatus::Done, &groups(&["ops"]));
+        let by2 = |n: &str| t2.layers.iter().find(|l| l.layer == n).unwrap();
+        assert_eq!(by2("worker").verdict, "not_applicable");
+        assert_eq!(by2("group").verdict, "not_applicable");
+        assert_eq!(by2("type_default").verdict, "applied", "with no scope the type default wins");
+    }
+
+    /// The one-line audit form. Asserted as a WHOLE STRING rather than by
+    /// substring: this line is the permanent authorisation record on the card,
+    /// and a substring check passes against a version that silently drops a
+    /// tier, which is the one failure that matters here.
+    #[test]
+    fn the_audit_line_names_every_tier_and_its_verdict() {
+        let c = conn_with(None, None);
+        add_session_gates(&c);
+        scope_gate(&c, "backend", "done", r#"["worker rule"]"#);
+        scope_gate(&c, "group:ops", "done", r#"["g1","g2"]"#);
+        let row = row_for("backend", "code", Some(r#"["card rule"]"#));
+        let t = effective_gate_trail(&c, &row, TaskStatus::Done, &groups(&["ops"]));
+        assert_eq!(
+            t.log_line(),
+            "authz: card=applied(1) worker:backend=outranked(1) group:ops=outranked(2) \
+column=silent type:code=outranked(2)"
+        );
+
+        // The permissive case must still produce a line. "Nothing required this,
+        // at any tier" is an authorisation answer; a trail that only appeared
+        // when something blocked would make the permissive case the invisible
+        // one, which is backwards for an audit record.
+        let plain = row_for("nobody", "chore", None);
+        let t2 = effective_gate_trail(&c, &plain, TaskStatus::Backlog, &groups(&[]));
+        let line = t2.log_line();
+        assert!(line.starts_with("authz: "), "{line}");
+        assert_eq!(line.matches('=').count(), 5, "all five tiers, always: {line}");
+        assert!(line.contains("card=silent"), "{line}");
+    }
+
+    /// `effective_gate_with_source` is a PROJECTION of the trail, not a second
+    /// walk. Pinned because two spellings of a precedence is exactly the
+    /// duplication this file warns about elsewhere, and the failure mode is
+    /// silent: they agree until one is edited.
+    #[test]
+    fn the_summary_and_the_trail_cannot_disagree_about_the_winner() {
+        let c = conn_with(None, None);
+        add_session_gates(&c);
+        scope_gate(&c, "backend", "done", r#"["worker rule"]"#);
+        scope_gate(&c, "group:ops", "verified", r#"["group rule"]"#);
+        for (row, target) in [
+            (row_for("backend", "code", Some(r#"["card"]"#)), TaskStatus::Done),
+            (row_for("backend", "code", None), TaskStatus::Done),
+            (row_for("backend", "code", None), TaskStatus::Verified),
+            (row_for("backend", "investigation", None), TaskStatus::Review),
+        ] {
+            let t = effective_gate_trail(&c, &row, target, &groups(&["ops"]));
+            let (crit, src) = effective_gate_with_source(&c, &row, target, &groups(&["ops"]));
+            assert_eq!((crit, src), (t.criteria.clone(), t.source.clone()), "{target:?}");
+            // And the applied layer must be the one the source names.
+            let applied: Vec<&str> =
+                t.layers.iter().filter(|l| l.verdict == "applied").map(|l| l.layer).collect();
+            assert_eq!(applied.len(), 1, "exactly one tier applies: {applied:?}");
+        }
+    }
+
+    /// AMUX-3567 REVIEW (amux-frustrations): the SOURCE at every rung.
+    ///
+    /// The gate VALUES were covered rung by rung; the tier that produced them
+    /// was not, anywhere. Measured by mutation on the shipped tree: making
+    /// `retype_would_help` return true for `Worker` AND `Group` left the entire
+    /// `-p amux-server` suite green (1264 passed, the one failure an unrelated
+    /// env-dependent alerts cell). So the advice "retyping will not change it"
+    /// could invert for the two tiers the whole feature exists to surface and
+    /// nothing would go red.
+    ///
+    /// That matters because the WRONG answer here is the incident: AF-168's
+    /// reporter retyped TUBES-2053 on a worker-scoped gate, watched it not
+    /// re-derive, and concluded the override was pinned per-card. Worker and
+    /// Group are exactly the rungs that were never asserted.
+    ///
+    /// One test for the whole ladder rather than five, because the property is
+    /// a mapping and the interesting failure is two rungs agreeing when they
+    /// should differ.
+    #[test]
+    fn the_gate_source_names_the_tier_that_won_at_every_rung() {
+        // TYPE DEFAULT — nothing configured anywhere.
+        let c = conn_with(None, None);
+        add_session_gates(&c);
+        let (_, src) = effective_gate_with_source(
+            &c, &row_for("backend", "code", None), TaskStatus::Done, &groups(&[]));
+        assert_eq!(src, GateSource::TypeDefault);
+        assert!(src.retype_would_help(), "the type default is the ONE rung retyping moves");
+        assert!(src.explain().contains("TYPE"), "{}", src.explain());
+
+        // COLUMN — an operator-authored gate on the status itself.
+        let c = conn_with(Some(r#"["Global column rule"]"#), Some(1));
+        add_session_gates(&c);
+        let (g, src) = effective_gate_with_source(
+            &c, &row_for("backend", "code", None), TaskStatus::Done, &groups(&[]));
+        assert_eq!(g, vec!["Global column rule"]);
+        assert_eq!(src, GateSource::Column);
+        assert!(!src.retype_would_help(), "retyping cannot clear a column gate");
+
+        // GROUP — the worker has none, a group does. This rung and the next are
+        // the ones the mutation proved uncovered.
+        let c = conn_with(None, None);
+        add_session_gates(&c);
+        scope_gate(&c, "group:ops", "done", r#"["Group rule"]"#);
+        let (g, src) = effective_gate_with_source(
+            &c, &row_for("backend", "code", None), TaskStatus::Done, &groups(&["ops"]));
+        assert_eq!(g, vec!["Group rule"]);
+        assert_eq!(src, GateSource::Group("ops".into()));
+        assert!(!src.retype_would_help(), "a GROUP gate ignores the item type: {}", src.explain());
+        assert!(src.explain().contains("GROUP scope"), "{}", src.explain());
+        assert!(src.explain().contains("session-gates"), "point at the endpoint that answers it: {}", src.explain());
+
+        // WORKER — beats the group, and names the worker so the reader can go
+        // look. This is TUBES-2053's shape exactly.
+        scope_gate(&c, "backend", "done", r#"["Worker rule"]"#);
+        let (g, src) = effective_gate_with_source(
+            &c, &row_for("backend", "code", None), TaskStatus::Done, &groups(&["ops"]));
+        assert_eq!(g, vec!["Worker rule"]);
+        assert_eq!(src, GateSource::Worker("backend".into()));
+        assert!(!src.retype_would_help(), "a WORKER gate ignores the item type: {}", src.explain());
+        assert!(src.explain().contains("`backend`"), "name the worker, or the reader cannot go look: {}", src.explain());
+
+        // CARD — beats everything above it.
+        let (g, src) = effective_gate_with_source(
+            &c,
+            &row_for("backend", "code", Some(r#"["Only this card"]"#)),
+            TaskStatus::Done,
+            &groups(&["ops"]),
+        );
+        assert_eq!(g, vec!["Only this card"]);
+        assert_eq!(src, GateSource::Card);
+        assert!(!src.retype_would_help());
+
+        // AND THE DISCRIMINATOR THE MUTATION EXPOSED: exactly one rung says yes.
+        // Asserted as a set so a future rung cannot be added silently on the
+        // wrong side of it.
+        let yes = [
+            GateSource::Card,
+            GateSource::Worker("w".into()),
+            GateSource::Group("g".into()),
+            GateSource::Column,
+            GateSource::TypeDefault,
+        ]
+        .iter()
+        .filter(|s| s.retype_would_help())
+        .count();
+        assert_eq!(yes, 1, "retyping moves the type default and nothing else");
     }
 
     /// The whole ladder in one specimen: worker, group and global all

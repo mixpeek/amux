@@ -89,8 +89,31 @@ PY
 sqlite3 "$SEED_DB" "PRAGMA journal_mode=delete;" >/dev/null
 
 echo "== running scripts/perf-baseline.sh against the synthetic corpus" >&2
-BASE_JSON="$(AMUX_LIVE_DB="$SEED_DB" AMUX_RS_BIN="$BIN" bash scripts/perf-baseline.sh | grep -E '^\{' | tail -1)"
-[ -n "$BASE_JSON" ] || { echo "FATAL: perf-baseline.sh emitted no JSON line" >&2; exit 2; }
+# LOUD ON FAILURE (AMUX-2872). The old pipeline (`... | grep '^{' | tail -1`)
+# inside a command substitution swallowed BOTH streams of a dying
+# perf-baseline.sh, and under pipefail the assignment itself exited this
+# script before the FATAL guard on the next line could fire — the nightly
+# perf job died for 12 straight runs with literally zero output between the
+# announcement and exit 1, which is why nobody could chase it. Capture both
+# streams, check the exit, and print the dying words before any grep.
+set +e
+AMUX_LIVE_DB="$SEED_DB" AMUX_RS_BIN="$BIN" bash scripts/perf-baseline.sh \
+  >"$WORK/base-out.txt" 2>"$WORK/base-err.txt"
+BASE_RC=$?
+set -e
+if [ "$BASE_RC" -ne 0 ]; then
+  echo "FATAL: perf-baseline.sh exited $BASE_RC — its full output:" >&2
+  sed 's/^/  [stdout] /' "$WORK/base-out.txt" >&2 || true
+  sed 's/^/  [stderr] /' "$WORK/base-err.txt" >&2 || true
+  exit 2
+fi
+BASE_JSON="$(grep -E '^\{' "$WORK/base-out.txt" | tail -1 || true)"
+[ -n "$BASE_JSON" ] || {
+  echo "FATAL: perf-baseline.sh exited 0 but emitted no JSON line — its full output:" >&2
+  sed 's/^/  [stdout] /' "$WORK/base-out.txt" >&2 || true
+  sed 's/^/  [stderr] /' "$WORK/base-err.txt" >&2 || true
+  exit 2
+}
 
 echo "== measuring /api/search (RR-0110 target: < 50ms over 10k entities)" >&2
 AMUX_HOME="$WORK" AMUX_DB="$SEED_DB" AMUX_RS_PORT=$PORT "$BIN" >"$WORK/server.log" 2>&1 &

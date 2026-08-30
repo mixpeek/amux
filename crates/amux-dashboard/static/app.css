@@ -264,7 +264,20 @@
   .edit-box {
     background: var(--card); border: 1px solid var(--border); border-radius: 12px;
     padding: 20px; width: 100%; max-width: 380px;
-    max-height: calc(100dvh - 40px); overflow-y: auto;
+    /* 92dvh, not the full 100dvh-40px, so overflow ENGAGES BEFORE the content
+       reaches the window edge (Ethan, 2026-08-27, screenshot of New worker).
+       The bug is the boundary case, not tall content: measured at 620px of
+       content in 634px of room, the box "fits", `overflow-y:auto` never turns
+       on, and the box is NOT scrollable — while `.edit-actions` is an 85px
+       STICKY footer that overlays the bottom of that content regardless. So
+       the last field sits under the button bar with no way to scroll to it,
+       which is exactly what the screenshot shows: `Use worktree` cut in half
+       by the Cancel/Create bar. Content that is merely CLOSE to the limit is
+       the dangerous size; content well past it always scrolled fine.
+       Reserving 8dvh guarantees the scroll affordance exists whenever the
+       content is anywhere near full height. */
+    max-height: min(92dvh, calc(100dvh - 40px)); overflow-y: auto;
+    overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
   }
   .edit-box h3 { font-size: 1rem; margin-bottom: 14px; }
 
@@ -572,7 +585,12 @@
     font-size: 0.82rem; font-weight: 600; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
     display: flex; align-items: center; gap: 8px; }
   .tts-loading-spin { display: inline-block; animation: tts-spin 0.9s linear infinite; }
+  /* Cancel/Stop control on the floating indicator (AMUX-3333). Touch-friendly. */
+  .tts-cancel-btn { background: rgba(255,255,255,0.22); color: #fff; border: 1px solid rgba(255,255,255,0.5);
+    border-radius: 14px; padding: 3px 12px; font-size: 0.78rem; font-weight: 600; cursor: pointer; margin-left: 2px; }
+  .tts-cancel-btn:hover { background: rgba(255,255,255,0.34); }
   @keyframes tts-spin { to { transform: rotate(360deg); } }
+  @media (max-width: 600px) { .tts-cancel-btn { min-height: 32px; padding: 6px 14px; } }
   /* Past read-alouds list (replay tab). */
   .ra-list { display: flex; flex-direction: column; }
   .ra-item { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
@@ -595,6 +613,13 @@
     font-family: inherit; field-sizing: content; word-break: break-word;
   }
   .send-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(88,166,255,0.12); }
+
+  /* Card-composer attachments: no paperclip button on the worker list (Ethan
+     2026-08-19 — too bulky there); you attach by DRAGGING files onto the
+     composer, and the chips bar reuses .peek-attach-bar / .peek-attach-chip.
+     Paste still works too. The peek keeps its own paperclip. */
+  .card-attach-bar { margin-top: 4px; }
+  .send-row.card-drop-over { outline: 2px dashed var(--accent); outline-offset: 2px; border-radius: 8px; }
 
   /* Peek overlay */
   .overlay {
@@ -703,7 +728,13 @@
     position: sticky; bottom: 0; z-index: 3; flex-shrink: 0;
     background: var(--card);
     border-top: 1px solid var(--border);
-    margin: 12px calc(-1 * var(--modal-pad)) calc(-1 * var(--modal-pad));
+    /* 20px top margin, not 12px: the NEGATIVE bottom margin below pulls the
+       footer flush with the box edge, and it shortens the scroller by exactly
+       that much — so at full scroll the last field still sat 7px under the
+       button bar (measured live, 2026-08-27). The bottom bleed is what makes
+       the footer flush and is worth keeping; the top margin buys the scroll
+       distance back without adding a gap under the buttons. */
+    margin: 20px calc(-1 * var(--modal-pad)) calc(-1 * var(--modal-pad));
     padding: 10px var(--modal-pad);
     /* iPhone PWA: clear the home indicator (.claude/rules/css-mobile.md) */
     padding-bottom: max(var(--modal-pad), env(safe-area-inset-bottom));
@@ -883,6 +914,14 @@
   .file-title-wrap { flex: 1; min-width: 0; margin-right: 8px; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
   .file-overlay-header h2 { font-size: 1rem; margin: 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.25; }
   .file-subpath { font-size: 0.68rem; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'SF Mono','Fira Code',monospace; }
+  /* The folder line is the way back to the file browser (AMUX-3663). It has to
+     LOOK clickable or it stays the dim label it has always been, and the
+     rationale for opening files directly depends on this being findable.
+     44px min-height is the mobile touch target; the rest of the row is short
+     text, so without it this is an ~11px tap on a phone. */
+  .file-subpath.clickable { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
+  .file-subpath.clickable:hover { color: var(--accent); }
+  @media (max-width: 600px) { .file-subpath.clickable { min-height: 44px; display: flex; align-items: center; } }
   /* Desktop: actions lay out inline in the header; the ⋮ menu button is mobile-only. */
   .file-actions { display: contents; }
   .file-menu-btn { display: none; background: none; border: none; color: var(--text); cursor: pointer; font-size: 1.25rem; line-height: 1; padding: 4px 8px; flex-shrink: 0; }
@@ -933,7 +972,15 @@
      Dimmed deliberately rather than brightened: punctuation is scaffolding, so it
      should recede while staying legible. */
   .file-overlay-body.file-code .hljs-punctuation { color: #8b949e; }
-  body.light .file-overlay-body.file-code .hljs-punctuation { color: #6e7781; }
+  /* github-dark's own `.hljs-section` is #1f6feb, which MEASURES 3.49:1 against
+     this viewer's light-mode body (#1c2128) and 4.0:1 against its dark one
+     (#010409) — both under WCAG AA's 4.5:1 floor for body text. It is the
+     section header in ini/toml/tf/hcl/cfg/conf, i.e. the most structural line
+     in every config file this fleet opens, and it was the lowest-contrast class
+     across all 61 code types measured. Lifted to GitHub's own accent blue,
+     which measures 5.95:1 here. Same reasoning as the punctuation override
+     above: the theme is a good default, not a per-surface answer. */
+  .file-overlay-body.file-code .hljs-section { color: #58a6ff; }
   /* The light-mode file viewer keeps a DARK body (#1c2128, see the rule near the
      top of this file), so the gutter must match that, not the page background. */
   body.light .file-overlay-body.file-code .hljs-gutter { background: #1c2128; color: #6e7781; }
@@ -1139,7 +1186,12 @@
   }
   .fe-tb-btn:hover { background: var(--hover); color: var(--text); }
   .fe-tb-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .fe-tb-actions { display: contents; }
+  /* The labeled action row (Home / New Folder / New File / New .mdai / Upload /
+     Refresh / Set dir) is collapsed into the ⋯ More menu on EVERY width (Ethan
+     2026-08-19: "these take up too much space make it an ellipse dropdown"). The
+     More menu already carries every one of these actions, so nothing is lost —
+     the toolbar is just Back / Up / breadcrumb / ⋯ now. */
+  .fe-tb-actions { display: none; }
   /* The More (ellipsis) menu is always available, on desktop and mobile. */
   .fe-tb-overflow { position: relative; flex-shrink: 0; display: flex; }
   .fe-tb-overflow-menu {
@@ -1159,9 +1211,8 @@
   .fe-tb-oitem-session { color: var(--accent); font-weight: 600; }
   .fe-tb-odivider { height: 1px; background: var(--border); margin: 3px 0; }
   @media (max-width: 600px) {
-    /* Primary labeled actions collapse into the More menu; the path bar and the
-       More button are all that stay in the toolbar, so it fits a 375px screen. */
-    .fe-tb-actions { display: none; }
+    /* .fe-tb-actions is already display:none at every width (above); on a phone
+       we also drop the "More" text so only the ⋯ icon remains, to fit 375px. */
     .fe-more-lbl { display: none; }
   }
   .fe-breadcrumb {
@@ -1695,6 +1746,18 @@
     border-radius: 10px; min-width: 260px; z-index: 60;
     box-shadow: 0 8px 24px rgba(0,0,0,0.4); overflow-x: hidden; overflow-y: auto;
     max-height: calc(100dvh - 80px);
+    /* CAP THE WIDTH OR THE MENU GROWS OFF THE LEFT EDGE (Ethan, 2026-08-26,
+       "fix this on mobile"). Measured at 375px: the menu was 490px wide at
+       left:-146, so 146px of it — every row LABEL — was off-screen, while the
+       right-hand values stayed visible. That is why the screenshot reads as
+       text cut at the START rather than ellipsised at the end.
+       `min-width: 260px` with no max lets content size the box, and `right: 0`
+       anchors it to the gear, so all the growth goes leftward off-screen.
+       `overflow-x: hidden` was already here and cannot help: it clips the
+       PAINT, it does not stop the box sizing to its content.
+       40px keeps ~9px of gutter at any phone width, because the wrapper's own
+       offset from the viewport edge (gear + padding) is near-constant. */
+    max-width: calc(100vw - 40px);
     padding: 10px 0;
   }
   .settings-menu.open { display: block; }
@@ -1887,6 +1950,26 @@
   .peek-attach-chip .chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
   .peek-attach-chip .chip-remove { cursor: pointer; color: var(--dim); flex-shrink: 0; font-size: 1.1rem; line-height: 1; opacity: 0.7; }
   .peek-attach-chip .chip-remove:hover { color: var(--red); opacity: 1; }
+  /* A FAILED CHIP MUST NOT PULSE (AF-235). `.uploading` animates opacity, which
+     reads as "still working" — the exact wrong cue on a transfer that has
+     stopped, and what kept the reporting user waiting. It gets a static red
+     border instead, and the `!` / retry controls below were referenced by the
+     card composer since AMUX-3372 with NO style ever defined, because the sole
+     failure path dropped the chip so the branch could not render. */
+  .peek-attach-chip.failed { border-color: var(--red); animation: none; opacity: 1; }
+  .peek-attach-chip .chip-err { color: var(--red); font-weight: 700; flex-shrink: 0; line-height: 1; cursor: help; }
+  .peek-attach-chip .chip-retry { cursor: pointer; color: var(--dim); flex-shrink: 0; font-size: 0.95rem; line-height: 1; opacity: 0.75; }
+  .peek-attach-chip .chip-retry:hover { color: var(--accent); opacity: 1; }
+  /* The escape hatch has to be PRESSABLE, or it is not one. Both controls sit on
+     a 20px-tall chip, so without this they are ~12px targets on a phone. */
+  @media (max-width: 600px) {
+    .peek-attach-chip .chip-remove,
+    .peek-attach-chip .chip-retry {
+      min-width: 44px; min-height: 44px; display: inline-flex;
+      align-items: center; justify-content: center; margin: -12px 0;
+    }
+    .peek-attach-chip { max-width: 100%; }
+  }
   .peek-attach-summary {
     display: flex; align-items: center; gap: 8px; padding: 6px 10px;
     background: var(--card); border: 1px solid var(--border); border-radius: 8px;
@@ -1987,6 +2070,29 @@
   .meta-count .mc-total { color: var(--dim); font-weight: 600; }
   /* Session card: scrollback cached on this device (readable with no signal). */
   .card-offline-dot { color: #3fb950; font-size: 0.7rem; opacity: 0.8; }
+  /* ISOLATED (AMUX-3232). A raw agent with the harness stripped and hidden from
+     peers is a RARE, high-consequence state, and until now the only way to learn
+     a worker was in it was to open its ⋯ menu and read a checkbox. A designation
+     that changes what a worker can reach has to be visible where the worker is,
+     not one interaction away.
+     Deliberately a text chip rather than an emoji: this is read at a glance next
+     to the name, and it is the one card-face marker whose meaning is not
+     guessable from a glyph. Sized to sit inside the existing card-name line so
+     it costs no vertical space at 375px, and it is not a touch target, so the
+     44px rule does not apply.
+
+     PREFIXED, like .pin-icon, and that is a bug fix rather than a style choice.
+     `.card-name` is `overflow:hidden; text-overflow:ellipsis; white-space:nowrap`,
+     so a SUFFIXED chip is what gets clipped when the name is long — measured at
+     375px on `af246-isolation-probe`, the chip's right edge landed at 304px
+     against a card edge of 289px and simply vanished. That loses exactly the
+     wrong half: the name is long, guessable and already truncating, while the
+     chip is the rare high-consequence fact the card exists to surface. Prefixing
+     makes the NAME absorb the truncation and keeps the flag visible at every
+     width. */
+  .card-isolated { font-size: 0.6rem; font-weight: 600; letter-spacing: 0.04em;
+    color: var(--warn, #d29922); border: 1px solid currentColor; border-radius: 4px;
+    padding: 0 4px; margin-right: 2px; vertical-align: middle; white-space: nowrap; }
   /* ── Dictation: compact recording popup (above the composer) ── */
   .dict-popup { display: none; position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 60;
     background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
@@ -3349,6 +3455,13 @@
   }
   .board-card-noexec { display:inline-block; font-size:0.62rem; font-weight:700; padding:1px 6px; margin-bottom:4px; margin-left:4px;
     border-radius:4px; background:rgba(224,85,91,0.18); color:#e0555b; border:1px solid rgba(224,85,91,0.45); }
+  /* ISOLATED OWNER (AMUX-3728). Same shape as .board-card-noexec because it is
+     the same class of fact — a routing instruction on this card is unfollowable
+     — but AMBER rather than red: "no executor" is a problem to fix, this is a
+     constraint to respect. The full owner_reach sentence rides the title, so the
+     chip stays one line at 375px. */
+  .board-card-isolated { display:inline-block; font-size:0.62rem; font-weight:700; padding:1px 6px; margin-bottom:4px; margin-left:4px;
+    border-radius:4px; background:rgba(210,153,34,0.15); color:var(--warn,#d29922); border:1px solid rgba(210,153,34,0.45); }
   .board-card-shepherd { font-size:0.62rem; padding:1px 6px; border-radius:4px; background:rgba(137,87,229,0.15);
     color:var(--purple,#8957e5); border:1px dashed rgba(137,87,229,0.5); }
   .board-card-rot { display:inline-block; font-size:0.62rem; font-weight:600; padding:1px 6px; margin-bottom:4px;
@@ -4807,6 +4920,12 @@
   .reclaim-danger { border-color: var(--red, #f85149) !important; color: var(--red, #f85149) !important; }
   .reclaim-minibtn { font-size: 0.7rem !important; padding: 3px 9px !important; margin-left: 8px; text-transform: none; letter-spacing: 0; font-weight: 500; min-height: 28px; }
   .reclaim-upbtn { font-size: 0.74rem; padding: 4px 10px; min-height: 32px; }
+  .reclaim-skips { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 16px; font-size: 0.78rem; }
+  .reclaim-skip-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; flex-wrap: wrap; }
+  .reclaim-skip-row code { font-family: var(--mono, monospace); font-size: 0.72rem; overflow: hidden; text-overflow: ellipsis; }
+  .reclaim-skip-reason { font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.04em; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--dim); flex-shrink: 0; }
+  .reclaim-skip-reason.bad { border-color: var(--yellow, #e3b341); color: var(--yellow, #e3b341); }
+  .reclaim-skip-why { color: var(--dim); font-size: 0.72rem; flex: 1; min-width: 0; }
   .metrics-table td input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; }
 
   .metrics-load-row { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -5322,11 +5441,34 @@
 }
 .mdai-err-cycle { margin-top: 6px; font-family: 'SF Mono','Fira Code',monospace; font-size: 0.72rem; }
 .mdai-edit { border-top: 1px solid var(--border); padding-top: 12px; }
+/* Bottom tabs: Diagram + List (AMUX-3322) */
+.mdai-btabs { display: flex; gap: 4px; border-top: 1px solid var(--border); margin-top: 14px; padding-top: 10px; }
+.mdai-btab { background: none; border: 1px solid var(--border); border-radius: 6px 6px 0 0; color: var(--dim); font-size: 0.78rem; font-weight: 600; padding: 7px 14px; cursor: pointer; min-height: 34px; }
+.mdai-btab.active { background: var(--card-bg); color: var(--text); border-bottom-color: var(--card-bg); }
+.mdai-btab-content { border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px; padding: 12px; }
+.mdai-diagram { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 0; }
+.mdai-dg-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.mdai-dg-node { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--bg); max-width: 460px; width: 100%; box-sizing: border-box; }
+.mdai-dg-src { cursor: pointer; border-left: 3px solid var(--cyan, #2a9fd6); }
+.mdai-dg-selffetch { border-left-style: dashed; }
+.mdai-dg-synth { cursor: pointer; border-left: 3px solid var(--accent); }
+.mdai-dg-out { border-left: 3px solid var(--green); }
+.mdai-dg-kind { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); margin-bottom: 3px; }
+.mdai-dg-title { font-size: 0.82rem; font-weight: 600; word-break: break-all; }
+.mdai-dg-sub { font-size: 0.74rem; color: var(--dim); line-height: 1.4; word-break: break-word; }
+.mdai-dg-arrow { color: var(--dim); font-size: 1.1rem; line-height: 1; }
+@media (max-width: 600px) { .mdai-btab { min-height: 44px; } .mdai-dg-node { max-width: 100%; } }
 .mdai-edit-h { font-size: 0.74rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); margin-bottom: 8px; }
 .mdai-note { font-size: 0.78rem; color: var(--dim); line-height: 1.5; margin-bottom: 8px; }
 .mdai-note a { color: var(--accent); }
 .mdai-edge { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 8px; }
 .mdai-edge-path { font-size: 0.74rem; font-family: 'SF Mono','Fira Code',monospace; color: var(--purple, #a371f7); word-break: break-all; margin-bottom: 6px; }
+/* The editable source path: same purple monospace token look as the read-only
+   div, but a real input so it can be changed and saved with the edge. */
+input.mdai-edge-path-input { display: block; width: 100%; box-sizing: border-box;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 8px; min-height: 34px; outline: none; }
+input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(88,166,255,0.12); }
 .mdai-prompt, .mdai-body-ta {
   width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
   border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px;
@@ -5431,4 +5573,197 @@
 @media (max-width: 600px) {
   .ut-wrap { font-size: 0.8rem; }
   .ut-out { margin-left: 8px; }
+}
+
+/* ===== Connectors (integrations) tab ===== */
+.conn-empty { color: var(--dim); padding: 20px 4px; font-size: 0.85rem; }
+.conn-origin { font-size: 0.75rem; color: var(--dim); line-height: 1.5; margin-bottom: 14px; }
+.conn-origin code { background: var(--hover); padding: 1px 5px; border-radius: 4px; }
+.conn-card { border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; background: var(--card-bg); }
+.conn-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.conn-title { font-weight: 700; font-size: 0.98rem; }
+.conn-cat { font-size: 0.68rem; color: var(--dim); background: var(--hover); padding: 2px 7px; border-radius: 10px; }
+.conn-badge { color: #fff; font-size: 0.66rem; font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-left: auto; }
+.conn-note { font-size: 0.75rem; color: var(--dim); line-height: 1.5; margin: 8px 0 10px; }
+.conn-creds { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; margin-bottom: 8px; }
+.conn-field { display: flex; flex-direction: column; gap: 3px; flex: 1 1 220px; min-width: 0; }
+.conn-klabel { font-size: 0.68rem; color: var(--dim); font-family: var(--mono, monospace); }
+.conn-klabel em { color: var(--green); font-style: normal; }
+.conn-input { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); font-size: 0.8rem; box-sizing: border-box; }
+.conn-save, .conn-connect, .conn-scope-btn, .conn-copy { border: 1px solid var(--border); background: var(--hover); color: var(--text); border-radius: 5px; font-size: 0.72rem; padding: 7px 12px; cursor: pointer; white-space: nowrap; min-height: 34px; }
+.conn-save { background: var(--accent); color: #000; border: none; font-weight: 600; }
+.conn-save:disabled { opacity: 0.6; cursor: default; }
+.conn-oauth { margin: 6px 0 10px; padding: 8px 10px; background: var(--hover); border-radius: 6px; }
+.conn-redir { font-size: 0.72rem; color: var(--dim); line-height: 1.6; margin-bottom: 8px; word-break: break-all; }
+.conn-redir code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+.conn-copy { padding: 2px 8px; min-height: 0; font-size: 0.66rem; margin-left: 4px; }
+.conn-connect { background: var(--cyan, #2a9fd6); color: #000; border: none; font-weight: 600; }
+.conn-test { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
+.conn-test-btn { background: var(--hover); color: var(--text); border: 1px solid var(--border); border-radius: 5px; font-size: 0.72rem; padding: 6px 12px; cursor: pointer; min-height: 32px; }
+.conn-test-btn:disabled { opacity: 0.6; cursor: default; }
+.conn-test-result { font-size: 0.74rem; }
+.conn-test-result.ok { color: var(--green); }
+.conn-test-result.bad { color: var(--red); }
+.conn-scope { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+@media (max-width: 600px) { .conn-test-btn { min-height: 44px; } }
+.conn-slabel { font-size: 0.72rem; color: var(--dim); }
+.conn-scope-off { opacity: 0.75; }
+/* Gmail accounts in the connector card (AMUX-3389): health + Reconnect/Add. */
+.conn-gmail { margin: 6px 0 10px; padding: 8px 10px; background: var(--hover); border-radius: 6px; }
+.conn-gmail-h { font-size: 0.72rem; font-weight: 600; color: var(--dim); margin-bottom: 6px; }
+.conn-gmail-empty, .conn-gmail-loading { font-size: 0.74rem; color: var(--dim); padding: 2px 0; }
+.conn-gmail-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 0; }
+.conn-gmail-addr { font-family: 'SF Mono','Fira Code',monospace; font-size: 0.76rem; color: var(--text); word-break: break-all; }
+.conn-gmail-badge { color: #fff; font-size: 0.62rem; font-weight: 600; padding: 2px 7px; border-radius: 9px; white-space: nowrap; }
+.conn-gmail-btn { margin-left: auto; border: 1px solid var(--border); background: var(--card-bg, var(--card)); color: var(--text); border-radius: 5px; font-size: 0.7rem; padding: 5px 10px; cursor: pointer; min-height: 32px; white-space: nowrap; }
+.conn-gmail-btn.conn-gmail-del { margin-left: 0; color: var(--red, #c0392b); }
+.conn-gmail-add { margin-top: 8px; border: 1px dashed var(--border); background: none; color: var(--accent); border-radius: 5px; font-size: 0.72rem; padding: 6px 12px; cursor: pointer; min-height: 34px; }
+@media (max-width: 600px) { .conn-gmail-btn { min-height: 44px; } .conn-gmail-btn { margin-left: 0; flex: 1 1 auto; } }
+/* Scope picker: searchable dropdown over real workers/groups (AMUX-3350) */
+.conn-picker-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 10050; display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; }
+.conn-picker { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; width: min(92vw, 420px); max-height: 70vh; display: flex; flex-direction: column; box-shadow: 0 8px 40px rgba(0,0,0,0.5); overflow: hidden; }
+.conn-picker-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+.conn-picker-x { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 1rem; }
+.conn-picker-search { margin: 10px 14px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 0.9rem; outline: none; }
+.conn-picker-list { overflow-y: auto; padding: 0 8px 10px; }
+.conn-picker-item { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--text); padding: 9px 10px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+.conn-picker-item:hover { background: var(--hover); }
+.conn-picker-item mark { background: var(--accent); color: #000; border-radius: 2px; padding: 0 1px; }
+.conn-picker-empty { color: var(--dim); font-size: 0.82rem; padding: 12px 10px; }
+.conn-picker-use { background: var(--accent); color: #000; border: none; border-radius: 5px; padding: 4px 10px; cursor: pointer; font-size: 0.78rem; margin-left: 4px; }
+@media (max-width: 600px) { .conn-picker-item { padding: 12px 10px; } .conn-picker-overlay { padding-top: 6vh; } }
+@media (max-width: 600px) {
+  .conn-field { flex: 1 1 100%; }
+  .conn-save, .conn-connect, .conn-scope-btn { min-height: 44px; flex: 1 1 auto; }
+  .conn-badge { margin-left: 0; }
+}
+
+/* ===== Spreadsheet (.xlsx) preview (AMUX-3343) ===== */
+.xlsx-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }
+.xlsx-tab { background: var(--hover); border: 1px solid var(--border); border-radius: 6px; color: var(--dim); font-size: 0.76rem; padding: 6px 12px; cursor: pointer; min-height: 34px; }
+.xlsx-tab.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+.xlsx-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--border); border-radius: 8px; }
+/* SheetJS sheet_to_html output (all <td>, no header row markup) */
+.xlsx-scroll table { border-collapse: collapse; font-size: 0.8rem; min-width: 100%; }
+.xlsx-scroll table td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; white-space: pre-wrap; word-break: break-word; max-width: 360px; vertical-align: top; }
+.xlsx-scroll table tr:nth-child(even) td { background: color-mix(in srgb, var(--hover) 40%, transparent); }
+.xlsx-table { border-collapse: collapse; font-size: 0.8rem; min-width: 100%; }
+.xlsx-table th, .xlsx-table td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; white-space: pre-wrap; word-break: break-word; max-width: 360px; vertical-align: top; }
+.xlsx-table th { background: var(--hover); font-weight: 600; position: sticky; top: 0; }
+.xlsx-table tr:nth-child(even) td { background: color-mix(in srgb, var(--hover) 40%, transparent); }
+.xlsx-empty { color: var(--dim); font-size: 0.85rem; padding: 16px 4px; }
+.xlsx-trunc { color: var(--yellow, #d4a017); font-size: 0.76rem; margin-top: 10px; }
+@media (max-width: 600px) { .xlsx-tab { min-height: 44px; } .xlsx-table th, .xlsx-table td { max-width: 220px; } }
+
+/* ── Lineage tab in the board card detail (AMUX-2393) ──────────────────────
+   Renders GET /api/why/task/<id>. The visual hierarchy is load-bearing, not
+   decoration: verdict and gaps come FIRST and are the only coloured blocks,
+   because a reader who scrolls a plausible-looking trail and never reaches the
+   caveats has been misled by layout alone. Zero-row sources stay visible (dimmed,
+   never hidden) — a source that found nothing is evidence, and hiding it would
+   recreate the ambiguity the endpoint reports its predicates to avoid. */
+.board-detail-lineage { margin-top: 10px; font-size: 0.76rem; line-height: 1.5; max-height: 420px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.bd-lin-verdict { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 8px 10px; border-radius: 8px; border: 1px solid transparent; margin-bottom: 10px; }
+.bd-lin-vlabel { font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.72rem; }
+.bd-lin-vwhy { color: var(--dim); flex: 1 1 180px; min-width: 0; }
+.bd-lin-ok   { background: rgba(46,160,67,0.10); border-color: rgba(46,160,67,0.35); }
+.bd-lin-warn { background: rgba(210,153,34,0.10); border-color: rgba(210,153,34,0.40); }
+.bd-lin-bad  { background: rgba(218,54,51,0.10);  border-color: rgba(218,54,51,0.40); }
+.bd-lin-h { font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.68rem; margin: 12px 0 5px; }
+.bd-lin-gaps { background: rgba(210,153,34,0.07); border-left: 3px solid rgba(210,153,34,0.5); border-radius: 6px; padding: 6px 10px; }
+.bd-lin-gaps .bd-lin-h { margin-top: 2px; }
+.bd-lin-gaps ul { margin: 0; padding-left: 16px; }
+.bd-lin-gaps li { margin-bottom: 5px; }
+.bd-lin-srcs { display: flex; flex-direction: column; gap: 3px; }
+.bd-lin-src { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 3px 0; min-width: 0; }
+.bd-lin-src code { font-size: 0.72rem; background: var(--panel2, rgba(255,255,255,0.05)); padding: 1px 5px; border-radius: 4px; }
+.bd-lin-zero { opacity: 0.62; }
+.bd-lin-rows { font-variant-numeric: tabular-nums; color: var(--dim); }
+.bd-lin-cap { color: #d29922; font-size: 0.68rem; border: 1px solid rgba(210,153,34,0.4); border-radius: 4px; padding: 0 4px; }
+.bd-lin-dim { color: var(--dim); opacity: 0.75; font-size: 0.70rem; word-break: break-word; min-width: 0; }
+/* flex-basis:100% forces the note onto its own row inside the wrapping
+   .bd-lin-src line. These notes are full sentences (a reaped-journal horizon
+   runs to ~250 chars), so sharing a row with the table name and row count would
+   push past 375px — which the lineage e2e spec asserts against. */
+.bd-lin-srcnote { flex: 0 0 100%; min-width: 0; color: var(--dim); opacity: 0.85; font-size: 0.68rem;
+  line-height: 1.4; word-break: break-word; overflow-wrap: anywhere; padding-left: 2px; }
+.bd-lin-tl { display: flex; flex-direction: column; }
+.bd-lin-line { display: flex; gap: 8px; padding: 5px 0; border-top: 1px solid var(--border, rgba(255,255,255,0.07)); min-width: 0; }
+.bd-lin-when { flex: 0 0 96px; color: var(--dim); font-size: 0.68rem; font-variant-numeric: tabular-nums; }
+.bd-lin-what { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.bd-lin-sum { word-break: break-word; }
+.bd-lin-actor { color: var(--accent, #58a6ff); font-size: 0.70rem; }
+.bd-lin-badge { display: inline-block; margin-left: 5px; font-size: 0.60rem; text-transform: uppercase; border: 1px solid rgba(210,153,34,0.5); color: #d29922; border-radius: 3px; padding: 0 3px; }
+.bd-lin-untimed { background: rgba(210,153,34,0.04); }
+.bd-lin-note { color: var(--dim); padding: 8px 10px; }
+.bd-lin-todo { border: 1px dashed var(--border, rgba(255,255,255,0.15)); border-radius: 6px; margin-top: 12px; }
+
+@media (max-width: 600px) {
+  /* 375px: the fixed timestamp gutter costs a third of the width and forces the
+     summary into a 2-character column, so the trail stacks instead. */
+  .board-detail-lineage { max-height: 60vh; font-size: 0.78rem; }
+  .bd-lin-line { flex-direction: column; gap: 2px; }
+  .bd-lin-when { flex: none; }
+  /* Touch target: the tab row is what a thumb actually hits. */
+  #bd-tab-lineage { min-height: 44px; }
+}
+
+/* ARCHIVED SECTION (AMUX-3715, requested by tubescience).
+   Read-only and appended after the columns — never a drop target, because they
+   archive deliberately via the CLI in bulk and a drag affordance would be a
+   footgun for that usage. */
+.board-archived-section {
+  flex: 0 0 auto;
+  width: 100%;
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.board-archived-header {
+  /* 44px: this is the only control in the section and it is what a thumb hits. */
+  min-height: 44px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0 8px;
+}
+.board-archived-header:hover { color: var(--text); }
+.board-archived-empty { color: var(--text-dim); font-size: 12px; padding: 6px 10px; }
+.board-archived-group { margin: 6px 0 10px; }
+.board-archived-group-h {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-dim);
+  padding: 4px 10px;
+}
+.board-archived-row {
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  /* Wrap rather than overflow: a 375px screen must not scroll sideways. */
+  overflow-wrap: anywhere;
+}
+.board-archived-row:hover { background: var(--bg-hover); }
+.board-archived-id { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.board-archived-title { color: var(--text); }
+/* The trigger is the field tubescience acts on: archiving DE-ARMS it, so for a
+   card parked on a condition this is the only path back to it. Styled to be
+   findable by eye when scanning, not decorative. */
+.board-archived-trigger {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--amber, #d29922);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .board-archived-section { margin-top: 8px; }
+  .board-archived-row { padding: 10px; }
 }

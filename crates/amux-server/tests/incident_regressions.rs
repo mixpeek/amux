@@ -106,6 +106,7 @@ fn incident_regression_duplicate_draft_resurrects_sent_message() {
         plain: "the actual body",
         html: "",
         boundary: "bnd-test",
+        attachments: &[],
     });
     // Body is base64 inside multipart — assert the ENCODED body is present.
     use base64::Engine;
@@ -118,6 +119,7 @@ fn incident_regression_duplicate_draft_resurrects_sent_message() {
         from: "a@x.com", to: "b@y.com", cc: "", subject: "Re: pilot",
         in_reply_to: "<parent@id>", references: "", plain: "", html: "",
         boundary: "bnd-test",
+        attachments: &[],
     });
     assert!(blank.contains("In-Reply-To"), "threading survives an empty body");
 }

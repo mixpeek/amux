@@ -513,7 +513,7 @@ async fn apply(
     // if its session is not up yet (provisioned separately) it queues and lands
     // when the worker starts. Only newly-created workers are here (see the loop).
     for (name, prompt) in &worker_prompts {
-        crate::api::session_verbs::steer_enqueue(&state, name, prompt, "env-apply-prompt", "").await;
+        let _ = crate::api::session_verbs::steer_enqueue(&state, name, prompt, "env-apply-prompt", "").await;
     }
 
     // ---- files: write each seed doc to its absolute path -------------------

@@ -41,6 +41,7 @@ const vendorGlobals = {
   FitAddon: 'readonly',      // @xterm/addon-fit
   WebLinksAddon: 'readonly', // @xterm/addon-web-links
   hljs: 'readonly',          // highlight.js
+  XLSX: 'readonly',          // sheetjs (xlsx) — Excel/ODS viewer, loaded on demand
   L: 'readonly',             // leaflet (+ markercluster)
   FullCalendar: 'readonly',  // fullcalendar
   posthog: 'readonly',       // posthog snippet (index.html inline bootstrap)

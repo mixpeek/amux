@@ -1,12 +1,12 @@
 {
-  "_comment": "Phase 9 baseline, release build vs a copy of the live 640k-row DB (scripts/perf-baseline.sh). CI compares against these; >10% p95 regression fails (Phase 10). Python server reference points measured 2026-08-09: board payload 6.2MB, RSS 888MB, dashboard first-byte >1s under load.",
-  "dashboard_avg_ms": 3,
-  "health_avg_ms": 2,
-  "board_avg_ms": 28,
-  "board_full_avg_ms": 34,
-  "workers_avg_ms": 3,
-  "rss_mb": 66,
-  "board_default_bytes": 622020,
-  "measured": "2026-08-09",
-  "targets": { "dashboard_ms": 500, "health_ms": 50, "board_ms": 200, "rss_mb": 200 }
+  "_comment": "Local baseline, release build vs a copy of the LIVE DB (scripts/perf-baseline.sh). Re-measured 2026-08-22 (was 2026-08-09: board 28ms @ 622KB, rss 66MB) — the live corpus grew to 2.1GB with a 7.1MB board payload, and TWO absolute targets are currently violated on real data: board_avg 215 >= 200 (AMUX-3491) and rss 310 >= 280 (AMUX-3488). perf-compare.py fails honestly on those absolutes until the debt is paid; the 10% delta gates measure from these numbers. Python server reference points, 2026-08-09: board payload 6.2MB, RSS 888MB, dashboard first-byte >1s under load.",
+  "dashboard_avg_ms": 8,
+  "health_avg_ms": 7,
+  "board_avg_ms": 215,
+  "board_full_avg_ms": 271,
+  "workers_avg_ms": 7,
+  "rss_mb": 310,
+  "board_default_bytes": 7118364,
+  "measured": "2026-08-22",
+  "targets": { "dashboard_ms": 500, "health_ms": 50, "board_ms": 200, "rss_mb": 280 }
 }

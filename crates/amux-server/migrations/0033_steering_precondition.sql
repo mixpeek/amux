@@ -1,0 +1,28 @@
+-- AMUX-3659: a queued nudge asserts state from QUEUE time and is read minutes later.
+--
+-- Board state is delivered at turn boundaries by design (the decision is
+-- recorded at the bottom of .claude/rules/ethos.md and is right). The
+-- consequence nobody costed: a nudge whose entire content is an assertion about
+-- a card's CURRENT state is computed at enqueue and read by a worker much later.
+--
+-- Measured over 24h of real deliveries:
+--   649 deliveries | mean queue->delivery lag 166.2s | max 3606.9s | 209 (32%) over 60s
+--
+-- A third of all steering is read more than a minute after its premise was
+-- computed. mvs-research hit exactly this on MR-2: the nudge fired ONCE, they
+-- applied the prescribed remedy 2 minutes later, and the nudge arrived 3m23s
+-- after it was computed — so a correct trigger and a correctly-applied remedy
+-- produced what looked like a broken re-nag. A false premise on arrival is
+-- indistinguishable from a broken trigger, which is the expensive part: a
+-- worker who believes the remedy cannot silence a nudge will either churn the
+-- card or start ignoring nudges (ethos rule 3).
+--
+-- `guard` already exists but is a PRODUCER LABEL (`board-drive`, `commit-nudge`)
+-- rather than a precondition; nothing re-checked anything at delivery.
+--
+-- These two columns are OPT-IN. A message with no precondition — a peer relay,
+-- a scheduler command — delivers exactly as before. Only a producer whose text
+-- asserts a card's state sets them, and only then can delivery drop a row whose
+-- premise has since become false.
+ALTER TABLE steering_queue ADD COLUMN precond_card TEXT;
+ALTER TABLE steering_queue ADD COLUMN precond_rev INTEGER;

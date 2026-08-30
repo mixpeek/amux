@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agent Fleet — What It Is, How to Run One, and Why It Matters (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="An AI agent fleet is a group of AI coding or automation agents running in parallel under a shared control plane. Learn what a fleet is, how it differs from a single agent or orchestrator, and how to manage one with amux.">
+  <meta name="keywords" content="AI agent fleet, agent fleet management, run AI engineering team, parallel AI agents, AI agent fleet orchestration, multi-agent fleet, Claude Code fleet, AI coding agent fleet 2026">
+  <link rel="canonical" href="https://amux.io/glossary/ai-agent-fleet/">
+  <meta property="og:title" content="AI Agent Fleet — What It Is, How to Run One, and Why It Matters (2026)">
+  <meta property="og:description" content="An AI agent fleet is a group of AI coding or automation agents running in parallel under a shared control plane. Learn how to manage a fleet of Claude Code, Codex, or Gemini CLI agents with amux.">
+  <meta property="og:url" content="https://amux.io/glossary/ai-agent-fleet/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},
+      {"@type":"ListItem","position":2,"name":"Glossary","item":"https://amux.io/glossary/"},
+      {"@type":"ListItem","position":3,"name":"AI Agent Fleet","item":"https://amux.io/glossary/ai-agent-fleet/"}
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "DefinedTerm",
+    "name": "AI Agent Fleet",
+    "description": "An AI agent fleet is a collection of AI coding or automation agents running in parallel under a shared control plane. The fleet shares a task queue (kanban board), coordination layer, monitoring dashboard, and self-healing watchdog. An AI engineering team running Claude Code, Codex, or Gemini CLI agents at scale is an example of an AI agent fleet.",
+    "url": "https://amux.io/glossary/ai-agent-fleet/",
+    "inDefinedTermSet": "https://amux.io/glossary/"
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "AI Agent Fleet — What It Is, How to Run One, and Why It Matters (2026)",
+    "description": "An AI agent fleet is a group of AI coding or automation agents running in parallel under a shared control plane. This guide covers what a fleet is, the components that make it work, and how to manage one with amux.",
+    "url": "https://amux.io/glossary/ai-agent-fleet/",
+    "datePublished": "2026-08-27",
+    "dateModified": "2026-08-27",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is an AI agent fleet?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "An AI agent fleet is a group of AI coding or automation agents — such as Claude Code, Codex CLI, or Gemini CLI instances — running in parallel under a shared control plane. The fleet has a common task queue, coordination layer, monitoring dashboard, and self-healing watchdog. A solo developer running 10 Claude Code agents overnight to generate tests across a codebase is operating an AI agent fleet."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How is an AI agent fleet different from a single AI agent?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "A single AI agent runs one task at a time and requires a human present to restart it if it crashes or hits a context limit. An AI agent fleet runs many tasks in parallel across multiple agents, uses a shared task queue to prevent duplication, heals automatically from crashes and context overflows, and supports remote monitoring from a phone or dashboard while the fleet runs unattended overnight."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What does a fleet control plane do?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "A fleet control plane launches, monitors, and self-heals agent sessions. It provides: a shared task board so agents claim work without duplication; an inter-agent messaging layer so sessions can coordinate and delegate; a self-healing watchdog that detects context overflows, crashes, and stuck prompts; a web and mobile dashboard for real-time monitoring and steering; and built-in tooling (scheduler, email, CRM, browser automation) to run full business workflows alongside coding agents."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How many agents can a fleet run?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Fleet size is determined by the host machine's memory and CPU. A modern MacBook Pro can run 10–20 parallel Claude Code, Codex, or Gemini CLI agents simultaneously. A dedicated Linux server can run 50+. amux imposes no session count limit — you are constrained only by hardware and API rate limits from the underlying model providers."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is the difference between an AI agent fleet and an orchestrator?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "An orchestrator is a component that coordinates what agents do — dispatching tasks, routing outputs, managing dependencies. A fleet is the collection of agents plus the control plane that manages them end to end: launch, monitoring, self-healing, task coordination, inter-agent messaging, and human oversight. amux is a fleet control plane that includes an orchestrator (the board and messaging layer) as one of its components."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can a fleet run different types of AI agents together?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. amux supports mixed-runtime fleets: Claude Code, Codex CLI, and Gemini CLI agents can all run in the same fleet simultaneously, sharing the same kanban board, messaging layer, and monitoring dashboard. You can assign specific runtimes to specific task types — for example, Claude Code for architecture tasks, Codex for boilerplate generation, Gemini for documentation."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb">
+      <a href="/">amux</a>
+      <span class="sep">›</span>
+      <a href="/glossary/">Glossary</a>
+      <span class="sep">›</span>
+      <span>AI Agent Fleet</span>
+    </div>
+
+    <div class="kicker">// glossary</div>
+    <h1>AI Agent Fleet</h1>
+    <p class="subtitle">
+      A collection of AI coding or automation agents running in parallel under a shared control plane —
+      with a common task queue, inter-agent coordination, self-healing, and remote monitoring.
+    </p>
+    <p style="color:var(--muted);font-size:0.85rem">Published: August 27, 2026</p>
+
+    <!-- EXP-065: ai-agent-fleet glossary top-of-page green CTA -->
+    <div style="background:linear-gradient(135deg,#064e3b,#065f46);border:1px solid #059669;border-radius:10px;padding:1.25rem 1.5rem;margin:1.5rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem"
+         data-exp="EXP-065">
+      <div>
+        <div style="font-weight:600;color:#d1fae5;font-size:1rem;margin-bottom:0.25rem">Run an AI engineering team from one dashboard</div>
+        <div style="color:#a7f3d0;font-size:0.875rem">amux is the open-source fleet control plane for Claude Code, Codex, and Gemini CLI — self-healing, kanban board, phone monitoring. MIT licensed, 367+ stars.</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener"
+         onclick="if(window.posthog) posthog.capture('exp065_ai_agent_fleet_glossary_cta_click', {page: window.location.pathname})"
+         style="display:inline-flex;align-items:center;gap:0.5rem;background:#059669;color:#fff;text-decoration:none;padding:0.625rem 1.25rem;border-radius:8px;font-size:0.9rem;font-weight:600;white-space:nowrap;flex-shrink:0">
+        View amux on GitHub ★
+      </a>
+    </div>
+
+    <div style="background:var(--surface-2,#1a1f2e);border-left:3px solid var(--accent,#6ee7b7);padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
+      <strong>Definition:</strong> An AI agent fleet is a group of AI coding or automation agents —
+      such as Claude Code, OpenAI Codex CLI, or Gemini CLI instances — running in parallel under a
+      shared control plane. The fleet has a common task queue, coordination layer, monitoring
+      dashboard, and self-healing watchdog. Running 10 Claude Code agents overnight to generate
+      tests across a codebase, each claiming tasks from a shared kanban board, is an example of
+      operating an AI agent fleet.
+    </div>
+
+    <h2>What makes a group of agents a fleet?</h2>
+
+    <p>
+      Launching two Claude Code windows manually is not a fleet. A fleet requires shared
+      infrastructure that coordinates what agents do, tracks what each has completed, prevents
+      duplicate work, keeps agents running when they crash or hit a context limit, and gives
+      a human visibility into the whole operation from a single view — or a phone.
+    </p>
+
+    <p>
+      The term became common in 2025 as teams moved from individual AI coding assistants
+      (one agent per developer) to engineering teams where a single person oversees dozens of
+      AI agents working in parallel on distinct tasks. An AI agent fleet is the equivalent of
+      a traditional software engineering team — but every team member is an AI agent, and the
+      "manager" is one human with a dashboard and a phone.
+    </p>
+
+    <h2>Fleet components</h2>
+
+    <p>A complete AI agent fleet control plane has four layers:</p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Layer</th>
+          <th>What it does</th>
+          <th>amux equivalent</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Agent sessions</strong></td>
+          <td>The individual AI coding agents running tasks — Claude Code, Codex CLI, Gemini CLI, or other headless runtimes</td>
+          <td>tmux sessions per agent, each running a supported runtime</td>
+        </tr>
+        <tr>
+          <td><strong>Task queue / coordination</strong></td>
+          <td>A shared board where tasks are posted and agents claim work atomically — preventing two agents from taking the same job</td>
+          <td>SQLite-backed kanban board with atomic compare-and-swap claiming</td>
+        </tr>
+        <tr>
+          <td><strong>Self-healing watchdog</strong></td>
+          <td>A process that monitors agent health, detects context overflows and crashes, and restarts or compacts sessions automatically</td>
+          <td>Built-in watchdog with auto-compact, crash restart, and stuck-prompt detection</td>
+        </tr>
+        <tr>
+          <td><strong>Monitoring and oversight</strong></td>
+          <td>A dashboard that shows live output from every agent, a mobile interface for remote approval and steering, and message history for inter-agent communication</td>
+          <td>Web dashboard (SSE-streamed), iOS app + PWA, Messages tab</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Fleet vs single agent vs orchestrator vs task queue</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Concept</th>
+          <th>Definition</th>
+          <th>Example</th>
+          <th>Scope</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Single agent</strong></td>
+          <td>One AI instance handling one task at a time, requires human presence</td>
+          <td>Claude Code in a terminal window, Cline in VS Code</td>
+          <td>One task, one human</td>
+        </tr>
+        <tr>
+          <td><strong>Orchestrator</strong></td>
+          <td>A component that routes tasks to agents, manages dependencies, and aggregates outputs</td>
+          <td>LangGraph, AutoGen, CrewAI</td>
+          <td>Task routing and composition</td>
+        </tr>
+        <tr>
+          <td><strong>Task queue</strong></td>
+          <td>A list of work items that agents consume in order</td>
+          <td>amux kanban board, GitHub Issues, Linear board</td>
+          <td>Work distribution only</td>
+        </tr>
+        <tr>
+          <td><strong>Agent fleet</strong></td>
+          <td>Multiple agents running in parallel with shared coordination, self-healing, and a monitoring layer</td>
+          <td>10 Claude Code agents claiming tasks from an amux board overnight</td>
+          <td>Full lifecycle: launch, coordinate, heal, monitor</td>
+        </tr>
+        <tr>
+          <td><strong>Fleet control plane</strong></td>
+          <td>The software layer that manages the entire fleet lifecycle — sessions, board, watchdog, messaging, oversight</td>
+          <td>amux</td>
+          <td>Everything above plus human oversight interface</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Why use a fleet instead of a single agent?</h2>
+
+    <p>
+      A single agent is throughput-bounded by one context window. A codebase with 200 files
+      to refactor takes one agent as long as it takes to process them serially. A fleet of 10
+      agents splits the work: each agent handles 20 files, and the total wall-clock time is
+      roughly one-tenth of the single-agent time. For work that can be decomposed — writing
+      tests, generating documentation, running security audits, updating dependencies across
+      modules — fleet throughput compounds directly with fleet size.
+    </p>
+
+    <p>
+      Beyond throughput, a fleet adds resilience. When one agent hits its context limit or
+      encounters an error, the self-healing watchdog handles recovery automatically.
+      Overnight runs complete without a human sitting at the desk. The next morning you review
+      the results, not the crash logs.
+    </p>
+
+    <h2>How amux manages an AI agent fleet</h2>
+
+    <p>
+      amux is the open-source control plane for running an AI agent fleet from a single
+      dashboard or your phone. When you use amux, your fleet gets:
+    </p>
+
+    <ul>
+      <li><strong>Parallel agent sessions</strong> — launch 1 to 50+ Claude Code, Codex, or Gemini CLI sessions headlessly in tmux, each isolated in its own project directory</li>
+      <li><strong>Shared kanban board</strong> — post tasks before a run; agents claim them with atomic SQLite compare-and-swap so no two sessions take the same job</li>
+      <li><strong>Self-healing watchdog</strong> — auto-compacts on context overflow, restarts on crash, replays the last message on stuck prompts; your fleet runs overnight without human intervention</li>
+      <li><strong>Inter-agent messaging</strong> — sessions send and receive messages via REST API, coordinate handoffs, and delegate sub-tasks through named @worker channels</li>
+      <li><strong>Session cloning</strong> — duplicate any live session to run parallel prompt experiments, compare outputs, then pick the better result and discard the other</li>
+      <li><strong>Mobile oversight</strong> — the iOS app and installable PWA give you live fleet visibility, steering messages, and approval gates from anywhere</li>
+      <li><strong>Business tooling</strong> — scheduler, CRM, Gmail-API email, browser automation, and notes run in the same fleet alongside coding agents</li>
+    </ul>
+
+    <h2>Fleet size and scaling</h2>
+
+    <p>
+      Most developers start with 3–5 agents and scale up as they gain confidence in the
+      fleet's self-healing behavior. The practical ceiling on a single machine is memory: each
+      Claude Code session uses roughly 200–400 MB, so a MacBook Pro with 32 GB of RAM can
+      comfortably sustain 10–15 agents without swapping. A Linux server with 64 GB can run 30–50+.
+    </p>
+
+    <p>
+      API rate limits are often the binding constraint before hardware. Claude Code's
+      rate limits vary by plan — Max plan subscribers get higher limits than Pro.
+      See the <a href="/guides/claude-code-rate-limits/">Claude Code rate limits guide</a>
+      for fleet-specific tuning, and the
+      <a href="/guides/scaling-to-50-agents/">scaling to 50+ agents guide</a> for machine
+      sizing recommendations.
+    </p>
+
+    <h2>Multi-runtime fleets</h2>
+
+    <p>
+      A fleet does not need to be homogeneous. amux supports mixed-runtime fleets where
+      Claude Code, Codex CLI, and Gemini CLI agents run side-by-side in the same fleet,
+      sharing the same kanban board and messaging layer.
+    </p>
+
+    <p>
+      Teams use multi-runtime fleets to assign specific runtimes to the tasks they handle best:
+      Claude Code for complex reasoning and architecture tasks, Codex for high-throughput
+      boilerplate generation, Gemini for documentation and summarization. The board distributes
+      work across all runtimes; the dashboard shows all sessions in a single view regardless of
+      which runtime each is running. See the
+      <a href="/guides/multi-runtime-agent-setup/">multi-runtime agent setup guide</a>.
+    </p>
+
+    <h2>FAQ</h2>
+
+    <dl style="display:grid;gap:1.5rem">
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">What is an AI agent fleet?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          A group of AI coding or automation agents running in parallel under a shared control plane.
+          The fleet shares a task queue, coordination layer, self-healing watchdog, and monitoring
+          dashboard. A solo developer running 10 Claude Code agents overnight to generate tests across
+          a codebase is operating an AI agent fleet.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">How is a fleet different from a single agent?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          A single agent processes tasks serially and requires human presence to restart on failure.
+          A fleet processes tasks in parallel across many agents, claims work from a shared board to
+          prevent duplication, heals automatically from crashes and context overflows, and runs
+          unattended overnight with remote monitoring from a phone.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">What does a fleet control plane do?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          A fleet control plane launches, monitors, and self-heals agent sessions. It provides a
+          shared task board, inter-agent messaging, a self-healing watchdog, and a web and mobile
+          dashboard. amux is a fleet control plane for Claude Code, Codex CLI, and Gemini CLI fleets.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">How many agents can a fleet run?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Fleet size is bounded by host memory (each agent uses 200–400 MB) and API rate limits from
+          the model provider. A MacBook Pro with 32 GB can run 10–15 agents; a Linux server with 64 GB
+          can run 30–50+. amux itself imposes no session count cap.
+          See the <a href="/guides/scaling-to-50-agents/">scaling guide</a> for sizing details.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Can a fleet run different AI runtimes together?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Yes. amux supports mixed-runtime fleets where Claude Code, Codex CLI, and Gemini CLI agents
+          run side-by-side, sharing the same board and messaging layer. Different runtimes can be
+          assigned to different task types based on their strengths. See the
+          <a href="/guides/multi-runtime-agent-setup/">multi-runtime setup guide</a>.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">What is the difference between a fleet and an orchestrator?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          An orchestrator routes tasks to agents and manages dependencies. A fleet is the full
+          collection of agents plus the control plane — launch, monitoring, self-healing, task
+          coordination, inter-agent messaging, and human oversight. amux is a fleet control plane that
+          includes an orchestration layer (the board and messaging system) as one of its components.
+        </dd>
+      </div>
+    </dl>
+
+    <h2>See also</h2>
+    <ul>
+      <li><a href="/guides/running-10-plus-agents/">Running 10+ agents in parallel</a></li>
+      <li><a href="/guides/scaling-to-50-agents/">Scaling an AI agent fleet to 50+ agents</a></li>
+      <li><a href="/guides/multi-runtime-agent-setup/">Multi-runtime agent setup (Claude Code + Codex + Gemini CLI)</a></li>
+      <li><a href="/guides/ai-agent-session-cloning/">Cloning and forking AI agent sessions</a></li>
+      <li><a href="/glossary/agent-multiplexer/">Agent multiplexer</a></li>
+      <li><a href="/glossary/ai-agent-control-plane/">AI agent control plane</a></li>
+      <li><a href="/guides/fleet-build-up/">Fleet build-up guide</a></li>
+    </ul>
+
+    <div class="cta-box">
+      <h3>Run your AI agent fleet with amux</h3>
+      <p>
+        Open-source control plane for Claude Code, Codex CLI, and Gemini CLI fleets.
+        Self-healing, shared kanban board, web dashboard, and iOS app.
+        MIT licensed. Install in under 2 minutes.
+      </p>
+      <pre><code>brew install mixpeek/amux/amux
+amux register myproject --dir ~/Dev/myproject
+amux start myproject
+amux serve  # → https://localhost:8824</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ Star on GitHub</a>
+      <a class="btn"
+         href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435"
+         target="_blank"
+         rel="noopener"
+         style="margin-left:0.5rem">Download iOS App</a>
+    </div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Glossary</div>
+          <ul>
+            <li><a href="/glossary/agent-multiplexer/">Agent multiplexer</a></li>
+            <li><a href="/glossary/ai-agent-control-plane/">AI agent control plane</a></li>
+            <li><a href="/glossary/ai-agent-fleet/">AI agent fleet</a></li>
+            <li><a href="/glossary/">All terms</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

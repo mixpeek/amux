@@ -29,10 +29,39 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # concurrent build WAIT and then find the work done, which is cheap.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.amux/rust-build-target}"
 
+# AEAB-52. THIS SCRIPT EXISTS TO PIN A SPECIFIC BUILD, so a server that hot-swaps
+# itself mid-suite is running a different binary from the one the suite chose.
+#
+# playwright.config.ts starts THREE of these (desktop 18823, mobile 18833,
+# ios-safari 18843). Each builds, every build rewrites the shared binary, and the
+# server's 5s SELF_ADOPT loop sees its own mtime move and exec's — refusing
+# connections for ~1s. Whichever specs are mid-`page.goto` fail with
+# ERR_CONNECTION_REFUSED. That was three days of "flaky" desktop failures: 3, then
+# 9 on a re-run of the SAME commit, then 2, then 2.
+#
+# The signature, execs per port against start order in run 32645871348:
+#     18823 desktop (1st) -> 2      18833 mobile (2nd) -> 1      18843 ios (3rd) -> 0
+# Each server exec's once per server started after it; the last never does.
+#
+# Set here rather than in playwright.config.ts because THIS is the script that
+# pins the build — anything else launching a pinned server gets it for free, and
+# the config cannot forget.
+#
+# A SECOND COPY WAS ADDED TO playwright.config.ts AND REMOVED AGAIN (AF-185). It
+# was written from a CI log that predated this line by twenty minutes, which is
+# the trap worth naming: a failure you can read in a job log is not a failure the
+# current tree has, and the log gives no hint that the tree moved. The copy was
+# also INERT — this `export` runs inside the process the config launches, so it
+# overrides whatever the config passed in, and the redundant setting could never
+# have taken effect even if the two disagreed. If you are here because a run
+# shows `binary changed on disk`, check the run's created_at against this line's
+# commit before patching anything.
+export AMUX_NO_SELF_ADOPT=1
+
 dirty="$(git -C "$REPO" status --porcelain -- crates/ Cargo.toml Cargo.lock 2>/dev/null || true)"
 
 if [ "${AMUX_E2E_WORKING_TREE:-0}" = "1" ]; then
-  echo "[e2e] AMUX_E2E_WORKING_TREE=1 — building the WORKING TREE, not HEAD."
+  echo "[e2e] SOURCE: the WORKING TREE at $REPO — NOT committed HEAD (AMUX_E2E_WORKING_TREE=1)."
   echo "[e2e] A peer mid-edit in this shared checkout can fail this run; that is the trade you asked for."
   exec cargo run -p amux-server
 fi
@@ -126,6 +155,23 @@ setup_worktree() {
 
 if setup_worktree; then
   cd "$WT"
+  # SAY WHICH SOURCE THIS RUN ACTUALLY BUILT, ALWAYS (AF-182, third instance).
+  #
+  # The banner above prints only `if [ -n "$dirty" ]`, so a run against a clean
+  # tree announced NOTHING about its source — and this script has three of them:
+  # committed HEAD, the working tree via AMUX_E2E_WORKING_TREE=1, and the working
+  # tree via the fallback below. All three produce identical output in the common
+  # case, so "did I test HEAD or the tree?" is unanswerable from the run's own log.
+  #
+  # That is not hypothetical. AF-182's third instance is a run killed by a peer's
+  # UNCOMMITTED mid-edit, filed fifteen days after this script started building
+  # from HEAD, over an import (`crate::worker::WorkerId`) that `git log -S --all`
+  # shows was never committed. One of the two tree paths must have been taken and
+  # the record cannot say which, so the incident is unreconstructable today.
+  #
+  # Ethos rule 4: an output that can be in two states publishes which one it was,
+  # in the same place someone already looks.
+  echo "[e2e] SOURCE: committed HEAD $(git -C "$REPO" rev-parse --short HEAD) (worktree $WT)."
   # The worktree build gets its OWN target dir (AMUX-2961). Sharing the fleet's
   # dir looked like the rule — but cargo dep-info records ABSOLUTE source paths,
   # so after a worktree build, a `cargo build` from the repo compares mtimes of
@@ -139,6 +185,9 @@ if setup_worktree; then
 else
   echo "[e2e] WARNING: could not prepare a HEAD worktree at $WT — falling back to the WORKING TREE."
   echo "[e2e] On CI the tree is HEAD so this is exact; on a shared checkout a peer mid-edit can fail this run."
+  # Same line as the success branch, deliberately — a reader grepping SOURCE finds
+  # one of the two in every run, rather than finding it only when things went well.
+  echo "[e2e] SOURCE: the WORKING TREE at $REPO — NOT committed HEAD."
 fi
 
 exec cargo run -p amux-server

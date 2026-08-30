@@ -1,0 +1,26 @@
+[Unit]
+Description=amux Server Builder (watches git commits)
+Documentation=https://amux.dev/docs
+PartOf=amux-server.service
+After=network-online.target
+
+[Service]
+# Type=oneshot, no Restart= (review @esteininger, PR #166, 2026-08-28):
+# rust-auto-build.sh is a one-shot script with no loop of its own — on
+# macOS it's re-invoked by launchd's StartInterval=60. Type=simple +
+# Restart=always + RestartSec=10 on a script that exits immediately turns
+# THAT into the loop, at 10s instead of the intended 60s — 6x the rate,
+# and fighting the timer below rather than complementing it, since systemd
+# ends up trying to (re)start a unit that's already being restarted. The
+# timer is the only thing that should be starting this.
+Type=oneshot
+ExecStart=$SCRIPT_DIR/scripts/rust-auto-build.sh
+Environment="CARGO_TARGET_DIR=$HOME/.amux/rust-build-target"
+WorkingDirectory=$SCRIPT_DIR
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=amux-builder
+
+# No [Install] section on purpose: this unit is started by
+# amux-builder.timer, not by `systemctl --user enable amux-builder`
+# directly. A WantedBy= here would let both paths start it at once.

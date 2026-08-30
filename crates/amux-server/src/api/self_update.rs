@@ -87,7 +87,7 @@ fn install_channel() -> (&'static str, Option<PathBuf>) {
 /// (`~/.local/bin/amux-server-rs`), so `install_channel` finds no `.git` and
 /// reports `standalone` on a perfectly normal source install. `AMUX_REPO_DIR`
 /// names the checkout explicitly; otherwise the server's own CWD is tried.
-fn repo_dir() -> Option<PathBuf> {
+pub(crate) fn repo_dir() -> Option<PathBuf> {
     if let Ok(v) = std::env::var("AMUX_REPO_DIR") {
         let p = PathBuf::from(v);
         if p.join(".git").exists() {

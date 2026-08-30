@@ -130,10 +130,43 @@ pub struct OllamaAdapter {
     pub default_model: String,
 }
 
+/// Compiled-in fallback when nothing is configured. It is a HINT, not a claim
+/// that this model exists — see [`ollama_default_model`].
+const OLLAMA_FALLBACK_MODEL: &str = "qwen3.8:27b";
+
+/// The ollama model to launch when the caller names none.
+///
+/// # Why this is a knob and not a literal
+///
+/// This was hardcoded to `qwen3.8:27b` in TWO places (here and
+/// `session_verbs::default_model_for_provider`), and the second one's comment
+/// said the quiet part out loud: "a launchable default is required (this box
+/// has qwen3.8:27b pulled)". A fact about ONE machine, compiled into a public
+/// OSS server — so every other install's ollama default names a 17 GB model
+/// they have never pulled, and the two copies could drift from each other
+/// besides.
+///
+/// It surfaced from the other end (DESKT-6): deleting that model on the box
+/// that does have it would have broken the default for every future ollama
+/// worker, which turned a `ollama rm` into a code change.
+///
+/// This is the shape `ethos.md` D3 already settled for the helper tier —
+/// "One knob: `AMUX_HELPER_MODEL`; all sites read it… the helper tier moves
+/// with one line of config". Same answer here, same reason: a pinned model is
+/// a bet that cannot improve, and the fix is to make it configuration rather
+/// than to pick a different literal.
+pub fn ollama_default_model() -> String {
+    std::env::var("AMUX_OLLAMA_DEFAULT_MODEL")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| OLLAMA_FALLBACK_MODEL.to_string())
+}
+
 impl Default for OllamaAdapter {
     fn default() -> Self {
         Self {
-            default_model: "qwen3.8:27b".into(),
+            default_model: ollama_default_model(),
         }
     }
 }
@@ -380,5 +413,105 @@ mod tests {
         );
         assert!(parse_ollama_list("").is_empty());
         assert!(parse_ollama_list("NAME  ID  SIZE  MODIFIED\n").is_empty());
+    }
+}
+#[cfg(test)]
+mod ollama_default_tests {
+    use super::*;
+
+    /// These tests mutate ONE process-wide env var, so run in parallel they
+    /// clobber each other: measured 4 failures in 5 runs before this guard.
+    /// A flaky test is worse than no test — it trains people to re-run rather
+    /// than to read. `--test-threads=1` would hide it here and still flake in
+    /// CI, so the serialization belongs in the test, not in how it is invoked.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Sets the var (or clears it), runs `f`, and always restores — including
+    /// on panic, since a leaked value would silently corrupt whichever test
+    /// grabs the lock next.
+    fn with_knob<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        // Poisoning is irrelevant here: a panicking test still restored its
+        // value via the guard below, so the env is clean either way.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("AMUX_OLLAMA_DEFAULT_MODEL").ok();
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                // SAFETY: ENV_LOCK is held for the whole scope, so no other
+                // test in this binary is reading or writing this var.
+                match &self.0 {
+                    Some(p) => unsafe { std::env::set_var("AMUX_OLLAMA_DEFAULT_MODEL", p) },
+                    None => unsafe { std::env::remove_var("AMUX_OLLAMA_DEFAULT_MODEL") },
+                }
+            }
+        }
+        let _restore = Restore(prev);
+        // SAFETY: as above — the lock makes this the only writer.
+        match value {
+            Some(v) => unsafe { std::env::set_var("AMUX_OLLAMA_DEFAULT_MODEL", v) },
+            None => unsafe { std::env::remove_var("AMUX_OLLAMA_DEFAULT_MODEL") },
+        }
+        f()
+    }
+
+    /// The guard has to actually serialize, or every assertion below is
+    /// satisfied by luck. Two threads hammering opposite values must never see
+    /// the other's.
+    #[test]
+    fn the_env_guard_actually_serializes() {
+        std::thread::scope(|sc| {
+            for (val, expect) in [("model-a", "model-a"), ("model-b", "model-b")] {
+                sc.spawn(move || {
+                    for _ in 0..200 {
+                        with_knob(Some(val), || assert_eq!(ollama_default_model(), expect));
+                    }
+                });
+            }
+        });
+    }
+
+    /// The two sites must not be able to disagree. They WERE two literals, and
+    /// "a view must share the predicate of the mechanism it describes" is
+    /// exactly what stops the next person changing one of them.
+    #[test]
+    fn the_adapter_and_the_launcher_resolve_the_same_model() {
+        with_knob(Some("pinned:test"), || {
+            assert_eq!(OllamaAdapter::default().default_model, ollama_default_model());
+            assert_eq!(OllamaAdapter::default().default_model, "pinned:test");
+        });
+    }
+
+    /// Unset must preserve TODAY's behaviour exactly — this change is meant to
+    /// make the default movable, not to move it.
+    #[test]
+    fn unset_keeps_the_compiled_fallback() {
+        with_knob(None, || assert_eq!(ollama_default_model(), OLLAMA_FALLBACK_MODEL));
+    }
+
+    /// The knob has to actually move it, or it is decoration. This is the
+    /// assertion that makes `ollama rm qwen3.8:27b` a config change rather than
+    /// a code change (DESKT-6).
+    #[test]
+    fn the_knob_moves_the_default() {
+        with_knob(Some("qwen2.5vl:3b"), || {
+            assert_eq!(ollama_default_model(), "qwen2.5vl:3b");
+            assert_eq!(
+                OllamaAdapter::default().default_model,
+                "qwen2.5vl:3b",
+                "the adapter must follow the knob too, not just the launcher"
+            );
+        });
+    }
+
+    /// An empty or whitespace-only value is a mis-set knob, not a request for
+    /// an empty model name — which would build `--model ` and fail obscurely
+    /// at launch instead of here.
+    #[test]
+    fn a_blank_knob_falls_back_rather_than_launching_an_empty_model() {
+        for blank in ["", "   "] {
+            with_knob(Some(blank), || {
+                assert_eq!(ollama_default_model(), OLLAMA_FALLBACK_MODEL, "blank {blank:?}");
+            });
+        }
     }
 }

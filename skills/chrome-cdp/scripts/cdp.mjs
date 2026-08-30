@@ -10,7 +10,7 @@
 import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { resolve } from 'path';
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import net from 'net';
 
 const TIMEOUT = 15000;
@@ -35,7 +35,82 @@ function sockPath(targetId) {
     : resolve(RUNTIME_DIR, `cdp-${targetId}.sock`);
 }
 
+// DRIVE AN AMUX SAVED PROFILE (AMUX-3674).
+//
+// Ethan, 2026-08-24: "i have saved profiles in amux browser — use those saved
+// profiles to do chrome cdp." They were unreachable from here: this script
+// finds its port through `DevToolsActivePort`, which Chrome writes only when
+// launched with `--remote-debugging-port=0`. amux launches with an EXPLICIT
+// port, so no such file exists in any amux profile dir (checked: zero under
+// `~/.amux/playwright-auth`). The port was never on disk to be found.
+//
+// amux knows it — `GET /api/browser/status` returns `cdp_port` — so ask the
+// thing that knows instead of hunting the filesystem for a file that is not
+// written. `$(amux url)` rather than $AMUX_URL: a lane started before the
+// 8822->8824 cutover carries a stale port in its process env and cannot rotate
+// it (AMUX-3046).
+//
+// Env, not a flag, so every existing verb works unchanged:
+//   AMUX_PROFILE=netsuite node cdp.mjs list
+//   CDP_PORT=59100        node cdp.mjs shot <target>
+function amuxCdpPort() {
+  if (process.env.CDP_PORT) return Number(process.env.CDP_PORT);
+  if (!process.env.AMUX_PROFILE) return null;
+  const want = process.env.AMUX_PROFILE.trim();
+  let base = '';
+  try {
+    base = execFileSync('amux', ['url'], { encoding: 'utf8', timeout: 5000 }).trim();
+  } catch {
+    base = (process.env.AMUX_URL || 'https://localhost:8824').trim();
+  }
+  let body;
+  try {
+    // -k: the server uses a self-signed cert, as every recipe in this repo does.
+    body = execFileSync('curl', ['-sk', '--max-time', '5', `${base}/api/browser/status`],
+                        { encoding: 'utf8' });
+  } catch (e) {
+    throw new Error(`AMUX_PROFILE=${want}: could not reach amux at ${base} (${e.message})`);
+  }
+  let st;
+  try { st = JSON.parse(body); } catch { throw new Error(`AMUX_PROFILE=${want}: amux returned non-JSON: ${body.slice(0, 200)}`); }
+  if (!st.running || !st.cdp_port) {
+    throw new Error(
+      `AMUX_PROFILE=${want}: no amux browser is running. Start one:\n` +
+      `  curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $AMUX_SESSION" \\\n` +
+      `       -d '{"profile":"${want}","url":"about:blank"}' ${base}/api/browser/start`);
+  }
+  // NAME THE MISMATCH rather than driving the wrong profile. One browser runs
+  // at a time, so asking for `netsuite` while `lob` is up must not silently
+  // hand you `lob`'s logged-in session — that is somebody else's staged state.
+  if (st.profile && st.profile !== want) {
+    throw new Error(
+      `AMUX_PROFILE=${want}: the running amux browser is profile '${st.profile}' ` +
+      `(started by ${st.started_by || 'unknown'}). Refusing to drive a different profile ` +
+      `than you asked for. Use AMUX_PROFILE=${st.profile}, or take it over deliberately ` +
+      `with {"profile":"${want}","takeover":true} on /api/browser/start.`);
+  }
+  return Number(st.cdp_port);
+}
+
 function getWsUrl() {
+  const port = amuxCdpPort();
+  if (port) {
+    // The browser endpoint needs its PATH, not just the port: Chrome's browser
+    // websocket is `/devtools/browser/<uuid>`, which only `/json/version`
+    // knows. The DevToolsActivePort path below gets the same two pieces from a
+    // file; this gets them over HTTP because amux launches with an explicit
+    // port and Chrome writes no file in that case.
+    let v;
+    try {
+      v = JSON.parse(execFileSync('curl', ['-s', '--max-time', '5',
+                                           `http://127.0.0.1:${port}/json/version`],
+                                  { encoding: 'utf8' }));
+    } catch (e) {
+      throw new Error(`amux browser CDP on port ${port} did not answer /json/version (${e.message})`);
+    }
+    if (!v.webSocketDebuggerUrl) throw new Error(`CDP on ${port} returned no webSocketDebuggerUrl`);
+    return v.webSocketDebuggerUrl;
+  }
   const home = homedir();
   // macOS: ~/Library/Application Support/<name>/DevToolsActivePort
   const macBrowsers = [

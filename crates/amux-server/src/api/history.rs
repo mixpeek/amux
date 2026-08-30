@@ -3,11 +3,20 @@
 //! append, POST import, DELETE clear).
 //!
 //! Python parity decisions, recorded so they are not "fixed" later:
-//! - The five stored `type` values are kept as-is; `kind` (human/session/
-//!   schedule/amux) and `queued` are DERIVED on read, exactly like
-//!   `_msg_kind`/`_msg_is_queued` — unknown types read as human, because
-//!   that is the reading that gets a message looked at rather than filtered
-//!   away.
+//! - The stored `type` values are kept as-is; `kind` (human/session/schedule/
+//!   amux/unknown) and `queued` are DERIVED on read, like `_msg_kind`/
+//!   `_msg_is_queued`.
+//!
+//!   CORRECTED 2026-08-26 (AMUX-3737). This block used to record "unknown types
+//!   read as human, because that is the reading that gets a message looked at
+//!   rather than filtered away" as a deliberate Python-parity decision. The
+//!   reasoning is about VISIBILITY and it is sound; the conclusion does not
+//!   follow, because `human` is not the only visible bucket. That default
+//!   silently attributed 355 machine-generated `pickup` nudges to a person, and
+//!   Ethan caught it from a screenshot rather than from anything here. Unknown
+//!   types now read as `unknown`: just as visible, and honest about what it
+//!   does not know. Kept as a note rather than deleted, because a stale
+//!   rationale is what made the default look considered.
 //! - Every filter (kind, q, session, group) is applied IN SQL, before the
 //!   LIMIT — the page-vs-corpus gap (AMUX-2548) is exactly what the Python
 //!   comments warn about.
@@ -30,7 +39,7 @@ use super::AppState;
 use crate::db::{PendingEvent, WriteOutcome};
 use amux_core::revision::{EntityType, MutationKind};
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -79,6 +88,31 @@ async fn get_history_item(
             let mtype = d.get("type").and_then(Value::as_str).unwrap_or("").to_string();
             d["kind"] = json!(msg_kind(&mtype));
             d["queued"] = json!(msg_is_queued(&mtype));
+            // JOIN THE INSTRUMENT THAT CAN ACTUALLY ANSWER. Matched on session
+            // and a +/-10s window around `ts`, never on text: cmd_history keeps
+            // the "[08:19 AM] " prefix the composer adds and steering_history
+            // does not, so a text match silently misses the rows that matter.
+            let delivery = d.get("delivery").and_then(Value::as_str).unwrap_or("").to_string();
+            let steering = if delivery == "direct" {
+                None
+            } else {
+                let sess = d.get("session").and_then(Value::as_str).unwrap_or("").to_string();
+                let ts_s = d.get("ts").and_then(Value::as_i64).unwrap_or(0) as f64 / 1000.0;
+                conn.query_row(
+                    "SELECT delivered_at FROM steering_history \
+                     WHERE session = ?1 AND ABS(queued_at - ?2) <= 10 \
+                     ORDER BY ABS(queued_at - ?2) LIMIT 1",
+                    rusqlite::params![sess, ts_s],
+                    |r| r.get::<_, Option<f64>>(0),
+                )
+                .ok()
+            };
+            let (verdict, source) = delivery_truth(&delivery, steering);
+            d["delivered"] = json!(verdict);
+            d["delivered_source"] = json!(source);
+            if let Some(Some(t)) = steering {
+                d["delivered_at_actual"] = json!((t * 1000.0) as i64);
+            }
         }
         Ok(rows.into_iter().next())
     })
@@ -88,6 +122,51 @@ async fn get_history_item(
         Ok(Ok(None)) => err(StatusCode::NOT_FOUND, json!({ "error": format!("MSG-{nid} not found") })),
         Ok(Err(e)) => internal(e),
         Err(e) => internal(e),
+    }
+}
+
+/// Whether a recorded message was actually DELIVERED, and which instrument says so.
+///
+/// `cmd_history` CANNOT answer this and has now misled in both directions on the
+/// same column:
+///
+///   - AF-159 read "all 144 have delivered_at set, so these landed". False —
+///     the column was a copy of the insert time (AMUX-3541 stopped the copy).
+///   - A frustration sweep on 2026-08-27 read "92 of 92 queued rows have a NULL
+///     delivered_at, so none landed" and nearly filed 92 lost messages. Also
+///     false — nothing stamps the column on delivery, which AMUX-3541's own
+///     comment says in as many words. steering_history showed both specimens
+///     delivered in 2-3 seconds.
+///
+/// A NULL that means "not delivered" and a NULL that means "nobody writes here"
+/// are the same bytes, so every reader has to know a fact that is not in the
+/// payload. `steering_history` IS stamped by the deliverer, so it can answer —
+/// and this joins the two rather than waiting for the deliverer to backfill.
+///
+/// `steering` encodes THREE input states, because collapsing the last two is the
+/// whole defect: None = no matching row; Some(None) = row found, unstamped;
+/// Some(Some(t)) = row found, delivered at t.
+fn delivery_truth(cmd_delivery: &str, steering: Option<Option<f64>>) -> (&'static str, &'static str) {
+    // A DIRECT send really was delivered when it was recorded — AMUX-3541 kept
+    // `now_ms` there for exactly that reason, so cmd_history is authoritative
+    // for this case and no join is needed.
+    if cmd_delivery == "direct" {
+        return ("delivered", "cmd_history — a direct send is delivered when it is recorded");
+    }
+    match steering {
+        Some(Some(_)) => ("delivered", "steering_history — stamped by the deliverer when it landed"),
+        Some(None) => (
+            "not delivered",
+            "steering_history — the deliverer holds this row and has not stamped it",
+        ),
+        // NOT "not delivered". The absence of a steering row is a fact about our
+        // lookup, not about the message, and reporting it as a negative is the
+        // exact misreading this function exists to stop.
+        None => (
+            "unknown",
+            "no matching steering_history row — and cmd_history.delivered_at is NOT stamped \
+             for queued rows (AMUX-3541), so its NULL is not evidence either way",
+        ),
     }
 }
 
@@ -108,16 +187,82 @@ fn ev(id: &str, mutation: MutationKind) -> PendingEvent {
 
 // ---- kind derivation (_MSG_KINDS / _msg_kind / _msg_is_queued) -------------
 
-const MSG_KINDS: [&str; 4] = ["human", "session", "schedule", "amux"];
+const MSG_KINDS: [&str; 6] =
+    ["human", "session", "schedule", "amux", "unstamped", "unknown"];
 
-/// Python `_msg_kind`: canonical kind for a stored type; unknown -> human.
+/// The stored types a HUMAN actually produces. An ALLOWLIST, deliberately.
+///
+/// The old rule was a denylist with `human` as the fallback, which is the most
+/// consequential default available here: it attributes machine-generated text
+/// to a person, and it does so silently for every message type amux invents
+/// after the classifier was written. `pickup` is exactly that: auto-pickup
+/// nudges, stamped `origin: board-drive`, 355 rows reading `Human` in the
+/// Messages view.
+pub(crate) const HUMAN_TYPES: [&str; 4] = [
+    "direct", "steering", "user",
+    // Legacy rows predating the type column. Historical human traffic, kept
+    // human on purpose; this is the one case where absence really does mean a
+    // person typed it.
+    "",
+];
+
+/// The stored types amux itself produces. Same shape as [`HUMAN_TYPES`] and
+/// read by the FILTER as well as the classifier, so the two cannot drift.
+pub(crate) const AMUX_TYPES: [&str; 2] = ["system", "pickup"];
+
+/// A send that went in via raw tmux keystrokes while the server was
+/// unreachable, reconciled into the trail afterwards by the CLI.
+///
+/// ITS OWN KIND, not `amux` and emphatically not `human` (AMUX-2670). A person
+/// probably did type it, but its delivery was never verified — keystrokes
+/// reached a pane and a picker may have eaten them — and its origin is the
+/// CLI's word rather than a server-side stamp. That is a different claim from
+/// either bucket.
+///
+/// The dashboard has classified this as `unstamped` since AMUX-2670, in
+/// `_msgKind`, with a comment saying an unstamped injection must not render
+/// identically to an audited send. THAT BRANCH HAS NEVER RUN: `_msgKind`
+/// returns the server's `kind` when the row carries one, every API row does,
+/// and the server said `human`. There was also no `_MSG_KIND.unstamped` entry,
+/// so even reaching it would have fallen back to the Human badge. A fix written
+/// into a path nothing executes (ethos rule 1), found while fixing AMUX-3737
+/// one line above it.
+pub(crate) const UNSTAMPED_TYPES: [&str; 1] = ["raw-tmux-fallback"];
+
+/// Canonical kind for a stored type.
+///
+/// THE UNKNOWN ARM IS THE POINT (AMUX-3737). Ethan: "youre confusing human vs
+/// session messages", over a screenshot of `[amux] You went idle holding
+/// RC-53...` wearing a blue `Human` badge. That row already carried
+/// `origin: board-drive` and `type: pickup`; the classifier read TYPE, did not
+/// recognise `pickup`, and fell through to `human`. Two fields in one row
+/// disagreeing about the same fact, with the view reading the wrong one.
+///
+/// Adding `"pickup" => "amux"` would fix those 355 rows and leave the shape
+/// intact, so the NEXT type someone adds becomes Human again in silence. An
+/// explicit `unknown` makes that self-announcing instead: a kind nobody expects
+/// showing up in the Messages view is the signal that a type was added without
+/// teaching this function.
+///
+/// Note what the FIX HAD TO CHANGE: `msg_kind("legacy-weirdness") == "human"`
+/// was an assertion pinning the fallback. A test can pin a bug precisely
+/// because a default is indistinguishable from a decision once it is written
+/// down.
+///
+/// `/api/usage/attribution` already had the safe shape — `human = trig ==
+/// "user"`, an allowlist — so its background/human split was never wrong, and
+/// the 49.7%-of-input-tokens-are-amux-initiated figure on AMUX-3759 stands.
+/// Two classifiers over the same distinction, one safe and one not.
 pub(crate) fn msg_kind(mtype: &str) -> &'static str {
-    match mtype.trim().to_lowercase().as_str() {
+    let t = mtype.trim().to_lowercase();
+    match t.as_str() {
         "session" => "session",
         "schedule" => "schedule",
-        "system" => "amux",
-        // direct / steering / user / "" / anything unknown.
-        _ => "human",
+        // Machine-authored. `pickup` is board-drive's auto-pickup prompt.
+        _ if AMUX_TYPES.contains(&t.as_str()) => "amux",
+        _ if UNSTAMPED_TYPES.contains(&t.as_str()) => "unstamped",
+        _ if HUMAN_TYPES.contains(&t.as_str()) => "human",
+        _ => "unknown",
     }
 }
 
@@ -234,11 +379,42 @@ fn flag(v: &Option<String>) -> bool {
     v.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
 }
 
+/// Default page, and the CEILING no caller can exceed (AF-213).
+///
+/// `limit` was unclamped: `?limit=100000` served all 8,920 rows at 19 MB, and
+/// nothing in the endpoint, the client, or the logs would have said so. The
+/// dashboard's own three consumers ask for 200, 200 and 500, so a 500 ceiling
+/// changes no existing caller's result and makes the 19 MB response
+/// unreachable — the fault is closed at the API rather than in whichever client
+/// happened to ask politely.
+const HISTORY_DEFAULT_LIMIT: i64 = 500;
+const HISTORY_MAX_LIMIT: i64 = 500;
+
 async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>) -> Response {
     let store = state.store.clone();
+    // CLAMPED OUT HERE, and the request is told. A truncated list that says
+    // nothing reads as data rather than as truncation — the same failure
+    // `board_contract_filters.rs` records, where a lane auditing its own board
+    // got 100 rows fleet-wide with nothing in the body saying so and was one
+    // step from reporting "only 4 done cards exist". So an over-limit request
+    // gets `X-Amux-Limit-Clamped` naming the ceiling, and a WARN, so the next
+    // occurrence is visible in the logs without anyone going to look.
+    let requested_limit: i64 = p
+        .limit
+        .as_deref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(HISTORY_DEFAULT_LIMIT);
+    let limit = requested_limit.clamp(1, HISTORY_MAX_LIMIT);
+    let was_clamped = requested_limit > HISTORY_MAX_LIMIT;
+    if was_clamped {
+        tracing::warn!(
+            requested = requested_limit, served = limit,
+            "GET /api/history limit clamped — a caller asked for a full-table read; \
+             page with &offset= instead"
+        );
+    }
     let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
         let conn = store.read()?;
-        let limit: i64 = p.limit.as_deref().and_then(|s| s.parse().ok()).unwrap_or(500);
         let offset: i64 = p.offset.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0);
         let session = p.session.clone().unwrap_or_default();
 
@@ -325,15 +501,44 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
             .filter(|k| MSG_KINDS.contains(&k.as_str()))
             .collect();
         if !want.is_empty() {
-            let mut ors: Vec<&str> = Vec::new();
+            let mut ors: Vec<String> = Vec::new();
+            // THE FILTER IS THE CLASSIFIER WRITTEN A SECOND TIME, so it is
+            // built from the SAME lists rather than restated (AMUX-3737). It
+            // used to say `type NOT IN ('session','schedule','system')` for
+            // `human` — the denylist, matching msg_kind's old fallback exactly,
+            // which is the problem: the two agreed, and both were wrong. A
+            // filter that reproduces a misclassification is worse than one that
+            // drifts from it, because the badge and the filter corroborate each
+            // other.
+            let inlist = |types: &[&str], params: &mut Vec<rusqlite::types::Value>| {
+                for t in types {
+                    params.push(rusqlite::types::Value::Text((*t).to_string()));
+                }
+                format!(
+                    "COALESCE(type,'') IN ({})",
+                    types.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+                )
+            };
             for k in &want {
                 match k.as_str() {
-                    // `human` is NOT the other three, so unknown/legacy types
-                    // land there, matching msg_kind's fallback exactly.
-                    "human" => ors.push("type NOT IN ('session','schedule','system')"),
-                    "amux" => ors.push("type='system'"),
+                    "human" => ors.push(inlist(&HUMAN_TYPES, &mut params)),
+                    "amux" => ors.push(inlist(&AMUX_TYPES, &mut params)),
+                    "unstamped" => ors.push(inlist(&UNSTAMPED_TYPES, &mut params)),
+                    // Anything this build does not classify. Selecting it is how
+                    // you FIND the types nobody taught msg_kind about, which is
+                    // the whole reason `unknown` exists as a kind.
+                    "unknown" => {
+                        let known: Vec<&str> = HUMAN_TYPES
+                            .iter()
+                            .chain(AMUX_TYPES.iter())
+                            .chain(UNSTAMPED_TYPES.iter())
+                            .chain(["session", "schedule"].iter())
+                            .copied()
+                            .collect();
+                        ors.push(format!("NOT {}", inlist(&known, &mut params)));
+                    }
                     other => {
-                        ors.push("type=?");
+                        ors.push("type=?".to_string());
                         params.push(rusqlite::types::Value::Text(other.to_string()));
                     }
                 }
@@ -380,7 +585,15 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
     })
     .await;
     match joined {
-        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Ok(v)) => {
+            let mut resp = Json(v).into_response();
+            if was_clamped {
+                if let Ok(hv) = HeaderValue::from_str(&limit.to_string()) {
+                    resp.headers_mut().insert("x-amux-limit-clamped", hv);
+                }
+            }
+            resp
+        }
         Ok(Err(e)) => internal(e),
         Err(e) => internal(e),
     }
@@ -579,19 +792,194 @@ mod tests {
         }
     }
 
+    /// The two rows the pre-AMUX-3737 fixture could not express.
+    ///
+    /// `seed` above holds one row per type the classifier already knew, so
+    /// `kind=human` returned the same two rows under the old denylist and the
+    /// new allowlist and the filter test was green across the bug's whole life.
+    /// A fixture that cannot contain the defect cannot detect it.
+    async fn seed_unclassified(app: &axum::Router) {
+        for (text, htype, ts) in [
+            // The specimen: an auto-pickup nudge, which read `Human`.
+            ("[amux] you went idle holding RC-53", "pickup", 6000),
+            // A type this build has never heard of, standing in for the next
+            // one somebody adds.
+            ("from the future", "some-new-type", 7000),
+        ] {
+            let (st, _) = send(
+                app,
+                "POST",
+                "/api/history",
+                Some(json!({ "text": text, "type": htype, "session": "alpha", "ts": ts })),
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK);
+        }
+    }
+
+    /// The FILTER half of AMUX-3737, which is the classifier written a second
+    /// time in SQL and therefore the half that can silently disagree with it.
+    #[tokio::test]
+    async fn the_kind_filter_agrees_with_the_classifier_about_machine_messages() {
+        let (app, _dir) = app();
+        seed(&app).await;
+        seed_unclassified(&app).await;
+
+        let kinds = |v: &Value| -> Vec<String> {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["kind"].as_str().unwrap_or("").to_string())
+                .collect()
+        };
+
+        // The badge. `pickup` must not wear `Human`.
+        let (_, all) = send(&app, "GET", "/api/history", None).await;
+        let by_text: std::collections::HashMap<&str, &str> = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["text"].as_str().unwrap(), r["kind"].as_str().unwrap()))
+            .collect();
+        assert_eq!(by_text["[amux] you went idle holding RC-53"], "amux");
+        assert_eq!(by_text["from the future"], "unknown");
+
+        // The filter must reach the same verdict. Selecting Human must not
+        // return either of them.
+        let (_, humans) = send(&app, "GET", "/api/history?kind=human", None).await;
+        let texts: Vec<&str> =
+            humans.as_array().unwrap().iter().map(|r| r["text"].as_str().unwrap()).collect();
+        assert_eq!(
+            texts,
+            vec!["queued steer", "hello from me"],
+            "an auto-pickup nudge and an unclassified row are not human traffic"
+        );
+        assert!(kinds(&humans).iter().all(|k| k == "human"));
+
+        // And selecting amux must FIND the pickup, or the row is simply lost.
+        let (_, amux) = send(&app, "GET", "/api/history?kind=amux", None).await;
+        let texts: Vec<&str> =
+            amux.as_array().unwrap().iter().map(|r| r["text"].as_str().unwrap()).collect();
+        assert_eq!(texts, vec!["[amux] you went idle holding RC-53", "amux nudge"]);
+
+        // `unknown` is selectable, which is how you find the types nobody
+        // taught msg_kind about. A kind you cannot filter on is a kind nobody
+        // will ever go looking for.
+        let (_, unk) = send(&app, "GET", "/api/history?kind=unknown", None).await;
+        let texts: Vec<&str> =
+            unk.as_array().unwrap().iter().map(|r| r["text"].as_str().unwrap()).collect();
+        assert_eq!(texts, vec!["from the future"]);
+
+        // Every row lands in exactly one kind: the four buckets must partition
+        // the table, or a message is invisible under every filter.
+        let mut seen = 0usize;
+        for k in ["human", "session", "schedule", "amux", "unknown"] {
+            let (_, v) = send(&app, "GET", &format!("/api/history?kind={k}"), None).await;
+            seen += v.as_array().unwrap().len();
+        }
+        assert_eq!(seen, 7, "5 seeded + 2 unclassified, each counted once");
+    }
+
+    /// AMUX-3737. Ethan: "youre confusing human vs session messages", over a
+    /// screenshot of `[amux] You went idle holding RC-53...` wearing a blue
+    /// `Human` badge.
+    ///
+    /// THIS TEST USED TO ASSERT THE BUG. Its last line was
+    /// `assert_eq!(msg_kind("legacy-weirdness"), "human")`, with the comment
+    /// "unknown provenance reads as human — the reading that gets looked at",
+    /// and the module header recorded the same thing as a deliberate parity
+    /// decision. The reasoning is about VISIBILITY and it is sound; the
+    /// conclusion does not follow, because `human` is not the only visible
+    /// bucket. Writing a default down is what makes it indistinguishable from a
+    /// decision, and both the doc and the test then defended it.
+    ///
+    /// Measured on the live table before the change: 355 `pickup` rows from
+    /// `origin: board-drive` reading Human, 4.0% of 8,993 messages.
     #[test]
-    fn kind_derivation_matches_python() {
-        assert_eq!(msg_kind("direct"), "human");
-        assert_eq!(msg_kind("steering"), "human");
-        assert_eq!(msg_kind("user"), "human");
-        assert_eq!(msg_kind(""), "human");
-        assert_eq!(msg_kind("SESSION "), "session");
+    fn an_unrecognised_type_is_unknown_never_human() {
+        for t in ["direct", "steering", "user", ""] {
+            assert_eq!(msg_kind(t), "human", "{t:?} is typed by a person");
+        }
+        assert_eq!(msg_kind("SESSION "), "session", "trimmed and lowercased");
         assert_eq!(msg_kind("schedule"), "schedule");
-        assert_eq!(msg_kind("system"), "amux");
-        // Unknown provenance reads as human — the reading that gets looked at.
-        assert_eq!(msg_kind("legacy-weirdness"), "human");
+        for t in ["system", "pickup"] {
+            assert_eq!(msg_kind(t), "amux", "{t:?} is machine-authored");
+        }
+        // AMUX-2670's kind, made real. Not `human` (its delivery was never
+        // verified) and not `amux` (a person probably did type it).
+        assert_eq!(msg_kind("raw-tmux-fallback"), "unstamped");
+        // THE SPECIMEN: the type on MSG-33250, the row in Ethan's screenshot.
+        assert_eq!(msg_kind("pickup"), "amux", "an auto-pickup nudge is not a person");
+        // THE SHAPE, which is what actually matters. Fixing only `pickup` would
+        // pass every line above and leave the next new type reading Human in
+        // silence.
+        assert_eq!(
+            msg_kind("some-type-invented-next-year"),
+            "unknown",
+            "an unrecognised type must announce that it is unrecognised"
+        );
         assert!(msg_is_queued("steering"));
         assert!(!msg_is_queued("direct"));
+
+        // The two lists the SQL filter is built from must stay disjoint, or a
+        // type would match both `kind=human` and `kind=amux`.
+        for h in HUMAN_TYPES {
+            assert!(!AMUX_TYPES.contains(&h), "{h:?} cannot be both human and amux");
+            assert!(!UNSTAMPED_TYPES.contains(&h), "{h:?} cannot be both human and unstamped");
+        }
+        for a in AMUX_TYPES {
+            assert!(!UNSTAMPED_TYPES.contains(&a), "{a:?} cannot be both amux and unstamped");
+        }
+    }
+
+    /// The sweep instrument that misled in both directions must now be unable to.
+    ///
+    /// Both historical misreadings were of the SAME column and pointed opposite
+    /// ways, which is the tell that the column cannot answer the question at
+    /// all: AF-159 concluded "delivered" from a non-NULL that was a copy of the
+    /// insert time; a 2026-08-27 sweep nearly concluded "92 lost messages" from
+    /// a NULL that only means nobody writes there.
+    #[test]
+    fn an_unstamped_column_is_never_read_as_a_delivery_verdict() {
+        // The case that nearly produced a false finding: queued, cmd_history
+        // silent, and the deliverer's own table says it landed in 2 seconds.
+        let (v, src) = delivery_truth("queued", Some(Some(1_787_779_179.0)));
+        assert_eq!(v, "delivered");
+        assert!(src.contains("steering_history"), "must name the instrument that answered: {src}");
+
+        // A row the deliverer HOLDS and has not stamped is real evidence of
+        // non-delivery, and must not be flattened into the unknown case.
+        assert_eq!(delivery_truth("queued", Some(None)).0, "not delivered");
+
+        // NO ROW IS NOT A NEGATIVE. This is the assertion that stops the whole
+        // class: absence of a lookup result is a fact about the lookup.
+        let (v3, src3) = delivery_truth("queued", None);
+        assert_eq!(v3, "unknown", "no steering row means we cannot tell, not that it failed");
+        assert_ne!(v3, "not delivered");
+        assert!(
+            src3.contains("NOT stamped"),
+            "the reader must be told WHY the obvious column cannot be used, or they will \
+             use it: {src3}"
+        );
+
+        // The three inputs must not collapse into two outputs — if any pair
+        // renders alike, the join has bought nothing over reading the column.
+        let all = [
+            delivery_truth("queued", Some(Some(1.0))).0,
+            delivery_truth("queued", Some(None)).0,
+            delivery_truth("queued", None).0,
+        ];
+        let mut uniq = all.to_vec();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq.len(), 3, "three input states must yield three verdicts: {all:?}");
+
+        // A direct send is honestly answerable from cmd_history alone (AMUX-3541
+        // kept `now_ms` there deliberately), so it must NOT be reported as
+        // unknown merely because no steering row was looked up.
+        let (v4, src4) = delivery_truth("direct", None);
+        assert_eq!(v4, "delivered");
+        assert!(src4.contains("cmd_history"), "and it must say which instrument: {src4}");
     }
 
     #[test]
@@ -676,6 +1064,44 @@ mod tests {
         let texts: Vec<&str> =
             page.as_array().unwrap().iter().map(|r| r["text"].as_str().unwrap()).collect();
         assert_eq!(texts, vec!["cron fire", "session relay"]);
+
+        // AF-213: `limit` IS CLAMPED, and an over-limit request is TOLD.
+        //
+        // The row count cannot discriminate here — the fixture has 5 rows and
+        // the ceiling is 500, so "asked for 100000, got 5" holds just as well
+        // against no clamp at all. The header is the only observable that
+        // separates them, which is why the assertion is on the header and the
+        // control below is a request that must NOT carry it.
+        //
+        // Measured on the live store before the clamp: ?limit=100000 served all
+        // 8,920 rows, 19 MB, silently.
+        {
+            let over = axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/history?limit=100000")
+                .body(Body::empty())
+                .unwrap();
+            let res = app.clone().oneshot(over).await.unwrap();
+            assert_eq!(
+                res.headers().get("x-amux-limit-clamped").and_then(|v| v.to_str().ok()),
+                Some("500"),
+                "an over-limit request must be told the ceiling it was cut to — a silent \
+                 truncation reads as data, not as truncation"
+            );
+
+            // CONTROL: a request inside the ceiling must NOT claim it was clamped.
+            // Without this, a handler that stamps the header unconditionally passes.
+            let ok = axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/history?limit=2")
+                .body(Body::empty())
+                .unwrap();
+            let res2 = app.clone().oneshot(ok).await.unwrap();
+            assert!(
+                res2.headers().get("x-amux-limit-clamped").is_none(),
+                "a request within the ceiling must not be labelled clamped"
+            );
+        }
 
         // counts=1: true totals per kind + all, ignoring limit.
         let (_, counts) = send(&app, "GET", "/api/history?counts=1&limit=1", None).await;

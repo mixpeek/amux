@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>Clone or Fork an AI Agent Session (2026) — amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="How to clone or fork an AI agent session in amux — duplicate a live Claude Code session to run parallel experiments, split work across twins, or test two implementation paths simultaneously without re-queuing.">
+  <meta name="keywords" content="clone AI agent session, fork Claude Code session, duplicate coding agent context, run parallel AI agent experiments, AI agent session fork, amux session clone, split AI agent task parallel">
+  <link rel="canonical" href="https://amux.io/guides/ai-agent-session-cloning/">
+  <meta property="og:title" content="Clone or Fork an AI Agent Session (2026) — amux">
+  <meta property="og:description" content="Duplicate a live amux session to run parallel experiments, split long-running tasks, or test two implementation approaches simultaneously. The twin inherits the full session context.">
+  <meta property="og:url" content="https://amux.io/guides/ai-agent-session-cloning/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Clone or Fork an AI Agent Session","item":"https://amux.io/guides/ai-agent-session-cloning/"}]}</script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Clone or Fork an AI Agent Session (2026)",
+    "description": "How to duplicate a live amux session — run parallel experiments, split work across two agents, or explore two implementation paths simultaneously without re-queuing.",
+    "url": "https://amux.io/guides/ai-agent-session-cloning/",
+    "datePublished": "2026-08-26",
+    "dateModified": "2026-08-26",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"},
+    "publisher": {"@type": "Organization", "name": "amux", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.svg"}}
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "Clone an AI agent session in amux",
+    "description": "Duplicate a live amux worker to split work, run parallel experiments, or fork an agent's context without re-queuing from scratch",
+    "step": [
+      {"@type": "HowToStep", "position": 1, "name": "Find the session you want to clone", "text": "List your running sessions: amux list. Pick the worker whose context you want to fork — the clone will be registered alongside it and can immediately receive messages."},
+      {"@type": "HowToStep", "position": 2, "name": "Clone via the dashboard or API", "text": "In the dashboard, open the session card and click 'Duplicate'. Via API: POST /api/sessions/<name>/clone — the server registers the twin and returns its new session name. The twin inherits the source's project, working directory, and board association."},
+      {"@type": "HowToStep", "position": 3, "name": "Send different tasks to each twin", "text": "Use amux send <original-name> 'implement approach A' and amux send <clone-name> 'implement approach B'. Each agent works independently in its own tmux session. Both appear on the board and in the dashboard."},
+      {"@type": "HowToStep", "position": 4, "name": "Monitor both in parallel from the dashboard", "text": "The web dashboard streams live output from every session simultaneously. Use the iOS app or the dashboard's split-view to watch both agents as they work. Peek via: amux peek <clone-name>."},
+      {"@type": "HowToStep", "position": 5, "name": "Pick the better result and retire the other", "text": "When one approach succeeds, mark its board card done and send the other worker a discard message or let it finish naturally. Close the unused twin with amux stop <clone-name> and amux deregister <clone-name>."}
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Can I fork a Claude Code session mid-task?",
+        "acceptedAnswer": {"@type": "Answer", "text": "Yes. amux's clone feature duplicates any live session at any point — including mid-task. The twin is registered with the same project and working directory. It starts from the moment it receives its first message, so you can send it a different continuation from the same point in the work without starting over."}
+      },
+      {
+        "@type": "Question",
+        "name": "What does the clone inherit from the original session?",
+        "acceptedAnswer": {"@type": "Answer", "text": "The clone inherits the project registration (working directory, session config, board association) and the group membership of the original. It does not inherit the in-flight terminal context of the running agent — it starts as a fresh session within the same project. Use this to run two different approaches on the same codebase from the same base state."}
+      },
+      {
+        "@type": "Question",
+        "name": "How is session cloning different from just starting a second worker?",
+        "acceptedAnswer": {"@type": "Answer", "text": "Starting a second worker requires re-running the full amux register command and manually setting up the project path and config. Cloning does this in one call — the twin is registered with the original's full config, shows up on the board, appears in the fleet view, and is ready to receive messages immediately. It also ensures the twin is named coherently (auto-suffixed) so both appear together in the session list."}
+      },
+      {
+        "@type": "Question",
+        "name": "Can I use session cloning to A/B test prompts?",
+        "acceptedAnswer": {"@type": "Answer", "text": "Yes — this is the primary use case. Clone the session, send prompt variant A to the original and variant B to the clone, watch both complete in the dashboard, then compare the outputs. The parallel execution means you get both results in the time it would take to run one, and neither run influences the other since each is a separate tmux session."}
+      },
+      {
+        "@type": "Question",
+        "name": "Does cloning work with Codex CLI and Gemini CLI sessions too?",
+        "acceptedAnswer": {"@type": "Answer", "text": "Yes. amux manages Claude Code, Codex CLI, and Gemini CLI sessions through the same interface. The clone feature works for any session regardless of which underlying agent runtime it runs."}
+      },
+      {
+        "@type": "Question",
+        "name": "How many clones can I run in parallel?",
+        "acceptedAnswer": {"@type": "Answer", "text": "amux imposes no hard limit on the number of clones or sessions. Practical limits are your machine's CPU/RAM and your API rate limits. Running 3–5 clones in parallel for prompt experiments is straightforward; running 10–50 parallel sessions (including clones) overnight for batch work is the intended fleet-scale use case."}
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb">
+      <a href="/">amux</a>
+      <span class="sep">›</span>
+      <a href="/guides/">Guides</a>
+      <span class="sep">›</span>
+      <span>Clone or Fork an AI Agent Session</span>
+    </div>
+
+    <div class="kicker">// guides</div>
+    <h1>Clone or Fork an AI Agent Session</h1>
+    <p class="subtitle">
+      Duplicate a live worker to run parallel experiments, split a task in two, or test different
+      implementation paths — without re-queuing from scratch.
+    </p>
+    <p style="color:var(--muted);font-size:0.85rem">Last updated: August 26, 2026</p>
+
+    <!-- EXP-063: session cloning guide top-of-page CTA -->
+    <div style="background:linear-gradient(135deg,#064e3b,#065f46);border:1px solid #059669;border-radius:10px;padding:1.25rem 1.5rem;margin:1.5rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem"
+         data-exp="EXP-063">
+      <div>
+        <div style="font-size:0.75rem;font-weight:600;letter-spacing:0.08em;color:#6ee7b7;text-transform:uppercase;margin-bottom:0.35rem">Multi-runtime AI engineering team</div>
+        <div style="font-size:1rem;font-weight:600;color:#fff;line-height:1.35">amux — session cloning, parallel fleets, phone control</div>
+        <div style="font-size:0.82rem;color:#a7f3d0;margin-top:0.25rem">Open source · MIT licensed · 367+ stars</div>
+      </div>
+      <a href="https://github.com/mixpeek/amux"
+         target="_blank"
+         rel="noopener"
+         onclick="if(window.posthog) posthog.capture('exp063_session_cloning_guide_cta_click', {page: window.location.pathname})"
+         style="display:inline-flex;align-items:center;gap:0.5rem;background:#059669;color:#fff;text-decoration:none;padding:0.6rem 1.25rem;border-radius:7px;font-size:0.875rem;font-weight:700;white-space:nowrap;flex-shrink:0">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5 3.3 9.3 7.9 10.8.6.1.8-.2.8-.6v-2.2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.7 1.2 3.4.9.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2.9-.3 1.9-.4 2.9-.4s2 .1 2.9.4c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.7.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.8C23.5 5.7 18.3.5 12 .5z"/></svg>
+        View amux on GitHub ★
+      </a>
+    </div>
+
+    <div style="background:var(--surface-2,#1a1f2e);border-left:3px solid var(--accent,#6ee7b7);padding:1rem 1.25rem;border-radius:0 8px 8px 0;margin:1.5rem 0">
+      <strong>Quick answer:</strong> Use <code>POST /api/sessions/&lt;name&gt;/clone</code> or the dashboard's
+      "Duplicate" button to fork any live amux session. The twin is registered immediately, inherits the
+      source project's config, and can receive messages right away. Send each twin a different task and
+      both run in parallel — no additional setup required.
+    </div>
+
+    <h2>What session cloning is for</h2>
+
+    <p>
+      A running amux session holds a live agent (Claude Code, Codex CLI, or Gemini CLI) inside a tmux
+      pane with its project context loaded. Cloning duplicates that registration — the twin gets its own
+      tmux session, its own board card, and its own send queue, all sharing the same base project and
+      working directory as the original.
+    </p>
+
+    <p>
+      The primary use cases are:
+    </p>
+
+    <ul>
+      <li>
+        <strong>Prompt A/B testing.</strong> Send one prompt variant to the original and a different
+        variant to the clone. Both run in parallel and you compare the outputs side-by-side in the
+        dashboard or iOS app. This gives you both results in the time of one run.
+      </li>
+      <li>
+        <strong>Task splitting.</strong> A long-running task can be split between two agents mid-flight.
+        Clone the session, send the first half of the remaining work to the original and the second half
+        to the twin. Both finish faster, and you merge the results.
+      </li>
+      <li>
+        <strong>Implementation path exploration.</strong> When two architectural approaches both seem
+        viable, run them simultaneously instead of sequentially. Both agents explore their path without
+        knowledge of the other; you pick the better result.
+      </li>
+      <li>
+        <strong>Regression guard.</strong> Clone a known-good session before changing its CLAUDE.md or
+        system prompt. Run the same test task on both — the clone preserves the original behavior as a
+        reference while you test the new config.
+      </li>
+    </ul>
+
+    <h2>How to clone a session</h2>
+
+    <h3>Via the dashboard</h3>
+
+    <p>
+      Open the session card in the amux web dashboard. Click the <strong>Duplicate</strong> button
+      (or the three-dot menu → "Clone session"). The twin appears in the fleet list immediately, named
+      with a <code>-copy</code> suffix unless you specify a name. The twin starts idle — send it a
+      message to begin work.
+    </p>
+
+    <h3>Via the REST API</h3>
+
+    <pre><code># Clone a session by name
+curl -sk -X POST $AMUX_URL/api/sessions/my-worker/clone
+
+# Clone and specify a name for the twin
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"my-worker-v2"}' \
+  $AMUX_URL/api/sessions/my-worker/clone
+
+# The response includes the twin's name and ID:
+# {"name":"my-worker-v2","session_id":"...","status":"idle"}</code></pre>
+
+    <h3>Send different tasks to each twin</h3>
+
+    <pre><code># Send approach A to the original
+amux send my-worker "Implement this using the repository pattern"
+
+# Send approach B to the clone
+amux send my-worker-v2 "Implement this using the service layer pattern"
+
+# Watch both in parallel
+amux peek my-worker
+amux peek my-worker-v2</code></pre>
+
+    <h2>Step-by-step: running a prompt experiment</h2>
+
+    <ol>
+      <li>
+        <strong>Pick a session that is idle or at a task boundary.</strong> The clone works best when
+        the source agent is between tasks — after completing one board card, before starting the next.
+        This gives you a clean fork point with no in-flight state to reconcile.
+      </li>
+      <li>
+        <strong>Clone via the dashboard or API.</strong> The twin registers instantly and appears in
+        the fleet view alongside the original.
+      </li>
+      <li>
+        <strong>Send different messages to each.</strong> Use <code>amux send &lt;name&gt;</code> or
+        <code>POST /api/sessions/&lt;name&gt;/send</code> for each twin. Both agents are now working
+        independently in parallel.
+      </li>
+      <li>
+        <strong>Monitor both in the dashboard or iOS app.</strong> The web dashboard streams live
+        terminal output from every session simultaneously. On the iOS app, swipe between session cards
+        to compare progress.
+      </li>
+      <li>
+        <strong>Pick the result and retire the other.</strong> When one approach succeeds, mark its
+        board card done. Stop and deregister the unused twin:
+        <pre><code>amux stop my-worker-v2
+amux deregister my-worker-v2</code></pre>
+      </li>
+    </ol>
+
+    <h2>Common patterns</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Use case</th>
+          <th>What you send to original</th>
+          <th>What you send to clone</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Prompt comparison</td>
+          <td>Concise, direct instruction</td>
+          <td>Same task with a detailed chain-of-thought prompt</td>
+        </tr>
+        <tr>
+          <td>Model comparison</td>
+          <td>Same task (original uses Claude Code)</td>
+          <td>Same task (clone uses Codex CLI or Gemini CLI)</td>
+        </tr>
+        <tr>
+          <td>Architecture A/B</td>
+          <td>"Use the repository pattern"</td>
+          <td>"Use the service layer pattern"</td>
+        </tr>
+        <tr>
+          <td>Task split</td>
+          <td>Files A–F of a refactor</td>
+          <td>Files G–L of the same refactor</td>
+        </tr>
+        <tr>
+          <td>Config change test</td>
+          <td>Existing CLAUDE.md unchanged</td>
+          <td>Updated CLAUDE.md — run the same test task on both</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>How cloning relates to the fleet model</h2>
+
+    <p>
+      amux's fleet model is built around a shared kanban board: agents atomically claim tasks so no
+      two sessions ever duplicate work. Session cloning fits into this model — each twin can claim its
+      own task from the board, or you can route tasks to specific workers by name via
+      <code>POST /api/sessions/&lt;name&gt;/send</code>. The two are complementary: use the board for
+      routine fleet-scale batch work, use explicit send for directed experimentation.
+    </p>
+
+    <p>
+      When you clone a session that has an active board card, the original keeps the card. The clone
+      starts without a claimed task — you can assign it one manually or let it pick up the next
+      available <code>todo</code> item on the board.
+    </p>
+
+    <h2>Frequently Asked Questions</h2>
+
+    <dl style="display:grid;gap:1.5rem">
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Can I fork a Claude Code session mid-task?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Yes. The clone is registered at any point — the source session keeps running unaffected.
+          The twin starts idle and receives its first message when you send one. If the original is
+          mid-task, the clone starts fresh within the same project rather than mid-conversation: it is
+          a project fork, not a conversation continuation.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">What does the clone inherit from the original?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Project registration (working directory, session config, group membership, board association).
+          It starts a fresh tmux session rather than inheriting the in-flight terminal state. This
+          gives you a clean agent running against the same codebase — ideal for parallel experimentation.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">How is session cloning different from just starting a second worker?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Starting a second worker requires re-running <code>amux register</code> and configuring the
+          project manually. Cloning takes one API call: the twin inherits the full project config,
+          gets a coherent name, appears on the board and in the fleet view, and is ready for messages
+          immediately. It is the difference between a few seconds and a few commands.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Can I use session cloning to A/B test prompts?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Yes — this is the primary use case. Clone the session, send prompt variant A to the original
+          and variant B to the clone, watch both in the dashboard, and compare outputs. Parallel
+          execution gives you both results in the time it would take to run one sequentially.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">Does cloning work with Codex CLI and Gemini CLI sessions?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          Yes. amux manages Claude Code, Codex CLI, and Gemini CLI sessions through the same
+          interface. The clone feature works for any session regardless of which underlying runtime it uses.
+          You can clone a Claude Code session and start the twin with Codex CLI to compare runtimes
+          on the same task.
+        </dd>
+      </div>
+      <div>
+        <dt style="font-weight:600;margin-bottom:0.35rem">How many clones can I run in parallel?</dt>
+        <dd style="color:var(--fg-mute,#8892a4);line-height:1.6">
+          No hard limit from amux. Practical limits are your machine's CPU/RAM and your API rate
+          limits. Running 3–5 clones in parallel for prompt experiments is routine; 10–50 parallel
+          sessions for overnight batch work is the intended fleet-scale use case. The self-healing
+          watchdog monitors all of them.
+        </dd>
+      </div>
+    </dl>
+
+    <h2>See also</h2>
+    <ul>
+      <li><a href="/guides/running-10-plus-agents/">Running 10+ agents in parallel</a></li>
+      <li><a href="/guides/ai-agent-quality-gates/">Quality gates — human approval at fleet scale</a></li>
+      <li><a href="/guides/getting-started/">Getting started with amux</a></li>
+      <li><a href="/guides/ai-agent-github-actions/">Trigger AI agents from GitHub Actions</a></li>
+      <li><a href="/features/mobile-pwa/">Monitor sessions from your iPhone</a></li>
+      <li><a href="/compare/amux-vs-windsurf/">amux vs Windsurf</a></li>
+    </ul>
+
+    <div class="cta-box">
+      <h3>Run parallel agent experiments tonight</h3>
+      <p>Clone any session, send two different prompts, compare results in the morning.</p>
+      <pre><code>brew install mixpeek/amux/amux
+amux register myproject --dir ~/Dev/myproject
+amux serve  # → https://localhost:8824</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">⭐ View on GitHub</a>
+      <a class="btn"
+         href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435"
+         target="_blank"
+         rel="noopener"
+         style="margin-left:0.5rem">Download iOS App</a>
+    </div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-windsurf/">vs Windsurf</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/guides/running-10-plus-agents/">Run 10+ Agents</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

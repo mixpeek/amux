@@ -54,6 +54,10 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/quarantine/{id}", axum::routing::delete(purge_quarantine))
         .route("/snapshots", axum::routing::get(list_snapshots))
+        .route(
+            "/skipped",
+            axum::routing::get(list_skipped).delete(unskip),
+        )
 }
 
 /// Mark scans left `running` by a previous process as interrupted.
@@ -71,9 +75,17 @@ pub fn routes() -> Router<AppState> {
 pub(crate) fn reap_orphaned_scans(store: &crate::db::SharedStore) {
     let res = store.write(|c| {
         let n = c.execute(
+            // current_path and current_phase are deliberately PRESERVED. The
+            // first version of this cleared them, which destroyed the only
+            // record of where a dead scan had been standing — so a scan that
+            // wedged at 1,087 directories came back saying it had been
+            // restarted and refusing to say where, and the reaper meant to make
+            // the failure legible was the thing erasing it.
             "UPDATE reclaim_scans
-                SET status='interrupted', finished_at=?1, current_path=NULL,
+                SET status='interrupted', finished_at=?1,
                     error='server restarted mid-scan; the scan thread did not survive'
+                          || COALESCE(' (last position: ' || current_phase || ' at '
+                                      || current_path || ')', '')
               WHERE status='running'",
             rusqlite::params![now_secs()],
         )?;
@@ -95,9 +107,192 @@ fn cancel_registry() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+// ── where the walk thread is, and what it is doing there ─────────────────────
+
+/// Quiet for this long is worth a log line. Nothing more.
+///
+/// The first version treated 45s as proof of a block and ended the scan on it.
+/// Its first production run stalled on `~/Downloads` and permanently exempted
+/// it — a directory that answers `readdir` in 2 seconds with 318 entries, and
+/// one of the places a cleanup scan most needs to look. The threshold was below
+/// the baseline: this machine runs ~50 agent sessions at load 95, and the scan
+/// is itself competing for the disk it is measuring, so quiet for a minute is
+/// contention, not a hang.
+const STALL_WARN_SECS: u64 = 45;
+
+/// Quiet for THIS long is a block, and the scan ends rather than spinning.
+///
+/// The discriminator is duration, because it is what actually separates the two
+/// cases: a wedged FileProvider root returns nothing ever (`~/Library/Mobile
+/// Documents` gave zero entries in 90s and was still blocked), while a merely
+/// slow directory returns. Five minutes of zero movement on ONE directory is
+/// not a load spike.
+const STALL_ABORT_SECS: u64 = 300;
+
+/// A directory is only routed around after it has hung this many separate
+/// scans. One observation is an anecdote, and the cost of believing it is a
+/// permanent hole in the scan that nothing announces.
+const STALL_HITS_TO_SKIP: i64 = 2;
+
+/// The walk thread's position, published once per directory.
+///
+/// `dirs_walked` freezing tells you a scan is stuck and NOTHING else. A
+/// `read_dir` blocked in the kernel and a SQLite flush blocked on the write
+/// lock produce a byte-identical stall from outside the process: same frozen
+/// counter, same `running` status, same silence. On 2026-08-20 a scan wedged at
+/// 1,087 directories and the row could name neither the path nor the phase, so
+/// the two hypotheses could only be separated by re-walking the tree by hand.
+///
+/// Two things make this able to answer. The position is published BEFORE each
+/// syscall that can block, so it names the directory the thread is sitting in
+/// rather than the last one it finished. And it is published separately from
+/// the throttled DB write that persists it, so a flush that never returns does
+/// not also erase the record of where the walk was.
+pub(crate) struct ScanPos {
+    inner: Mutex<PosInner>,
+}
+
+struct PosInner {
+    path: String,
+    phase: &'static str,
+    since: std::time::Instant,
+}
+
+impl ScanPos {
+    pub(crate) fn new() -> Self {
+        ScanPos {
+            inner: Mutex::new(PosInner {
+                path: String::new(),
+                phase: "starting",
+                since: std::time::Instant::now(),
+            }),
+        }
+    }
+
+    /// Enter `phase` at `path`. Resets the stall clock: this is progress.
+    fn set(&self, path: &FsPath, phase: &'static str) {
+        if let Ok(mut p) = self.inner.lock() {
+            p.path = path.to_string_lossy().into_owned();
+            p.phase = phase;
+            p.since = std::time::Instant::now();
+        }
+    }
+
+    /// Change phase without moving. Also progress — a flush that starts is a
+    /// different thing to hang in than the readdir that preceded it.
+    fn phase(&self, phase: &'static str) {
+        if let Ok(mut p) = self.inner.lock() {
+            p.phase = phase;
+            p.since = std::time::Instant::now();
+        }
+    }
+
+    /// (path, phase, seconds since that position was last advanced)
+    fn read(&self) -> (String, &'static str, f64) {
+        match self.inner.lock() {
+            Ok(p) => (p.path.clone(), p.phase, p.since.elapsed().as_secs_f64()),
+            // A poisoned mutex means the walk thread panicked holding it. Say
+            // so rather than returning a position that looks live.
+            Err(_) => (String::new(), "poisoned", f64::MAX),
+        }
+    }
+}
+
+impl Default for ScanPos {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── directories the scan will not enter ──────────────────────────────────────
+
+/// FileProvider roots, skipped on the merits rather than defensively.
+///
+/// Their contents are online-only: the bytes live on someone else's disk and
+/// occupy no local blocks, so a CLEANUP scan has nothing to reclaim in them,
+/// and enumerating one can force downloads — the scan would consume disk
+/// instead of freeing it. That `~/Library/Mobile Documents` also happens to
+/// hang readdir forever on this machine is a second reason, not the reason.
+///
+/// Home-relative, because these are per-user paths.
+const PROVIDER_ROOTS: &[&str] = &["Library/Mobile Documents", "Library/CloudStorage"];
+
+/// Seed the provider roots, then hand back every path the walk must not enter.
+///
+/// Skips are rows rather than constants so the scan can REPORT what it did not
+/// look at, and so a learned one can be deleted when the filesystem behind it
+/// starts answering again. An exemption that leaves no trace is invisible
+/// (ethos rule 1) — and invisible is how a "cleanup scan" quietly stops
+/// covering a third of a home directory.
+fn load_skips(store: &crate::db::SharedStore) -> std::collections::HashSet<PathBuf> {
+    let home = home_dir();
+    let now = now_secs();
+    let seed: Vec<String> = PROVIDER_ROOTS
+        .iter()
+        .map(|r| home.join(r).to_string_lossy().into_owned())
+        .collect();
+    let _ = store.write(move |c| {
+        for p in &seed {
+            c.execute(
+                "INSERT OR IGNORE INTO reclaim_skipped
+                   (path, reason, detail, first_seen, last_seen, hits)
+                 VALUES (?1,'provider',?2,?3,?3,0)",
+                rusqlite::params![
+                    p,
+                    "cloud FileProvider root: online-only content holds no local blocks to reclaim",
+                    now
+                ],
+            )?;
+        }
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    });
+
+    let mut out = std::collections::HashSet::new();
+    if let Ok(conn) = store.read() {
+        // A learned skip needs corroboration. `provider` rows are a standing
+        // decision and apply immediately; a `stalled` row is one observation
+        // until a second scan hangs on the same path, because a single 5-minute
+        // quiet spell on a loaded machine is not proof a directory is broken.
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT path FROM reclaim_skipped
+              WHERE reason='provider' OR (reason='stalled' AND hits >= ?1)",
+        ) {
+            if let Ok(rows) = stmt.query_map([STALL_HITS_TO_SKIP], |r| r.get::<_, String>(0)) {
+                for p in rows.flatten() {
+                    out.insert(PathBuf::from(p));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Record a directory that hung a scan, so the NEXT scan routes around it.
+///
+/// Called from the watchdog, which is by definition running while something is
+/// blocked — so this write may itself be the thing that cannot complete. It is
+/// deliberately attempted only AFTER the WARN has already reached the log.
+fn record_stalled_dir(store: &crate::db::SharedStore, path: String, detail: String) {
+    let now = now_secs();
+    let res = store.write(move |c| {
+        let n = c.execute(
+            "INSERT INTO reclaim_skipped (path, reason, detail, first_seen, last_seen, hits)
+             VALUES (?1,'stalled',?2,?3,?3,1)
+             ON CONFLICT(path) DO UPDATE SET
+               reason='stalled', detail=excluded.detail,
+               last_seen=excluded.last_seen, hits=hits+1",
+            rusqlite::params![path, detail, now],
+        )?;
+        Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+    });
+    if let Err(e) = res {
+        tracing::error!(error = %e, "failed to record a stalled reclaim directory");
+    }
+}
+
 // ── volume state ─────────────────────────────────────────────────────────────
 
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -200,6 +395,21 @@ fn devtool_roots() -> Vec<(PathBuf, &'static str, &'static str)> {
             home.join(".amux/rust-build-target"),
             "build",
             "Shared cargo target dir",
+        ),
+        // The BIGGER sibling, and it was missing from this list for as long as
+        // it has existed. Measured 2026-08-19: 4.2GB here against 1.0GB in the
+        // shared dir, on a machine that had reached 1GB free — so the tool whose
+        // whole job is finding reclaimable space was blind to the largest
+        // reclaimable directory amux owns.
+        //
+        // This is the hand-maintained-list failure: the list agrees with reality
+        // until something new appears, and the day it disagrees is the day it is
+        // needed. Written by e2e/serve-head.sh (a debug-profile build), so it is
+        // fully regenerable and costs one cold e2e run.
+        (
+            home.join(".amux/rust-build-target-e2e-head"),
+            "build",
+            "e2e head-build cargo target dir",
         ),
     ]
 }
@@ -327,6 +537,18 @@ struct ScanCfg {
     tree_depth: i32,
     large_file_floor: u64,
     stale_age_secs: i64,
+    /// Also size the dev-tool stores in `devtool_roots()`, which are REAL
+    /// absolute paths in the home directory and are walked regardless of
+    /// `roots`.
+    ///
+    /// It exists because that unconditional behaviour turned every unit test
+    /// that calls `walk()` on a three-file temp directory into a full pass over
+    /// this machine's caches — `~/.cache`, `~/Library/Caches` and a 15GB shared
+    /// cargo target dir — under background I/O priority. Two such tests ran for
+    /// fourteen hours at 0% CPU and, because cargo serialises on one build
+    /// lock, took every other lane's `cargo test` hostage with them. A test
+    /// that silently scans the whole machine is not a unit test.
+    include_devtools: bool,
 }
 
 /// Ask the kernel to treat this thread's reads as background work.
@@ -356,6 +578,9 @@ struct WalkOut {
     dirs: u64,
     files: u64,
     bytes: u64,
+    /// Directories the skip list kept us out of, so the scan can say what it
+    /// did not look at instead of silently under-reporting a home directory.
+    skipped: Vec<PathBuf>,
 }
 
 struct Finding {
@@ -386,6 +611,8 @@ type ProgressFn<'a> = dyn FnMut(u64, u64, u64, &FsPath, &mut Vec<Finding>) + 'a;
 fn walk(
     cfg: &ScanCfg,
     cancel: &AtomicBool,
+    pos: &ScanPos,
+    skip: &std::collections::HashSet<PathBuf>,
     progress: &mut ProgressFn<'_>,
 ) -> WalkOut {
     set_background_io();
@@ -396,8 +623,9 @@ fn walk(
         dirs: 0,
         files: 0,
         bytes: 0,
+        skipped: Vec::new(),
     };
-    let devtools = devtool_roots();
+    let devtools = if cfg.include_devtools { devtool_roots() } else { vec![] };
     let now = now_secs();
     // size -> paths, for the duplicate fingerprint pass
     let mut by_size: HashMap<u64, Vec<PathBuf>> = HashMap::new();
@@ -425,23 +653,48 @@ fn walk(
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
+            if skip.contains(&dir) {
+                out.skipped.push(dir);
+                continue;
+            }
+            // Published BEFORE the syscall that can block. `read_dir` on an
+            // unresponsive FileProvider root never returns, and this line is
+            // then the only record anywhere of which directory that was.
+            pos.set(&dir, "readdir");
+
             since_yield += 1;
             if since_yield >= 64 {
                 since_yield = 0;
                 // Cheap politeness on a loaded box: the throttled I/O policy
                 // handles disk, this keeps us off a core.
                 std::thread::sleep(std::time::Duration::from_millis(1));
-                progress(out.dirs, out.files, out.bytes, &dir, &mut out.findings);
             }
+            // Called every directory now, not every 64th. The write it triggers
+            // is throttled to 700ms inside the callback, so the cost here is an
+            // `Instant::elapsed`, while the benefit is that the persisted
+            // `current_path` names the directory the walk is IN rather than one
+            // up to 64 directories behind it.
+            progress(out.dirs, out.files, out.bytes, &dir, &mut out.findings);
 
             let entries = match std::fs::read_dir(&dir) {
                 Ok(e) => e,
                 Err(_) => continue, // permission denied etc — skip, do not fail the scan
             };
+            pos.set(&dir, "entries");
             out.dirs += 1;
             let mut local = Acc::default();
 
+            let mut n_entries = 0u32;
             for entry in entries.flatten() {
+                n_entries += 1;
+                // Statting 200k entries under background I/O priority is slow
+                // work, not stuck work. The clock has to advance through it or
+                // the watchdog reports a wedge on the busiest directory in the
+                // tree — a detector that fires hardest where the scan is
+                // working hardest is worse than none.
+                if n_entries.is_multiple_of(512) {
+                    pos.set(&dir, "entries");
+                }
                 let path = entry.path();
                 let md = match entry.metadata() {
                     Ok(m) => m,
@@ -459,7 +712,8 @@ fn walk(
                 if md.is_dir() {
                     // Prune at a known build/dep dir: record it whole.
                     if BUILD_DIRS.contains(&name.as_str()) {
-                        let sub = subtree_totals(&path, root_dev, cancel);
+                        let sub = subtree_totals(&path, root_dev, cancel, pos);
+                        pos.set(&dir, "entries"); // back out of the pruned subtree
                         out.bytes += sub.bytes;
                         out.files += sub.files;
                         local.bytes += sub.bytes;
@@ -573,7 +827,14 @@ fn walk(
         if !p.exists() || guard_path(p).is_err() {
             continue;
         }
-        let sub = subtree_totals(p, 0, cancel);
+        // The skip list governs here too. A dev-tool root that hangs would
+        // otherwise wedge the scan from the one code path that never consulted
+        // the mechanism built to prevent exactly that.
+        if skip.contains(p) {
+            out.skipped.push(p.clone());
+            continue;
+        }
+        let sub = subtree_totals(p, 0, cancel, pos);
         if sub.bytes >= 64 * 1024 * 1024 {
             let age_d = (now - sub.newest_mtime).max(0) / 86400;
             out.findings.push(Finding {
@@ -602,6 +863,11 @@ fn walk(
         }
         let mut seen: HashMap<String, PathBuf> = HashMap::new();
         for p in paths {
+            // Reads two chunks off every same-size candidate. On a large-file
+            // set that is real seek time with no directory changing, so the
+            // position has to advance here too or the watchdog reads the
+            // duplicate pass as a wedge on whatever directory came last.
+            pos.set(p, "fingerprint");
             let Some(fp) = fingerprint(p, *sz) else { continue };
             if let Some(first) = seen.get(&fp) {
                 out.findings.push(Finding {
@@ -627,7 +893,7 @@ fn walk(
 /// Same accounting rules as the main walk: on-disk blocks rather than apparent
 /// size, and hardlinked files counted once. A cargo `target/` dir is full of
 /// hardlinks, so this is not a corner case here.
-fn subtree_totals(root: &FsPath, dev_filter: u64, cancel: &AtomicBool) -> Acc {
+fn subtree_totals(root: &FsPath, dev_filter: u64, cancel: &AtomicBool, pos: &ScanPos) -> Acc {
     use std::os::unix::fs::MetadataExt;
     let mut acc = Acc::default();
     let mut seen = SeenInodes::default();
@@ -641,6 +907,11 @@ fn subtree_totals(root: &FsPath, dev_filter: u64, cancel: &AtomicBool) -> Acc {
         if n.is_multiple_of(128) {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        // This prune walks a whole subtree — a 400k-file node_modules takes far
+        // longer than the stall threshold. Without publishing here, the
+        // watchdog would read a legitimately-working scan as wedged, which is
+        // the false positive that turns a detector into noise.
+        pos.set(&dir, "prune");
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for entry in entries.flatten() {
             let Ok(md) = entry.metadata() else { continue };
@@ -705,17 +976,24 @@ fn default_roots() -> Vec<PathBuf> {
     v
 }
 
-async fn start_scan(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    body: Option<Json<StartScan>>,
-) -> Response {
-    let body = body.map(|Json(b)| b).unwrap_or(StartScan {
-        roots: vec![],
-        large_file_mb: None,
-        stale_days: None,
-    });
+/// Start a scan the way the HTTP endpoint does, for callers that are not HTTP.
+///
+/// The disk-watch job needs to kick a scan on a schedule. Giving it its own
+/// copy of the setup would be a second spelling of the roots, the config
+/// defaults and the one-at-a-time guard, and CLAUDE.md's own record of what a
+/// duplicated seam costs applies directly: the two would drift the first time
+/// either changed, and the drift would be invisible because both still work.
+/// So the handler is a thin wrapper over this.
+pub(crate) async fn start_background_scan(state: &AppState) -> Result<String, String> {
+    begin_scan(state, StartScan { roots: vec![], large_file_mb: None, stale_days: None }, "disk-watch")
+        .await
+}
 
+async fn begin_scan(
+    state: &AppState,
+    body: StartScan,
+    session: &str,
+) -> Result<String, String> {
     // One scan at a time: two concurrent walkers on a loaded disk is exactly
     // the disruption this feature is supposed to avoid.
     if let Ok(conn) = state.store.read() {
@@ -727,24 +1005,12 @@ async fn start_scan(
             )
             .unwrap_or(0);
         if running > 0 {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": "a scan is already running",
-                    "hint": "GET /api/reclaim/scan for its id, or POST /api/reclaim/scan/<id>/cancel"
-                })),
-            )
-                .into_response();
+            return Err("a scan is already running".into());
         }
     }
 
+    let session_owned = session.to_string();
     let scan_id = ulid::Ulid::new().to_string();
-    let session = headers
-        .get("X-Amux-Session")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-
     let mut roots = default_roots();
     for r in &body.roots {
         let p = PathBuf::from(shellexpand_home(r));
@@ -757,6 +1023,7 @@ async fn start_scan(
         tree_depth: 3,
         large_file_floor: body.large_file_mb.unwrap_or(500) * 1024 * 1024,
         stale_age_secs: body.stale_days.unwrap_or(90) * 86400,
+        include_devtools: true,
     };
 
     let (free, total) = df_bytes(&home_dir()).unwrap_or((0, 0));
@@ -774,13 +1041,13 @@ async fn start_scan(
             c.execute(
                 "INSERT INTO reclaim_scans (id, started_at, status, roots, df_total, df_free, snapshot_count, session)
                  VALUES (?1, ?2, 'running', ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![sid, started, roots_json, total as i64, free as i64, snaps, session],
+                rusqlite::params![sid, started, roots_json, total as i64, free as i64, snaps, session_owned],
             )?;
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         })
         .await
     {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        return Err(e.to_string());
     }
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -796,8 +1063,39 @@ async fn start_scan(
         .spawn(move || run_scan(store, sid, cfg, cancel))
         .ok();
 
-    tracing::info!(scan = %scan_id, roots = roots.len(), "reclaim scan started");
-    Json(json!({"ok": true, "scan_id": scan_id, "status": "running"})).into_response()
+    tracing::info!(scan = %scan_id, roots = roots.len(), by = %session, "reclaim scan started");
+    Ok(scan_id)
+}
+
+async fn start_scan(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    body: Option<Json<StartScan>>,
+) -> Response {
+    let body = body.map(|Json(b)| b).unwrap_or(StartScan {
+        roots: vec![],
+        large_file_mb: None,
+        stale_days: None,
+    });
+    let session = headers
+        .get("X-Amux-Session")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    match begin_scan(&state, body, &session).await {
+        Ok(scan_id) => Json(json!({"ok": true, "scan_id": scan_id, "status": "running"}))
+            .into_response(),
+        Err(e) if e.contains("already running") => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": e,
+                "hint": "GET /api/reclaim/scan for its id, or POST /api/reclaim/scan/<id>/cancel"
+            })),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
 }
 
 fn shellexpand_home(s: &str) -> String {
@@ -829,41 +1127,203 @@ fn insert_finding(c: &rusqlite::Connection, scan_id: &str, f: &Finding) -> rusql
     Ok(())
 }
 
+/// Watch the walk thread's position and end the scan honestly if it wedges.
+///
+/// It cannot UNBLOCK the walker: a thread stuck in `read_dir` on an
+/// unresponsive filesystem is stuck in the kernel, ignores the cancel flag, and
+/// will sit there until the process exits. What it can do is stop the scan
+/// LYING — naming the path and the phase, marking the row terminal so the
+/// dashboard stops spinning and the one-scan-at-a-time guard stops refusing
+/// every future scan with 409, and recording the directory so the next scan
+/// routes around it.
+///
+/// Order matters. The WARN goes out BEFORE any database access, because the
+/// other thing a scan can hang on is the SQLite write lock — and a watchdog
+/// that reached for the store first would block in exactly the place the walker
+/// did and report nothing at all. That log line is what makes the next
+/// occurrence self-announcing in `~/.amux/logs/server-rs.log` instead of
+/// needing someone to notice a frozen counter.
+fn spawn_stall_watchdog(
+    store: crate::db::SharedStore,
+    scan_id: String,
+    pos: Arc<ScanPos>,
+    cancel: Arc<AtomicBool>,
+    done: Arc<AtomicBool>,
+) {
+    std::thread::spawn(move || {
+        let mut warned_at = String::new();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            if done.load(Ordering::Relaxed) {
+                return;
+            }
+            let (path, phase, stalled) = pos.read();
+
+            // Notice early, act late. The WARN costs a log line and is what
+            // makes a slow directory visible without deciding anything about
+            // it; ending the scan is a verdict and needs the longer evidence.
+            // Collapsing the two is what exempted ~/Downloads on one reading.
+            if stalled >= STALL_WARN_SECS as f64
+                && stalled < STALL_ABORT_SECS as f64
+                && warned_at != path
+            {
+                warned_at = path.clone();
+                tracing::warn!(
+                    scan = %scan_id, path = %path, phase, quiet_s = stalled as u64,
+                    "reclaim scan is quiet on one directory (still waiting, not yet a verdict)"
+                );
+            }
+            if stalled < STALL_ABORT_SECS as f64 {
+                continue;
+            }
+
+            // A poisoned position means the walk thread panicked holding the
+            // lock. That is a crash, not a stall, and reporting it as one would
+            // print a nonsense duration (f64::MAX seconds) next to a real
+            // finding — the kind of plausible-looking wrong number that gets
+            // believed.
+            if phase == "poisoned" {
+                tracing::error!(scan = %scan_id, "reclaim walk thread panicked mid-scan");
+                let sid = scan_id.clone();
+                let _ = store.write(move |c| {
+                    let n = c.execute(
+                        "UPDATE reclaim_scans SET status='failed', finished_at=?2,
+                             error='the walk thread panicked; see server-rs.log for the backtrace'
+                           WHERE id=?1 AND status='running'",
+                        rusqlite::params![sid, now_secs()],
+                    )?;
+                    Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+                });
+                return;
+            }
+
+            let stalled_s = stalled as u64;
+            tracing::warn!(
+                scan = %scan_id,
+                path = %path,
+                phase,
+                stalled_s,
+                "reclaim scan stalled: the walk thread is blocked and is not coming back"
+            );
+
+            // Only a blocked READDIR indicts the directory. A stalled flush is
+            // the database being slow, and blaming the path the walker happened
+            // to be standing on would poison the skip list with innocent dirs.
+            if phase == "readdir" && !path.is_empty() {
+                record_stalled_dir(
+                    &store,
+                    path.clone(),
+                    format!(
+                        "readdir did not return after {stalled_s}s (needs {STALL_HITS_TO_SKIP} \
+                         such scans before it is skipped)"
+                    ),
+                );
+            }
+
+            cancel.store(true, Ordering::Relaxed);
+            let (sid, p, err) = (
+                scan_id.clone(),
+                path.clone(),
+                format!(
+                    "stalled {stalled_s}s in {phase} at {path} — the walk thread never returned \
+                     from this position"
+                ),
+            );
+            let res = store.write(move |c| {
+                let n = c.execute(
+                    "UPDATE reclaim_scans
+                        SET status='stalled', finished_at=?2, error=?3,
+                            current_path=?4, current_phase=?5
+                      WHERE id=?1 AND status='running'",
+                    rusqlite::params![sid, now_secs(), err, p, phase],
+                )?;
+                Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+            });
+            if let Err(e) = res {
+                tracing::error!(scan = %scan_id, error = %e, "could not mark a stalled scan");
+            }
+            return;
+        }
+    });
+}
+
 fn run_scan(store: crate::db::SharedStore, scan_id: String, cfg: ScanCfg, cancel: Arc<AtomicBool>) {
     let t0 = std::time::Instant::now();
     let mut last_flush = std::time::Instant::now();
     let sid_p = scan_id.clone();
     let store_p = store.clone();
 
+    let skip = load_skips(&store);
+    let pos = Arc::new(ScanPos::new());
+    let done = Arc::new(AtomicBool::new(false));
+    spawn_stall_watchdog(
+        store.clone(),
+        scan_id.clone(),
+        pos.clone(),
+        cancel.clone(),
+        done.clone(),
+    );
+
     let mut flushed_findings = 0usize;
     let out = {
+        let pos_p = pos.clone();
         let mut progress =
             |dirs: u64, files: u64, bytes: u64, cur: &FsPath, pending: &mut Vec<Finding>| {
                 if last_flush.elapsed() < std::time::Duration::from_millis(700) {
                     return;
                 }
                 last_flush = std::time::Instant::now();
-                let (sid, cur) = (sid_p.clone(), cur.to_string_lossy().into_owned());
+                let (sid, cur_s) = (sid_p.clone(), cur.to_string_lossy().into_owned());
                 let batch: Vec<Finding> = std::mem::take(pending);
                 flushed_findings += batch.len();
+                // The phase flip is what separates "the disk is not answering"
+                // from "the write lock is not answering" when this never
+                // returns. Both freeze dirs_walked identically.
+                pos_p.phase("flush");
+                let phase_s = "flush";
                 let _ = store_p.write(move |c| {
                     c.execute(
-                        "UPDATE reclaim_scans SET dirs_walked=?2, files_walked=?3, bytes_seen=?4, current_path=?5 WHERE id=?1",
-                        rusqlite::params![sid, dirs as i64, files as i64, bytes as i64, cur],
+                        "UPDATE reclaim_scans SET dirs_walked=?2, files_walked=?3, bytes_seen=?4, current_path=?5, current_phase=?6 WHERE id=?1",
+                        rusqlite::params![sid, dirs as i64, files as i64, bytes as i64, cur_s, phase_s],
                     )?;
                     for f in &batch {
                         insert_finding(c, &sid, f)?;
                     }
                     Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
                 });
+                pos_p.set(cur, "readdir");
             };
-        walk(&cfg, &cancel, &mut progress)
+        walk(&cfg, &cancel, &pos, &skip, &mut progress)
     };
+    // Before the finalize write, so a slow rollup is not mistaken for a wedge.
+    done.store(true, Ordering::Relaxed);
 
     let cancelled = cancel.load(Ordering::Relaxed);
     let elapsed = t0.elapsed().as_secs_f64();
     let n_find = flushed_findings + out.findings.len();
     let n_tree = out.tree.len();
+    // Refresh the skips this scan actually leaned on. A skip row that stops
+    // being hit is one whose filesystem may have come back — without a
+    // last_seen that moves, the table can only ever grow and nobody can tell a
+    // live exemption from a fossil.
+    let hit_skips: Vec<String> = out
+        .skipped
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let n_skipped = hit_skips.len();
+    if !hit_skips.is_empty() {
+        let now = now_secs();
+        let _ = store.write(move |c| {
+            for p in &hit_skips {
+                c.execute(
+                    "UPDATE reclaim_skipped SET last_seen=?2, hits=hits+1 WHERE path=?1",
+                    rusqlite::params![p, now],
+                )?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        });
+    }
 
     // Snapshot-held space as a first-class finding. Without this the UI shows
     // a big reclaimable total that the disk will not actually hand back.
@@ -918,9 +1378,14 @@ fn run_scan(store: crate::db::SharedStore, scan_id: String, cfg: ScanCfg, cancel
                 ],
             )?;
         }
+        // `AND status='running'` so a walker that eventually unblocks cannot
+        // overwrite the watchdog's verdict. A scan the watchdog declared
+        // stalled stays stalled: the row that told the truth wins over the one
+        // that arrived twenty minutes late claiming success.
         c.execute(
             "UPDATE reclaim_scans SET status=?2, finished_at=?3, dirs_walked=?4, files_walked=?5,
-                 bytes_seen=?6, current_path=NULL, df_free=?7 WHERE id=?1",
+                 bytes_seen=?6, current_path=NULL, current_phase=NULL, df_free=?7
+             WHERE id=?1 AND status='running'",
             rusqlite::params![
                 sid,
                 if cancelled { "cancelled" } else { "done" },
@@ -939,7 +1404,8 @@ fn run_scan(store: crate::db::SharedStore, scan_id: String, cfg: ScanCfg, cancel
     match res {
         Ok(_) => tracing::info!(
             scan = %scan_id, findings = n_find, tree_nodes = n_tree,
-            elapsed_s = elapsed, cancelled, "reclaim scan finished"
+            elapsed_s = elapsed, cancelled, skipped_dirs = n_skipped,
+            "reclaim scan finished"
         ),
         // A scan that dies here leaves a row stuck in 'running', which blocks
         // every future scan — so it must be loud, not a silent thread exit.
@@ -1012,7 +1478,7 @@ async fn get_scan(
 
     let scan = conn.query_row(
         "SELECT id, started_at, finished_at, status, roots, error, dirs_walked, files_walked,
-                bytes_seen, current_path, df_total, df_free, snapshot_count
+                bytes_seen, current_path, df_total, df_free, snapshot_count, current_phase
          FROM reclaim_scans WHERE id = ?1",
         [&id],
         |r| {
@@ -1030,6 +1496,10 @@ async fn get_scan(
                 "df_total": r.get::<_, Option<i64>>(10)?,
                 "df_free": r.get::<_, Option<i64>>(11)?,
                 "snapshot_count": r.get::<_, Option<i64>>(12)?,
+                // Which of the two identical-looking stalls this was. Absent
+                // from the first version, which is why a wedged scan could only
+                // report that it had stopped, never where or in what.
+                "current_phase": r.get::<_, Option<String>>(13)?,
             }))
         },
     );
@@ -1089,7 +1559,79 @@ async fn get_scan(
         })
         .unwrap_or_default();
 
-    Json(json!({"scan": scan, "findings": findings, "totals": totals})).into_response()
+    // Shipped with every scan, not behind its own call, because "what did you
+    // NOT look at" is part of reading the result honestly: a home directory
+    // total that silently omits a subtree is a confident wrong answer.
+    let skipped = read_skips(&conn);
+
+    Json(json!({"scan": scan, "findings": findings, "totals": totals, "skipped": skipped}))
+        .into_response()
+}
+
+fn read_skips(conn: &rusqlite::Connection) -> Vec<serde_json::Value> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT path, reason, detail, first_seen, last_seen, hits
+           FROM reclaim_skipped ORDER BY reason, path",
+    ) else {
+        return vec![];
+    };
+    stmt.query_map([], |r| {
+        let reason: String = r.get(1)?;
+        let hits: i64 = r.get(5)?;
+        Ok(json!({
+            "path": r.get::<_, String>(0)?,
+            "reason": reason,
+            "detail": r.get::<_, Option<String>>(2)?,
+            "first_seen": r.get::<_, i64>(3)?,
+            "last_seen": r.get::<_, i64>(4)?,
+            "hits": hits,
+            // Whether this row is actually EXCLUDING anything, as opposed to
+            // being a recorded observation waiting for corroboration. Without
+            // it the list reads as "these are all skipped", which is the
+            // view-disagrees-with-the-mechanism failure: a reader would see
+            // ~/Downloads listed and conclude it was no longer scanned.
+            "active": reason == "provider" || hits >= STALL_HITS_TO_SKIP,
+        }))
+    })
+    .map(|rows| rows.flatten().collect())
+    .unwrap_or_default()
+}
+
+async fn list_skipped(State(state): State<AppState>) -> Response {
+    match state.store.read() {
+        Ok(c) => Json(json!({"skipped": read_skips(&c)})).into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct SkipPath {
+    path: String,
+}
+
+/// Forget a skip, so the next scan tries that directory again.
+///
+/// The exit condition for a learned exemption. A filesystem that hung once may
+/// answer next week, and without this the skip list is a one-way ratchet whose
+/// coverage only ever shrinks — the failure mode where a cleanup scan quietly
+/// stops looking at the places most worth cleaning.
+async fn unskip(State(state): State<AppState>, Query(q): Query<SkipPath>) -> Response {
+    let path = q.path.clone();
+    match state.store.write(move |c| {
+        let n = c.execute("DELETE FROM reclaim_skipped WHERE path=?1", [&path])?;
+        Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+    }) {
+        Ok(r) if r.applied => {
+            tracing::info!(path = %q.path, "reclaim skip cleared; next scan will try it again");
+            Json(json!({"ok": true, "path": q.path})).into_response()
+        }
+        Ok(_) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "not skipped", "path": q.path})),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 async fn cancel_scan(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -1270,7 +1812,9 @@ async fn create_quarantine(
             refused.push(json!({"path": raw, "reason": "does not exist"}));
             continue;
         }
-        let sz = subtree_totals(&p, 0, &cancel).bytes.max(
+        // Sizing one quarantine candidate, not a scan: no watchdog is reading
+        // this position, so it gets its own throwaway.
+        let sz = subtree_totals(&p, 0, &cancel, &ScanPos::new()).bytes.max(
             std::fs::symlink_metadata(&p).map(|m| m.len()).unwrap_or(0),
         );
         // Preserve the original path shape under the batch dir so restore is
@@ -1581,6 +2125,7 @@ mod tests {
         let home = home_dir();
         let must_allow: Vec<PathBuf> = vec![
             home.join(".amux/rust-build-target"),
+            home.join(".amux/rust-build-target-e2e-head"),
             home.join("Library/Caches"),
             home.join("Library/Developer/Xcode/DerivedData"),
             home.join(".ollama/models"),
@@ -1669,5 +2214,284 @@ mod tests {
         assert_eq!(kind_of("lib.rlib"), "build");
         assert_eq!(kind_of("main.rs"), "code");
         assert_eq!(kind_of("no-extension"), "other");
+    }
+
+    fn cfg_for(root: &FsPath) -> ScanCfg {
+        ScanCfg {
+            roots: vec![root.to_path_buf()],
+            tree_depth: 8,
+            large_file_floor: u64::MAX, // no findings; these tests are about the walk
+            stale_age_secs: i64::MAX,
+            // Never true in a test. See the field's own comment: this is what
+            // made two of these tests walk the whole machine.
+            include_devtools: false,
+        }
+    }
+
+    /// A walk must stay inside the roots it was given.
+    ///
+    /// It did not. `devtool_roots()` is a list of REAL absolute paths, walked
+    /// unconditionally at the end of every `walk()`, so a unit test pointed at
+    /// a three-file temp directory also scanned `~/.cache`, `~/Library/Caches`
+    /// and a 15GB shared cargo target dir under background I/O priority. The
+    /// two tests that call `walk()` ran for fourteen hours at 0% CPU, and
+    /// because cargo serialises on a single build lock they took every other
+    /// lane's `cargo test` down with them — a peer had to start gating with
+    /// `--skip api::reclaim` to get a green suite.
+    ///
+    /// The assertion is on PATHS rather than on elapsed time, because a timing
+    /// assertion on a shared machine at load 95 is a flake generator. A leaked
+    /// devtool root shows up as a finding outside the tempdir, which is exact.
+    #[test]
+    fn a_walk_stays_inside_the_roots_it_was_given() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("f.bin"), vec![0u8; 512]).expect("write");
+
+        let pos = ScanPos::new();
+        let cancel = AtomicBool::new(false);
+        let skip = std::collections::HashSet::new();
+        let mut noop = |_: u64, _: u64, _: u64, _: &FsPath, _: &mut Vec<Finding>| {};
+        let out = walk(&cfg_for(dir.path()), &cancel, &pos, &skip, &mut noop);
+
+        // Non-vacuity: a walk that produced nothing would satisfy the stray
+        // check trivially, and an empty filter result is indistinguishable from
+        // a correct one on the rows alone.
+        assert!(!out.tree.is_empty(), "the walk must have recorded something");
+
+        let root = dir.path();
+        let strays: Vec<String> = out
+            .findings
+            .iter()
+            .map(|f| f.path.clone())
+            .chain(out.tree.keys().cloned())
+            .filter(|p| !p.starts_with(root))
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            strays.is_empty(),
+            "the walk left its roots and touched: {strays:?}"
+        );
+    }
+
+    /// The property that makes a stall diagnosable: at the moment the walk is
+    /// about to enter a directory, the published position IS that directory.
+    ///
+    /// It fails if `pos.set` moves after `read_dir` — which is the version that
+    /// cannot answer, because the syscall that hangs is the one in between.
+    /// The old code published every 64th directory instead, so a wedge named
+    /// some ancestor up to 64 pops earlier and the real culprit was never
+    /// written down anywhere.
+    #[test]
+    fn position_names_the_directory_about_to_be_read_not_the_last_one_finished() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for i in 0..12 {
+            let sub = dir.path().join(format!("sub{i}"));
+            std::fs::create_dir(&sub).expect("mkdir");
+            std::fs::write(sub.join("f.bin"), vec![0u8; 64]).expect("write");
+        }
+
+        let pos = ScanPos::new();
+        let cancel = AtomicBool::new(false);
+        let skip = std::collections::HashSet::new();
+        let mut mismatches: Vec<String> = Vec::new();
+        let mut calls = 0usize;
+        {
+            let mut progress =
+                |_d: u64, _f: u64, _b: u64, cur: &FsPath, _p: &mut Vec<Finding>| {
+                    calls += 1;
+                    let (path, phase, _) = pos.read();
+                    if path != cur.to_string_lossy() || phase != "readdir" {
+                        mismatches.push(format!("at {cur:?}: published {phase} at {path}"));
+                    }
+                };
+            walk(&cfg_for(dir.path()), &cancel, &pos, &skip, &mut progress);
+        }
+
+        // The 700ms throttle lives in run_scan's callback, not here, so every
+        // directory reports — 13 of them (root + 12 subdirectories).
+        assert!(calls >= 13, "progress must fire per directory, saw {calls}");
+        assert!(mismatches.is_empty(), "position lagged the walk: {mismatches:?}");
+    }
+
+    /// A directory on the skip list is stepped over, and SAID to be stepped
+    /// over, while its siblings are still walked.
+    ///
+    /// The silent-skip version of this passes a scan that quietly omits a
+    /// subtree, which is the same wrong answer as a scan that crashes, except
+    /// it is delivered with a completion status.
+    #[test]
+    fn a_skipped_directory_is_reported_and_its_siblings_still_walked() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hazard = dir.path().join("hazard");
+        let fine = dir.path().join("fine");
+        std::fs::create_dir(&hazard).expect("mkdir");
+        std::fs::create_dir(&fine).expect("mkdir");
+        std::fs::write(hazard.join("big.bin"), vec![9u8; 40_000]).expect("write");
+        std::fs::write(fine.join("small.bin"), vec![1u8; 4_000]).expect("write");
+
+        let pos = ScanPos::new();
+        let cancel = AtomicBool::new(false);
+        let mut skip = std::collections::HashSet::new();
+        skip.insert(hazard.clone());
+        let mut noop = |_: u64, _: u64, _: u64, _: &FsPath, _: &mut Vec<Finding>| {};
+        let out = walk(&cfg_for(dir.path()), &cancel, &pos, &skip, &mut noop);
+
+        assert_eq!(out.skipped, vec![hazard.clone()], "the skip must be reported");
+        assert!(
+            out.bytes >= 4_000 && out.bytes < 40_000,
+            "sibling walked, hazard not: got {} bytes",
+            out.bytes
+        );
+
+        // Without the skip the same tree yields the hazard's bytes too, so the
+        // assertion above is discriminating rather than merely satisfiable.
+        let empty = std::collections::HashSet::new();
+        let full = walk(&cfg_for(dir.path()), &cancel, &pos, &empty, &mut noop);
+        assert!(
+            full.bytes > out.bytes,
+            "control: an unskipped walk must see MORE ({} vs {})",
+            full.bytes,
+            out.bytes
+        );
+    }
+
+    /// The reaper must not destroy the evidence it exists to expose.
+    ///
+    /// The first version cleared `current_path`, so the scan that wedged at
+    /// 1,087 directories came back saying only that the server had restarted —
+    /// and locating the actual culprit took a hand-run walk with a stopwatch.
+    #[test]
+    fn reap_preserves_the_position_a_dead_scan_died_at() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store: crate::db::SharedStore =
+            Arc::new(crate::db::Store::open(&dir.path().join("t.db")).expect("open"));
+        store
+            .write(|c| {
+                c.execute(
+                    "INSERT INTO reclaim_scans
+                       (id, started_at, status, roots, dirs_walked, files_walked, bytes_seen,
+                        current_path, current_phase)
+                     VALUES ('S1', 1, 'running', '[]', 1087, 28209, 0,
+                             '/Users/ethan/Library/Mobile Documents', 'readdir')",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .expect("seed");
+
+        reap_orphaned_scans(&store);
+
+        let conn = store.read().expect("read");
+        let (status, path, err): (String, Option<String>, String) = conn
+            .query_row(
+                "SELECT status, current_path, error FROM reclaim_scans WHERE id='S1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("row");
+        assert_eq!(status, "interrupted");
+        assert_eq!(path.as_deref(), Some("/Users/ethan/Library/Mobile Documents"));
+        assert!(
+            err.contains("readdir at /Users/ethan/Library/Mobile Documents"),
+            "the error must name where it died, got: {err}"
+        );
+    }
+
+    /// Provider roots are skipped by default, and a skip can be undone.
+    ///
+    /// A one-way ratchet would let the scan's coverage shrink silently over
+    /// time, which is worse than the hang it is avoiding: a hang is visible.
+    #[test]
+    fn provider_roots_seed_as_skips_and_can_be_cleared() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store: crate::db::SharedStore =
+            Arc::new(crate::db::Store::open(&dir.path().join("t.db")).expect("open"));
+
+        let skips = load_skips(&store);
+        let icloud = home_dir().join("Library/Mobile Documents");
+        assert!(skips.contains(&icloud), "iCloud provider root must be skipped by default");
+
+        // Seeding twice must not duplicate or resurrect a cleared row.
+        let again = load_skips(&store);
+        assert_eq!(skips.len(), again.len(), "seeding must be idempotent");
+
+        let p = icloud.to_string_lossy().into_owned();
+        store
+            .write(move |c| {
+                let n = c.execute("DELETE FROM reclaim_skipped WHERE path=?1", [&p])?;
+                Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+            })
+            .expect("delete");
+        let conn = store.read().expect("read");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM reclaim_skipped", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(n as usize, skips.len() - 1, "clearing a skip must remove exactly one");
+    }
+
+    /// A learned skip records WHY, so a future reader can tell an intentional
+    /// exemption from a filesystem that hung once during a transient outage.
+    /// One stall records an observation; it does not create an exemption.
+    ///
+    /// The version without this shipped, and its first production run ended on
+    /// `~/Downloads` after 48 quiet seconds and permanently excluded it. That
+    /// directory answers readdir in 2 seconds with 318 entries — it was
+    /// contention on a machine running ~50 agents, on a disk the scan itself
+    /// was busy reading. A detector whose action is a silent permanent hole in
+    /// the scan has to need more than one reading.
+    #[test]
+    fn one_stall_records_but_does_not_exempt_and_two_does() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store: crate::db::SharedStore =
+            Arc::new(crate::db::Store::open(&dir.path().join("t.db")).expect("open"));
+        let victim = "/Users/someone/Downloads";
+
+        record_stalled_dir(&store, victim.into(), "quiet 300s".into());
+        let after_one = load_skips(&store);
+        assert!(
+            !after_one.contains(&PathBuf::from(victim)),
+            "one stall must NOT exempt a directory"
+        );
+
+        record_stalled_dir(&store, victim.into(), "quiet 300s".into());
+        let after_two = load_skips(&store);
+        assert!(
+            after_two.contains(&PathBuf::from(victim)),
+            "a second stall on the same path must take effect"
+        );
+
+        // Control: the row existed the whole time, so the first assertion is
+        // about the SKIP rule and not about a missing record.
+        let conn = store.read().expect("read");
+        let hits: i64 = conn
+            .query_row(
+                "SELECT hits FROM reclaim_skipped WHERE path=?1",
+                [victim],
+                |r| r.get(0),
+            )
+            .expect("the observation must be recorded from the first stall");
+        assert_eq!(hits, 2);
+    }
+
+    #[test]
+    fn a_stalled_directory_is_recorded_with_its_reason_and_counts_repeats() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store: crate::db::SharedStore =
+            Arc::new(crate::db::Store::open(&dir.path().join("t.db")).expect("open"));
+
+        record_stalled_dir(&store, "/mnt/dead-nfs".into(), "readdir did not return after 45s".into());
+        record_stalled_dir(&store, "/mnt/dead-nfs".into(), "readdir did not return after 45s".into());
+
+        let conn = store.read().expect("read");
+        let (reason, detail, hits): (String, String, i64) = conn
+            .query_row(
+                "SELECT reason, detail, hits FROM reclaim_skipped WHERE path='/mnt/dead-nfs'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("row");
+        assert_eq!(reason, "stalled");
+        assert!(detail.contains("45s"), "detail must carry the stall duration: {detail}");
+        assert_eq!(hits, 2, "a repeat stall must increment rather than insert a second row");
     }
 }

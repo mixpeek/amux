@@ -275,7 +275,14 @@ async fn post_message(
          -H 'Content-Type: application/json' -d '{{\"text\":\"YOUR REPLY HERE\"}}'"
     );
     let (delivered, delivery_status) =
-        session_verbs::send_text(&state, &recipient, &wrapped, true).await;
+        session_verbs::send_text(
+            &state,
+            &recipient,
+            &wrapped,
+            true,
+            session_verbs::SendOrigin::Automation,
+        )
+        .await;
 
     Json(json!({
         "ok": true,
@@ -306,7 +313,14 @@ async fn end_channel(
         "[channel ended by @{safe_closer}] no reply needed — the channel has been closed."
     );
     if session_verbs::is_running(&other).await {
-        let _ = session_verbs::send_text(&state, &other, &notice, true).await;
+        let _ = session_verbs::send_text(
+            &state,
+            &other,
+            &notice,
+            true,
+            session_verbs::SendOrigin::Automation,
+        )
+        .await;
     }
 
     let other_for_file = other.clone();

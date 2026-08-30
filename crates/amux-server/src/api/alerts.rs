@@ -97,7 +97,7 @@ impl AlertChannels for RealChannels {
         }
         let mut last_err = String::new();
         for from in &accounts {
-            match gc.compose_send(from, to, subject, body, "", "", "", "", true).await {
+            match gc.compose_send(from, to, subject, body, "", "", "", "", true, &[]).await {
                 Ok(_) => return (true, format!("email via {from}")),
                 Err(e) => last_err = format!("email error via {from}: {}", truncate(&e, 80)),
             }
@@ -182,6 +182,34 @@ async fn send_sms(phone: &str, text: &str) -> (bool, String) {
             Err(e) => (false, format!("twilio error: {}", truncate(&e.to_string(), 120))),
         };
     }
+    // Circuit breaker on the TCC wall (AMUX-3492). With the Automation
+    // permission missing, the osascript below hangs to the full 12s timeout —
+    // and it did so INLINE on every owner alert, three pages in three days at
+    // a near-identical 12.6-12.7s. A wall that just ate 12s will eat the next
+    // 12s too, so after a timeout the channel is skipped (saying so in the
+    // channels map, never silently — AMUX-2938) until the cooldown passes,
+    // then probed again so a granted permission resumes within one window.
+    // Fast errors are NOT breakered: they cost nothing and carry their own
+    // diagnosis.
+    //
+    // The wall stamp PERSISTS across restarts (AMUX-3500 corrected AMUX-3492's
+    // own judgment here). The first cut kept it in-process, reasoning "a
+    // restart re-probing once is the behavior you want" — which assumed
+    // restarts are rare. On this machine the auto-builder restarts the server
+    // on every landed commit (~6x on the day this shipped), so with sparse
+    // alerts virtually EVERY page was a fresh process paying the 12s probe:
+    // the breaker was measurably inert (12,674ms at 11:28 pre-fix, 12,526ms
+    // at 14:11 post-fix, each the first alert on its process). The wall is
+    // per-MACHINE state — a TCC permission — so the stamp is a file under
+    // AMUX_HOME (mtime = wall time), machine-scoped like the thing it
+    // records. The atomic stays as the in-process fast path.
+    let wall_ts = IMSG_WALL_TS
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .max(imessage_wall_stamp_ts(&home));
+    if let Some(skip) = imessage_breaker_verdict(wall_ts, now_f64() as u64, imessage_retry_s(&home))
+    {
+        return (false, skip);
+    }
     let run = tokio::process::Command::new("osascript")
         .args([
             "-e", "on run {msg, ph}",
@@ -197,18 +225,90 @@ async fn send_sms(phone: &str, text: &str) -> (bool, String) {
         .arg(phone)
         .output();
     match tokio::time::timeout(std::time::Duration::from_secs(12), run).await {
-        Err(_) => (
-            false,
-            "imessage timed out — grant Automation permission for Messages, or set TWILIO_* creds"
-                .into(),
-        ),
+        Err(_) => {
+            IMSG_WALL_TS.store(now_f64() as u64, std::sync::atomic::Ordering::Relaxed);
+            stamp_imessage_wall(&home);
+            // TWO-FIXES: the 12s burn used to leave no log line of its own —
+            // only the channel string in the ledger, invisible unless every
+            // channel failed. The wall is now greppable where sweeps look.
+            tracing::warn!(
+                "[urgent-alert] imessage hit the 12s TCC wall — Automation permission for \
+                 Messages is missing; channel breakered for {}s (AMUX_IMESSAGE_RETRY_S)",
+                imessage_retry_s(&home)
+            );
+            (
+                false,
+                "imessage timed out — grant Automation permission for Messages, or set TWILIO_* creds"
+                    .into(),
+            )
+        }
         Ok(Err(e)) => (false, format!("imessage error: {}", truncate(&e.to_string(), 100))),
-        Ok(Ok(out)) if out.status.success() => (true, "imessage".into()),
+        Ok(Ok(out)) if out.status.success() => {
+            IMSG_WALL_TS.store(0, std::sync::atomic::Ordering::Relaxed);
+            clear_imessage_wall(&home);
+            (true, "imessage".into())
+        }
         Ok(Ok(out)) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
             (false, format!("imessage error: {}", truncate(stderr.trim(), 100)))
         }
     }
+}
+
+/// The wall stamp's file: mtime = when the 12s TCC timeout last fired.
+/// Machine-scoped on purpose (see the breaker comment above).
+fn imessage_wall_stamp_path(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("imessage-wall.stamp")
+}
+
+/// Epoch seconds of the persisted wall, 0 when none (or unreadable — an
+/// absent stamp means probe, which fails toward one 12s wait, never toward
+/// a silently skipped channel).
+fn imessage_wall_stamp_ts(home: &std::path::Path) -> u64 {
+    std::fs::metadata(imessage_wall_stamp_path(home))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn stamp_imessage_wall(home: &std::path::Path) {
+    let _ = std::fs::write(
+        imessage_wall_stamp_path(home),
+        b"mtime of this file = last 12s iMessage TCC-wall timeout (AMUX-3500)\n",
+    );
+}
+
+fn clear_imessage_wall(home: &std::path::Path) {
+    let _ = std::fs::remove_file(imessage_wall_stamp_path(home));
+}
+
+/// Epoch seconds of the last 12s-timeout failure; 0 = closed (send normally).
+static IMSG_WALL_TS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn imessage_retry_s(home: &std::path::Path) -> u64 {
+    effective_env(home, "AMUX_IMESSAGE_RETRY_S")
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(900)
+}
+
+/// Pure breaker decision, split out so the skip/probe boundary is testable
+/// without a Messages.app or a 12s wait. Some(reason) = skip the send.
+fn imessage_breaker_verdict(last_wall_ts: u64, now_s: u64, retry_s: u64) -> Option<String> {
+    if last_wall_ts == 0 {
+        return None;
+    }
+    let elapsed = now_s.saturating_sub(last_wall_ts);
+    if elapsed >= retry_s {
+        return None; // cooldown over — probe the channel again
+    }
+    Some(format!(
+        "imessage skipped — hit the 12s Automation-permission wall {elapsed}s ago \
+         (AMUX-3492); next probe in {}s. Grant Automation permission for Messages \
+         or set TWILIO_* creds",
+        retry_s - elapsed
+    ))
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -340,12 +440,35 @@ pub(crate) fn hdr_worker(headers: &HeaderMap) -> String {
 
 // ---- /api/alert/config -----------------------------------------------------
 
+/// The send path's own SMS gate, shared with `/api/alert/config` so the view
+/// and the send cannot disagree. Found by amux-frustrations verifying AC-362:
+/// config reported `"sms": true` in exactly the state where a real send
+/// reports "no phone configured (AMUX_OWNER_PHONE is empty)" — the flag is a
+/// real fact (the toggle), but a reader checking it believed a send would
+/// text. Returns (deliverable, blocked_reason); the reason strings are the
+/// send path's own, verbatim, so the two surfaces stay in string parity.
+fn sms_gate(home: &std::path::Path) -> (bool, Option<&'static str>) {
+    if effective_env(home, "AMUX_URGENT_SMS").unwrap_or_else(|| "1".into()) == "0" {
+        return (false, Some("disabled (AMUX_URGENT_SMS=0)"));
+    }
+    if effective_env(home, "AMUX_OWNER_PHONE").unwrap_or_default().is_empty() {
+        return (false, Some("no phone configured (AMUX_OWNER_PHONE is empty)"));
+    }
+    (true, None)
+}
+
 async fn get_config() -> Response {
     let home = amux_home();
+    let (sms_deliverable, sms_blocked) = sms_gate(&home);
     Json(json!({
         "phone": effective_env(&home, "AMUX_OWNER_PHONE").unwrap_or_default(),
         "push": effective_env(&home, "AMUX_URGENT_PUSH").unwrap_or_else(|| "1".into()) != "0",
+        // `sms` stays the raw TOGGLE (existing consumers render it as the
+        // setting); deliverability is its own field because they genuinely
+        // differ — a toggle can be on with no phone to text.
         "sms": effective_env(&home, "AMUX_URGENT_SMS").unwrap_or_else(|| "1".into()) != "0",
+        "sms_deliverable": sms_deliverable,
+        "sms_blocked_reason": sms_blocked,
         "sms_provider": if effective_env(&home, "TWILIO_ACCOUNT_SID").is_some() { "twilio" } else { "imessage" },
     }))
     .into_response()
@@ -630,10 +753,10 @@ async fn post_owner(
     // AMUX_OWNER_PHONE present but empty), which is very likely a deliberate
     // response to the 38-SMS night of 2026-08-03 — see cmd_alert in the CLI.
     // Deliberate or not, the alarm must say so out loud.
-    if !sms_enabled {
-        out_channels.insert("sms".into(), json!("disabled (AMUX_URGENT_SMS=0)"));
-    } else if phone.is_empty() {
-        out_channels.insert("sms".into(), json!("no phone configured (AMUX_OWNER_PHONE is empty)"));
+    // The reason comes from the SAME gate /api/alert/config now reports, so
+    // the config view and a real send can never name different truths.
+    if let (false, Some(reason)) = sms_gate(&home) {
+        out_channels.insert("sms".into(), json!(reason));
     }
     if sms_enabled && !phone.is_empty() {
         // Stamp the originating session so the owner sees WHICH session
@@ -652,9 +775,20 @@ async fn post_owner(
     // inbox (self-send). This is why the fire alarm no longer depends on a push
     // subscription he never made or a phone he cleared after the 38-SMS night.
     let email_enabled = effective_env(&home, "AMUX_URGENT_EMAIL").unwrap_or_else(|| "1".into()) != "0";
-    let owner_email = effective_env(&home, "AMUX_OWNER_EMAIL")
-        .filter(|e| !e.trim().is_empty())
-        .or_else(|| crate::integrations::email::connected_accounts_by_freshness_in(&home).into_iter().next());
+    let pinned_email = effective_env(&home, "AMUX_OWNER_EMAIL").filter(|e| !e.trim().is_empty());
+    let owner_email = pinned_email.clone().or_else(|| {
+        crate::integrations::email::connected_accounts_by_freshness_in(&home).into_iter().next()
+    });
+    // SAY WHICH INBOX, AND WHY (AMUX-3524). With AMUX_OWNER_EMAIL unset the
+    // destination is "whichever connected account was refreshed most
+    // recently" — so the SAME alert class lands in different inboxes over
+    // time, and nothing anywhere said so. Measured over 7 days: 9 pages to
+    // info@, 5 to a PERSONAL gmail, 1 to ethan@, which is most of why the
+    // fire alarm felt like noise. The fallback stays (an alarm with no
+    // configured address must still reach someone) but it is no longer
+    // silent: the channels map carries the destination and the reason, and
+    // an unpinned send WARNs where sweeps look.
+    let owner_email_pinned = pinned_email.is_some();
     if !email_enabled {
         out_channels.insert("email".into(), json!("disabled (AMUX_URGENT_EMAIL=0)"));
     } else if owner_email.is_none() {
@@ -669,7 +803,19 @@ async fn post_owner(
             };
             let (ok, detail) = channels.email(to, &subject, &msg).await;
             email_delivered = ok;
-            out_channels.insert("email".into(), json!(if ok { detail } else { format!("failed: {detail}") }));
+            if !owner_email_pinned {
+                tracing::warn!(
+                    destination = %to,
+                    "[urgent-alert] AMUX_OWNER_EMAIL is unset — paged the most recently \
+                     refreshed connected account, so this alert class moves between inboxes. \
+                     Pin one address in server.env (AMUX-3524)."
+                );
+            }
+            let how = if owner_email_pinned { "AMUX_OWNER_EMAIL" } else { "UNPINNED: freshest connected account (set AMUX_OWNER_EMAIL)" };
+            out_channels.insert(
+                "email".into(),
+                json!(if ok { format!("{detail} -> {to} [{how}]") } else { format!("failed: {detail}") }),
+            );
         }
     }
     record_owner_alert(&state, &origin, &session, &msg, &reason, &out_channels, false).await;
@@ -775,6 +921,76 @@ async fn get_owner_ledger(State(state): State<AppState>, Query(qp): Query<Ledger
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AMUX-3492 — the breaker's whole value is at its three boundaries: a
+    /// closed breaker must send (or every alert silently loses a channel), a
+    /// fresh wall must skip WITH the reason and retry time (a bare skip is
+    /// AMUX-2938's indistinguishable-absence bug), and an expired cooldown
+    /// must probe again (or a granted permission never resumes).
+    #[test]
+    fn imessage_breaker_skips_only_inside_the_cooldown_and_says_why() {
+        // Closed (never walled): send.
+        assert_eq!(imessage_breaker_verdict(0, 1_000_000, 900), None);
+        // Walled 10s ago, 900s cooldown: skip, naming elapsed and remaining.
+        let skip = imessage_breaker_verdict(1_000_000, 1_000_010, 900).expect("must skip");
+        assert!(skip.contains("10s ago"), "elapsed missing: {skip}");
+        assert!(skip.contains("890s"), "retry-remaining missing: {skip}");
+        assert!(skip.contains("Automation permission"), "remedy missing: {skip}");
+        // Cooldown exactly over, and past it: probe again.
+        assert_eq!(imessage_breaker_verdict(1_000_000, 1_000_900, 900), None);
+        assert_eq!(imessage_breaker_verdict(1_000_000, 1_001_000, 900), None);
+        // Clock skew (wall ts in the future): treat as fresh, skip — never
+        // underflow into a probe storm.
+        assert!(imessage_breaker_verdict(1_000_100, 1_000_000, 900).is_some());
+    }
+
+    /// AMUX-3500 — the wall stamp must survive a process restart, because the
+    /// builder restarts this server on every landed commit and an in-process
+    /// breaker was measurably inert (every alert was a fresh process paying
+    /// the 12s probe). File semantics: absent = 0 (probe), stamped = now,
+    /// cleared = 0 again — and a stamp in home A is invisible from home B
+    /// (perf harnesses boot temp homes; their probes must not inherit the
+    /// real machine's wall).
+    #[test]
+    fn imessage_wall_stamp_survives_what_a_process_restart_destroys() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(imessage_wall_stamp_ts(dir.path()), 0, "absent stamp = probe");
+        stamp_imessage_wall(dir.path());
+        let now = crate::config::now_f64() as u64;
+        let ts = imessage_wall_stamp_ts(dir.path());
+        assert!(ts > 0 && now.abs_diff(ts) <= 5, "stamp must read ≈now, got {ts} vs {now}");
+        let other = tempfile::tempdir().unwrap();
+        assert_eq!(imessage_wall_stamp_ts(other.path()), 0, "stamps are per-home");
+        clear_imessage_wall(dir.path());
+        assert_eq!(imessage_wall_stamp_ts(dir.path()), 0, "cleared stamp = probe again");
+    }
+
+    /// The config view and the send path share one SMS gate (found verifying
+    /// AC-362: config said "sms": true in exactly the state where a real send
+    /// reports "no phone configured"). Every case writes BOTH keys into the
+    /// file because effective_env is file-first and this machine's process env
+    /// carries its own values — an absent key would make the test read the
+    /// host, not the fixture.
+    #[test]
+    fn sms_gate_matches_the_send_paths_own_predicate() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = |sms: &str, phone: &str| {
+            std::fs::write(
+                dir.path().join("server.env"),
+                format!("AMUX_URGENT_SMS={sms}\nAMUX_OWNER_PHONE={phone}\n"),
+            )
+            .unwrap();
+        };
+        env("0", "+15551234567");
+        assert_eq!(sms_gate(dir.path()), (false, Some("disabled (AMUX_URGENT_SMS=0)")));
+        env("1", "");
+        assert_eq!(
+            sms_gate(dir.path()),
+            (false, Some("no phone configured (AMUX_OWNER_PHONE is empty)"))
+        );
+        env("1", "+15551234567");
+        assert_eq!(sms_gate(dir.path()), (true, None));
+    }
 
     /// The fire-alarm honesty rule (AC-347 / mixpeek-finances). "sent" is
     /// legitimate ONLY when an endpoint accepted the push (2xx). The whole
@@ -943,12 +1159,20 @@ mod tests {
         let _guard = test_env::set_home(dir.path());
         let app = app(MockChannels::ok());
 
-        // Python defaults: no phone, both channels on, imessage provider.
+        // Python defaults: no phone, both channels on, imessage provider —
+        // and the toggle-on/no-phone state must SAY sms is not deliverable
+        // (the AC-362 residual: "sms": true beside phone "" read as "a send
+        // will text" when a real send reports "no phone configured").
         let (st, v) = send(&app, "GET", "/api/alert/config", &[], None).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(
             v,
-            json!({ "phone": "", "push": true, "sms": true, "sms_provider": "imessage" })
+            json!({
+                "phone": "", "push": true, "sms": true,
+                "sms_deliverable": false,
+                "sms_blocked_reason": "no phone configured (AMUX_OWNER_PHONE is empty)",
+                "sms_provider": "imessage"
+            })
         );
 
         // PATCH applies only the keys present in the body.
@@ -1002,13 +1226,35 @@ mod tests {
         // Email is a channel now (AMUX-3203), but the temp home has no connected
         // Gmail account and AMUX_OWNER_EMAIL is unset, so it reports why rather
         // than sending — push + sms are unchanged.
+        // THE FAILURE MESSAGE MUST NAME THE HOME IT ACTUALLY READ (AMUX-3719).
+        //
+        // Observed failing once in 4 full-suite runs on 2026-08-25 with
+        // `email: "email via ethan@example.com -> pinned@example.com
+        // [AMUX_OWNER_EMAIL]"` — a value that can only come from ANOTHER test's
+        // fixture home (a_pinned_owner_email_is_used_and_reported_as_pinned
+        // writes that pin into its own tempdir). Not reproducible: passes alone,
+        // passes as a module, passed three consecutive full runs afterwards.
+        //
+        // The mechanism could not be determined from the failure output, because
+        // the assertion printed the rendered channels and nothing about WHICH
+        // home produced them — so the one datum that separates "the guard leaked"
+        // from "this test resolved a different home" was absent from the only
+        // artifact the flake leaves behind. That missing datum is the bug worth
+        // fixing here (ethos rule 4); the cause is still open on AMUX-3719.
         assert_eq!(
             v["channels"],
             json!({
                 "push": "sent",
                 "sms": "imessage",
                 "email": "no AMUX_OWNER_EMAIL and no connected Gmail account",
-            })
+            }),
+            "fixture home = {:?}\nAMUX_HOME  = {:?}\nresolved   = {:?}\n\
+             If `resolved` is not `fixture home`, this is the AMUX-3719 cross-test \
+             home leak and NOT a defect in the alert path — report the three paths \
+             above on that card rather than re-deriving them.",
+            dir.path(),
+            std::env::var("AMUX_HOME").ok(),
+            crate::config::amux_home(),
         );
         assert_eq!(v["message"], json!("prod is down\n(deploy failed)"));
         assert_eq!(v["origin"], json!("sender-a"));
@@ -1164,12 +1410,48 @@ mod tests {
         )
         .await;
         assert_eq!(v["delivered_any"], json!(true), "email must deliver the page: {v}");
-        assert_eq!(v["channels"]["email"], json!("email via ethan@example.com"));
         assert!(v.get("fallback").is_none(), "a delivered page must not carry the miss fallback");
+        // AMUX-3524: an UNPINNED destination must SAY it is unpinned and name
+        // the inbox it chose. Silence here is what let one alert class scatter
+        // across three of Ethan's inboxes for a week unnoticed.
+        let ch = v["channels"]["email"].as_str().unwrap_or_default();
+        assert!(ch.contains("ethan@example.com"), "the channel must name the destination: {ch}");
+        assert!(ch.contains("UNPINNED"), "an unset AMUX_OWNER_EMAIL must be stated: {ch}");
         // The mock received the self-send to the connected account.
         let emails = mock.emails.lock().unwrap().clone();
         assert_eq!(emails.len(), 1, "exactly one email attempt");
         assert_eq!(emails[0].0, "ethan@example.com", "owner email defaults to the connected account");
+    }
+
+    /// AMUX-3524 CONTROL — with AMUX_OWNER_EMAIL set, the destination is that
+    /// address and the channel says it was PINNED. Without this cell the
+    /// assertion above passes for a server that shouts UNPINNED unconditionally.
+    #[tokio::test]
+    async fn a_pinned_owner_email_is_used_and_reported_as_pinned() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("gmail-tokens")).unwrap();
+        // A connected account that is NOT the pinned address: if the pin were
+        // ignored, the send would go here and the test would catch it.
+        std::fs::write(dir.path().join("gmail-tokens/info@example.com.json"), "{}").unwrap();
+        set_server_env_key(dir.path(), "AMUX_URGENT_PUSH", "0").unwrap();
+        set_server_env_key(dir.path(), "AMUX_OWNER_EMAIL", "pinned@example.com").unwrap();
+        let mock = MockChannels::ok();
+        let app = app(mock.clone());
+        let (_, v) = send(
+            &app,
+            "POST",
+            "/api/alert/owner",
+            &[],
+            Some(json!({ "message": "pinned destination page" })),
+        )
+        .await;
+        let ch = v["channels"]["email"].as_str().unwrap_or_default();
+        assert!(ch.contains("pinned@example.com"), "must page the PINNED address: {ch}");
+        assert!(ch.contains("AMUX_OWNER_EMAIL"), "must report the pin as the source: {ch}");
+        assert!(!ch.contains("UNPINNED"), "a pinned send must not warn unpinned: {ch}");
+        let emails = mock.emails.lock().unwrap().clone();
+        assert_eq!(emails[0].0, "pinned@example.com", "the pin, not the connected account");
     }
 
     /// A FIRE ALARM MUST NOT REPORT SUCCESS HAVING REACHED NOBODY (AMUX-2938).

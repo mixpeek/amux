@@ -255,6 +255,84 @@ impl IcalPublisher for NoopPublisher {
     }
 }
 
+/// The publisher that ships (AMUX/SA-124, 2026-08-22): `aws s3 cp` via the
+/// CLI already on this machine, stdin-fed, no new workspace dependency —
+/// the same call shape Python's boto3 `put_object` made, headers included.
+///
+/// This exists because the NoopPublisher's honesty was not enough: the
+/// registry said `calendar_s3: unavailable` from the day of the Rust
+/// cutover, nobody read it, and Ethan's REAL Google Calendar silently
+/// served an Aug-21 snapshot while 14 events (a 12-installment settlement
+/// schedule among them, first payment days out) accumulated only in the
+/// live feed. A degraded state a human must poll IS the rule-4 second
+/// layer: a tag in a store the reader never opens.
+pub struct CliS3Publisher {
+    pub bucket: String,
+    pub key: String,
+    pub region: String,
+}
+
+impl CliS3Publisher {
+    /// Some only when the deployment configured a bucket+key AND the aws CLI
+    /// exists — is_configured stays truthful about DELIVERABILITY, not intent.
+    pub fn from_env() -> Option<Self> {
+        let get = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
+        let bucket = get("AMUX_S3_BUCKET")?;
+        let key = get("AMUX_S3_KEY")?;
+        let region = get("AMUX_S3_REGION").unwrap_or_else(|| "us-east-1".into());
+        Some(Self { bucket, key, region })
+    }
+
+    fn aws_binary() -> Option<std::path::PathBuf> {
+        ["/usr/local/bin/aws", "/opt/homebrew/bin/aws", "/usr/bin/aws"]
+            .iter()
+            .map(std::path::PathBuf::from)
+            .find(|p| p.exists())
+    }
+}
+
+impl IcalPublisher for CliS3Publisher {
+    fn is_configured(&self) -> bool {
+        !self.bucket.is_empty() && !self.key.is_empty() && Self::aws_binary().is_some()
+    }
+    fn publish(&self, ical: &str) -> Result<(), String> {
+        use std::io::Write;
+        let aws = Self::aws_binary().ok_or("aws CLI not found")?;
+        let mut child = std::process::Command::new(aws)
+            .args([
+                "s3", "cp", "-",
+                &format!("s3://{}/{}", self.bucket, self.key),
+                "--region", &self.region,
+                // Same headers Python set: content-type for Google, ETag-able
+                // caching so conditional refetches stay cheap.
+                "--content-type", "text/calendar; charset=utf-8",
+                "--cache-control", "public, max-age=900, must-revalidate",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("aws spawn failed: {e}"))?;
+        child
+            .stdin
+            .take()
+            .ok_or("aws stdin unavailable")?
+            .write_all(ical.as_bytes())
+            .map_err(|e| format!("writing feed to aws failed: {e}"))?;
+        let out = child.wait_with_output().map_err(|e| format!("aws wait failed: {e}"))?;
+        if out.status.success() {
+            tracing::info!(bucket = %self.bucket, key = %self.key, "iCal published to S3");
+            Ok(())
+        } else {
+            Err(format!(
+                "aws s3 cp exited {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>()
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

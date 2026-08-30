@@ -361,6 +361,14 @@ test('golden_realtime_convergence', async ({ browser, baseURL, request }, testIn
         timeout: 10_000,
       });
     }
+    // Drain any invalidate debounce still pending from phase 1 (AMUX-3503):
+    // the client now fetches 400ms after an SSE invalidate, and a fetch
+    // scheduled BEFORE the kill observes the board as it is WHEN IT FIRES —
+    // so without this drain, phase-2 creates landing inside that window
+    // arrive on page 2 through a legitimately pre-kill signal and the "gap
+    // is real" assert reads 8. Under the old full-push dialect this race
+    // could not exist (a push carried the state at push time).
+    await page2.waitForTimeout(700);
     const killAt = Date.now();
 
     const second = [6, 7, 8].map((n) => `${prefix} gap ${n}`);

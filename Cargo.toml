@@ -49,6 +49,14 @@ tokio-rustls = "0.26"
 rcgen = "0.13"
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"], default-features = false }
 cron = "0.12"
+# calamine: pure-Rust reader for .xlsx/.xls/.ods, so the Files viewer can render a
+# spreadsheet as a table server-side (AMUX-3343) without shipping a heavy client
+# library to a mobile-first PWA.
+calamine = "0.26"
+# jsonwebtoken: RS256 signing of the Google service-account JWT assertion for
+# domain-wide delegation (AMUX-3347), so amux mints impersonated access tokens
+# for the Mixpeek Google connectors without a per-user browser grant.
+jsonwebtoken = "9"
 proptest = "1"
 tempfile = "3"
 tower = "0.5"

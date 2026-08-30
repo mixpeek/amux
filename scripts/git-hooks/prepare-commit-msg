@@ -1,4 +1,7 @@
 #!/bin/sh
+# guard-features: interpret-trailers
+# (Drift token for install-hooks.sh — see append-only-push-guard's header for
+#  the mechanism. A vendored copy lacking a canonical token reads STALE.)
 # amux-session-stamp — tags each commit with the originating amux session, and
 # stamps `(human)` when there is none.
 #
@@ -39,7 +42,94 @@ msg_file="$1"
 # amux session names are [a-z0-9-] (see sanitize_session_name), so no lane can
 # ever be called "(human)" and a reader needs no lookup table to tell them
 # apart.
-stamp="${AMUX_SESSION:-(human)}"
+#
+# MR-43: before falling all the way to "(human)", try recovering a lane's own
+# identity from the tmux pane it is actually running in — $AMUX_SESSION can go
+# missing IN-PROCESS (spawn always injects it, session_verbs.rs) without the
+# lane having stopped being a lane. Scoped to amux- prefixed panes ONLY, so
+# this cannot touch the human case above: a human's own shell is never in one,
+# so it still falls through to "(human)" exactly as before. Not weakening the
+# exemption, only correcting which of the three causes (paragraph above) this
+# commit actually was.
+stamp="$AMUX_SESSION"
+if [ -z "$stamp" ]; then
+  _mr43_tname="$(tmux display-message -p '#S' 2>/dev/null)"
+  case "$_mr43_tname" in
+    amux-*) stamp="${_mr43_tname#amux-}" ;;
+  esac
+fi
+stamp="${stamp:-(human)}"
+
+# Guarantee the final newline BEFORE handing the file to interpret-trailers.
+# On a message file whose last line lacks its terminator, git (measured on
+# 2.39) glues the trailer straight onto that line — subject and trailer
+# become ONE paragraph, the trailer is unparseable, and the push guard then
+# reads the session's own commit as foreign and blocks its push (2026-08-22:
+# a merge commit's stamp rendered as "...'origin/main' Amux-Session: amux"
+# and cost an amend-under-pin dance to ship). No-op on well-formed files;
+# empty files are left alone (nothing to stamp a paragraph onto).
+if [ -s "$msg_file" ] && [ -n "$(tail -c 1 "$msg_file")" ]; then
+  echo >> "$msg_file"
+fi
+
+# WHICH REASONING PROCESS, not merely which lane (AMUX-3780).
+#
+# mixpeek-homepage-claude was credited with a commit they did not write: two
+# distinct Claude sessions ran under that ONE lane name on 2026-08-26 and both
+# committed, and `Amux-Session` records the lane. Their framing is the sharp
+# one — a trailer that names the lane reads exactly like a trailer that names
+# the author — and a reviewer (me) routed questions about that change to the
+# wrong party as a result.
+#
+# THE FIELD HAS TO BE ONE AMUX OWNS. Their suggested fix was to promote the
+# `Claude-Session` trailer, which b1f5a478 happened to carry. Measured: only
+# 30% of commits since that field first appeared carry it at all, because it is
+# written by Claude Code's own trailer feature and not by any amux hook. A
+# discriminator present on 30% of commits cannot answer "whose is this".
+#
+# `cc_conversation_id` is amux's own: it is the lane's transcript identity, it
+# is already maintained in the session meta, and `amux fresh` rotates it — so
+# it separates reasoning processes by construction rather than by luck.
+#
+# FAIL-OPEN, and silent when absent. A hook that blocks a commit because it
+# could not read a JSON file would be a worse bug than the one it fixes, and a
+# human commit ("(human)") has no conversation to name.
+#
+# THE GRAFT PATH, which invokes no hook at all (AMUX-3782). `git commit-tree`
+# is plumbing and fires nothing, so a graft-pushed commit carries neither
+# trailer. Measured 2026-08-26, last 400 commits on each repo's origin/main:
+# amux 380/400 stamped (95%, lanes here use `git commit`), mixpeek 202/400
+# (50%, the repo where grafting past a peer's dirty worktree is routine).
+#
+# The answer is not a second producer of the trailer block. Run THIS FILE by
+# hand on the message you are about to hand to commit-tree:
+#
+#     .git/hooks/prepare-commit-msg "$MSG"
+#     SHA=$(git commit-tree -p origin/main -F "$MSG" "$TREE")
+#
+# It takes a message file and stamps it in place, so a graft gets exactly what
+# `git commit` would have given it: both fields, the final-newline guard above,
+# and an existing peer's trailer left alone. The alternative, a hand-rolled
+# `git interpret-trailers --trailer "Amux-Session: $AMUX_SESSION"` line, had
+# already drifted before it was proposed — it stamps the session and drops the
+# conversation, because a one-liner carries only the fields its author knew
+# about. `scripts/test-graft-stamp.sh` pins the recipe above cell by cell, and
+# its cell D is exactly that difference.
+#
+# A STALE vendored copy under .git/hooks stamps a graft with whatever it would
+# have stamped a commit in the same checkout — no worse than the commit path,
+# and the SessionStart freshness hook already reports that drift by name.
+conv=""
+if [ "$stamp" != "(human)" ]; then
+  _meta="${AMUX_HOME:-$HOME/.amux}/sessions/${stamp}.meta.json"
+  if [ -r "$_meta" ]; then
+    conv="$(python3 -c 'import json,sys
+try:
+    print((json.load(open(sys.argv[1])).get("cc_conversation_id") or "").strip())
+except Exception:
+    pass' "$_meta" 2>/dev/null)"
+  fi
+fi
 
 git interpret-trailers --in-place --if-exists doNothing \
   --trailer "Amux-Session: $stamp" "$msg_file" 2>/dev/null || {
@@ -48,4 +138,15 @@ git interpret-trailers --in-place --if-exists doNothing \
   grep -q "^Amux-Session: " "$msg_file" 2>/dev/null \
     || printf '\nAmux-Session: %s\n' "$stamp" >> "$msg_file"
 }
+
+# Stamped SEPARATELY and only when known, so a missing conversation id can
+# never cost the session stamp above — the field that already works must not
+# become conditional on the field being added.
+if [ -n "$conv" ]; then
+  git interpret-trailers --in-place --if-exists doNothing \
+    --trailer "Amux-Conversation: $conv" "$msg_file" 2>/dev/null || {
+    grep -q "^Amux-Conversation: " "$msg_file" 2>/dev/null \
+      || printf 'Amux-Conversation: %s\n' "$conv" >> "$msg_file"
+  }
+fi
 exit 0

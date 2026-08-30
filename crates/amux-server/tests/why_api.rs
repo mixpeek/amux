@@ -449,3 +449,99 @@ async fn payloadless_journal_events_are_reported_as_unreconstructable() {
         "{v}"
     );
 }
+
+/// The retention horizon, which is the difference between "this card's history"
+/// and "the surviving tail of it" — two answers with identical shapes.
+///
+/// `_amux_state_events` is reaped (14d default, `AMUX_STATE_EVENTS_RETAIN_DAYS`),
+/// so its floor is a MOVING horizon. The zero-row arm always said so. Every
+/// other arm treated the rows it got as the whole story, which for anything
+/// older than the window is false in the most misleading available way: the
+/// trail renders, it is internally consistent, and it silently begins partway
+/// through.
+///
+/// Both directions are asserted in ONE test on ONE database, deliberately. A
+/// test that only pinned the old card would pass just as well against a version
+/// that flags EVERY card, which would make the caveat noise and teach readers to
+/// skip it — and a caveat nobody reads is the same defect one layer along.
+#[tokio::test]
+async fn a_card_older_than_the_journal_floor_is_told_its_trail_is_a_tail() {
+    let (app, store, _d) = app();
+    store
+        .write(|conn| {
+            // The journal floor for this database is 2026-08-09T09:00:00Z.
+            // OLD was created 2026-07-25; NEW on 2026-08-20. Same journal, same
+            // number of events each, so the only thing that can separate them is
+            // the created-vs-floor comparison.
+            conn.execute(
+                "INSERT INTO issues (id, title, desc, status, creator, created, updated) VALUES
+                   ('AM-OLD','older than the journal','d','done','x',1784937600,1786000000),
+                   ('AM-NEW','born inside the window','d','done','x',1787000000,1787000100)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO _amux_state_events (rev, entity_type, entity_id, mutation, at, payload) VALUES
+                   (1,'task','AM-OLD','{\"kind\":\"updated\"}','2026-08-09T09:00:00+00:00','{\"id\":\"AM-OLD\",\"status\":\"done\"}'),
+                   (2,'task','AM-NEW','{\"kind\":\"updated\"}','2026-08-21T09:00:00+00:00','{\"id\":\"AM-NEW\",\"status\":\"done\"}')",
+                [],
+            )?;
+            Ok(WriteOutcome { applied: false, events: vec![] })
+        })
+        .unwrap();
+
+    let journal_note = |v: &Value| -> String {
+        v["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["table"] == "_amux_state_events")
+            .and_then(|s| s["note"].as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let gaps_text = |v: &Value| -> String {
+        v["gaps"].as_array().unwrap().iter().filter_map(|g| g.as_str()).collect::<Vec<_>>().join(" | ")
+    };
+
+    // OLD: predates the floor. It has an event, so the old zero-row arm never
+    // fired; this is exactly the row count that used to read as complete.
+    let (_, old) = get(&app, "/api/why/task/AM-OLD").await;
+    let n = old["sources"].as_array().unwrap().iter()
+        .find(|s| s["table"] == "_amux_state_events").unwrap()["rows"].as_i64().unwrap();
+    assert_eq!(n, 1, "the fixture must produce a NON-empty journal probe, or this pins the zero-row arm that was already correct: {old}");
+    assert!(
+        journal_note(&old).contains("surviving TAIL"),
+        "a card predating the journal floor must be told its trail is truncated, not handed 1 event as its history: {}",
+        journal_note(&old)
+    );
+    assert!(
+        gaps_text(&old).contains("surviving TAIL"),
+        "and truncation is a GAP, not merely a footnote on the probe: {}",
+        gaps_text(&old)
+    );
+    assert!(
+        journal_note(&old).contains("2026-08-09"),
+        "the floor must be given as a DATE the reader can hold against the card, not only as a rev: {}",
+        journal_note(&old)
+    );
+
+    // NEW: born inside the window. Must NOT be flagged — and must get the
+    // receipt, because a reader who has learned to distrust the horizon needs a
+    // way to tell a complete trail from a truncated one.
+    let (_, new) = get(&app, "/api/why/task/AM-NEW").await;
+    assert!(
+        !journal_note(&new).contains("surviving TAIL"),
+        "a card born inside the retained window must NOT be flagged as truncated: {}",
+        journal_note(&new)
+    );
+    assert!(
+        !gaps_text(&new).contains("surviving TAIL"),
+        "and it must not carry a truncation gap: {}",
+        gaps_text(&new)
+    );
+    assert!(
+        journal_note(&new).contains("history is complete"),
+        "it should say so positively — otherwise the fix makes every trail equally suspect: {}",
+        journal_note(&new)
+    );
+}

@@ -115,3 +115,73 @@ fn the_version_parser_reads_real_values_and_rejects_junk() {
     assert_eq!(const_str("const APP_VER = 5;", "APP_VER"), None, "unquoted is not a version");
     assert_eq!(const_str("nothing here", "APP_VER"), None);
 }
+
+/// 3. DUPLICATE TOP-LEVEL FUNCTION NAMES. A third class the parse check cannot
+///    see, and the one that shipped a live regression on 2026-08-25.
+///
+/// AMUX-3715 added `function _renderArchivedSection(container)` for the board's
+/// archived section. The SESSIONS view already had a `_renderArchivedSection`
+/// eleven thousand lines earlier. Function declarations hoist and the LAST one
+/// wins, so the board version silently replaced the sessions version — and every
+/// sessions call site passes no arguments, so it hit `container.appendChild` on
+/// `undefined` and threw before the loading overlay could be hidden. The main
+/// dashboard view was dead. gtm-research diagnosed and fixed it (7607ee46).
+///
+/// WHY EVERY EXISTING CHECK WAS GREEN, and this is the part worth keeping: the
+/// LANGUAGE makes one of the two shapes an error and the other legal. A
+/// duplicate `let`/`const` at the same scope is a SyntaxError that `node --check`
+/// catches. A duplicate `function` is valid JavaScript. So the parse check gave
+/// real coverage on half the failure and none on the other half, and nothing
+/// distinguished the two halves from the outside.
+///
+/// The author's own commit message that day said every function the new code
+/// CALLED had been checked to exist — which is the one-directional version of
+/// this check, and the direction that was already covered. Every name you call
+/// must exist; every name you define must not already. This is the mirror.
+#[test]
+fn no_two_top_level_functions_in_app_js_share_a_name() {
+    let src = asset("app.js");
+    // Column-0 anchored: nested functions are indented, and this file's
+    // top-level declarations are not. `const x = function` is not a
+    // declaration and cannot collide by hoisting, so it is correctly excluded.
+    let mut seen: std::collections::BTreeMap<String, usize> = Default::default();
+    for line in src.lines() {
+        let rest = match line.strip_prefix("async function ") {
+            Some(r) => r,
+            None => match line.strip_prefix("function ") {
+                Some(r) => r,
+                None => continue,
+            },
+        };
+        let name: String =
+            rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').collect();
+        if !name.is_empty() {
+            *seen.entry(name).or_insert(0) += 1;
+        }
+    }
+
+    // PREMISE, asserted: the extractor found the population it is meant to
+    // check. An anchor that stopped matching would make this pass over an empty
+    // map forever, which is the vacuous green this whole file exists to refuse.
+    assert!(
+        seen.len() > 200,
+        "extracted only {} top-level functions from app.js — the extractor is broken, not the \
+         code. Fix it; do not delete the assert.",
+        seen.len()
+    );
+    // And a name known to be there, so a match that silently narrowed is caught
+    // as well as one that broke outright.
+    assert!(seen.contains_key("renderBoard"), "extractor regressed: renderBoard not found");
+
+    let dupes: Vec<String> =
+        seen.iter().filter(|(_, n)| **n > 1).map(|(k, n)| format!("{k} ({n}x)")).collect();
+    assert!(
+        dupes.is_empty(),
+        "two top-level functions share a name in app.js. Declarations HOIST, so the last one \
+         silently replaces the earlier one and every earlier call site starts running the wrong \
+         body — `node --check` cannot see this because a duplicate `function` is legal (a \
+         duplicate `let` would be a SyntaxError, which is why that half was already covered). \
+         Rename one: {}",
+        dupes.join(", ")
+    );
+}

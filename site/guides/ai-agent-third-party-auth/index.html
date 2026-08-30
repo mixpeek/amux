@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>How to Authorize AI Agents for Third-Party Services — amux OAuth Broker (2026)</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="How to give AI agents access to OAuth-protected services: authorize once in the amux Connectors tab, and every agent in your fleet shares the grant automatically. No per-session credential setup.">
+  <meta name="keywords" content="authorize AI agent for third-party services, AI agent OAuth, AI agent credential management, OAuth for AI agents, AI agent API key management, amux connectors, AI agent third-party auth">
+  <link rel="canonical" href="https://amux.io/guides/ai-agent-third-party-auth/">
+  <meta property="og:title" content="How to Authorize AI Agents for Third-Party Services — amux OAuth Broker (2026)">
+  <meta property="og:description" content="Authorize once in the amux Connectors tab and every agent in your fleet shares the grant. No per-session OAuth flows, no credential spreading across tmux sessions.">
+  <meta property="og:url" content="https://amux.io/guides/ai-agent-third-party-auth/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"},
+      {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://amux.io/guides/"},
+      {"@type": "ListItem", "position": 3, "name": "AI Agent Third-Party Auth", "item": "https://amux.io/guides/ai-agent-third-party-auth/"}
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Authorize AI Agents for Third-Party Services — amux OAuth Broker",
+    "description": "How to give AI agents access to OAuth-protected services: authorize once in the amux Connectors tab, and every agent in your fleet shares the grant automatically.",
+    "url": "https://amux.io/guides/ai-agent-third-party-auth/",
+    "datePublished": "2026-08-22",
+    "dateModified": "2026-08-22",
+    "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
+    "image": "https://amux.io/og-image.png",
+    "keywords": ["AI agent OAuth", "authorize AI agents", "AI agent credential management", "AI agent third-party auth", "amux connectors"]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "How to authorize an AI agent fleet for a third-party service",
+    "description": "Give every agent in your amux fleet access to an OAuth-protected service with a single browser authorization — no per-session flows, no credential spreading.",
+    "step": [
+      {
+        "@type": "HowToStep",
+        "position": 1,
+        "name": "Open the Connectors tab",
+        "text": "In the amux dashboard, click the Connectors tab (keyboard shortcut: C). The tab lists all configured providers and their live health status (ok / api_error / unreachable / not_granted)."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 2,
+        "name": "Select the service to authorize",
+        "text": "Choose the service from the provider registry — Google (Gmail, Drive, Calendar), Granola, or a Custom OAuth service. Click Connect next to the service name."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 3,
+        "name": "Complete the browser OAuth flow once",
+        "text": "A browser window opens to the service's authorization page. Sign in and approve the requested permissions. This is the only time anyone needs to interact with the browser flow — the amux OAuth broker holds the resulting tokens centrally."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 4,
+        "name": "Confirm the health canary is green",
+        "text": "After authorization, the Connectors tab shows a live health indicator for the service. A green 'ok' status means the token was accepted and the service is reachable. A 'not_granted' status means the authorization was incomplete — click Connect again to retry."
+      },
+      {
+        "@type": "HowToStep",
+        "position": 5,
+        "name": "All fleet agents now have access",
+        "text": "Every agent session launched from this amux instance automatically receives the OAuth grant as environment variables at startup. No per-session authorization, no credential sharing in prompts, no manual env var injection."
+      }
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "How do I authorize an AI agent to access a third-party service?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "In amux, open the Connectors tab, select the service (Google, Granola, or Custom), and click Connect. A browser window opens for the standard OAuth flow — you authorize once, and the amux OAuth broker holds the resulting tokens. Every agent launched after that automatically receives the grant as environment variables, with no per-session setup."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is an OAuth broker for AI agents?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "An OAuth broker is a central service that holds OAuth tokens on behalf of a fleet of agents. Instead of each agent doing its own browser authorization flow — which is impractical for headless sessions — the broker holds a single grant and distributes short-lived tokens to agents on demand. amux's OAuth broker (introduced in the August 2026 release) lets you authorize once from the dashboard and share that grant across every agent in your fleet."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do AI agents receive OAuth credentials at runtime?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux injects credentials as environment variables when each agent session launches. For OAuth-based services, the broker mints a short-lived access token and injects it as the named environment variable (e.g., GOOGLE_ACCESS_TOKEN). The agent reads it like any other env var. Tokens are refreshed automatically before expiry — the agent never needs to handle the refresh flow."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I scope an OAuth grant to specific agents only?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. In the Connectors tab, each credential can be scoped to global (every agent), group (agents in a named group), or worker (one specific agent session). For high-privilege OAuth grants — like a Google account with write access to production Drive folders — use worker or group scope rather than global."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What happens if the OAuth token expires or the authorization is revoked?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "amux's health canary for each connector checks token validity in the background. If a token expires or is revoked, the Connectors tab shows 'not_granted' and amux creates an autofix board card naming the affected service. The card owner receives a notification and can re-authorize from the dashboard in one click. Running agents that depend on the credential will see the env var become invalid — amux does not silently continue with a bad token."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Are OAuth tokens stored securely in amux?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "OAuth tokens are stored in the amux SQLite database on your own machine or server — the same database that holds board cards, schedules, and session history. The database is not encrypted at rest by default, but it is local to your infrastructure and never transmitted off-machine unless you explicitly configure the amux Cloud tunnel. Tokens are not written into CLAUDE.md files, not included in git history, and not echoed in agent transcripts."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>AI Agent Third-Party Auth</span></div>
+
+    <h1>How to Authorize AI Agents for Third-Party Services</h1>
+    <p class="subtitle">The OAuth broker in amux's Connectors tab lets you authorize once and share that grant with every agent in your fleet. No per-session credential setup, no credentials in prompts. <em>Updated August 2026.</em></p>
+
+    <!-- CTA baked in at creation -->
+    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:14px 20px;margin:1.5rem 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <span style="flex:1;min-width:200px;font-size:.92rem;color:var(--fg,#e2e8f0)">amux is open source — self-host your agent fleet with built-in OAuth management, kanban, and mobile oversight.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('new_page_ai_agent_third_party_auth_gh_cta_click')" style="display:inline-flex;align-items:center;gap:6px;background:#10b981;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:.88rem;font-weight:600;white-space:nowrap">View amux on GitHub ★</a>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem 1.75rem;margin:2rem 0;">
+      <p style="margin:0;font-size:1.05rem;line-height:1.7;"><strong>The short answer:</strong> AI agents running in headless terminal sessions can't complete browser-based OAuth flows themselves. amux solves this with a central OAuth broker in the Connectors tab — you authorize a service once from your browser, and every agent in your fleet receives the grant automatically as environment variables at startup.</p>
+    </div>
+
+    <h2>The problem: headless agents can't do OAuth</h2>
+    <p>Most modern APIs use OAuth 2.0 for authorization — Google Drive, Gmail, Slack, GitHub, and dozens of others. The standard OAuth flow requires a browser: the user visits an authorization URL, signs in, approves permissions, and the service redirects back with an authorization code.</p>
+    <p>AI coding agents running in terminal sessions can't do this. A Claude Code session in tmux has no browser, no way to open an authorization URL, and no way to receive the redirect. The workarounds are all bad:</p>
+    <ul>
+      <li><strong>Paste the OAuth token into a prompt:</strong> Tokens appear in the agent's conversation history, which gets logged. Rotate the token and you have to update every active session manually.</li>
+      <li><strong>Set tokens as environment variables before launching the session:</strong> Works for one session. Running 20 parallel agents means 20 separate env setups. Tokens expire and the agents silently fail.</li>
+      <li><strong>Give agents service account keys:</strong> Service accounts work for some services but not consumer APIs. They also require per-developer key distribution and rotation.</li>
+    </ul>
+    <p>The amux OAuth broker handles this at the platform level: authorize once, the broker holds the tokens, every agent gets them automatically.</p>
+
+    <h2>How the amux OAuth broker works</h2>
+    <p>The broker is a component of the amux server. When you connect a service in the Connectors tab:</p>
+    <ol>
+      <li><strong>Authorization URL:</strong> amux generates an authorization URL for the service using your configured OAuth client credentials (or amux's default client for supported services).</li>
+      <li><strong>Browser flow (once):</strong> You visit the URL, approve permissions in the service's standard consent screen. This is the only browser interaction required — ever, until the grant is revoked.</li>
+      <li><strong>Token storage:</strong> The service redirects back to amux with an authorization code. The server exchanges it for access + refresh tokens and stores them locally in the amux SQLite database.</li>
+      <li><strong>Agent injection:</strong> When any agent session launches, amux injects the access token as a named environment variable (e.g., <code>GOOGLE_ACCESS_TOKEN</code>). The token is refreshed automatically before expiry.</li>
+      <li><strong>Health monitoring:</strong> A background canary probe periodically validates each token. Status is visible in the Connectors tab (ok / api_error / unreachable / not_granted) and reported on the board if anything breaks.</li>
+    </ol>
+
+    <h2>Step-by-step: connect a service</h2>
+
+    <h3>Google (Gmail, Drive, Calendar)</h3>
+    <ol>
+      <li>Open the amux dashboard and click the <strong>Connectors</strong> tab (or press <kbd>C</kbd>).</li>
+      <li>Find Google in the provider list and click <strong>Connect</strong>.</li>
+      <li>A browser tab opens to Google's authorization screen. Sign in with the Google account your agents should use.</li>
+      <li>Approve the requested permissions. amux requests only the scopes it uses: Gmail read/send, Drive read/write, Calendar read/write. You can narrow these in your OAuth client configuration.</li>
+      <li>The browser closes and the Connectors tab shows a green <strong>ok</strong> status for Google.</li>
+      <li>Every agent launched from now on receives <code>GOOGLE_ACCESS_TOKEN</code> as an environment variable, valid for 1 hour and refreshed automatically.</li>
+    </ol>
+
+    <h3>Custom OAuth service</h3>
+    <p>For services not in the default registry, use the Custom provider type:</p>
+    <ol>
+      <li>In the Connectors tab, click <strong>Add Custom</strong>.</li>
+      <li>Enter the service name, authorization URL, token URL, and the scopes your agents need.</li>
+      <li>Paste your OAuth client ID and secret (these stay on your server — amux never transmits them).</li>
+      <li>Click <strong>Connect</strong> to run the browser authorization flow.</li>
+      <li>Set the environment variable name agents should use (e.g., <code>MYSERVICE_TOKEN</code>).</li>
+    </ol>
+
+    <h3>Simple API keys (non-OAuth)</h3>
+    <p>For services that use API keys rather than OAuth, the Connectors tab also supports paste-once key storage with the same scoping and health-check system. See the <a href="/guides/ai-agent-connectors/">AI Agent Connectors guide</a> for the full key management flow.</p>
+
+    <h2>Credential scoping</h2>
+    <p>Not every agent should access every credential. The Connectors tab lets you scope each grant:</p>
+    <div style="overflow-x:auto;margin:1rem 0 1.5rem">
+      <table style="width:100%;border-collapse:collapse;font-size:.875rem">
+        <thead>
+          <tr style="background:var(--bg-2,#1a1f2e)">
+            <th style="text-align:left;padding:.625rem .875rem;border-bottom:2px solid var(--line,#2a3040);font-weight:600">Scope</th>
+            <th style="text-align:left;padding:.625rem .875rem;border-bottom:2px solid var(--line,#2a3040);font-weight:600">Who receives the credential</th>
+            <th style="text-align:left;padding:.625rem .875rem;border-bottom:2px solid var(--line,#2a3040);font-weight:600">When to use</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid var(--line,#2a3040)">
+            <td style="padding:.6rem .875rem;font-weight:600">Global</td>
+            <td style="padding:.6rem .875rem">Every agent session in this amux instance</td>
+            <td style="padding:.6rem .875rem">Shared read-only services (public APIs, analytics)</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--line,#2a3040);background:var(--bg-2,#1a1f2e)">
+            <td style="padding:.6rem .875rem;font-weight:600">Group</td>
+            <td style="padding:.6rem .875rem">Agents in a named group</td>
+            <td style="padding:.6rem .875rem">Team-specific or project-specific integrations</td>
+          </tr>
+          <tr>
+            <td style="padding:.6rem .875rem;font-weight:600">Worker</td>
+            <td style="padding:.6rem .875rem">One specific named agent session</td>
+            <td style="padding:.6rem .875rem">High-privilege credentials, billing-sensitive keys, production write access</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A Google account with write access to production Drive should be scoped to worker (a specific agent assigned to a specific task), not global. A read-only analytics API key can safely be global.</p>
+
+    <h2>What agents see</h2>
+    <p>Inside a Claude Code or Codex session, credentials from the Connectors tab appear as regular environment variables:</p>
+    <pre><code>echo $GOOGLE_ACCESS_TOKEN      # valid access token, auto-refreshed
+echo $GOOGLE_REFRESH_TOKEN     # held by the broker; injected for services that need it
+echo $MYSERVICE_API_KEY        # API key credentials appear the same way</code></pre>
+    <p>Agents read them the same way any application reads credentials from env vars. No special SDK, no amux-specific library, no broker API to call. The agent's code doesn't know the tokens come from an OAuth broker.</p>
+    <p>In CLAUDE.md, you can reference the env var name so the model knows it's available:</p>
+    <pre><code>## Available integrations
+- Google Drive: use the GOOGLE_ACCESS_TOKEN env var (already set — do not ask the user for it)
+- Custom API: MYSERVICE_API_KEY is available for requests to api.myservice.com</code></pre>
+
+    <h2>Token refresh and expiry</h2>
+    <p>OAuth access tokens typically expire after 1 hour. amux handles this transparently:</p>
+    <ul>
+      <li>The broker refreshes tokens proactively, before they expire, using the stored refresh token.</li>
+      <li>Running sessions receive a fresh token at their next launch — long-running sessions (overnight runs) get updated tokens injected via the steering queue when a refresh occurs mid-session.</li>
+      <li>If a refresh fails (revoked grant, expired refresh token), the Connectors tab updates to <code>not_granted</code> and the broker creates an autofix card on the board. The card owner gets a notification.</li>
+    </ul>
+
+    <h2>Security considerations</h2>
+    <p>The OAuth broker is designed for teams running amux on their own infrastructure, not as a multi-tenant service. Key points:</p>
+    <ul>
+      <li><strong>Tokens stay on your server:</strong> Access and refresh tokens live in the local SQLite database. They are not transmitted to Mixpeek servers or any third party.</li>
+      <li><strong>The amux database is not encrypted at rest:</strong> Anyone with read access to the server's filesystem can read the SQLite file, including stored tokens. Restrict filesystem access to the amux server process and its operators.</li>
+      <li><strong>Use worker scope for production write access:</strong> Do not grant a globally-scoped token with production write permissions. An agent working on a test task should not be able to delete production Drive files.</li>
+      <li><strong>Revocation is one click:</strong> In the Connectors tab, click Disconnect to revoke the stored grant and remove it from all future agent launches. You can also revoke at the service directly (in Google Account permissions, etc.) — amux's canary will detect it and update the status within one probe cycle.</li>
+    </ul>
+
+    <h2>FAQ</h2>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">How do I authorize an AI agent to access a third-party service?</summary>
+      <p style="margin:0.8rem 0 0;">Open the amux Connectors tab, select the service, click Connect, and complete the standard browser OAuth flow once. The amux broker holds the resulting tokens and distributes them to every agent in your fleet as environment variables at launch. No per-session setup is needed after the initial authorization.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What is an OAuth broker for AI agents?</summary>
+      <p style="margin:0.8rem 0 0;">An OAuth broker holds OAuth tokens centrally on behalf of a fleet of headless agents that can't run browser-based authorization flows. The broker completes the auth flow once (via a human in a browser), stores the tokens, and distributes short-lived access tokens to agents at session launch. amux's OAuth broker is part of the server process — there's no separate service to run.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Can I scope an OAuth grant to specific agents only?</summary>
+      <p style="margin:0.8rem 0 0;">Yes — global, group, or worker scope. Global means every agent gets it. Group limits to a named group of sessions. Worker restricts to one specific named session. Use worker scope for high-privilege credentials like accounts with production write access.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">What happens when the OAuth token expires or is revoked?</summary>
+      <p style="margin:0.8rem 0 0;">amux's health canary detects expired or revoked tokens within one probe cycle. The Connectors tab updates to <code>not_granted</code>, an autofix card appears on the board, and the card owner receives an in-app notification. Re-authorizing from the Connectors tab restores the grant for all agents.</p>
+    </details>
+
+    <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
+      <summary style="cursor:pointer;font-weight:600;">Does amux support services that use API keys instead of OAuth?</summary>
+      <p style="margin:0.8rem 0 0;">Yes — the Connectors tab handles both. For API key-based services, paste the key once and amux injects it as an environment variable for every agent in scope. The same health-check and scoping system applies. See the <a href="/guides/ai-agent-connectors/">AI Agent Connectors guide</a> for full details.</p>
+    </details>
+
+    <div class="cta-box">
+      <h3>Run an authorized AI agent fleet in under 30 minutes</h3>
+      <p>Install amux, connect your services once in the Connectors tab, and every agent you launch has access. Open source, self-hosted, no per-seat fee.</p>
+      <pre><code>brew install mixpeek/amux/amux
+amux serve  # → https://localhost:8824
+# Open the Connectors tab and authorize your services</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View amux on GitHub ★</a>
+      <a class="btn" href="/guides/ai-agent-connectors/" style="margin-left:0.75rem;">API key credentials guide →</a>
+    </div>
+
+    <p style="margin-top:2rem;"><strong>Related:</strong>
+      <a href="/guides/ai-agent-connectors/">AI Agent Connectors — API key management</a> ·
+      <a href="/guides/getting-started/">Getting started with amux</a> ·
+      <a href="/for/ctos/">amux for CTOs</a> ·
+      <a href="/guides/run-ai-engineering-team/">Running an AI engineering team</a> ·
+      <a href="/changelog/">amux changelog</a>
+    </p>
+  </main>
+
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Guides</div>
+          <ul>
+            <li><a href="/guides/getting-started/">Getting Started</a></li>
+            <li><a href="/guides/ai-agent-connectors/">AI Agent Connectors</a></li>
+            <li><a href="/guides/run-ai-engineering-team/">AI Engineering Team</a></li>
+            <li><a href="/guides/">All Guides</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">For Teams</div>
+          <ul>
+            <li><a href="/for/enterprise/">Enterprise</a></li>
+            <li><a href="/for/ctos/">CTOs</a></li>
+            <li><a href="/for/engineering-managers/">Engineering Managers</a></li>
+            <li><a href="/for/ai-engineers/">AI Engineers</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/compare/">Compare</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

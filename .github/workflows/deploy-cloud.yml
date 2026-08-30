@@ -71,8 +71,17 @@ on:
     types: [completed]
     branches: [main]
 
+# Event-SCOPED group, deliberately: with a single shared group, GitHub keeps at
+# most ONE waiting run, and each new workflow_run auto-deploy evicts whatever is
+# queued — which on 2026-08-22 cancelled two manual recreate dispatches in 30
+# minutes (AMUX-3517). The recreate dispatch is the ONLY path that gets new code
+# into running containers, so it was being starved precisely when the most code
+# was landing. Scoping the group by event_name gives dispatches their own queue
+# slot; actual host mutation stays serialized by the flock every SSH step takes
+# on /var/lock/amux-deploy.lock (two runs may be green concurrently in Actions,
+# but only one touches the host at a time, in whole-step units).
 concurrency:
-  group: deploy-cloud
+  group: deploy-cloud-${{ github.event_name }}
   cancel-in-progress: false
 
 env:
@@ -409,7 +418,7 @@ jobs:
 
       - name: Pull the new image and (re)generate per-workspace compose files
         run: |
-          ssh -i ~/.ssh/amux_cloud "root@$CLOUD_HOST" 'bash -s' << 'ENDSSH'
+          ssh -i ~/.ssh/amux_cloud "root@$CLOUD_HOST" 'flock -w 900 /var/lock/amux-deploy.lock bash -s' << 'ENDSSH'
             set -u
             source /etc/amux/gateway.env
             R2_ENDPOINT="https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com"
@@ -437,6 +446,33 @@ jobs:
             for user_dir in /var/amux/users/*/; do
               user_id=$(basename "$user_dir")
               compose_file="$user_dir/docker-compose.yml"
+              # This loop is DIRECTORY-driven, not DB-driven: a workspace dir left
+              # behind by an incomplete deletion (delete removed the gateway.db row
+              # and the docker volume but not /var/amux/users/<id>) gets its
+              # container RESURRECTED here, silently, even though the org no longer
+              # exists to any user. That happened on 2026-08-18: a recreate=yes run
+              # brought back 6 orgs the mass-delete had removed (AC-373), because it
+              # never removed their dirs. Make the resurrection self-announce so a
+              # deploy-log sweep catches the next one instead of a human noticing a
+              # container count that does not match the org count. NOTE: the host has
+              # NO sqlite3 CLI (only python3), so query via the sqlite3 module — an
+              # earlier `sqlite3 …` version of this check was silently inert.
+              if [ -f /var/amux/gateway.db ]; then
+                _hasrow=$(python3 -c "import sqlite3; print('1' if sqlite3.connect('/var/amux/gateway.db').execute(\"SELECT 1 FROM orgs WHERE id=? UNION SELECT 1 FROM users WHERE id=? UNION SELECT 1 FROM orgs WHERE owner_id=? UNION SELECT 1 FROM org_memberships WHERE user_id=? LIMIT 1\", ('${user_id}','${user_id}','${user_id}','${user_id}')).fetchone() else '')" 2>/dev/null)
+                if [ -z "$_hasrow" ]; then
+                  # SKIP, not just warn. The gateway resolves every workspace from
+                  # the DB, so a dir with NO row is unreachable by any user — a
+                  # leftover from an incomplete deletion, not a real workspace. A
+                  # legit new signup always has its org/user row committed BEFORE
+                  # its dir is provisioned, so it is never skipped here. Not
+                  # skipping is exactly how a recreate=yes run resurrected 6 deleted
+                  # orgs on 2026-08-18 (AC-373). We do NOT rm the dir from CI (that
+                  # is an owner-authorised delete, ethos rule 8); we refuse to bring
+                  # it back and make the refusal loud.
+                  echo "::warning::orphaned workspace ${user_id}: /var/amux/users/${user_id} has NO gateway.db row — SKIPPING (refusing to resurrect a deleted env). Remove the dir to silence: rm -rf /var/amux/users/${user_id}"
+                  continue
+                fi
+              fi
               # Search the WHOLE file for the host port bound to :8822. A
               # `grep -A1 ports:` parse broke silently once when a comment moved
               # in above the mapping, and skipped all 19 workspaces while the
@@ -519,7 +555,7 @@ jobs:
 
       - name: Recreate running workspaces and prove the new server answers
         run: |
-          ssh -i ~/.ssh/amux_cloud "root@$CLOUD_HOST" 'bash -s' << 'ENDSSH'
+          ssh -i ~/.ssh/amux_cloud "root@$CLOUD_HOST" 'flock -w 900 /var/lock/amux-deploy.lock bash -s' << 'ENDSSH'
             set -u
             WANT=$(docker image inspect -f '{{.Id}}' ghcr.io/mixpeek/amux:latest)
             bad=0
@@ -548,6 +584,20 @@ jobs:
                 bad=1
               fi
             done
+            # A collided recreate is INVISIBLE to both loops above: they iterate
+            # `docker ps` (running only), and the collision's signature is the old
+            # container killed and the replacement stuck in Created under a
+            # hash-prefixed name — so the env drops out of the running list and the
+            # job stays green. That happened on 2026-08-22 (org_02699…: Exited(137)
+            # + stray Created, deploy reported SUCCESS, env down until a human
+            # counted containers). Assert the absence directly: after a recreate,
+            # NO amux-user container may exist in a non-running state.
+            wedged=$(docker ps -a --filter 'name=amux-user' --format '{{.Names}}: {{.State}}' | grep -v ': running$' || true)
+            if [ -n "$wedged" ]; then
+              echo "RECREATE LEFT WEDGED CONTAINERS (exists but not running):"
+              echo "$wedged" | sed 's/^/  /'
+              bad=1
+            fi
             exit "$bad"
           ENDSSH
 
@@ -574,7 +624,7 @@ jobs:
       #   not (a scheme-agnostic check here cannot fail, ethos rule 7).
       - name: Flip the gateway to the https hop (atomic — restores on any failure)
         run: |
-          ssh -i ~/.ssh/amux_cloud "root@$CLOUD_HOST" 'bash -s' << 'ENDSSH'
+          ssh -i ~/.ssh/amux_cloud "root@$CLOUD_HOST" 'flock -w 900 /var/lock/amux-deploy.lock bash -s' << 'ENDSSH'
             set -eu
             LOG=/var/log/amux-gateway.log
             ENV=/etc/amux/gateway.env

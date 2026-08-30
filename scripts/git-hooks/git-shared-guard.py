@@ -189,14 +189,106 @@ def _amend_verdict(cmd, scrubbed, run_dir):
                     "never rewritten; make a follow-up commit instead")
     m = re.search(r'AMUX_AMEND_EXPECT=([0-9a-f]{7,40})\b', cmd)
     if m and head.startswith(m.group(1)):
-        return None  # inspected + pinned + matches -> safe amend of own fresh HEAD
+        # AF-106 durable half (AMUX-3407): the pin proves the COMMIT BEING
+        # REWRITTEN is yours; the check below proves the STAGED SET being
+        # absorbed is too. On 2026-08-20 a correctly-pinned bare amend swept
+        # 139 lines of a peer's staged work (their migration and a 132-line
+        # handler change) into a commit carrying an unrelated message — the
+        # pin was satisfied and protected the wrong operand. The ownership
+        # question is the one the pre-commit staged-guard already answers;
+        # this asks the SAME server endpoint at the second door (AMUX-2325).
+        return _amend_staged_check(scrubbed, run_dir)
     got = f"pinned {m.group(1)} != HEAD {head[:12]}" if m else "no AMUX_AMEND_EXPECT pin"
+    return _amend_pin_refusal(got)
+
+
+def _amend_pin_refusal(got):
     return ("git commit --amend without verified HEAD pin (" + got + ") — HEAD on this SHARED "
             "branch may be ANOTHER session's commit (2026-07-05 near-miss: an amend silently "
             "rewrote a foreign unpushed commit). Inspect first (`git log -1 --format=%H`), then "
-            "re-run pinned: `AMUX_AMEND_EXPECT=<that-sha> git commit --amend ...` — the guard "
-            "allows it only if HEAD still matches when the amend runs. If HEAD is not yours, "
-            "use a follow-up commit instead")
+            "re-run pinned: `AMUX_AMEND_EXPECT=<that-sha> git commit --amend -- <your paths>` "
+            "— the guard allows it only if HEAD still matches when the amend runs. SCOPE IT "
+            "WITH A PATHSPEC: the pin protects the commit you are rewriting, NOT the staged "
+            "set you are absorbing, and a bare `--amend` takes everything staged including a "
+            "peer's in-flight work (AF-106, 139 lines swept on 2026-08-20). If HEAD is not "
+            "yours, use a follow-up commit instead")
+
+
+def _amend_staged_check(scrubbed, run_dir):
+    """AF-106 durable half (AMUX-3407): a pinned BARE amend absorbs the whole
+    staged set, so the staged set's ownership is checked against the same
+    server endpoint the pre-commit staged-guard uses — one predicate, two
+    doors (AMUX-2325). Fail-OPEN on every error (the guard's standing
+    contract: an outage must not brick commits); only a POSITIVE foreign
+    verdict refuses. A pathspec amend absorbs only what it names and passes
+    without asking; the sanctioned escapes from a refusal are the pathspec
+    form (your own work) and ~/.amux/guard-allow-once (deliberate absorption,
+    owner-sanctioned, audit-logged) — the same two doors every other verdict
+    here offers. AMUX_AMEND_STAGED_GUARD=0 disables just this check."""
+    if re.search(r'\bcommit\b[^\n;&|]*\s--\s', scrubbed):
+        return None  # pathspec amend: scoped by construction
+    if os.environ.get("AMUX_AMEND_STAGED_GUARD", "1").strip().lower() in ("0", "false", "off", "no"):
+        return None
+    sess = os.environ.get("AMUX_SESSION", "")
+    if not sess:
+        return None  # a human's amend is not amux's to gate
+    try:
+        import subprocess, ssl, urllib.request
+        staged = subprocess.run(
+            ("git", "-C", run_dir, "diff", "--cached", "--name-only"),
+            capture_output=True, text=True, timeout=10).stdout.split()
+        if not staged:
+            return None  # message-only amend absorbs nothing
+        body = json.dumps({"session": sess, "dir": run_dir, "paths": staged,
+                           "op": "amend", "guard_version": 1}).encode()
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        # Base URL: explicit override first (the test suite points it at an
+        # unreachable port to prove fail-open deterministically — the sibling
+        # resolver below self-heals to the LIVE server, which would silently
+        # turn a fail-open test into a live-server test); then the
+        # staged-guard's own resolver (it self-heals a stale AMUX_URL port);
+        # env fallback last. Any failure falls through to fail-open.
+        base = os.environ.get("AMUX_STAGED_GUARD_URL")
+        if not base:
+            try:
+                import importlib.machinery
+                sib = os.path.join(os.path.dirname(os.path.realpath(__file__)), "amux-staged-guard")
+                mod = importlib.machinery.SourceFileLoader("_asg", sib).load_module()
+                base = mod.amux_base_url()
+            except Exception:
+                base = os.environ.get("AMUX_URL") or "https://localhost:8824"
+        req = urllib.request.Request(
+            base + "/api/git/staged-guard", data=body, method="POST",
+            headers={"Content-Type": "application/json", "X-Amux-Session": sess})
+        with urllib.request.urlopen(req, timeout=5, context=ctx) as r:
+            d = json.loads(r.read().decode())
+        return _amend_staged_decision(d)
+    except Exception:
+        return None  # fail-open
+
+
+def _amend_staged_decision(d):
+    """Pure, so the matrix is testable without a server. Only FOREIGN paths
+    refuse — `shared` (both edited) matches the pre-commit guard's own
+    non-blocking policy, and `undecided`/disabled are not verdicts. The
+    2026-08-20 specimen was foreign: the absorbed migration + handler change
+    had exactly one editing session, and it was not the amender."""
+    if not isinstance(d, dict) or d.get("undecided") or d.get("enabled") is False:
+        return None
+    foreign = [(f.get("path") or "?") for f in (d.get("foreign") or [])]
+    if not foreign:
+        return None
+    shown = ", ".join(foreign[:6]) + (" …" if len(foreign) > 6 else "")
+    return ("git commit --amend would ABSORB another session's staged work — %d staged path(s) "
+            "were last edited by a different session (%s), and a bare --amend takes the whole "
+            "staged set into your commit under your message. This is AF-106's exact incident: "
+            "139 lines swept on 2026-08-20 by an amend whose pin was VALID — the pin protects "
+            "the commit, not the absorbed content. Scope it to your own work: "
+            "`git commit --amend -- <your paths>`. If absorbing their staged work is genuinely "
+            "intended, coordinate with that session, then use the owner-sanctioned one-off "
+            "(~/.amux/guard-allow-once, audit-logged)." % (len(foreign), shown))
 
 
 def _discard_verdict(cmd, scrubbed, run_dir):
@@ -320,8 +412,22 @@ def _has_cotenants(run_dir):
     guard that blocks when the server is down would wedge every lane."""
     try:
         import urllib.request, ssl
+        # `op` IS REQUIRED, and its absence here is what kept AF-156 alive
+        # after the server-side fix. git_guard.rs `hook_is_outdated` is
+        # `guard_version < 2 && !has_explicit_op`, and its doc comment justifies
+        # keying on `op` with "every modern client sends at least `op`" — a
+        # premise this file's own third POST contradicted, 170 lines below the
+        # path that fix was written for.
+        #
+        # Measured 2026-08-24: 212 OUTDATED HOOK WARNs AFTER the fix landed at
+        # 79e9c89c 06:12, including this checkout at 16:23:51 with a hook
+        # byte-identical to source. The warning's printed remedy is "Reinstall:
+        # scripts/install-hooks.sh", which reinstalls hooks that were already
+        # current — so a lane following it exactly sees no change and the
+        # warning returns within the hour (the AMUX-2140 shape, and the reason
+        # the server-side comment calls it worse than merely noisy).
         body = json.dumps({"session": os.environ.get("AMUX_SESSION", ""),
-                           "dir": run_dir, "paths": []}).encode()
+                           "dir": run_dir, "paths": [], "op": "cotenant-probe"}).encode()
         req = urllib.request.Request(
             amux_base_url() + "/api/git/staged-guard",
             data=body, method="POST",
@@ -356,16 +462,93 @@ def _has_cotenants(run_dir):
         return False
 
 
+
+# AF-151 (AREA silent-partial): a block stops the WHOLE Bash call, not just the
+# git verb that tripped it. When the command joined other work to that verb --
+# the reported specimen was a heredoc writing a commit-message file followed by
+# `git commit --amend -F` that file -- the other half is skipped too, and the
+# refusal said nothing about it. The operator fixes the named git complaint,
+# re-runs, and the retry reads a file the heredoc never wrote: rc=0 from an
+# amend that changed nothing. Same family as the rest of AF-150 -- a compound
+# operation whose silent half is invisible because the loud half was answered.
+#
+# DISCRIMINATES, deliberately: a lone `git ...` invocation gets no note (it
+# would be noise on the common case, and a notice that always fires is one
+# nobody reads). Runs on the SCRUBBED command so a heredoc BODY mentioning
+# `&&` cannot manufacture a phantom second half.
+_LAST_CMD = ""
+_SHELL_JOINERS = re.compile(r"&&|\|\||;|\n|(?<!\|)\|(?!\|)")
+
+
+def _skipped_half_note(cmd):
+    """The NOTE text when a blocked command had non-git work, else ''."""
+    if not cmd:
+        return ""
+    # Heredoc TERMINATORS survive the body strip and are not work: without
+    # this, a lone `git commit -F - <<'EOF' ... EOF` reported a skipped
+    # segment called `EOF`, which is both wrong and confusing at exactly the
+    # moment the reader is deciding what to re-run.
+    delims = set(re.findall(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)", cmd))
+    segments = [seg.strip() for seg in _SHELL_JOINERS.split(_scrub(cmd))]
+    segments = [seg for seg in segments if seg and seg not in delims]
+    if len(segments) < 2:
+        return ""
+    # A segment is "git work" when the verb is git, after leading env
+    # assignments (FOO=bar git ...) which are part of the same invocation.
+    def _is_git(seg):
+        words = seg.split()
+        while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+            words = words[1:]
+        return bool(words) and words[0] == "git"
+    others = [(i, seg) for i, seg in enumerate(segments) if not _is_git(seg)]
+    if not others:
+        return ""
+    # AF-153: DECIDE on the scrubbed text (that is what stops a heredoc body
+    # manufacturing a phantom half) but DISPLAY the original. Scrubbing blanks
+    # quoted content, so `echo "hello world" > /tmp/m.txt` rendered as
+    # `echo   > /tmp/m.txt` — a command with its content removed, shown at the
+    # exact moment the reader is deciding what to re-run. Split the ORIGINAL
+    # the same way and show the segment at the same index; if the two do not
+    # line up (an unbalanced quote, say), fall back to the scrubbed text rather
+    # than show a mismatched segment, which would be worse than a blanked one.
+    raw_segments = [seg.strip() for seg in _SHELL_JOINERS.split(cmd)]
+    raw_segments = [seg for seg in raw_segments if seg and seg not in delims]
+    idx, scrubbed_seg = others[0]
+    display = raw_segments[idx] if len(raw_segments) == len(segments) else scrubbed_seg
+    shown = display[:80] + ("..." if len(display) > 80 else "")
+    return (
+        "NOTE: the rest of this command did not run either — the block stops the whole "
+        f"Bash call, not just the git verb. Skipped {len(others)} non-git segment(s), "
+        f"first: `{shown}`.\n"
+        "      If a later step reads what an earlier one was supposed to write, re-run "
+        "the WHOLE command after fixing the complaint above; do not re-run only the git "
+        "half against stale state.\n"
+    )
+
 def main():
     data = json.load(sys.stdin)
     if data.get("tool_name") != "Bash":
         return 0
     cmd = (data.get("tool_input") or {}).get("command", "") or ""
+    global _LAST_CMD
+    _LAST_CMD = cmd
     scrubbed = _scrub(cmd)                       # match only real invocations
     cwd = data.get("cwd") or os.getcwd()
     shared = [os.path.realpath(os.path.expanduser(p)) for p in
               os.environ.get("AMUX_SHARED_CHECKOUTS", "~/Dev/mixpeek").split(":") if p.strip()]
     mC = re.search(r'-C\s+(\S+)', scrubbed)
+    # AMUX-3462 (MF-703): this hook reads the command TEXT, before the shell
+    # expands it. A -C path spelled with a variable (`git -C $S/wipetest ...`)
+    # therefore cannot be resolved here — the old code realpath'd the raw
+    # token anyway, fabricating a literal '<cwd>/$S/wipetest' that
+    # prefix-matched the shared checkout and produced a refusal naming a repo
+    # that does not exist. Discard the capture and fall back to the documented
+    # cwd inference; the refusal note below names the real cause and the
+    # LITERAL-path escape (which is what actually works).
+    _unexpanded_c = None
+    if mC and re.search(r'[$`]', mC.group(1)):
+        _unexpanded_c = mC.group(1)
+        mC = None
     run_dir = os.path.realpath(os.path.expanduser(mC.group(1))) if mC else os.path.realpath(cwd)
     # WHERE run_dir CAME FROM, said out loud in the refusal (AF-23). Otherwise the
     # message asserts a repo path as FACT, and when the inference is wrong it still
@@ -387,6 +570,12 @@ def main():
                  "see a `cd` inside a compound command. If you meant a different repo, such as "
                  "a scratch clone, re-run as `git -C <path> ... -- <paths>` and the guard will "
                  "evaluate THAT repo instead.)")
+    if _unexpanded_c:
+        _dir_note = (
+            "\n  (The -C path %r contains an UNEXPANDED shell construct — this guard reads the "
+            "command text BEFORE your shell expands it, so it cannot resolve that path; it "
+            "evaluated the session cwd instead. The precise -C escape needs a LITERAL path: "
+            "`git -C /full/path ...` — AMUX-3462.)" % _unexpanded_c)
     # The discard check runs BEFORE the static-scope gate below, and deliberately so.
     # AMUX_SHARED_CHECKOUTS is unset in every session env, in the shell, and in
     # amux-server.py, so `shared` is the hardcoded default ~/Dev/mixpeek — while
@@ -469,7 +658,15 @@ def main():
     # repo root — real data, repo-root paired (AMUX-2337), the same source the
     # discard check above already uses. The list stays as an ADDITIVE override so
     # an explicitly-named root is still guarded even with no cotenants online.
-    if not any(run_dir == s or run_dir.startswith(s + os.sep) for s in shared):
+    _scope_dirs = [run_dir]
+    if _unexpanded_c:
+        # The naive resolution of the unexpanded token — what the old code used
+        # as run_dir outright. Kept ONLY as an extra shared-scope candidate so
+        # this fix never fails open relative to the old behavior: an ABSOLUTE
+        # prefix with a trailing variable (`-C /shared/root/$X reset --hard`)
+        # must stay guarded even when the session cwd is elsewhere.
+        _scope_dirs.append(os.path.realpath(os.path.expanduser(_unexpanded_c)))
+    if not any(d == s or d.startswith(s + os.sep) for d in _scope_dirs for s in shared):
         if not _has_cotenants(run_dir):
             return 0
     amend_why = None
@@ -564,7 +761,22 @@ def main():
             return 2
     return 0
 
-try:
-    sys.exit(main())
-except Exception:
-    sys.exit(0)  # fail-open: a guard bug must never break tool calls
+if __name__ == "__main__":
+    # The gate matters beyond convention: the test suite imports this module
+    # to reach the pure decision functions, and an unconditional module-level
+    # sys.exit made that import EXIT THE TEST PROCESS with 0 mid-run — a
+    # whole suite reporting green while its tail never executed (AMUX-3407,
+    # caught because the PASS line went missing, not because anything failed).
+    try:
+        _rc = main()
+        # AF-151: one emission point for every block path — the individual
+        # refusals each write their own reason, and none of them knew whether
+        # the caller had joined other work to the git verb.
+        if _rc == 2:
+            try:
+                sys.stderr.write(_skipped_half_note(_LAST_CMD))
+            except Exception:
+                pass  # the note must never turn a clean block into a crash
+        sys.exit(_rc)
+    except Exception:
+        sys.exit(0)  # fail-open: a guard bug must never break tool calls

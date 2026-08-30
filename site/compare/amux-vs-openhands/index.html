@@ -24,7 +24,7 @@
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs OpenHands","item":"https://amux.io/compare/amux-vs-openhands/"}]}</script>
 
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs OpenHands (OpenDevin) 2026: Fleet Orchestration vs Autonomous Agent","description":"OpenHands executes single complex tasks autonomously in a Docker sandbox. amux orchestrates a fleet of 5-50 parallel Claude Code, Codex, or Gemini CLI agents from your own machine. Here is when to use each.","url":"https://amux.io/compare/amux-vs-openhands/","datePublished":"2026-08-11","dateModified":"2026-08-11","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs OpenHands (OpenDevin) 2026: Fleet Orchestration vs Autonomous Agent","description":"OpenHands executes single complex tasks autonomously in a Docker sandbox. amux orchestrates a fleet of 5-50 parallel Claude Code, Codex, or Gemini CLI agents from your own machine. Here is when to use each.","url":"https://amux.io/compare/amux-vs-openhands/","datePublished":"2026-08-11","dateModified":"2026-08-23","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is OpenHands the same as OpenDevin?","acceptedAnswer":{"@type":"Answer","text":"Yes. OpenDevin was renamed OpenHands in mid-2024 after the project moved under the All Hands AI organization. The codebase, community, and GitHub repository (github.com/All-Hands-AI/OpenHands) are the same project. When you search for OpenDevin, you will find OpenHands."}},{"@type":"Question","name":"Does amux replace OpenHands?","acceptedAnswer":{"@type":"Answer","text":"No. They operate at different levels. OpenHands is a fully autonomous single agent: you give it a task, it plans and executes in a Docker container, running tests and fixing errors by itself. amux is an orchestration layer: you coordinate a fleet of 5-50 coding agents (Claude Code, Codex, Gemini CLI), distributing tasks via a shared kanban board and keeping them running overnight with self-healing. Many teams use OpenHands for complex isolated tasks and amux for coordinating the fleet."}},{"@type":"Question","name":"Can I run OpenHands as a worker inside amux?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux manages tmux sessions, and you can run any CLI tool inside a tmux session, including the OpenHands CLI. This lets you coordinate multiple OpenHands instances from the amux dashboard, assign them tasks from the kanban board, and monitor their output alongside Claude Code or Codex workers in the same fleet view."}},{"@type":"Question","name":"Which is better for overnight runs?","acceptedAnswer":{"@type":"Answer","text":"amux is designed for overnight multi-task fleet runs. Its self-healing watchdog auto-compacts context when agents near their limit, restarts crashed sessions, and replays the last message so no work is lost. You queue 50 tasks, close your laptop, and wake up to results. OpenHands is better suited for single complex isolated tasks where deep autonomy (running tests, searching the web, fixing errors) matters more than fleet scale."}},{"@type":"Question","name":"What does OpenHands cost compared to amux?","acceptedAnswer":{"@type":"Answer","text":"OpenHands cloud (openhands.ai) uses a per-task credit model on top of LLM API costs. The self-hosted OSS version is free but requires Docker and your own LLM API keys. amux is free open-source software under MIT + Commons Clause. You pay only for the LLM API tokens your agents consume. There is no per-task fee, no per-seat charge, and no usage cap on the self-hosted version."}}]}</script>
 
@@ -47,7 +47,13 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs OpenHands</span></div>
 
     <h1>amux vs OpenHands (OpenDevin) 2026</h1>
-    <p class="subtitle">Autonomous single-agent sandbox vs open-source fleet orchestration. Different tools for different workflows, and why many teams use both.</p>
+    <p class="subtitle">Autonomous single-agent sandbox vs open-source fleet orchestration. Different tools for different workflows, and why many teams use both. Updated August 2026.</p>
+
+    <!-- EXP-055: /compare/amux-vs-openhands/ top-of-page green CTA -->
+    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:14px 20px;margin:1.5rem 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <span style="flex:1;min-width:200px;font-size:.92rem;color:var(--fg,#e2e8f0)">Run an AI engineering team from one dashboard — coordinate Claude Code, Codex, and Gemini CLI workers with self-healing, kanban, and phone monitoring. Open source, MIT licensed.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp055_openhands_compare_topofpage_cta_click')" style="display:inline-flex;align-items:center;gap:6px;background:#10b981;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:.88rem;font-weight:600;white-space:nowrap">View amux on GitHub ★</a>
+    </div>
 
     <!-- EXP-007: compare pages GitHub CTA (green pattern) -->
     <div style="background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:8px;padding:1.2rem 1.6rem;margin:1.8rem 0;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
@@ -131,7 +137,7 @@
             </tr>
             <tr>
               <td><strong>Open source</strong></td>
-              <td>Yes — MIT + Commons Clause, ~338 stars</td>
+              <td>Yes — MIT + Commons Clause, ~365 stars</td>
               <td>Yes — MIT, ~42,000 stars</td>
             </tr>
             <tr>
@@ -143,6 +149,11 @@
               <td><strong>Best for</strong></td>
               <td>Parallel overnight coding runs, fleet coordination, task queues</td>
               <td>Complex single-task autonomy: write, test, fix in one shot</td>
+            </tr>
+            <tr>
+              <td><strong>Third-party API auth</strong></td>
+              <td>OAuth broker (Connectors tab) — authorize once, every agent in the fleet shares the grant</td>
+              <td>Per-task credential injection; no shared auth layer</td>
             </tr>
             <tr>
               <td><strong>Claude Code integration</strong></td>
@@ -269,6 +280,19 @@
       </div>
     </section>
 
+    <!-- What's New August 2026 -->
+    <section>
+      <h2>What's new in amux — August 2026</h2>
+      <p>Recent additions that change the comparison since this page was first written:</p>
+      <ul>
+        <li><strong>Connectors tab (OAuth broker):</strong> agents can now authenticate with third-party services once from the dashboard — Google, GitHub, Slack, or any custom OAuth provider. Every agent in the fleet shares the grant. No more pasting credentials into CLAUDE.md files. OpenHands handles credentials per-task; amux's broker is fleet-scoped.</li>
+        <li><strong>Gmail batch API — inbox 4x faster:</strong> reading 480 emails now completes in ~5 API round-trips instead of 90. For agents that process email as part of business automation, this is the difference between a 2-second and a 12-second inbox sweep.</li>
+        <li><strong>@-worker dropdown in scheduler:</strong> the scheduler command editor now autocompletes worker names with @-mention. Queue recurring jobs for specific agents without leaving the dashboard.</li>
+        <li><strong>Server self-adoption (zero-downtime updates):</strong> the amux server detects a new binary on commit, exits, and launchd relaunches it — no manual restart, no dropped sessions.</li>
+        <li><strong>Disk watchdog:</strong> weekly warning before caches fill the drive. On a fleet running 30+ agents, build caches accumulate fast; the watchdog alerts before ENOSPC.</li>
+      </ul>
+    </section>
+
     <!-- FAQ -->
     <section>
       <h2>Frequently asked questions</h2>
@@ -302,7 +326,7 @@ amux serve  # web dashboard at https://localhost:8824</code></pre>
       <div class="cta-box">
         <h3>Run a parallel agent fleet tonight</h3>
         <p>amux is open source, free, and installs in under a minute. Queue 10 tasks, close your laptop, wake up to finished PRs.</p>
-        <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View amux on GitHub (338 stars)</a>
+        <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View amux on GitHub (365 stars)</a>
       </div>
     </section>
 

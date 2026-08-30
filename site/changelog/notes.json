@@ -1,11 +1,384 @@
 [
   {
+    "hash": "0ae647b1",
+    "short": "0ae647b",
+    "title": "Real-time backbone health is now visible in the dashboard",
+    "date": "2026-08-27",
+    "type": "feat",
+    "tags": ["dashboard", "observability"],
+    "description": "The SSE realtime backbone now publishes a joined health signal — server-side connection count meets the client-side reconnect beacon count. The dashboard can now show whether your fleet is truly live-connected or silently polling. A near-zero stale reconnect count shortly after a deploy is expected (ramp-up); the live connections metric is the discriminator. Check GET /api/debug/sse for the full breakdown."
+  },
+  {
+    "hash": "7f197c13",
+    "short": "7f197c1",
+    "title": "Every fleet gh call now uses your GitHub App token automatically",
+    "date": "2026-08-27",
+    "type": "feat",
+    "tags": ["github", "fleet"],
+    "description": "A token shim now sits in front of every `gh` CLI call made by an agent in the fleet. When a GitHub App is configured in amux, its installation token is injected automatically — no per-session credential setup, no agent-by-agent authentication. Teams using GitHub Apps for CI, PR creation, or repository access get fleet-wide coverage without touching each worker's environment."
+  },
+  {
+    "hash": "b1f5a478",
+    "short": "b1f5a47",
+    "title": "Board pickup scoring now weights by task age — older tasks surface first",
+    "date": "2026-08-26",
+    "type": "feat",
+    "tags": ["board", "fleet"],
+    "description": "The board drive previously picked up todo items in pos-LIFO order, which meant tasks added early could be buried under newer ones indefinitely. Age-weighted pickup scoring now blends position with how long a card has been waiting. Tasks that have sat in todo for hours or days score higher and get claimed sooner, keeping the backlog moving rather than stacking."
+  },
+  {
+    "hash": "bfd8d78c",
+    "short": "bfd8d78",
+    "title": "Duplicate / clone any live session",
+    "date": "2026-08-26",
+    "type": "feat",
+    "tags": ["sessions", "fleet"],
+    "description": "Any running session can now be duplicated with one API call (POST /api/sessions/<name>/clone) or via the dashboard 'Duplicate' button. The twin is registered alongside the original, inherits its project config and board association, and is immediately ready to receive messages. Use it to run parallel prompt experiments, split a long task across two agents, or A/B test two implementation approaches simultaneously without re-queuing from scratch."
+  },
+  {
+    "hash": "f4092ab9",
+    "short": "f4092ab",
+    "title": "Archived cards collapse into a drawer on the board",
+    "date": "2026-08-26",
+    "type": "feat",
+    "tags": ["board", "ux"],
+    "description": "The board's Archived section now folds behind a collapsible 'Archived (N)' header by default. On boards with dozens of completed cards, this keeps the active columns scannable without discarding history. Click the header to expand it when you need to review or restore an archived card."
+  },
+  {
+    "hash": "05df543e",
+    "short": "05df543",
+    "title": "Discard a held email draft and dismiss the approvals banner",
+    "date": "2026-08-26",
+    "type": "feat",
+    "tags": ["email", "ux"],
+    "description": "The email composition flow now includes a Discard button for held drafts and a way to collapse the approvals banner once you've decided not to send. Previously, a draft that was no longer relevant stayed in the approval queue with no way to remove it short of sending it or leaving it indefinitely. The banner now auto-collapses after a discard."
+  },
+  {
+    "hash": "03f3d8d3",
+    "short": "03f3d8d",
+    "title": "amux reserves 30% of the plan window for the human operator",
+    "date": "2026-08-26",
+    "type": "feat",
+    "tags": ["usage", "reliability"],
+    "description": "Under heavy overnight fleet load, the agent pool could consume the full API plan window, leaving no budget for the human operator's own interactive sessions the next morning. amux now reserves 30% of the plan window for human use and constrains agent activity to the remaining 70%. If the fleet reaches the ceiling it queues new work rather than continuing to consume — the reservation is enforced, not advisory."
+  },
+  {
+    "hash": "5e647edd",
+    "short": "5e647ed",
+    "title": "Send to a specific worker by its ID",
+    "date": "2026-08-25",
+    "type": "feat",
+    "tags": ["workers", "api"],
+    "description": "The worker-send route is now canonical: POST /api/sessions/<worker-name>/send is a stable, documented endpoint that external systems can address directly. Previously the send path had to be discovered from the session listing on each call. This change makes it practical to wire GitHub Actions, webhooks, and other external triggers to a named worker by ID, since the URL is now stable across restarts and server updates."
+  },
+  {
+    "hash": "9b27e1c1",
+    "short": "9b27e1c",
+    "title": "Schedules show estimated turns per day at creation and on edit",
+    "date": "2026-08-25",
+    "type": "feat",
+    "tags": ["schedules", "ux"],
+    "description": "When you create or edit a recurring schedule, amux now calculates and displays the estimated agent turns per day that schedule will consume based on its cadence. A schedule running every hour shows 24 turns/day; one running every weekday at 9am shows 5. This lets you forecast token spend before committing to a schedule, rather than discovering cost only after the first week of runs."
+  },
+  {
+    "hash": "84d0bd03",
+    "short": "84d0bd0",
+    "title": "Messages hold during rate limits instead of being dropped",
+    "date": "2026-08-25",
+    "type": "feat",
+    "tags": ["reliability", "steering"],
+    "description": "When a message is sent to a session that is currently rate-limited — either by API quota or by Claude Code's own rate limit — amux now holds the message in a delivery queue and delivers it as soon as the limit is released. Previously the message was silently dropped, with no indication to the sender that it had not been received. This affects agent-to-agent pipelines and external API callers who cannot predict whether a target worker is rate-limited at send time."
+  },
+  {
+    "hash": "1ad1e7744d9bebaefd6dd0e568bea886cfb8081b",
+    "short": "1ad1e77",
+    "title": "Board tasks now record when they closed",
+    "date": "2026-08-24",
+    "type": "feat",
+    "tags": ["board", "analytics"],
+    "description": "Every board card now stores a closed_at timestamp the moment its status moves to done or verified. This makes sprint analytics queryable without exporting: you can ask 'what did each agent close this week?' and get a precise answer rather than inferring closure from activity logs."
+  },
+  {
+    "hash": "f5c6af7632190b4a7cb8d30d3783c24346e8145f",
+    "short": "f5c6af7",
+    "title": "Board audit trail: which permission layer allowed each transition",
+    "date": "2026-08-24",
+    "type": "feat",
+    "tags": ["board", "governance"],
+    "description": "Board status transitions now record which permission layer approved the move — agent-auto, human-review, or force-override — alongside the actor and timestamp. Engineering managers and team leads can audit the board history and know not just what changed but under which authorization. No additional configuration required."
+  },
+  {
+    "hash": "978645c01affccddd99b667479c09b09cdf248a0",
+    "short": "978645c",
+    "title": "CLI no longer hangs when the server is unreachable",
+    "date": "2026-08-24",
+    "type": "fix",
+    "tags": ["cli", "reliability"],
+    "description": "Previously, running an amux CLI command against a server that was down or unreachable would hang indefinitely — the shell prompt never returned until you killed the process. The CLI now detects a failed connection immediately, prints a clear error with the server address and how to restart it, and exits with a non-zero status. Scripts and CI jobs that call amux commands will no longer stall silently on a down server."
+  },
+  {
+    "hash": "4049e8798d1e5604d87383679b6141a545c72f03",
+    "short": "4049e87",
+    "title": "Inbox loads 4x faster with Gmail batch API",
+    "date": "2026-08-22",
+    "type": "perf",
+    "tags": ["email", "gmail", "performance"],
+    "description": "The Gmail inbox now fetches all message metadata in a single batch request rather than one API call per message. Inbox loads with 480 messages now complete in roughly 5 round-trips instead of 480, cutting load time by 4x. The change is transparent — the inbox, thread, and search views work identically."
+  },
+  {
+    "hash": "2b1c408822ddcd3510885ef6144c8855a2fe45c2",
+    "short": "2b1c408",
+    "title": "@-mention any worker in the scheduler command editor",
+    "date": "2026-08-22",
+    "type": "feat",
+    "tags": ["dashboard", "scheduler", "ux"],
+    "description": "The @-worker autocomplete dropdown — previously limited to the message composer — now attaches to any text input, starting with the scheduler command editor. Type @ in a scheduled command to pick a session name from a live fleet list. The correct session name gets inserted without typos, which matters for scheduled commands that run unattended."
+  },
+  {
+    "hash": "726ca46ef70d237c4e8084bd15582b23925338eb",
+    "short": "726ca46",
+    "title": "Weekly disk watchdog warns before caches fill your drive",
+    "date": "2026-08-21",
+    "type": "feat",
+    "tags": ["disk", "monitoring", "maintenance"],
+    "description": "amux now runs a weekly disk watchdog that scans for directories consuming more than configurable thresholds and emits a warning before writes start failing. Particularly useful for teams running amux on a shared server with heavy multi-session usage — Rust build caches, log archives, and tmux scrollback can accumulate several gigabytes per week without notice."
+  },
+  {
+    "hash": "c510cad16da7ca1c3d0ee3672f99e9cc21120dbe",
+    "short": "c510cad",
+    "title": "Server updates apply in place — no restart window",
+    "date": "2026-08-21",
+    "type": "fix",
+    "tags": ["server", "reliability", "deploy"],
+    "description": "The amux Rust server now self-adopts new builds in place: when the auto-builder detects a new commit touching the server crate, it installs the updated binary and the running process exits cleanly for launchd to relaunch immediately. Sessions keep running through the changeover. Previously, applying a server update required a manual restart and introduced a brief window where the server was unavailable."
+  },
+  {
+    "hash": "7404228",
+    "short": "7404228",
+    "title": "Board progress note notifies the card owner",
+    "date": "2026-08-21",
+    "type": "feat",
+    "tags": ["board", "notifications", "agents"],
+    "description": "When a peer session adds a progress note to a board card you own, the card owner now receives a live notification and the success line names the recipient. Previously a progress note was written silently — the card owner had no way to know a peer had updated their card without polling the board. Works across all running sessions in the same fleet."
+  },
+  {
+    "hash": "418e23c",
+    "short": "418e23c",
+    "title": "Pane-churn — model-agnostic generation signal for any AI agent",
+    "date": "2026-08-20",
+    "type": "feat",
+    "tags": ["status", "observability", "agents"],
+    "description": "amux can now detect when any AI coding agent is actively generating output — not just Claude Code. The pane-churn signal watches for rapid terminal output change and infers a 'working' status regardless of which model or runtime is running (Claude Code, Codex, Gemini CLI, Aider, or a custom script). Previously, working-state detection relied on Claude Code-specific UI patterns. Pane-churn works universally."
+  },
+  {
+    "hash": "318a37e",
+    "short": "318a37e",
+    "title": "Status-explain — see exactly how amux derived a session's current state",
+    "date": "2026-08-20",
+    "type": "feat",
+    "tags": ["status", "observability", "dashboard"],
+    "description": "Each session status chip in the dashboard now carries an explanation tooltip showing exactly how amux derived that state — which signal won, what it saw in the pane, and why it chose that status over alternatives. Previously a session that showed 'idle' or 'working' gave no indication of the reasoning behind the label. Status-explain makes the derivation transparent, so you can trust the status or understand why it's wrong."
+  },
+  {
+    "hash": "68e87ef",
+    "short": "68e87ef",
+    "title": "Live canary per connector service — ok / api_error / unreachable / not_granted",
+    "date": "2026-08-20",
+    "type": "feat",
+    "tags": ["connectors", "observability", "dashboard"],
+    "description": "Each service in the Connectors tab now shows a live health indicator — ok, api_error, unreachable, or not_granted — updated in real time by a background canary probe. If a credential stops working (expired token, revoked key, wrong scope), the connector shows api_error or not_granted immediately, and amux creates an autofix card on the board naming the affected service. Dashboard status dots reflect connector health so you can see at a glance whether your agent fleet has the credentials it needs."
+  },
+  {
+    "hash": "ddd3ee9",
+    "short": "ddd3ee9",
+    "title": "OAuth broker — authorize once, every agent shares the grant",
+    "date": "2026-08-20",
+    "type": "feat",
+    "tags": ["connectors", "oauth", "credentials", "agents"],
+    "description": "The new OAuth broker lets you authorize an external service (Google, GitHub, or any OAuth 2.0 provider) a single time and share that grant across every agent in your fleet. Previously each session that needed an OAuth-protected API had to either hold its own token or go through a separate auth flow. Now the broker holds the grant centrally, mints short-lived tokens on demand, and injects them as environment variables at session launch. Tokens stay out of CLAUDE.md and git history."
+  },
+  {
+    "hash": "05d925f",
+    "short": "05d925f",
+    "title": "Files view sorts by last modified (newest first) by default",
+    "date": "2026-08-20",
+    "type": "feat",
+    "tags": ["files", "dashboard", "ux"],
+    "description": "The Files tab now opens with files sorted by last-modified time, newest first — the file you just wrote or edited is at the top. Previously the default sort was alphabetical, which buried the most recently changed files in the middle of long directory listings. The sort preference is persisted per-session so it stays across page refreshes."
+  },
+  {
+    "hash": "dff05ce",
+    "short": "dff05ce",
+    "title": "PWA resume lands on your exact last location — peek tab and closed state included",
+    "date": "2026-08-20",
+    "type": "feat",
+    "tags": ["pwa", "ios", "ux", "sessions"],
+    "description": "Reopening the amux PWA (or reloading the dashboard) now returns you to exactly where you left off — the same session selected, the same peek panel open (or closed), and the same tab active inside the peek. Previously reopening the app always landed on the sessions list with no peek open, requiring several taps to get back to the session you were monitoring. The restored state includes which peeks were explicitly closed, so a closed peek stays closed rather than reopening on resume."
+  },
+  {
+    "hash": "e58c085",
+    "short": "e58c085",
+    "title": "Email read-back shows your sent copy, not Gmail's rewritten version",
+    "date": "2026-08-20",
+    "type": "fix",
+    "tags": ["email", "gmail", "api"],
+    "description": "When you read back a message you just sent via /api/email/message/<id>, you now see the exact content you sent \u2014 not the Gmail-rewritten delivered copy, which could strip formatting or alter structure. Affects outbound read-back for all Gmail-connected accounts. Useful for confirming exactly what your agent sent before acting on the reply."
+  },
+  {
+    "hash": "2e78f49",
+    "short": "2e78f49",
+    "title": "Browser automation start echoes ignored fields and accepts a viewport parameter",
+    "date": "2026-08-19",
+    "type": "fix",
+    "tags": ["browser", "automation", "api"],
+    "description": "POST /api/browser/start now returns an ignored_fields list when you pass unrecognized parameters, so a wrong guess reads as a debugging hint rather than a silent no-op. Also adds a viewport parameter ({width, height}) so you can set screen dimensions at launch \u2014 useful for responsive layout testing and screenshots at specific breakpoints."
+  },
+  {
+    "hash": "a1c5be1",
+    "short": "a1c5be1",
+    "title": "Email reply audit rows now carry to/subject fields like send rows",
+    "date": "2026-08-19",
+    "type": "fix",
+    "tags": ["email", "audit", "api"],
+    "description": "The email send audit log (GET /api/email/log) previously showed blank to and subject fields for replies \u2014 only direct sends were fully attributed. Reply rows now carry the recipient and subject thread, so the audit trail is consistent whether your agent sent a fresh email or replied in a thread."
+  },
+  {
+    "hash": "168f311c",
+    "short": "168f311",
+    "title": "BM25 board search \u2014 full-text relevance ranking with match highlighting",
+    "date": "2026-08-19",
+    "type": "feat",
+    "tags": [
+      "board",
+      "search",
+      "bm25",
+      "dashboard"
+    ],
+    "description": "The board search bar now uses BM25 relevance ranking across every card field \u2014 title, description, notes, session tags, and status \u2014 with match highlighting on results. Previously the board used substring filtering with no ranking, so a query matching dozens of cards returned them in arbitrary order. BM25 brings TF-IDF style scoring so the most relevant cards surface first. Particularly useful when running large fleets where a session might have hundreds of past cards."
+  },
+  {
+    "hash": "438e528",
+    "short": "438e528",
+    "title": "Email file attachments \u2014 attach PDFs, CSVs, and files to /send and /reply",
+    "date": "2026-08-18",
+    "type": "feat",
+    "tags": [
+      "email",
+      "attachments",
+      "gmail",
+      "agents"
+    ],
+    "description": "Both /api/email/send and /api/email/reply now accept an attachments array. Each entry takes a filename, base64-encoded content, and MIME type. The email is sent as multipart/mixed so the body and attachment arrive together in Gmail. Agents can generate a report, export a CSV, or produce a PDF and email it to a recipient without any manual step. Works with all connected Gmail accounts."
+  },
+  {
+    "hash": "61f71f3",
+    "short": "61f71f3",
+    "title": "Email attachment inline flag and download endpoint",
+    "date": "2026-08-18",
+    "type": "feat",
+    "tags": [
+      "email",
+      "attachments",
+      "gmail",
+      "api"
+    ],
+    "description": "Attachments sent via /api/email/send or /api/email/reply are now flagged as inline or attachment in the MIME structure. A new GET /api/email/attachment/<id> download endpoint returns the raw attachment bytes, useful for agents or operators who need to retrieve a previously sent file. This closes the loop on the attachment workflow: send, confirm arrival, and retrieve if needed."
+  },
+  {
+    "hash": "f3aac99",
+    "short": "f3aac99",
+    "title": "Session status: API 5xx / Overloaded \u2014 distinct state when provider is rate-limited or down",
+    "date": "2026-08-18",
+    "type": "feat",
+    "tags": [
+      "sessions",
+      "status",
+      "api",
+      "observability"
+    ],
+    "description": "Sessions can now report an Overloaded status when the AI provider is returning 5xx errors or explicit rate-limit responses. Previously these events caused sessions to appear as crashed or stalled with no distinct visual signal. The new status surfaces in the dashboard session card, the iOS app status chip, and the API response, so operators can distinguish 'agent is broken' from 'provider is temporarily unavailable' without reading terminal output."
+  },
+  {
+    "hash": "fe519a42682cbfc1770b93964176",
+    "short": "fe519a4",
+    "title": "Connectors tab \u2014 paste API credentials once, scope to global, group, or per-worker",
+    "date": "2026-08-16",
+    "type": "feat",
+    "tags": [
+      "connectors",
+      "credentials",
+      "integrations",
+      "dashboard"
+    ],
+    "description": "The new Connectors tab lets you configure API keys and OAuth tokens for external services \u2014 Google, Granola, or any custom API \u2014 and make them available to your agent fleet as environment variables. Set the scope once (global for all agents, group for a team of sessions, per-worker for a single session) and a Test button verifies the credential is accepted before any agent relies on it. Credentials stay out of CLAUDE.md and git history. On rotation, update one record and every agent picks up the new key on next launch."
+  },
+  {
+    "hash": "d6538cb",
+    "short": "d6538cb",
+    "title": "MDAI viewer gains Diagram and List tabs \u2014 visualize computed file DAGs and browse all nodes",
+    "date": "2026-08-18",
+    "type": "feat",
+    "tags": [
+      "mdai",
+      "computed-files",
+      "dashboard",
+      "visualization"
+    ],
+    "description": "The .mdai file viewer now has two additional bottom tabs: Diagram (a visual graph of the computed file DAG \u2014 which nodes feed which) and List (a flat browse of all nodes in the local.amux folder). Previously the viewer showed only the raw file body. The new tabs make it practical to navigate and understand a multi-node computed file pipeline at a glance, directly from the dashboard."
+  },
+  {
+    "hash": "91fdd23",
+    "short": "91fdd23",
+    "title": "MDAI data source node \u2014 pull your own amux message history into a computed file pipeline",
+    "date": "2026-08-18",
+    "type": "feat",
+    "tags": [
+      "mdai",
+      "computed-files",
+      "messages",
+      "automation"
+    ],
+    "description": "A new prompt-only MDAI node type fetches its own session message history at run time, with no additional data source configuration. Useful for pipelines that analyze a session's own conversation log \u2014 for example, a daily summary agent that reads what the fleet did overnight and produces a digest. The node resolves its messages at DAG evaluation time so the output stays current without any external wiring."
+  },
+  {
+    "hash": "65bafdc",
+    "short": "65bafdc",
+    "title": "Spreadsheet preview in Files tab \u2014 .xlsx and .xls files render as sortable tables",
+    "date": "2026-08-18",
+    "type": "feat",
+    "tags": [
+      "files",
+      "spreadsheet",
+      "dashboard",
+      "preview"
+    ],
+    "description": "Excel spreadsheets (.xlsx and .xls) now open as interactive sortable tables in the amux Files viewer \u2014 no external application required. Previously these files showed a binary download prompt. Agents can be directed to process spreadsheet data and operators can verify the content directly in the dashboard without switching to a separate tool."
+  },
+  {
+    "hash": "6f3a882",
+    "short": "6f3a882",
+    "title": "Cancel TTS \u2014 stop audio generation or playback mid-session",
+    "date": "2026-08-17",
+    "type": "feat",
+    "tags": [
+      "tts",
+      "voice",
+      "ios",
+      "dashboard"
+    ],
+    "description": "A cancel button now appears during active text-to-speech generation and playback. Previously, TTS could not be interrupted \u2014 if you triggered a read-aloud on a long document, you had to wait for it to finish. The cancel button stops both the generation request and any in-progress audio playback immediately, making voice features practical to use on the iOS app mid-session."
+  },
+  {
     "sha": "9f41809",
     "short": "9f41809",
     "date": "2026-08-17",
     "type": "feat",
-    "title": "Computed files (.mdai) — define a knowledge DAG where agents produce outputs other agents consume automatically",
-    "tags": ["files", "agents", "knowledge-graph"],
+    "title": "Computed files (.mdai) \u2014 define a knowledge DAG where agents produce outputs other agents consume automatically",
+    "tags": [
+      "files",
+      "agents",
+      "knowledge-graph"
+    ],
     "description": "A new .mdai file type introduces computed-file nodes with a DAG resolver, cache, and history. Define dependencies between files so that when one agent produces output, downstream agents automatically see the fresh result. The client UI adds a dedicated tab, node overlay, and connect controls. Combine with coding agents to build multi-step knowledge pipelines that run unattended."
   },
   {
@@ -13,8 +386,12 @@
     "short": "8b802e1",
     "date": "2026-08-16",
     "type": "feat",
-    "title": "Files tab now works like an OS file manager — browse, preview, and edit any project file from your browser or phone",
-    "tags": ["files", "dashboard", "mobile"],
+    "title": "Files tab now works like an OS file manager \u2014 browse, preview, and edit any project file from your browser or phone",
+    "tags": [
+      "files",
+      "dashboard",
+      "mobile"
+    ],
     "description": "The Files tab gained a full OS file-manager UX: directory tree, inline preview, and edit-in-place for text and code files. You can now browse your project, read agent-produced artifacts, and make quick edits without leaving the dashboard. Works at phone width so you can review and tweak files from your iOS app on the go."
   },
   {
@@ -23,7 +400,11 @@
     "date": "2026-08-17",
     "type": "feat",
     "title": "Codex and Ollama agent transcripts now render with the same Claude-style layout in the peek panel",
-    "tags": ["peek", "codex", "ollama"],
+    "tags": [
+      "peek",
+      "codex",
+      "ollama"
+    ],
     "description": "The peek panel now renders Codex and Ollama (qwen) session transcripts using the same structured message layout as Claude Code sessions. Tool calls, thinking blocks, and assistant turns are highlighted and collapsible. Easier to see what a local Codex or Ollama worker did overnight without parsing raw terminal output."
   },
   {
@@ -31,24 +412,32 @@
     "short": "6a2d0bc",
     "date": "2026-08-16",
     "type": "feat",
-    "title": "OPEN worker peek stays live — the expanded session view refreshes in place without collapsing back",
-    "tags": ["peek", "dashboard", "ux"],
-    "description": "When you open a worker's peek panel to watch it run, the view now stays live and updates in place. Previously, new activity would collapse the open view back to the summary row. Now you can keep a worker expanded and watch its transcript update in real time — useful for monitoring a long-running overnight task."
+    "title": "OPEN worker peek stays live \u2014 the expanded session view refreshes in place without collapsing back",
+    "tags": [
+      "peek",
+      "dashboard",
+      "ux"
+    ],
+    "description": "When you open a worker's peek panel to watch it run, the view now stays live and updates in place. Previously, new activity would collapse the open view back to the summary row. Now you can keep a worker expanded and watch its transcript update in real time \u2014 useful for monitoring a long-running overnight task."
   },
   {
     "sha": "cb5724e",
     "short": "cb5724e",
     "date": "2026-08-16",
     "type": "fix",
-    "title": "Disk gauge now reports the actual data volume — was measuring the sealed read-only system volume on macOS",
-    "tags": ["metrics", "macos", "fix"],
-    "description": "The disk usage gauge in the dashboard was measuring the sealed APFS system volume on macOS, which is always nearly full, instead of the Macintosh HD data volume where your project files and model weights live. The gauge now shows accurate free space on the data volume — relevant when running large local models or accumulating agent output."
+    "title": "Disk gauge now reports the actual data volume \u2014 was measuring the sealed read-only system volume on macOS",
+    "tags": [
+      "metrics",
+      "macos",
+      "fix"
+    ],
+    "description": "The disk usage gauge in the dashboard was measuring the sealed APFS system volume on macOS, which is always nearly full, instead of the Macintosh HD data volume where your project files and model weights live. The gauge now shows accurate free space on the data volume \u2014 relevant when running large local models or accumulating agent output."
   },
   {
     "sha": "1678a5b",
     "date": "2026-08-16",
     "type": "feat",
-    "title": "Owner alerts fire via email and iMessage — critical agent events reach you without any manual setup"
+    "title": "Owner alerts fire via email and iMessage \u2014 critical agent events reach you without any manual setup"
   },
   {
     "sha": "ec08a71",
@@ -60,7 +449,7 @@
     "sha": "c6bd42b",
     "date": "2026-08-16",
     "type": "feat",
-    "title": "Health invariant alert.channel_can_deliver — a disconnected owner-alert channel now shows red in the dashboard"
+    "title": "Health invariant alert.channel_can_deliver \u2014 a disconnected owner-alert channel now shows red in the dashboard"
   },
   {
     "sha": "6ebef13",
@@ -72,7 +461,7 @@
     "sha": "2b00af8",
     "date": "2026-08-16",
     "type": "feat",
-    "title": "New CLI command: amux board show <ID> — inspect any board card from the terminal without opening the browser"
+    "title": "New CLI command: amux board show <ID> \u2014 inspect any board card from the terminal without opening the browser"
   },
   {
     "sha": "ec031ce",

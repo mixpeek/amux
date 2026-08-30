@@ -36,6 +36,22 @@ CC_HOME="${CC_HOME:-$HOME/.amux}"
 CC_SESSIONS="$CC_HOME/sessions"
 CC_DEFAULTS="$CC_HOME/defaults.env"
 
+# MR-43: recover AMUX_SESSION from the tmux pane name when it is empty inside
+# a lane that IS running in its amux-launched pane (spawn always injects it —
+# session_verbs.rs — so this is loss in-process, not absence at launch).
+# Fixed ONCE here rather than at each of this script's 30+ AMUX_SESSION call
+# sites, so every X-Amux-Session/X-Amux-Worker header downstream benefits
+# without a separate edit per site. Scoped to amux- prefixed panes: a human's
+# own tmux session (or no tmux at all) leaves AMUX_SESSION exactly as unset as
+# before this.
+if [[ -z "${AMUX_SESSION:-}" ]]; then
+  _mr43_tname="$(tmux display-message -p '#S' 2>/dev/null || true)"
+  if [[ "$_mr43_tname" == amux-* ]]; then
+    export AMUX_SESSION="${_mr43_tname#amux-}"
+  fi
+  unset _mr43_tname
+fi
+
 # ── Colors (disabled when not a tty or TERM is dumb) ────────────────────────
 if [[ -t 1 ]] && [[ "${TERM:-dumb}" != "dumb" ]]; then
   BOLD=$'\033[1m' DIM=$'\033[2m' RESET=$'\033[0m'
@@ -48,6 +64,124 @@ fi
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 die() { echo "${RED}error:${RESET} $*" >&2; exit 1; }
+
+# ── Every server call goes through _curl ─────────────────────────────────────
+#
+# A CONNECT TIMEOUT, in one place, because a per-call-site flag is a thing every
+# future call site has to remember and not one of the 41 sites did. Re-measured
+# against upstream/main at rebase time: 41 curl invocations, 0 with
+# --connect-timeout, 8 carrying only -m.
+#
+# Without one, an unreachable server does not FAIL — it HANGS, and none of the
+# error handling in this file can run while curl is still waiting. Measured
+# 2026-08-23 (AEAB-46): a dead localhost port on WSL2 drops the SYN instead of
+# refusing it, so `amux board done <id> --outcome ...` sat until its CALLER gave
+# up after two minutes and printed nothing. AEAB-36's "cannot reach the board —
+# NOTHING was applied" die() was already right there and could not fire. Pointed
+# at a host that fails fast (DNS, curl exit 6) the same command printed it
+# correctly — so the instrument could report the shape of failure that was
+# already obvious and not the one that looks like a wedged CLI.
+#
+# `-m`/`--max-time` is a DIFFERENT knob and stays at the call site: it caps the
+# whole transfer, and `peek --live` or `send` may legitimately be slow. The eight
+# sites that already had `-m` still hung for their full budget on a dropped
+# connect, which is why adding more of it was never the fix.
+_curl() {
+  local rc=0
+  command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-5}" "$@" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then _transport_breadcrumb "$rc" "$@"; fi
+  return "$rc"
+}
+
+# The second half of the fix: make the NEXT transport failure self-announcing.
+#
+# A CLI that cannot reach the server also cannot report that it could not reach
+# the server — the request never arrives, so nothing lands in the request log and
+# a sweep of /api/logs/analyze sees a silence identical to "nobody ran anything".
+# So the note is written to disk here and shipped on the next invocation that CAN
+# reach the server (_flush_transport_breadcrumbs).
+#
+# Recorded: the curl exit code, the method, and the URL with its QUERY STRING
+# stripped — so scheme and host and path, not the path alone — never the body and
+# never the headers. A breadcrumb whose own payload leaks an outcome's prose or an
+# auth header into a log the whole fleet reads costs more than the hang did. The
+# host is kept deliberately: AMUX_API pointing somewhere unexpected is one of the
+# things this breadcrumb exists to make visible.
+_transport_breadcrumb() {
+  local rc="$1"; shift
+  local url="" method="GET" prev="" a
+  for a in "$@"; do
+    case "$a" in http://*|https://*) url="$a" ;; esac
+    if [[ "$prev" == "-X" ]]; then method="$a"; fi
+    prev="$a"
+  done
+  printf '{"ts":%s,"curl_exit":%s,"method":"%s","url":"%s","session":"%s","cli":"bash"}\n' \
+    "$(date -u +%s)" "$rc" "$method" "${url%%\?*}" \
+    "${AMUX_SESSION:-${AMUX_WORKER:-}}" \
+    >> "$CC_HOME/cli-transport.jsonl" 2>/dev/null || true
+}
+
+# Ship the backlog to /api/client-debug, which logs the whole payload at INFO in
+# ~/.amux/logs/server-rs.log and serves it back from
+# GET /api/client-debug?kind=cli-transport-failure. That is what turns "my amux
+# command hung once" from a thing one operator saw into a thing a log sweep finds.
+#
+# ALWAYS returns 0: a diagnostic that can break a hot path 48 lanes run is worse
+# than no diagnostic.
+#
+# What it deletes, it delivered. The first version of this function read the
+# NEWEST 200 lines, posted those, and then cleared the WHOLE file — so on a
+# backlog of 201 every older breadcrumb was destroyed unsent, and the truncate
+# reported success. That is the shape this PR fixes one layer up, one layer down:
+# a composite operation taking its success signal from the part that worked. It
+# also raced: ~48 lanes share CC_HOME, so a `>>` landing between the read and the
+# `: >` was lost even inside the window.
+#
+# So the file is ROTATED, not truncated. mv is atomic within the directory: the
+# snapshot is exactly what gets posted, concurrent appends land in a fresh file
+# while it drains, and the snapshot is removed only on a 2xx — any other answer
+# puts it back for the next invocation to retry. There is no per-post row cap
+# because that cap is what ate the evidence; the snapshot can only grow while the
+# server is unreachable, and the first command that reaches it ships all of it.
+_flush_transport_breadcrumbs() {
+  local f="$CC_HOME/cli-transport.jsonl"
+  [[ -s "$f" ]] || return 0
+  local snap="$f.sending.$$"
+  mv "$f" "$snap" 2>/dev/null || return 0
+  local body code
+  body=$(F="$snap" python3 -c '
+import json, os
+rows = []
+with open(os.environ["F"]) as fh:
+    for line in fh.read().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            pass
+print(json.dumps({"kind": "cli-transport-failure", "n": len(rows), "rows": rows}))
+' 2>/dev/null) || { _restore_transport_snapshot "$snap" "$f"; return 0; }
+  # command curl, NOT _curl: a failed flush must not breadcrumb its own failure,
+  # which would be an unbounded pile of notes about not being able to send notes.
+  code=$(command curl -sk --connect-timeout 3 -m 5 -o /dev/null -w '%{http_code}' \
+    -X POST -H 'Content-Type: application/json' -d "$body" \
+    "${AMUX_API:-https://localhost:8824}/api/client-debug" 2>/dev/null || echo 000)
+  case "$code" in
+    2??) rm -f "$snap" 2>/dev/null || true ;;
+    *) _restore_transport_snapshot "$snap" "$f" ;;
+  esac
+  return 0
+}
+
+# Appended back rather than moved back, because a fresh $f may already exist from
+# a lane that failed while this snapshot was in flight — clobbering it would lose
+# the very breadcrumbs this function exists to keep.
+_restore_transport_snapshot() {
+  cat "$1" >> "$2" 2>/dev/null && rm -f "$1" 2>/dev/null
+  return 0
+}
 
 need_tmux() {
   command -v tmux &>/dev/null || die "tmux is required. Install with: brew install tmux"
@@ -176,7 +310,7 @@ _start_via_api() {
   local name="$1"
   local AMUX_API="${AMUX_API:-https://localhost:8824}"
   local resp
-  resp=$(curl -sk -m 90 -X POST -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+  resp=$(_curl -sk -m 90 -X POST -H "X-Amux-Session: ${AMUX_SESSION:-}" \
     "$AMUX_API/api/sessions/$name/start" 2>/dev/null) || resp=""
   if [[ -z "$resp" ]]; then
     # herdr AND codex/ollama start through the server now (AMUX-3164), so this is
@@ -204,7 +338,7 @@ _stop_via_api() {
   local name="$1"
   local AMUX_API="${AMUX_API:-https://localhost:8824}"
   local resp
-  resp=$(curl -sk -m 15 -X POST -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+  resp=$(_curl -sk -m 15 -X POST -H "X-Amux-Session: ${AMUX_SESSION:-}" \
     "$AMUX_API/api/sessions/$name/stop" 2>/dev/null) || resp=""
   if [[ -z "$resp" ]]; then
     return 1
@@ -861,7 +995,14 @@ try:
         'target': os.environ['TGT'],
         'text': os.environ['BODY'],
         'from': os.environ.get('FROM', ''),
-        'ts': int(time.time()),
+        # MILLISECONDS. cmd_history.ts is millis (declared in
+        # invariants/checks.rs TIMESTAMP_COLUMNS), and this wrote SECONDS, so
+        # every reconciled fallback landed in the audit trail dated 1970-01-21
+        # and sorted below every real row — GET /api/history?limit=50 never
+        # returned one. The send WAS recorded and was unfindable where anyone
+        # looks, which is the exact failure this ledger exists to prevent.
+        # Found by writing scripts/test-unstamped-ledger.sh (AMUX-2626).
+        'ts': int(time.time() * 1000),
     }))
 except Exception:
     sys.exit(1)
@@ -893,10 +1034,16 @@ print(json.dumps({
     'text': d.get('text', ''),
     'type': 'raw-tmux-fallback',
     'session': d.get('target', ''),
-    'ts': d.get('ts'),
+    # NORMALISE: rows written before the millis fix carry SECONDS. Converting
+    # here rather than only at the write site means a ledger that survived the
+    # upgrade still reconciles to the right instant instead of to 1970.
+    # 1e11 is the discriminator: any plausible seconds timestamp is ~1.8e9 and
+    # any plausible millis one is ~1.8e12, so the gap is three orders of
+    # magnitude and cannot be straddled by clock skew.
+    'ts': (lambda t: int(t) * 1000 if t and int(t) < 100000000000 else t)(d.get('ts')),
     'origin': 'unstamped-fallback from ' + (d.get('from') or 'unknown'),
 }))" 2>/dev/null) || continue
-    if curl -sk -m 10 -X POST -H 'Content-Type: application/json' \
+    if _curl -sk -m 10 -X POST -H 'Content-Type: application/json' \
          -d "$body" "$api/api/history" >/dev/null 2>&1; then
       sent=$((sent+1))
     else
@@ -922,7 +1069,7 @@ d = {'text': os.environ['MSG']}
 if os.environ.get('NB'):
     d['no_board'] = True          # AC-183: server skips autotask card creation
 print(json.dumps(d))")
-  resp=$(curl -sk -m 15 -X POST -H 'Content-Type: application/json' \
+  resp=$(_curl -sk -m 15 -X POST -H 'Content-Type: application/json' \
     -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
     -d "$body" "$AMUX_API/api/workers/$name/send" 2>/dev/null) || resp=""
   if [[ -n "$resp" ]]; then
@@ -952,7 +1099,7 @@ PYEOF
   local _retry
   for _retry in 1 2; do
     sleep 2
-    resp=$(curl -sk -m 5 -X POST -H 'Content-Type: application/json' \
+    resp=$(_curl -sk -m 5 -X POST -H 'Content-Type: application/json' \
       -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
       -d "$body" "$AMUX_API/api/workers/$name/send" 2>/dev/null) || resp=""
     if [[ -n "$resp" ]]; then
@@ -1345,6 +1492,54 @@ Usage: amux board <status> <ID> [--checked \"crit\" ...] [--ack] [--type T] [--r
   # A PATCH is atomic, so `{"desc":...,"status":"done"}` that trips the gate
   # discards the outcome text TOO — and the retry then has nothing to satisfy
   # "Outcome recorded in the item" with, so it fails again for a new reason.
+  # THE REVIEWER IS WRITTEN FIRST TOO, for the same reason (AMUX-3534).
+  #
+  # `amux board review <ID> --reviewer <peer>` on a GATED card refused the
+  # transition, correctly, and silently discarded the reviewer: the PATCH is
+  # atomic, so a gate 409 rolls back the whole body. Observed 2026-08-23 on
+  # AMUX-3527 — card stayed `doing`, reviewer never set, and the 409 body lists
+  # the criteria and the type escape while saying NOTHING about the flag that
+  # was passed. So half the command evaporated and nothing distinguished that
+  # from success.
+  #
+  # Naming the peer is a fact about the handoff and is independent of whether
+  # the move is permitted. A refusal should cost the transition, not the
+  # handoff — which is exactly the argument the outcome block below already
+  # makes, one field over. The failure is easy to miss in ordinary work: you
+  # fix the gate, re-run, it succeeds, and you never learn the first attempt
+  # left a card in review with nobody asked to look at it. That is the
+  # condition --reviewer was added to prevent.
+  #
+  # Sent in the STATUS body as well, deliberately. It is idempotent, and if
+  # this pre-write fails for a reason the transition survives, the second copy
+  # still lands.
+  if [[ -n "$reviewer" ]]; then
+    local _rvresp _rvcurl=0
+    _rvresp=$(_curl -sk -X PATCH -H 'Content-Type: application/json' \
+      -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
+      -d "$(V="$reviewer" python3 -c 'import json,os;print(json.dumps({"reviewer":os.environ["V"]}))')" \
+      "${AMUX_API:-https://localhost:8824}/api/board/$id" 2>/dev/null) || _rvcurl=$?
+    if [[ "$_rvcurl" -ne 0 ]]; then
+      die "cannot reach the board at ${AMUX_API:-https://localhost:8824} (curl exit $_rvcurl).
+NOTHING was applied — not the reviewer, and not the '$status' transition.
+The card is unchanged."
+    fi
+    # Do NOT discard this response: a dropped reviewer that looks saved is the
+    # whole defect (AC-323's shape, now on a fourth field).
+    printf '%s' "$_rvresp" | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception:
+    sys.stderr.write("warning: reviewer NOT set — server sent no JSON. "
+                     "The transition below was still attempted; check its result.\n"); sys.exit(0)
+if d.get("error") or d.get("blocked"):
+    sys.stderr.write("warning: reviewer NOT set: %s\n" % (d.get("error") or "blocked")); sys.exit(0)
+ign = [f for f in (d.get("ignored_fields") or []) if f]
+if ign:
+    sys.stderr.write("warning: reviewer NOT set — server ignored %s\n" % ", ".join(ign))
+'
+  fi
+
   # mixpeek-orchestrator hit this three times on 2026-08-04 (MO-3076 x2,
   # MO-3077). Two writes, not one: the outcome survives a refused transition.
   if [[ -n "$outcome" ]]; then
@@ -1355,14 +1550,45 @@ Usage: amux board <status> <ID> [--checked \"crit\" ...] [--ack] [--type T] [--r
       # look identical to a saved one. AC-323 shape a third time (board
       # progress, --trigger stamp, now here), found by the sweep
       # mixpeek-frustrations suggested rather than by it being reported.
-    curl -sk -X PATCH -H 'Content-Type: application/json' \
+    # CAPTURE curl's OWN exit status, do not pipe it straight into python.
+    #
+    # AEAB-36. This was `curl ... | python3 -c ...`, and the python deliberately
+    # exits 0 on failure so a lost outcome does not block the transition below.
+    # `set -euo pipefail` (line 19) defeated that completely: on a TRANSPORT
+    # failure curl exits non-zero, `pipefail` makes the pipeline return curl's
+    # status rather than python's, and `set -e` aborts the whole script right
+    # here — AFTER python has printed "outcome NOT recorded".
+    #
+    # So the user saw one warning, scoped to the OUTCOME, and the status
+    # transition never ran and never said so. Observed live on 2026-08-19
+    # closing AEAB-34, while the server happened to be restarting to adopt a new
+    # build: status stayed `review`, desc unchanged, and the natural reading of
+    # that warning — "status moved, prose lost" — was the exact opposite of the
+    # truth. Reproduced deterministically with AMUX_API pointed at a dead port:
+    # one warning line, exit 7, no transition.
+    #
+    # A code path written to be non-fatal was made fatal by a shell option one
+    # line from the top of the file, in precisely the case it was designed to
+    # survive.
+    local _oresp _ocurl=0
+    _oresp=$(_curl -sk -X PATCH -H 'Content-Type: application/json' \
       -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d "$_obody" \
-      "${AMUX_API:-https://localhost:8824}/api/board/$id" \
-    | python3 -c '
+      "${AMUX_API:-https://localhost:8824}/api/board/$id" 2>/dev/null) || _ocurl=$?
+    if [[ "$_ocurl" -ne 0 ]]; then
+      # Unreachable for the outcome means unreachable for the transition. Say
+      # BOTH facts, because reporting only the first is what made this
+      # dangerous, and stop rather than pretending to try.
+      die "cannot reach the board at ${AMUX_API:-https://localhost:8824} (curl exit $_ocurl).
+NOTHING was applied — not the outcome, and not the '$status' transition.
+The card is unchanged. Re-run when the server is back; if it just restarted to
+adopt a build, that is expected and a retry normally succeeds."
+    fi
+    printf '%s' "$_oresp" | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
 except Exception:
-    sys.stderr.write("warning: outcome NOT recorded — server sent no JSON\n"); sys.exit(0)
+    sys.stderr.write("warning: outcome NOT recorded — server sent no JSON. "
+                     "The transition below was still attempted; check its result.\n"); sys.exit(0)
 if d.get("error") or d.get("blocked"):
     sys.stderr.write("warning: outcome NOT recorded: %s\n" % (d.get("error") or "blocked")); sys.exit(0)
 ign = [f for f in (d.get("ignored_fields") or []) if f]
@@ -1371,6 +1597,23 @@ if ign:
 '
   fi
   local body
+  # WARNING: the block below is inside single quotes (python3 -c '...'). An
+  # apostrophe anywhere in it — including in a comment — closes the quote early
+  # and bash then fails to parse this whole FILE. That is not a local bug: this
+  # script is the symlink target of ~/.local/bin/amux, so a save is a deploy and
+  # every session in the fleet loses every subcommand at once, with the CLI too
+  # broken to print the help that would name the HTTP fallback. It happened
+  # (AMUX-3464, 2026-08-26). Keep explanations out here in bash-comment land,
+  # where quoting does not apply. `.claude/check-and-commit.sh` runs `bash -n`
+  # on save now, and tests/cli_syntax_guard.rs is the backstop.
+  #
+  # `reason` and `desc_append` are BOTH sent for a force, on purpose. The server
+  # interpolates `reason` into the permanent audit line ("force by <who>: a->b
+  # reason=..."); desc_append is prose a later edit can bury. Sending only the
+  # latter is why all 41 force lines this board had ever written read `reason=`
+  # empty, while 9 of those cards carried a good "[FORCED] <why>" in the desc:
+  # --force had already refused to run without a reason, and it simply never
+  # reached the ledger.
   body=$(S="$status" A="$ack" T="$newtype" O="$override" R="$rev" G="$trigger" F="$force_reason" V="$reviewer" python3 -c '
 import json, os, sys, time
 b = {"status": os.environ["S"]}
@@ -1379,7 +1622,10 @@ if os.environ.get("T"): b["type"] = os.environ["T"]
 if os.environ.get("V"): b["reviewer"] = os.environ["V"]
 if os.environ.get("O"): b["override_doing"] = True
 if os.environ.get("R"): b["rev"] = int(os.environ["R"])
-if os.environ.get("F"): b["force"] = True; b["desc_append"] = "[FORCED] " + os.environ["F"]
+if os.environ.get("F"):
+    b["force"] = True
+    b["reason"] = os.environ["F"]
+    b["desc_append"] = "[FORCED] " + os.environ["F"]
 # Stamp last_verified_at alongside source_ref: a trigger with no verification
 # time is indistinguishable from one checked a month ago, and the staleness
 # view keys on exactly that field. Setting one without the other would make
@@ -1390,11 +1636,108 @@ if os.environ.get("G"):
 crit = sys.argv[1:]
 if crit: b["gate_checked"] = crit
 print(json.dumps(b))' ${checked[@]+"${checked[@]}"})
-  curl -sk -X PATCH \
+  # Same AEAB-36 trap as the outcome write above, and WORSE here because this
+  # one is not piped: `result=$(_board_transition ...)` under `set -e` aborted
+  # the caller the instant curl failed at the transport level, so
+  # `amux board done <ID>` against an unreachable server printed ABSOLUTELY
+  # NOTHING and exited 7. Not a warning, not an error, not the id — the purest
+  # form of the silent-failure class this file already guards against in three
+  # other places, sitting on the sanctioned path.
+  #
+  # A dropped connection and a refused transition must never look alike: one
+  # means "nothing happened, retry", the other means "the board said no".
+  local _tresp _tcurl=0
+  _tresp=$(_curl -sk -X PATCH \
     -H 'Content-Type: application/json' \
     -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
     -d "$body" \
-    "${AMUX_API:-https://localhost:8824}/api/board/$id"
+    "${AMUX_API:-https://localhost:8824}/api/board/$id" 2>/dev/null) || _tcurl=$?
+  if [[ "$_tcurl" -ne 0 ]]; then
+    printf '%s\n' "cannot reach the board at ${AMUX_API:-https://localhost:8824} (curl exit $_tcurl).
+The '$status' transition was NOT applied and the card is unchanged — this is a
+transport failure, not a refused gate. Re-run when the server is back." >&2
+    return 1
+  fi
+  printf '%s' "$_tresp"
+}
+
+# The board's valid item types, ASKED FOR rather than carried.
+#
+# Extracted from the `type` verb, which learned this the hard way: it used to
+# hold a hardcoded list that drifted — advertising `task` and `decision`, both
+# rejected, and omitting `tripwire` — so following the tool's own usage line
+# produced "unknown type 'decision'" and sent you looking at your card instead
+# of at the CLI (AMUX-2479). `add --type` needs the same list, and a SECOND copy
+# is how that drift happens again, so there is one implementation and no literal
+# list anywhere in this file. On an unreachable server it returns a POINTER, not
+# a guess: confidently wrong help is worse than none.
+_board_valid_types() {
+  local _resp _code _body _t
+  # -w captures the STATUS so a transport failure and a 200-with-an-unexpected
+  # -shape cannot print the same sentence. They did, for every session: this
+  # helper read ["fields"]["valid_types"] while the server publishes `types` at
+  # top level (board.rs, KNOWN_TYPES), so `amux board add --help` on a perfectly
+  # healthy server said "server unreachable" and pointed the reader at the
+  # AMUX-3046 stranded-port hunt instead of at a key-path bug one line away.
+  # The note above already said confidently wrong help is worse than none; this
+  # separates the two failures so the message can keep that promise.
+  _resp=$(_curl -sk --max-time 3 -w '\n%{http_code}' "$AMUX_API/api/board/contract" 2>/dev/null)
+  _code="${_resp##*$'\n'}"
+  _body="${_resp%$'\n'*}"
+  if [[ "$_code" != "200" ]]; then
+    echo "(server unreachable at ${AMUX_API} (http=${_code:-000}) — see GET /api/board/contract)"
+    return
+  fi
+  # Read BOTH spellings: `types` is what the server publishes, the nested one is
+  # the historical shape this helper was written against. Accepting either means
+  # the next rename degrades to the other key rather than blanking the list.
+  _t=$(printf '%s' "$_body" | python3 -c 'import json,sys
+d = json.load(sys.stdin)
+t = d.get("types") or (d.get("fields") or {}).get("valid_types") or []
+print(" ".join(t))' 2>/dev/null)
+  [[ -n "$_t" ]] && echo "$_t" \
+    || echo "(server answered 200 but published no type list — contract shape changed; see GET /api/board/contract)"
+}
+
+# Refuse an argument that LOOKS like a flag but is not one this verb knows.
+#
+# AEAB-17: every board verb taking positional text used `*) text="$1"` as its
+# catch-all, so an unsupported or mistyped flag became part of the TEXT with
+# exit 0 and no warning. The failure is invisible at the call site — the command
+# prints the card id it created and looks like it worked.
+#
+# Only `--`-prefixed arguments are refused. A positional title is legitimate and
+# must keep working; something starting with `--` is a mistake often enough that
+# refusing it is right, and the escape (--stdin/--file) is named in the message
+# so a title that genuinely begins with dashes is still expressible.
+_board_bad_flag() {
+  local verb="$1" arg="$2"; shift 2
+  die "amux board $verb: unknown option '$arg'
+accepted here: $*
+If '$arg' was meant as literal text, pass it via --stdin or --file so it is
+never parsed as a flag. Unknown flags used to be folded silently into the
+title/text (AEAB-17), which produced cards with a scratch path in the title
+and an empty body."
+}
+
+_board_add_usage() {
+  cat <<EOF
+Usage: amux board add <title>
+       amux board add --stdin | --file <path>          (title, unevaluated by your shell)
+
+Optional:
+  --desc <text> | --desc-stdin | --desc-file <path>    card body
+  --type <type>                                        the GATE is derived from this
+  --depends-on <ISSUE-ID>                              link the new card to one it
+                                                       depends on (repeatable)
+  --help                                               this text
+
+types: $(_board_valid_types)
+
+Prefer --stdin/--file for a title and --desc-stdin/--desc-file for a body: inline
+text is evaluated by YOUR shell first, so backticks and \$(...) in it are EXECUTED
+before amux ever sees them (AMUX-1888).
+EOF
 }
 
 # Outcome-based exit for board mutations (AMUX-2140): the CLI used to report
@@ -1438,6 +1781,42 @@ if ok:
     # misread, then routed around a working command with a raw PATCH.
     label = (_argv[2] if len(_argv) > 2 else "") or d.get("status") or d.get("title") or "ok"
     print(d.get("id", "?"), "\u2192", label)
+    # DIVERTED is not IGNORED, and the difference is what the caller does next
+    # (AMUX-3791). Ignored means "set it somewhere else"; diverted means "it IS
+    # set, stop looking in the field you named". `board backlog --trigger` on an
+    # autofix-filed card writes the condition into the card BODY, because
+    # source_ref holds the dedupe signature that stops the detector re-filing.
+    # Without this line the command printed "<id> -> backlog", and verifying the
+    # way the flag implies \u2014 read back source_ref \u2014 returned the old value and
+    # read as a silent drop. That false negative cost a probe against a live
+    # card and nearly a bug report against code behaving correctly. stderr and
+    # exit 0: nothing went wrong, so it must not look like a failure or change
+    # the stdout shape any script is parsing.
+    for dv in (d.get("diverted_fields") or []):
+        if not isinstance(dv, dict):
+            continue
+        # QUOTE THE VALUE THE SERVER ECHOED BACK, not a generic noun. The whole
+        # point of this line is that a caller can confirm the write WITHOUT
+        # opening the card, and "the value was recorded" sends them to look
+        # anyway. The first draft reached for the status LABEL here, which
+        # `board backlog` never passes, so every real invocation printed the
+        # generic fallback.
+        #
+        # NO APOSTROPHE OR SINGLE QUOTE BELOW, INCLUDING IN COMMENTS. This
+        # function is a python3 -c block delimited by single quotes, so one
+        # apostrophe anywhere in it takes the fleet CLI down at load. The first
+        # draft of this hunk did exactly that; the save gate caught it and the
+        # CLI was broken fleet-wide until it was stashed.
+        val = dv.get("value") or ""
+        if len(val) > 73:
+            val = val[:72] + "..."
+        shown = "\"" + val + "\"" if val else "the value"
+        sys.stderr.write(
+            "note: %s was recorded in the card %s, not in `%s` \u2014 %s\n"
+            % (shown,
+               (dv.get("landed_in") or "?").upper(),
+               dv.get("field") or "?",
+               dv.get("why") or "no reason given"))
     # A 200 does not mean the server applied everything you sent. Reported by
     # mixpeek-frustrations: `board backlog --trigger` stored source_ref but
     # silently dropped last_verified_at, so the card parked with a good trigger
@@ -1545,11 +1924,11 @@ For long text use:                amux board progress $id \"\$(cat file)\"" ;;
           esac ;;
       esac
       local cur result
-      cur=$(curl -sk "$AMUX_API/api/board/$id" | python3 -c "import sys,json;d=json.load(sys.stdin);i=d.get('item') or d;print(json.dumps(sorted(set((i.get('tags') or [])+['needs:you']))))" 2>/dev/null)
+      cur=$(_curl -sk "$AMUX_API/api/board/$id" | python3 -c "import sys,json;d=json.load(sys.stdin);i=d.get('item') or d;print(json.dumps(sorted(set((i.get('tags') or [])+['needs:you']))))" 2>/dev/null)
       [[ -n "$cur" ]] || die "card $id not found"
       local body
       body=$(TAGS="$cur" ASK="$ask" python3 -c "import os,json; b={'tags':json.loads(os.environ['TAGS'])}; a=os.environ['ASK'].strip(); b['desc_append']=('NEEDS-YOU: '+a) if a else b.get('desc_append'); print(json.dumps({k:v for k,v in b.items() if v is not None}))")
-      result=$(curl -sk -X PATCH -H 'Content-Type: application/json' -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
+      result=$(_curl -sk -X PATCH -H 'Content-Type: application/json' -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
         -d "$body" "$AMUX_API/api/board/$id")
       # Label it as the TAG write it is. Without this the printer rendered the
       # card's unchanged status ("AC-221 -> todo"), which reads as a failed
@@ -1641,18 +2020,14 @@ For long text use:                amux board progress $id \"\$(cat file)\"" ;;
         # "unknown type 'decision'", which is the worst kind of help: confidently
         # wrong, and it sends you looking at your card instead of at the CLI.
         # (Hit live on AMUX-2479, 2026-08-07.)
-        local _types
-        _types=$(curl -sk --max-time 3 "$AMUX_API/api/board/contract" 2>/dev/null \
-          | python3 -c 'import json,sys
-try: print(" ".join(json.load(sys.stdin)["fields"]["valid_types"]))
-except Exception: pass' 2>/dev/null)
-        [[ -n "$_types" ]] || _types="(server unreachable — see GET /api/board/contract)"
+        # One implementation, in _board_valid_types — `add --type` needs the
+        # same list and a second copy is how the drift below happens again.
         die "Usage: amux board type <ISSUE-ID> <type>
-types: $_types"
+types: $(_board_valid_types)"
       fi
       local result
       result=$(T="$new_type" python3 -c 'import json,os;print(json.dumps({"type":os.environ["T"]}))' \
-        | curl -sk -X PATCH -H 'Content-Type: application/json' \
+        | _curl -sk -X PATCH -H 'Content-Type: application/json' \
             -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
       # Label it as the TYPE write it is. Argument-less, _board_outcome renders
       # the card's CURRENT status, so retyping a card printed "AMUX-2394 → doing"
@@ -1660,6 +2035,36 @@ types: $_types"
       # defect 1b667aa fixed for needsyou and status-update; this was the third
       # site, and the card that fixed the other two said there were two.
       echo "$result" | _board_outcome "$id" "" "type set to $new_type"
+      return $?
+      ;;
+    epic)
+      # AMUX-3707. The decompose nudge has told every lane since AMUX-3323 to
+      # "set each child's `epic` to <ID>" when promoting a capture shell — and
+      # there was no verb. `epic` is a real PATCH field (board.rs:2142, added by
+      # AMUX-2992) reachable only by hand-rolled curl, which drops the worker
+      # header and produces exactly the unattributed writes the ledger depends
+      # on not having. Same defect as `type`, `archive` and `reviewer` above
+      # (AMUX-2325), found the same way: by walking the sanctioned escape with
+      # only the sanctioned tooling and discovering it leaves the trail.
+      local id="${1:-}"; local parent="${2:-}"
+      _board_id_guard "epic" "$id"
+      [[ -n "$id" ]] || die "Usage: amux board epic <ISSUE-ID> <EPIC-ID>
+       amux board epic <ISSUE-ID> none        (detach from its epic)
+Rolls a card up under an epic. The epic itself is a card retyped \`epic\`:
+  amux board type PARENT-1 epic && amux board epic CHILD-1 PARENT-1"
+      # An empty second argument would silently CLEAR the epic, so a typo
+      # (\`amux board epic AMUX-1\`) would detach rather than error. Clearing
+      # must be asked for by name.
+      [[ -n "$parent" ]] || die "amux board epic: name the epic, or 'none' to detach.
+Usage: amux board epic $id <EPIC-ID> | none"
+      case "$parent" in none|None|NONE|clear) parent="" ;; esac
+      local result
+      result=$(P="$parent" python3 -c 'import json,os;print(json.dumps({"epic":os.environ["P"]}))' \
+        | _curl -sk -X PATCH -H 'Content-Type: application/json' \
+            -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
+      local _note="epic set to $parent"
+      [[ -n "$parent" ]] || _note="epic cleared"
+      echo "$result" | _board_outcome "$id" "" "$_note"
       return $?
       ;;
     archive|unarchive)
@@ -1684,7 +2089,7 @@ unarchive brings it back — this is the un-do that did not exist before AMUX-24
 b={"archived": int(os.environ["A"])}
 if os.environ.get("W"): b["authorized_by"]=os.environ["W"]
 print(json.dumps(b))' \
-        | curl -sk -X PATCH -H 'Content-Type: application/json' \
+        | _curl -sk -X PATCH -H 'Content-Type: application/json' \
             -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
       echo "$result" | _board_outcome "$id" "" "${subcmd}d"
       return $?
@@ -1706,7 +2111,7 @@ Sets the session whose sign-off is required for review -> done."
       [[ "$who" == "none" ]] && who=""
       local result
       result=$(R="$who" python3 -c 'import json,os;print(json.dumps({"reviewer":os.environ["R"]}))' \
-        | curl -sk -X PATCH -H 'Content-Type: application/json' \
+        | _curl -sk -X PATCH -H 'Content-Type: application/json' \
             -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
       echo "$result" | _board_outcome "$id" "" "reviewer set to ${who:-none}"
       return $?
@@ -1723,7 +2128,7 @@ Sets the session whose sign-off is required for review -> done."
       local id="${1:-}"
       _board_id_guard "show" "$id"
       [[ -n "$id" ]] || die "Usage: amux board show <ISSUE-ID>"
-      curl -sk "$AMUX_API/api/board/$id" | python3 -c '
+      _curl -sk "$AMUX_API/api/board/$id" | python3 -c '
 import json, sys
 raw = sys.stdin.read()
 try:
@@ -1783,6 +2188,15 @@ conversation it was captured from."
           --desc-file)    [[ -n "${2:-}" && -r "${2:-}" ]] || die "usage: amux board retitle <ID> --desc-file <path>"
                           new_desc=$(cat "$2"); _mode=1; shift 2 ;;
           --desc)         new_desc="${2:-}"; _mode=1; shift 2 ;;
+          --help|-h)      die "Usage: amux board retitle <ISSUE-ID> <title> | --stdin | --file <path>
+       amux board retitle <ISSUE-ID> --desc-stdin | --desc-file <path> | --desc <text>" ;;
+          # Same AEAB-17 defect as `add` below, twenty lines away: this catch-all
+          # absorbed unknown flags into the TITLE. Fixed here too rather than
+          # left as a known hole — searching for the SHAPE and not one spelling
+          # is the lesson of the sweep that missed a second site by grepping a
+          # single pattern.
+          --*)            _board_bad_flag retitle "$1" \
+                            "--stdin --file <p> --desc <text> --desc-stdin --desc-file <p> --help" ;;
           *)              new_title="$1"; _mode=1; shift ;;
         esac
       done
@@ -1798,7 +2212,7 @@ if t: b["title"]=t
 # appending to it — the whole point is that the original text lacked context.
 if d.strip(): b["desc"]=d; b["desc_append"]=False
 print(json.dumps(b))' \
-        | curl -sk -X PATCH -H 'Content-Type: application/json' \
+        | _curl -sk -X PATCH -H 'Content-Type: application/json' \
             -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
       local _what="title rewritten"
       [[ -n "$new_desc" && -n "$new_title" ]] && _what="title + desc rewritten"
@@ -1811,17 +2225,76 @@ print(json.dumps(b))' \
       # (AMUX-1888); the JSON body is built with json.dumps, not string
       # interpolation, so a quote/newline/backslash in the title can't produce
       # malformed JSON (the old `-d "{\"title\":\"$title\"}"` form did).
-      local title
-      if [[ "${1:-}" == "--stdin" || "${1:-}" == "-" ]]; then title=$(cat)
-      elif [[ "${1:-}" == "--file" ]]; then
-        [[ -n "${2:-}" && -r "${2:-}" ]] || die "usage: amux board add --file <path>"
-        title=$(cat "$2")
-      else title="$*"; fi
-      [[ -n "$title" ]] || die "Usage: amux board add <title> | --stdin | --file <path>"
+      #
+      # AEAB-17. This used to be `else title="$*"`, which meant EVERY argument
+      # became part of the title — so an unsupported or mistyped flag was
+      # silently folded in, exit 0, no warning. One log-review run filed five
+      # cards that way: titles up to 259 chars carrying raw
+      # `--type blocker --desc-file /private/tmp/.../c26.md` (a scratch path
+      # that would not exist the next day), empty descs, and the DEFAULT type —
+      # so two cards about a production outage were typed `code` and therefore
+      # gated on "Implemented and merged" + "Tests / lint pass", which cannot be
+      # acked truthfully for "your prod host disk is full" (ethos rule 3,
+      # reached by accident). And `amux board add --help` filed a card TITLED
+      # "--help", so the one action taken to discover the interface was the
+      # action that polluted the board — the AMUX-2140 shape, where following
+      # the instruction is what produces the failure.
+      #
+      # Two fixes, and the second is why the first was needed: reject unknown
+      # flags instead of absorbing them, AND accept --type/--desc-* so the
+      # honest path is the easy path. Without the latter, a card with a body
+      # still needs add-then-retitle, which is exactly the two-step that made
+      # the mistake natural. `retitle` already had these flags; `add`, the verb
+      # you reach first, had none and said so nowhere reachable.
+      local title="" desc="" itype="" _src=""
+      local -a deps=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --stdin|-)     title=$(cat); _src=1; shift ;;
+          --file)        [[ -n "${2:-}" && -r "${2:-}" ]] || die "usage: amux board add --file <path>"
+                         title=$(cat "$2"); _src=1; shift 2 ;;
+          --desc-stdin)  desc=$(cat); shift ;;
+          --desc-file)   [[ -n "${2:-}" && -r "${2:-}" ]] || die "usage: amux board add --desc-file <path>"
+                         desc=$(cat "$2"); shift 2 ;;
+          --desc)        [[ -n "${2:-}" ]] || die "usage: amux board add --desc <text>"
+                         desc="$2"; shift 2 ;;
+          --type)        [[ -n "${2:-}" ]] || die "usage: amux board add --type <type>
+types: $(_board_valid_types)"
+                         itype="$2"; shift 2 ;;
+          # AF-242. The server has ALWAYS accepted depends_on at create (it is
+          # in the POST handler's known_keys) and honours it — verified live.
+          # `add` could not say it, and `epic` was the CLI's only link verb, so
+          # a card that begets a card took two steps and the second had no verb
+          # at all. That is ethos rule 1: capability present, honoured, reaching
+          # nobody because the sanctioned tool cannot express it. Two lanes
+          # routed around it on 2026-08-26 alone — a reviewer's out-of-scope
+          # finding written into the host card's desc, and an AF-182 -> AMUX-3726
+          # split written into prose on both cards.
+          --depends-on)  [[ -n "${2:-}" ]] || die "usage: amux board add --depends-on <ISSUE-ID>"
+                         deps+=("$2"); shift 2 ;;
+          --help|-h)     _board_add_usage; return 0 ;;
+          --*)           _board_bad_flag add "$1" \
+                           "--stdin --file <p> --desc <text> --desc-stdin --desc-file <p> --type <t> --depends-on <ID> --help" ;;
+          *)             title="${title:+$title }$1"; _src=1; shift ;;
+        esac
+      done
+      [[ -n "$title" ]] || die "$(_board_add_usage)"
       local body result
-      body=$(T="$title" S="${AMUX_SESSION:-}" python3 -c \
-        "import json,os; print(json.dumps({'title': os.environ['T'].strip(), 'status':'todo', 'session': os.environ['S']}))")
-      result=$(curl -sk -X POST \
+      local _deps_joined=""
+      [[ ${#deps[@]} -gt 0 ]] && _deps_joined=$(printf '%s\n' "${deps[@]}")
+      body=$(T="$title" S="${AMUX_SESSION:-}" D="$desc" TY="$itype" DEP="$_deps_joined" python3 -c 'import json,os
+b = {"title": os.environ["T"].strip(), "status": "todo", "session": os.environ["S"]}
+d = os.environ.get("D", "")
+if d.strip(): b["desc"] = d
+t = os.environ.get("TY", "").strip()
+if t: b["type"] = t
+# ABSENT, not an empty list, when no --depends-on was given. An always-present
+# [] is a different statement to the server and would satisfy any assertion
+# that only checks the flag WORKS (AF-242).
+dep = [x.strip() for x in os.environ.get("DEP", "").split("\n") if x.strip()]
+if dep: b["depends_on"] = dep
+print(json.dumps(b))')
+      result=$(_curl -sk -X POST \
         -H 'Content-Type: application/json' \
         -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
         -d "$body" \
@@ -1836,7 +2309,7 @@ print(json.dumps(b))' \
       shift 2>/dev/null || true
       local q="$*" body result
       body=$(Q="$q" python3 -c "import os,json;print(json.dumps({'question':os.environ['Q'].strip()}))")
-      result=$(curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
+      result=$(_curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
         -d "$body" "$AMUX_API/api/board/$id/status-request")
       echo "$result" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('message') or d.get('reason') or json.dumps(d)); sys.exit(0 if d.get('delivered') else 1)"
       return $?
@@ -1879,7 +2352,7 @@ status-CHANGE verbs (done, verified, review, backlog), not on this one." ;;
       [[ -n "$text" ]] || die "status text required"
       local body result
       body=$(T="$text" python3 -c "import os,json;print(json.dumps({'text':os.environ['T'].strip()}))")
-      result=$(curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
+      result=$(_curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
         -d "$body" "$AMUX_API/api/board/$id/status-update")
       # Same shape as the needsyou path: posting a status-UPDATE does not move
       # the card, so printing its current status behind an arrow invites the
@@ -1892,12 +2365,29 @@ status-CHANGE verbs (done, verified, review, backlog), not on this one." ;;
       local id="${1:-}"; [[ -n "$id" ]] || die "Usage: amux board claim <ISSUE-ID>"
       _board_id_guard "claim" "$id"
       local result
-      result=$(curl -sk -X POST \
+      result=$(_curl -sk -X POST \
         -H 'Content-Type: application/json' \
         -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
         -d "{\"session\":\"${AMUX_SESSION:-}\"}" \
         "$AMUX_API/api/board/$id/claim")
       echo "$result" | _board_outcome
+      return $?
+      ;;
+    assign)
+      # Sanctioned reassignment (AMUX-3450). The claim endpoint's 409 for a
+      # card owned by another worker used to say "reassign it first" while no
+      # CLI verb could — the documented escape was walkable only via a
+      # hand-rolled PATCH, which is ethos rule 6's unaudited back door. This
+      # verb IS that PATCH, attributed and with the outcome surfaced loudly.
+      local id="${1:-}" who="${2:-}"
+      [[ -n "$id" && -n "$who" ]] || die "Usage: amux board assign <ISSUE-ID> <worker>"
+      _board_id_guard "assign" "$id"
+      local result
+      result=$(_curl -sk -X PATCH -H 'Content-Type: application/json' \
+        -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
+        -d "{\"session\":\"$who\"}" \
+        "$AMUX_API/api/board/$id")
+      echo "$result" | _board_outcome "$id" "" "assigned to $who"
       return $?
       ;;
     import)
@@ -2109,7 +2599,7 @@ Supported:  amux board progress $id --stdin <<'EOF'   (heredoc; backticks stay l
       # was found. The whole reason sessions are told to use `amux board` rather
       # than raw curl is that it supplies attribution for you; a write verb that
       # silently does not is the sanctioned-instruction-is-the-theatre shape.
-      curl -sk -X PATCH \
+      _curl -sk -X PATCH \
         -H 'Content-Type: application/json' \
         -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
         -d "{\"desc_append\":$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$msg")}" \
@@ -2135,13 +2625,23 @@ if 'desc_append' in ign:
     sys.exit(1)
 if 'id' not in d:
     print('progress NOT recorded: unexpected response %s' % str(d)[:200], file=sys.stderr); sys.exit(1)
-print(d['id'], '— progress noted')
+# AVE-36: say whether the OWNER was told, not just that bytes landed. Both
+# progress and ask reported success, only ask notified, and nothing at the
+# call site distinguished them — three cross-group confirms went unread on a
+# card its owner was actively working.
+n = d.get('owner_notified')
+if n is True:
+    print(d['id'], \"— progress noted; owner '%s' notified at their next turn\" % d.get('session', '?'))
+elif n is False:
+    print(d['id'], '— progress noted, but OWNER NOT NOTIFIED: %s' % d.get('owner_notify_reason', 'no reason given'))
+else:
+    print(d['id'], '— progress noted (own card or no owner: no cross-owner notice due)')
 "
       # Check if task has a gh: tag — if so, post comment to GH issue
       local task_json
       # Point read (AMUX-2223). This pulled the ENTIRE board — 4.7MB across
       # 1624 cards — to find one card by id.
-      task_json=$(curl -sk "$AMUX_API/api/board/$id" 2>/dev/null)
+      task_json=$(_curl -sk "$AMUX_API/api/board/$id" 2>/dev/null)
       if [[ -n "$task_json" ]]; then
         local gh_tag
         gh_tag=$(echo "$task_json" | python3 -c "
@@ -2186,7 +2686,7 @@ for tag in item.get('tags',[]):
       # second layer: a tag in a store the reader never opens. So read them
       # here and print one line, in the place the reader is already looking.
       local _hdr; _hdr=$(mktemp)
-      curl -sk -D "$_hdr" "$AMUX_API/api/board?$_lsq" | python3 -c "
+      _curl -sk -D "$_hdr" "$AMUX_API/api/board?$_lsq" | python3 -c "
 import sys,json
 items=json.load(sys.stdin)
 for i in sorted(items, key=lambda x: x.get('updated',0), reverse=True):
@@ -2221,14 +2721,21 @@ ${BOLD}amux board${RESET} — manage board issues from the CLI
 
   amux whoami                      Live worker identity vs inherited env (mismatch warns)
   amux board ls [--all]            List open issues (--all includes archived)
+  amux board show <ID>             Print one card in full (title, desc, gate, history)
   amux board add <title>           Create a new todo issue
+    --type T                       set the type at create time (the GATE is derived from it)
+    --desc/--desc-stdin/--desc-file  give the card a body in the same write
+                                   (--stdin/--file for the TITLE. Unknown flags are
+                                    REFUSED, not folded into the title — AEAB-17.)
   amux board claim <ID>            Atomically claim a todo/backlog card for this worker
+  amux board assign <ID> <worker>  Reassign a card to a worker (the claim 409's sanctioned exit)
   amux board needsyou <ID> [ask]   Mark a card as blocked on the human (surfaces in Needs-you).
                                    A sign-in/login ask auto-gets a clickable resume link into
                                    this session's live browser view (Ethan clicks to sign in).
   amux board ask <ID> [question]   Ask the owning worker to post a status update
   amux board status-update <ID> …  (for the owning worker) post status to the board
                                    (prose, --stdin or --file <path>; NOT the gate flags below)
+  amux board discard <ID>          Retire a card that is not a unit of work (ungated)
   amux board done <ID>             Move issue to done
   amux board doing <ID>            Move issue to doing (in progress)
   amux board review <ID>           Move issue to in review
@@ -2236,6 +2743,10 @@ ${BOLD}amux board${RESET} — manage board issues from the CLI
   amux board backlog <ID>          Move issue to backlog
   amux board status <ID> <status>  Set any status
   amux board type <ID> <type>      Correct a card's type (the gate is DERIVED from it)
+  amux board epic <ID> <EPIC-ID>   Roll a card up under an epic ('none' detaches)
+  amux board reviewer <ID> <W>     Name the peer a card in review is handed to
+  amux board archive <ID>          Hide a card from every view AND every autonomy loop
+  amux board unarchive <ID>        Bring an archived card back (the un-do, AMUX-2492)
   amux board retitle <ID> <title>  Rewrite a title/desc so the card stands alone
                                    (--stdin/--file preferred; --desc-stdin for the body)
 
@@ -2352,7 +2863,7 @@ cmd_config() {
   local sub="${1:-}"; shift || true
   case "$sub" in
     export)
-      curl -sk "${AMUX_API:-https://localhost:8824}/api/config/export" \
+      _curl -sk "${AMUX_API:-https://localhost:8824}/api/config/export" \
       | python3 -c '
 import sys, json, yaml
 d = json.load(sys.stdin)
@@ -2372,7 +2883,7 @@ if not isinstance(doc, dict):
     sys.stderr.write("config must be a YAML mapping (got %s)\n" % type(doc).__name__); sys.exit(2)
 print(json.dumps(doc))
 ' "$f") || die "could not parse $f as YAML"
-      curl -sk -X PUT -H 'Content-Type: application/json' -d "$body" \
+      _curl -sk -X PUT -H 'Content-Type: application/json' -d "$body" \
         "${AMUX_API:-https://localhost:8824}/api/config/apply" \
       | python3 -c '
 import sys, json
@@ -2392,7 +2903,7 @@ sys.exit(1 if errs else 0)
     skin)
       # What a given worker actually renders with, after the layer merge.
       local w="${1:-}"
-      curl -sk "${AMUX_API:-https://localhost:8824}/api/skin?worker=${w}" \
+      _curl -sk "${AMUX_API:-https://localhost:8824}/api/skin?worker=${w}" \
       | python3 -c '
 import sys, json, yaml
 d = json.load(sys.stdin)
@@ -2447,7 +2958,7 @@ print(json.dumps(fields))' "$@"
     add)
       [ $# -gt 0 ] || die "Usage: amux crm add \"Name\" [company=X] [email=Y] [role=Z] [phone=P]"
       local json; json=$(_crm_json "$@")
-      curl -sk -X POST -H 'Content-Type: application/json' \
+      _curl -sk -X POST -H 'Content-Type: application/json' \
         -H "X-Amux-Session: ${AMUX_SESSION:-}" \
         -d "$json" "$AMUX_API/api/crm/contacts" | python3 -c '
 import json, sys
@@ -2460,7 +2971,7 @@ print(d.get("id", "?"), "created")'
       shift 2>/dev/null || true
       [ $# -gt 0 ] || die "amux crm update: nothing to set. Give key=value pairs."
       local json; json=$(_crm_json "$@")
-      curl -sk -X PATCH -H 'Content-Type: application/json' \
+      _curl -sk -X PATCH -H 'Content-Type: application/json' \
         -H "X-Amux-Session: ${AMUX_SESSION:-}" \
         -d "$json" "$AMUX_API/api/crm/contacts/$cid" | python3 -c '
 import json, sys
@@ -2470,7 +2981,7 @@ print("updated")'
       ;;
     get|show)
       local cid="${1:-}"; [ -n "$cid" ] || die "Usage: amux crm get PPL-1"
-      curl -sk "$AMUX_API/api/crm/contacts/$cid" | python3 -c '
+      _curl -sk "$AMUX_API/api/crm/contacts/$cid" | python3 -c '
 import json, sys
 c = json.load(sys.stdin)
 if c.get("error"): print("error:", c["error"], file=sys.stderr); sys.exit(1)
@@ -2495,7 +3006,7 @@ for a in sys.argv[1:]:
         notes.append(a)
 if notes: fields["notes"] = " ".join(notes)
 print(json.dumps(fields))' "$@")
-      curl -sk -X POST -H 'Content-Type: application/json' \
+      _curl -sk -X POST -H 'Content-Type: application/json' \
         -H "X-Amux-Session: ${AMUX_SESSION:-}" \
         -d "$json" "$AMUX_API/api/crm/contacts/$cid/interactions" | python3 -c '
 import json, sys
@@ -2504,17 +3015,33 @@ if d.get("error"): print("error:", d["error"], file=sys.stderr); sys.exit(1)
 print("logged", d.get("id", ""))'
       ;;
     followups|fu)
-      curl -sk "$AMUX_API/api/crm/followups" | python3 -c '
+      # Read the body defensively, like `tunnel status` and `alert` already do.
+      # Unparseable input used to reach `json.load` directly and print a raw
+      # Python traceback — loud, but naming json/__init__.py rather than the
+      # server, so "amux is down" and "amux crm is broken" looked identical.
+      # AEAB-37: this is NOT the AEAB-36 silent-abort shape, which is what that
+      # card originally claimed; it is a smaller instrument defect in the same
+      # family. See the card for the correction.
+      _curl -sk "$AMUX_API/api/crm/followups" | python3 -c '
 import json, sys
-items = json.load(sys.stdin)
+raw = sys.stdin.read()
+try: items = json.loads(raw)
+except ValueError: sys.exit("amux server not responding at %s (restarting?) — retry in a moment" % __import__("os").environ.get("AMUX_API", "the configured API"))
+if isinstance(items, dict) and items.get("error"): sys.exit("error: %s" % items["error"])
 if not items: print("No pending follow-ups"); sys.exit(0)
 for i in items:
     print(i.get("follow_up_date", ""), i.get("name", ""), "-", i.get("follow_up_note", ""))'
       ;;
     list|ls|"")
-      curl -sk "$AMUX_API/api/crm/contacts$([ -n "${1:-}" ] && printf '?q=%s' "$1")" | python3 -c '
+      _curl -sk "$AMUX_API/api/crm/contacts$([ -n "${1:-}" ] && printf '?q=%s' "$1")" | python3 -c '
 import json, sys
-cs = json.load(sys.stdin)
+raw = sys.stdin.read()
+try: cs = json.loads(raw)
+except ValueError: sys.exit("amux server not responding at %s (restarting?) — retry in a moment" % __import__("os").environ.get("AMUX_API", "the configured API"))
+# An error OBJECT is not an empty list. Iterating a dict yields its KEYS, so
+# without this the loop below called .get() on a string and died with an
+# AttributeError that named neither the server nor the error it returned.
+if isinstance(cs, dict) and cs.get("error"): sys.exit("error: %s" % cs["error"])
 if not cs: print("No contacts"); sys.exit(0)
 for c in cs:
     print("%-8s %-28s %s" % (c.get("id", ""), (c.get("name") or "")[:28], c.get("company", "")))'
@@ -2550,6 +3077,9 @@ ${BOLD}Worker management:${RESET}
   amux exec <name> [flags]       Register + start in one step
   amux stop <name>               Stop a running worker
   amux rm <name>                 Remove a worker (stops if running)
+  amux fresh <name> [-y]         Restart the worker on a NEW conversation
+                                 ${DIM}keeps env, cards, memory, groups — drops the${RESET}
+                                 ${DIM}compaction backlog. See /api/debug/context-health${RESET}
   amux start-all                 Start all registered workers
   amux stop-all                  Stop all running workers
 
@@ -2592,7 +3122,7 @@ ${BOLD}CRM:${RESET}
 
 ${BOLD}Board:${RESET}
   amux board ls                  List all board issues
-  amux board add <title>         Create a new issue
+  amux board add <title>         Create a new issue (--type/--desc*; see `amux board`)
   amux board done <ID>           Mark issue as done
   amux board doing <ID>          Mark issue as in progress
   amux board todo <ID>           Mark issue as todo
@@ -2657,7 +3187,7 @@ cmd_tunnel() {
   # all 7 call sites; nothing else could see it, because a CLI that exits 0 is
   # invisible to every check that looks at exit codes.
   local _tunnel_code
-  _tunnel_code=$(curl -sk -o /dev/null -w '%{http_code}' "$AMUX_API/api/tunnel/status" 2>/dev/null || echo 000)
+  _tunnel_code=$(_curl -sk -o /dev/null -w '%{http_code}' "$AMUX_API/api/tunnel/status" 2>/dev/null || echo 000)
   if [[ "$_tunnel_code" == "404" ]]; then
     echo "amux tunnel: not available in this server build (HTTP 404 -- /api/tunnel/* is not routed)." >&2
     echo "  The verb exists in this CLI but the endpoints were never ported to the rust server." >&2
@@ -2671,7 +3201,7 @@ cmd_tunnel() {
       local port="${1:-}"
       local payload='{}'
       [[ -n "$port" ]] && payload="{\"port\":$port}"
-      curl -sk -X POST -H 'Content-Type: application/json' -d "$payload" \
+      _curl -sk -X POST -H 'Content-Type: application/json' -d "$payload" \
         "$AMUX_API/api/tunnel/start" | python3 -c "
 import sys, json
 raw = sys.stdin.read()
@@ -2690,7 +3220,7 @@ print(('already running → ' if d.get('already') else 'tunnel up → ') + (d.ge
       # unless -f is passed, which is how this printed "tunnel stopped" against
       # a route that does not exist (AF-63).
       local _stop_code
-      _stop_code=$(curl -sk -o /dev/null -w '%{http_code}' -X POST "$AMUX_API/api/tunnel/stop" 2>/dev/null || echo 000)
+      _stop_code=$(_curl -sk -o /dev/null -w '%{http_code}' -X POST "$AMUX_API/api/tunnel/stop" 2>/dev/null || echo 000)
       if [[ "$_stop_code" == 2* ]]; then
         echo "tunnel stopped"
       else
@@ -2699,7 +3229,7 @@ print(('already running → ' if d.get('already') else 'tunnel up → ') + (d.ge
       fi
       ;;
     status|"")
-      curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
+      _curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
 import sys, json
 raw = sys.stdin.read()
 try:
@@ -2718,7 +3248,7 @@ if d.get('error'): print('error   :', d['error'])
 "
       ;;
     url)
-      curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
+      _curl -sk "$AMUX_API/api/tunnel/status" | python3 -c "
 import sys, json
 raw = sys.stdin.read()
 try:
@@ -2779,7 +3309,7 @@ This is a FIRE ALARM — only for things that need the owner immediately
   # Pass X-Amux-Session so the server stamps the TRUE origin (from the tmux
   # identity) into the owner_alerts ledger — the body 'session' is only a CLAIM.
   # This is what makes a safety-critical alert first-hand verifiable (AMUX-1795).
-  curl -sk -X POST -H 'Content-Type: application/json' \
+  _curl -sk -X POST -H 'Content-Type: application/json' \
     -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
     -d "$(python3 -c 'import json,sys; print(json.dumps({"message":sys.argv[1],"reason":sys.argv[2],"session":sys.argv[3]}))' "$msg" "$reason" "$sess")" \
     "$AMUX_API/api/alert/owner" | python3 -c "
@@ -2804,6 +3334,30 @@ if not delivered:
     fb = d.get('fallback') or 'no channel delivered — post to the board and say so in your turn output'
     sys.stderr.write(fb + '\n')
     sys.exit(3)
+# PARTIAL IS NOT DELIVERED (AMUX-3619). The zero-channel case above has been
+# handled since AMUX-3151; the case that was not is SOME channels failing, which
+# printed a bare 'alert delivered' while push and SMS were both dead. Measured
+# 2026-08-24 on a real disk escalation: 1 of 3 channels reached anything, and the
+# line led with the word 'delivered'. The per-channel detail was always in the
+# string; what was wrong is that the SUMMARY reported the best outcome instead of
+# the worst, which is the one-output-two-states shape on the fire alarm itself.
+failed = [k for k, v in ch.items() if str(v).lower().startswith(('error', 'failed', 'not '))]
+# An UNPINNED destination is a delivery that may not have reached the OWNER: the
+# server falls back to the freshest connected account, which can change without
+# anyone touching alert config. Not a failure, and not a clean success either.
+unpinned = [k for k, v in ch.items() if 'UNPINNED' in str(v)]
+if failed:
+    sys.stderr.write('ALERT ONLY PARTLY DELIVERED — %d of %d channel(s) FAILED (%s): %s\n'
+                     % (len(failed), len(ch), ', '.join(failed), detail))
+    if unpinned:
+        sys.stderr.write('and %s has no pinned destination (set AMUX_OWNER_EMAIL) — it went to '
+                         'whichever account connected most recently\n' % ', '.join(unpinned))
+    sys.stderr.write('The owner may not have been reached. Say so in your turn output rather '
+                     'than treating this as paged.\n')
+    sys.exit(0)
+if unpinned:
+    sys.stderr.write('alert delivered, but %s has no pinned destination (set AMUX_OWNER_EMAIL)\n'
+                     % ', '.join(unpinned))
 print('alert delivered →', detail)
 "
 }
@@ -2847,6 +3401,80 @@ cmd_whoami() {
 #
 # DEFAULT is a PURE FILE READ (no HTTP probe): probing per-call across ~48 lanes
 # would flood the server to ask where the server is. `--verify` opts into a probe.
+# amux fresh <session> — recycle a worker's CONVERSATION, keep the worker.
+#
+# Why this exists (AMUX-3742). A lane resumes the same Claude conversation
+# forever, so it accumulates compaction generations. Measured 2026-08-26 over
+# every transcript active since 08-05: amux lanes median 8, max 215; a raw
+# terminal sits at 0. Same model, same effort, same first-turn token baseline —
+# the difference is that the lane answers from a summary of a summary while a
+# fresh terminal reads primary sources. That is the whole "raw claude performs
+# better than amux claude" report.
+#
+# The remedy lived in the server the whole time and reached nobody: the
+# dashboard rendered "New conversation" only on a STOPPED worker, and the API
+# answered 409 while running. Every live lane is running, so on all 50 of them
+# the one control that fixes this was hidden AND refused.
+#
+# The worker survives untouched: env, board cards, memory, groups, name, tags.
+# Only the conversation starts over. Deliberately never automatic — the
+# conversation is the lane's accumulated work and discarding it is the owner's
+# call (ethos rule 8).
+cmd_fresh() {
+  local yes=0 name=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -y|--yes) yes=1; shift ;;
+      *)        name="$1"; shift ;;
+    esac
+  done
+  [[ -n "$name" ]] || die "usage: amux fresh <session> [-y]"
+  name=$(resolve_session "$name") || return 1
+
+  local api="${AMUX_API:-$(cmd_url)}"
+  # State the cost before paying it. The generation count is what makes this a
+  # decision instead of a guess, so it is fetched even when -y skips the prompt.
+  local gens
+  gens=$(_curl -sk "$api/api/debug/context-health" 2>/dev/null | N="$name" python3 -c "
+import json,os,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
+for l in d.get('lanes',[]):
+    if l.get('session')==os.environ['N']:
+        print(l.get('generations') if l.get('measured') else 'unmeasured')
+        break
+")
+  echo "${BOLD}$name${RESET} — conversation has been compacted ${BOLD}${gens:-?}${RESET} time(s)."
+  echo "${DIM}The worker keeps its env, board cards, memory and groups. Only the conversation restarts.${RESET}"
+  if [[ "$yes" -ne 1 ]]; then
+    if [[ ! -t 0 ]]; then
+      die "not a terminal — re-run with -y to confirm discarding this conversation"
+    fi
+    printf "Discard it and restart on a fresh conversation? [y/N] "
+    local reply; read -r reply
+    [[ "$reply" == "y" || "$reply" == "Y" ]] || { echo "${DIM}unchanged${RESET}"; return 0; }
+  fi
+
+  local resp rc=0
+  resp=$(_curl -sk -X PATCH -H 'Content-Type: application/json' \
+    -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+    -d '{"new_conversation":true,"restart":true}' \
+    "$api/api/sessions/$name/config" 2>/dev/null) || rc=$?
+  [[ "$rc" -eq 0 ]] || die "cannot reach the amux server at $api (curl exit $rc) — NOTHING was changed"
+  # Read the BODY, never the exit code: a 409 is a perfectly successful curl.
+  echo "$resp" | python3 -c "
+import json,sys
+raw=sys.stdin.read()
+try: d=json.loads(raw)
+except Exception: sys.exit('unexpected response: '+raw[:200])
+if d.get('error'):
+    msg=d['error']
+    if d.get('escape'): msg += chr(10)+'  try: '+d['escape']
+    sys.exit(msg)
+print(d.get('message','ok') + (' (was %s generations deep)' % d['generations'] if d.get('generations') is not None else ''))
+"
+}
+
 cmd_url() {
   local literal="https://localhost:8824"   # last-resort floor; appended, never an else-branch
   local retired_floor="8822"                # only consulted when endpoint.json is unreadable
@@ -2881,7 +3509,7 @@ cmd_url() {
     # A dead port returns an EMPTY body, not a connection refusal, so liveness
     # asserts the /health body looks like an amux server — not merely that the
     # socket answered (something else may have grabbed the port).
-    if curl -sk -m 3 "$resolved/health" 2>/dev/null | grep -q '"server"'; then
+    if _curl -sk -m 3 "$resolved/health" 2>/dev/null | grep -q '"server"'; then
       printf 'amux url: %s (via %s) — /health responds as an amux server\n' "$resolved" "$src" >&2
       return 0
     fi
@@ -2913,7 +3541,7 @@ _warn_stale_amux_url() {
   if [ -z "$url" ] || [ "$url" = "$api" ]; then return 0; fi
   local marker="${TMPDIR:-/tmp}/amux-url-warn-${AMUX_SESSION:-unknown}"
   if [ -f "$marker" ]; then return 0; fi
-  if curl -sk -m 2 -o /dev/null "$url/health" 2>/dev/null; then return 0; fi
+  if _curl -sk -m 2 -o /dev/null "$url/health" 2>/dev/null; then return 0; fi
   touch "$marker" 2>/dev/null || true
   {
     echo "amux: WARNING — \$AMUX_URL ($url) does not answer; this CLI is fine (it uses $api)."
@@ -2926,6 +3554,9 @@ _warn_stale_amux_url() {
 if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
   ensure_dirs
   _warn_stale_amux_url
+  # Ship any transport failures the PREVIOUS invocations could not report,
+  # before doing this one's work. No-op (one file test) when there are none.
+  _flush_transport_breadcrumbs
 
   case "${1:-}" in
     register|reg)     shift; cmd_register "$@" ;;
@@ -2948,6 +3579,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     alert)            shift; cmd_alert "$@" ;;
     iac)              shift; cmd_config "$@" ;;
     whoami)           cmd_whoami ;;
+    fresh)            shift; cmd_fresh "$@" ;;
     url)              shift; cmd_url "$@" ;;
     help|--help|-h)   cmd_help ;;
     version|--version|-v) echo "amux v${CC_VERSION}" ;;

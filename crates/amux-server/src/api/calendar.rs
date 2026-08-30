@@ -46,9 +46,16 @@ pub struct CalendarCtx {
 
 impl CalendarCtx {
     pub fn new_default() -> Arc<Self> {
+        // The real publisher (SA-124): aws-CLI backed, no new dependency —
+        // the Noop stays only for deployments with no bucket configured or
+        // no aws binary, and its refusal still reaches the registry.
+        let publisher: Arc<dyn IcalPublisher> =
+            match crate::integrations::calendar::CliS3Publisher::from_env() {
+                Some(p) if p.is_configured() => Arc::new(p),
+                _ => Arc::new(NoopPublisher),
+            };
         Arc::new(CalendarCtx {
-            // TODO(RR-0089): S3 publisher lands with the aws-sdk-s3 dep decision.
-            publisher: Arc::new(NoopPublisher),
+            publisher,
             registry: integrations::global_registry().clone(),
             s3_bucket: std::env::var("AMUX_S3_BUCKET").ok().filter(|s| !s.trim().is_empty()),
         })

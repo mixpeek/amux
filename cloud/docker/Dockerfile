@@ -56,6 +56,20 @@ COPY amux ./amux
 # so the next scripts/ include_str! does not re-break it; build-stage only (the
 # content is baked into the binary, the runtime stage needs none of it).
 COPY scripts scripts
+# frustrations.md is a BUILD INPUT for the same reason, third recurrence of the
+# class after `amux` and `scripts/` (AMUX-3633). The ledger checks added in
+# 14573a02 include_str! the file to parse the REAL ledger rather than a fixture,
+# so a format change that silently zeroes the parser fails there instead of
+# turning both checks green.
+#
+# It is reached from a #[test] today, so a --release image build does not compile
+# it and this COPY is insurance rather than a live break. The guard
+# (tests/dockerfile_build_inputs.rs) does not distinguish test-only include_str!
+# from production ones, and I would rather satisfy it than teach it an exception:
+# every previous file in this list started as "probably fine" and then broke a
+# deploy. One 200KB text file in the build stage only, which the runtime stage
+# does not receive.
+COPY frustrations.md frustrations.md
 
 # --release is REQUIRED, not a preference. `rust-embed` is built without the
 # `debug-embed` feature, so a DEBUG binary reads the dashboard from

@@ -1,0 +1,31 @@
+-- AMUX-3562: steering_history gains `guard` and `sender`, so an injection's
+-- PRODUCER survives into the record a consumer actually reads.
+--
+-- Nothing new is being captured here. `steering_queue` has carried both for
+-- some time, and `steer_enqueue`'s own docstring states the design: "`sender`
+-- is the origin lane ... or "" for an automated producer, WHICH THE `guard`
+-- ALREADY IDENTIFIES." Production call sites tag themselves richly today —
+-- commit-nudge, board-drive, staged-guard, auto-compact, status-request,
+-- board-progress, env-apply-prompt, accountability, sched:<id>.
+--
+-- Every one of those labels was then discarded at the moment the row moved to
+-- history, which is precisely when it stops being operational state and becomes
+-- the evidence. So the fleet injects thousands of prompts a week and the only
+-- way to ask which job produced them has been to regex the message TEXT.
+--
+-- That is not hypothetical cost. scripts/token-baseline.py was written against
+-- exactly this gap and had to reverse-engineer a taxonomy from message
+-- prefixes: 15.9% of a 7-day window landed in `other`, two of its buckets
+-- matched ZERO rows because they were patterns for text no generator emits any
+-- more, and the script carries a permanent self-warning about the breakdown
+-- going stale. A prefix taxonomy over another subsystem's user-facing strings
+-- goes wrong silently every time that subsystem rewords a sentence.
+--
+-- With these columns the question is a GROUP BY instead of a guess, and the
+-- guess gets deleted.
+--
+-- Additive only, per this directory's rule. NULL/absent is the honest reading
+-- for every legacy row: not "no producer", but "this row predates the column"
+-- — and consumers must treat it that way rather than counting it as unattributed.
+-- ADDCOL: steering_history guard TEXT
+-- ADDCOL: steering_history sender TEXT

@@ -39,7 +39,7 @@
     "description": "How engineering leaders use amux to deploy a fleet of parallel AI coding agents — Claude Code, Codex, and Gemini CLI — with a shared kanban board, self-healing overnight operation, mobile oversight, and a full audit trail. Open source, self-hosted, zero vendor dependency.",
     "url": "https://amux.io/for/ctos/",
     "datePublished": "2026-07-24",
-    "dateModified": "2026-08-10",
+    "dateModified": "2026-08-22",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
     "image": "https://amux.io/og-image.png"
@@ -72,7 +72,7 @@
         "name": "Can engineering teams use amux on their own infrastructure without sending code to third-party servers?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes — amux is fully self-hosted by default. The server runs as a single Python process on your own machine or internal server. No code, task content, or agent output leaves your network unless you configure amux Cloud (a tunnel relay for public URL access — the relay handles HTTP proxying only, not storage or execution). Everything runs locally: the dashboard, agents, kanban board, CRM, email, and scheduler."
+          "text": "Yes — amux is fully self-hosted by default. The server is a single Rust binary on your own machine or internal server. No code, task content, or agent output leaves your network unless you configure amux Cloud (a tunnel relay for public URL access — the relay handles HTTP proxying only, not storage or execution). Everything runs locally: the dashboard, agents, kanban board, CRM, email, and scheduler."
         }
       },
       {
@@ -127,6 +127,12 @@
 
     <h1>amux for CTOs</h1>
     <p class="subtitle">Run an AI engineering team from one dashboard — self-healing parallel agents, shared kanban, mobile oversight, and a full audit trail. <em>Updated August 2026.</em></p>
+
+    <!-- EXP-053: /for/ctos/ top-of-page green CTA -->
+    <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:14px 20px;margin:1.5rem 0;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <span style="flex:1;min-width:200px;font-size:.92rem;color:var(--fg,#e2e8f0)">Scale your engineering output with a self-healing fleet of parallel AI agents — open source, self-hosted, MIT licensed.</span>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp053_ctos_topofpage_cta_click')" style="display:inline-flex;align-items:center;gap:6px;background:#10b981;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:.88rem;font-weight:600;white-space:nowrap">View amux on GitHub ★</a>
+    </div>
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem 1.75rem;margin:2rem 0;">
       <p style="margin:0;font-size:1.05rem;line-height:1.7;"><strong>What amux gives your engineering org:</strong> a single control plane for Claude Code, Codex, and Gemini CLI sessions — with a web dashboard, iOS app, shared kanban board, self-healing watchdog, multi-runtime rate-limit distribution, append-only audit logs, and a REST API for integration with your existing toolchain. All open source, MIT + Commons Clause, self-hosted on your own infrastructure. Your code never leaves your network.</p>
@@ -272,11 +278,20 @@ schedules:
     <h2>What a CTO actually sees on day 1</h2>
     <p>Here's a realistic first-week picture for a 5-developer engineering team that deploys amux on a shared server:</p>
     <ol>
-      <li><strong>Day 1:</strong> Install amux on a team server (<code>pip install amux</code>, configure TLS, add auth). Each developer registers their project: <code>amux register myproject --dir ~/Dev/myproject --yolo</code>. The CTO and team leads get the iOS app and see all sessions on the dashboard within an hour.</li>
+      <li><strong>Day 1:</strong> Install amux on a team server (<code>brew install mixpeek/amux/amux</code>, configure TLS, add auth). Each developer registers their project: <code>amux register myproject --dir ~/Dev/myproject --yolo</code>. The CTO and team leads get the iOS app and see all sessions on the dashboard within an hour.</li>
       <li><strong>Day 2:</strong> Create the first shared task queue on the board. Five developers add their current sprinted tasks as board issues. The first two developers with Claude Code sessions running claim and complete tasks while the CTO monitors from their phone in a meeting.</li>
       <li><strong>Day 3:</strong> First overnight run. 8 sessions start at midnight. The watchdog fires twice for context compaction, once for a crash recovery. In the morning: 6 of 8 tasks completed, 2 in doing (picked up second tasks after finishing their first). The CTO's morning board review takes 10 minutes from the iOS app.</li>
       <li><strong>Week 1:</strong> The team writes shared CLAUDE.md rules for their coding style and branching conventions, checked into the repo. All sessions now follow them automatically. Cost tracking in the dashboard shows $180 in Claude API spend for the week — CTO sets a per-session daily budget threshold in server.env.</li>
     </ol>
+
+    <h2>What's new in August 2026</h2>
+    <ul>
+      <li><strong>OAuth broker (Connectors tab):</strong> Authorize a third-party service once from the dashboard and every agent in your fleet shares the OAuth grant automatically. No per-session credential setup — one approval covers the whole fleet. The Connectors tab also shows per-service health canaries so you can see which integrations are live before agents try to use them.</li>
+      <li><strong>Board progress notes with owner alerts:</strong> When an agent appends a progress note to a board card, the card's owner gets an in-app notification. Engineering managers and CTOs are kept updated on long-running tasks without polling the board manually.</li>
+      <li><strong>Status-explain:</strong> The dashboard now shows how each session's status was derived — whether from a live hook report, a terminal scrape, or a timeout inference. Removes ambiguity when a session's indicator doesn't match what you expected.</li>
+      <li><strong>Server self-adoption (zero-downtime deploys):</strong> The Rust server now swaps the running binary in place when a new build lands. No restart window, no dropped connections — updates apply while sessions keep running.</li>
+      <li><strong>Disk watchdog:</strong> A weekly scan warns before build caches and logs fill the drive. Flags directories above configurable thresholds so you have time to clean up before writes start failing.</li>
+    </ul>
 
     <h2>Comparison: ad-hoc agents vs amux team deployment</h2>
     <div style="overflow-x:auto;margin:1.5rem 0;">
@@ -336,7 +351,7 @@ schedules:
     <h2>FAQ</h2>
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
       <summary style="cursor:pointer;font-weight:600;">Is amux production-ready for an engineering team?</summary>
-      <p style="margin:0.8rem 0 0;">Yes — it runs in production at companies ranging from two-person startups to 15-developer teams. The server is a single Python process, self-restarts on file save, and stores all state in a local SQLite database. Stability concerns are addressed by the self-healing architecture: even if Claude Code crashes mid-session, amux auto-recovers. The main operational risk is the host machine going down — mitigated by running on a server (not a developer laptop) with standard uptime practices.</p>
+      <p style="margin:0.8rem 0 0;">Yes — it runs in production at companies ranging from two-person startups to 15-developer teams. The server is a single Rust binary that self-adopts new builds in place (no restart window — the binary swaps live when a new build lands), storing all state in a local SQLite database. Stability concerns are addressed by the self-healing architecture: even if Claude Code crashes mid-session, amux auto-recovers. The main operational risk is the host machine going down — mitigated by running on a server (not a developer laptop) with standard uptime practices.</p>
     </details>
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
@@ -362,7 +377,7 @@ schedules:
     <!-- EXP-014 -->
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:8px;padding:20px 24px;margin:32px 0;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
-        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — open-source AI engineering team dashboard (336★ GitHub)</div>
+        <div style="font-weight:600;font-size:1rem;margin-bottom:4px">amux — open-source AI engineering team dashboard (363★ GitHub)</div>
         <div style="color:var(--muted);font-size:.9rem">Run Claude Code, Codex, and Gemini CLI sessions from one dashboard. Self-healing, kanban, mobile oversight, and audit trail. Single Rust binary, MIT licensed, self-hosted.</div>
       </div>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp014_guide_github_cta_click',{page:window.location.pathname})" style="background:#6366f1;color:#fff;padding:10px 20px;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ★</a>
@@ -371,8 +386,8 @@ schedules:
     <div class="cta-box">
       <h3>Deploy amux for your engineering team</h3>
       <p>Get a shared dashboard, self-healing agents, and mobile oversight running in under 30 minutes. Self-hosted on your infrastructure, open source, no per-seat fee.</p>
-      <pre><code>pip install amux
-# or: brew install mixpeek/amux/amux
+      <pre><code>brew install mixpeek/amux/amux
+# or: curl -fsSL https://amux.io/install.sh | sh
 amux serve  # → https://your-server:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★</a>
       <a class="btn" href="/for/enterprise/" style="margin-left:0.75rem;">Enterprise deployment →</a>

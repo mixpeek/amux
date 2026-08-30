@@ -839,7 +839,7 @@ impl Runtime {
                                 next.version =
                                     i64::try_from(updated.version).unwrap_or(next.version + 1);
                                 next.updated = now.timestamp();
-                                crate::db::board_store::save_patched(conn, &next)?;
+                                crate::db::board_store::save_patched(conn, &mut next)?;
                                 Ok(WriteOutcome {
                                     applied: true,
                                     events: vec![
@@ -1305,6 +1305,11 @@ impl Runtime {
         body: &str,
         now: DateTime<Utc>,
     ) -> anyhow::Result<()> {
+        // Redact secret shapes before the prompt reaches the fleet-readable board
+        // — title AND desc both derive from `body` (AMUX-3384). Same helper the
+        // send-path capture uses, so the two sites cannot drift on what leaks.
+        let redacted = crate::api::session_verbs::redact_prompt_secrets(body);
+        let body = redacted.as_str();
         let Some(title) = amux_core::board::title_from_prompt(body) else {
             return Ok(()); // steering, not a task
         };
@@ -1396,7 +1401,7 @@ impl Runtime {
                     ));
                     *minted_w.lock().unwrap() = Some((row.id.clone(), name));
                 }
-                crate::db::board_store::save_patched(conn, &row)?;
+                crate::db::board_store::save_patched(conn, &mut row)?;
                 // notified is deliberately outside save_patched's SET list
                 // (a Python-owned column); set it here so the assignment
                 // notifier never re-announces a prompt the worker already
@@ -1444,7 +1449,7 @@ impl Runtime {
                  (`amux board status {card_id} discarded`) — a card that should not exist is \
                  the honest answer too."
             );
-            crate::api::session_verbs::steer_enqueue_store(
+            let _ = crate::api::session_verbs::steer_enqueue_store(
                 &self.store,
                 &session,
                 &msg,
@@ -2191,6 +2196,20 @@ mod adherence_tests {
     #[tokio::test]
     async fn a_deictic_prompt_flags_its_card_and_asks_the_worker_to_rewrite_it() {
         let store = store();
+        // AF-188 made the shared enqueue REFUSE a target with no session env
+        // file, so a worker that exists only as a store row is now undeliverable
+        // and the ask below silently never queues. `seed_worker` writes the row;
+        // it has never written the file, which did not matter until the enqueue
+        // started asking. Register it.
+        //
+        // This is the fourth fixture the widening caught and the first that was
+        // NOT in session_verbs — which is why it survived my post-change suite
+        // run and went red in CI instead. A change to a chokepoint reaches every
+        // caller's tests, including the ones in modules you did not open.
+        let _home = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(_home.path());
+        std::fs::create_dir_all(_home.path().join("sessions")).unwrap();
+        std::fs::write(_home.path().join("sessions/alpha.env"), "CC_DIR=/tmp\n").unwrap();
         let w = seed_worker(&store, 7, "alpha");
         let protocol = Arc::new(MockProtocol::new());
         protocol.register(w.clone(), AgentState::Idle);

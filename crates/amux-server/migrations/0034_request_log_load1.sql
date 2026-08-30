@@ -1,0 +1,41 @@
+-- AMUX-3646: the latency detector could not say "the machine was oversubscribed",
+-- so it named innocent endpoints instead.
+--
+-- AMUX-3644 filed "5 endpoints slow at once" naming /api/board, /api/board/{id},
+-- /api/browser/start, /api/sessions and /api/sessions/{name}/{*verb}. None of
+-- them was the fault. Sampled on this host while that card was being written:
+--
+--     load average 36.86 / 29.65 / 32.00     hw.ncpu = 28
+--
+-- A 28-core box at 1.3x oversubscription, and not an anomaly: the fleet compiles
+-- and tests THIS SERVER continuously. `scripts/rust-auto-build.sh` fires on every
+-- commit any of ~50 lanes makes, and every lane runs cargo test and clippy before
+-- pushing because CI denies warnings. Two of AMUX-3644's three slow windows land
+-- inside a builder run. Measured against the same endpoints on an idle-ish
+-- server, with /health's `build` checked before and after: /api/board 0.337s,
+-- /api/sessions 0.610s, /api/sync 0.009s. The service is fine and the host is not.
+--
+-- That is ethos rule 4. When a human opens the card they see five endpoint names,
+-- every one innocent, and no trace of the one fact that explains all five. The
+-- rollup's own `if_this_is_wrong` offered a single exit ("raise
+-- AMUX_OUTLIER_ROLLUP_AT"), which is the wrong one: the endpoints are NOT
+-- independent, so taking it suppresses a correct rollup to silence a cause the
+-- detector cannot name.
+--
+-- ONE SAMPLE PER LOG-BATCH FLUSH, not per request. `request_log.rs` already reads
+-- `heartbeat::boot_at()` once per batch for exactly this reason and this sits
+-- beside it, so the cost is one `getloadavg(3)` per flush of up to BATCH_MAX rows.
+-- Skew is irrelevant by construction: load1 is a ONE-MINUTE average and a batch
+-- forms in milliseconds, so attaching the flush-time value to a row stamped
+-- moments earlier reports the same minute either way.
+--
+-- NULL means NOT RECORDED, never "the machine was idle" — the convention this
+-- schema already sets. A consumer that reads absence as 0.0 would report an
+-- oversubscribed host as a quiet one, which is the exact inversion this column
+-- exists to prevent.
+--
+-- CONTEXT, NOT A FILTER. Nothing excludes a row for carrying a high load1. AF-175
+-- excluded 213,420 rows on a population of eleven and the lesson recorded there is
+-- that a silent exclusion hollows out the baseline. The load number is attached to
+-- a report so a reader can weigh it; it is never a reason to drop data.
+-- ADDCOL: _amux_request_log load1 REAL

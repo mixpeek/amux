@@ -44,6 +44,20 @@ pub fn routes() -> Router<AppState> {
         .route("/{id}/start", post(start_worker))
         .route("/{id}/stop", post(stop_worker))
         .route("/{id}/peek", get(peek_worker))
+        // THE CANONICAL SPELLING OF `send`, promoted out of the catch-all
+        // (`/api/workers/{name}/{*verb}` in session_verbs.rs) that has been
+        // answering it. Only `send` is promoted: naming the other 40-odd verbs
+        // here would freeze the fleet substrate's spelling into this API before
+        // anyone has decided which of them belong to it. The catch-all shrinks
+        // as verbs earn a home, rather than being replaced wholesale.
+        //
+        // The body limit is disabled for the same reason the catch-all router
+        // disables it: long prompts ride /send bodies. Scoped to this route, so
+        // no other worker route's limit changes.
+        .route(
+            "/{id}/send",
+            post(send_worker).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
 }
 
 /// `GET /api/ollama/models` — list locally installed Ollama models by running
@@ -996,6 +1010,55 @@ pub async fn peek_worker(
     }
 }
 
+/// `POST /api/workers/{id}/send` — deliver a prompt to a worker.
+///
+/// WHAT THIS ADDS over the catch-all it takes precedence over: the target is
+/// resolved through the store ONCE, so an id or a name alias reaches the same
+/// worker a display name does, and a rename between resolution and delivery
+/// cannot land the text in a different lane than the one that was addressed.
+///
+/// WHAT THIS DELIBERATELY DOES NOT DO: implement `send`. It hands off to
+/// `session_verbs::send_verb`, which is the one implementation — origin
+/// stamping (AMUX-1768), cross-group scoping, msg_id idempotency, board
+/// capture and the submitted/queued verdict all stay there. A second
+/// implementation of send is how two callers end up disagreeing about whether
+/// a message was delivered.
+///
+/// A key the store does not know is NOT a 404 here. The catch-all this route
+/// displaces serves every session name, store-backed or not, and `amux send`
+/// posts to this path for all of them; 404-ing the ones without a worker row
+/// would take delivery away from sessions that have it today. Unknown keys are
+/// passed through as session names, and `send_verb`'s existence gate answers
+/// for them exactly as the dispatcher would have.
+pub async fn send_worker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    headers: axum::http::HeaderMap,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let store = state.store.clone();
+    let k = key.clone();
+    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let conn = store.read()?;
+        Ok(queries::get_worker(&conn, &k)?)
+    })
+    .await;
+    let resolved = match joined {
+        Ok(Ok(Some(row))) if !row.display_name.is_empty() => row.display_name,
+        // A row with no display name has no env file to address either, so
+        // there is nothing better to try than the key the caller used; the
+        // existence gate then reports the miss under the name they asked for.
+        Ok(Ok(_)) => key,
+        Ok(Err(e)) => return internal(e),
+        Err(e) => return internal(e),
+    };
+    let body = match crate::api::fs::parse_body(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
+    };
+    crate::api::session_verbs::send_verb(&state, &resolved, &headers, &body).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1080,6 +1143,175 @@ mod tests {
     }
 
     // ---- RR-0034 test list ----------------------------------------------
+
+    /// A stored `display_name` cannot walk out of the sessions directory.
+    ///
+    /// `create_worker` only checks that `display_name` is non-empty, so the
+    /// store can hold `../escaped`. This route is the first thing that turns a
+    /// stored name into a filesystem path, and the paths are built by
+    /// concatenation (`sessions_dir().join(format!("{name}.env"))`), so without
+    /// the name check the existence gate stats outside `sessions/` — and a
+    /// `/compact` send goes further and `create_dir_all`s under
+    /// `transcripts_dir().join(name)`.
+    ///
+    /// The planted file is what makes this test bite: with it, the traversed
+    /// path EXISTS, so an existence-first ordering sails past the gate and the
+    /// send proceeds under a name that is a path.
+    ///
+    /// What is pinned here is the ORDER — the refusal names the name, before
+    /// anything builds a path from it. The `create_dir_all` itself does not
+    /// happen in this fixture (`claude_home()` holds no project matching the
+    /// planted `CC_DIR`, so the backup returns before writing), which is why
+    /// this asserts on the refusal rather than on an absent directory: an
+    /// assertion that cannot fail would pin nothing.
+    #[tokio::test]
+    async fn a_stored_display_name_cannot_escape_the_sessions_dir() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("escaped.env"), "CC_DIR=/tmp\n").unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (app, _dir) = app();
+        let id = create(&app, "../escaped").await;
+
+        let (st, _, v) = send(
+            &app,
+            "POST",
+            &format!("/api/workers/{id}/send"),
+            Some(json!({ "text": "/compact" })),
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::BAD_REQUEST,
+            "a name with a path separator must be refused before it is used as one: {v}"
+        );
+        // The DISTINGUISHING assertion: refused on the name. Without the check
+        // this is the late `auto-wake failed: invalid session name` shape,
+        // which arrives only after the name has already been used as a path.
+        assert_eq!(v["error"], json!("invalid session name"), "{v}");
+    }
+
+    /// A worker ID addressed at the modern send route reaches that worker.
+    ///
+    /// THE DEFECT THIS FAILS ON: before `/{id}/send` was a route, this path
+    /// fell to the catch-all `/api/workers/{name}/{*verb}`, which addresses the
+    /// fleet substrate BY NAME. The ulid was handed to `env_path(<id>)`
+    /// verbatim, matched nothing, and answered `session '<id>' not found` — so
+    /// the assertion below reads back the id instead of `hw` without the fix.
+    /// Every other worker route accepts an id; send was the one that did not,
+    /// which leaves a caller holding the only handle a rename does not move
+    /// unable to deliver with it.
+    ///
+    /// Asserted at the existence gate, not on a 200: a 200 needs a live
+    /// terminal, would launch one on the machine running the suite, and — the
+    /// reason that matters — would still pass against a route that resolved
+    /// nothing, because the name only becomes observable in the answer.
+    #[tokio::test]
+    async fn send_route_resolves_a_worker_id_to_its_session_name() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (app, _dir) = app();
+        let id = create(&app, "hw").await;
+
+        let (st, _, v) = send(
+            &app,
+            "POST",
+            &format!("/api/workers/{id}/send"),
+            Some(json!({ "text": "hi" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{v}");
+        assert_eq!(
+            v["error"],
+            json!("session 'hw' not found"),
+            "the id must resolve to the worker's name, not be used as one: {v}"
+        );
+    }
+
+    /// A promoted route that `/api/debug/routes` does not report is a route
+    /// nobody can find.
+    ///
+    /// The drift guard in request_log.rs (`every_absolute_route_literal_is_in_
+    /// route_table`) cannot see this one: it scans for `.route("/api/…")`
+    /// literals, and everything this module mounts is written relative to the
+    /// `/api/workers` nest — peek, start and stop are unguarded by it for the
+    /// same reason. So the promoted route is pinned against the served table
+    /// directly. Adjacent and pre-existing; not this change's to close.
+    #[tokio::test]
+    async fn the_promoted_send_route_is_reported_by_debug_routes() {
+        let (app, _dir) = app();
+        let (st, _, v) = send(&app, "GET", "/api/debug/routes", None).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let row = v["routes"]
+            .as_array()
+            .expect("routes array")
+            .iter()
+            .find(|r| r["path"] == "/api/workers/{id}/send")
+            .unwrap_or_else(|| panic!("promoted route absent from the served table: {v}"));
+        assert_eq!(row["methods"], json!(["POST"]));
+    }
+
+    /// Promoting the route did not put a ceiling on prompts that had none.
+    ///
+    /// The catch-all's router disables the body limit outright (session_verbs.
+    /// rs — "long prompts ride /send bodies"), so `POST /api/workers/<n>/send`
+    /// has been uncapped. Nested under `/api/workers` it would instead inherit
+    /// the protected router's 16MB cap (mod.rs), which is a narrowing, not a
+    /// default — hence the disable on the route. Sized ABOVE 16MB deliberately:
+    /// at 3MB this passes either way and pins nothing.
+    #[tokio::test]
+    async fn a_prompt_larger_than_the_default_body_limit_still_reaches_the_gate() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (app, _dir) = app();
+
+        let big = "x".repeat(17 * 1024 * 1024);
+        let (st, _, v) = send(
+            &app,
+            "POST",
+            "/api/workers/ghost/send",
+            Some(json!({ "text": big })),
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::NOT_FOUND,
+            "a 17MB prompt must reach the existence gate, not be refused by size: {v}"
+        );
+    }
+
+    /// The promoted route does not narrow what the catch-all it displaces
+    /// served.
+    ///
+    /// A real route takes precedence over the wildcard, so every `amux send`
+    /// now lands here — including sends to plain env-file sessions that have no
+    /// worker row at all. Answering `worker not found` for those would take
+    /// delivery away from sessions that have it today, and it would be the
+    /// wrong fact besides: the store's silence says nothing about whether the
+    /// session exists.
+    #[tokio::test]
+    async fn send_route_passes_a_key_with_no_worker_row_through_as_a_session() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (app, _dir) = app();
+
+        let (st, _, v) = send(
+            &app,
+            "POST",
+            "/api/workers/ghost/send",
+            Some(json!({ "text": "hi" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{v}");
+        assert_eq!(
+            v["error"],
+            json!("session 'ghost' not found"),
+            "an unknown key is a session miss, not a worker miss: {v}"
+        );
+    }
 
     #[tokio::test]
     async fn create_get_rename_then_alias_resolves() {
@@ -1357,6 +1589,17 @@ mod tests {
         assert_eq!(st, StatusCode::UNAUTHORIZED);
         // The legacy alias must not be an auth bypass.
         let (st, _, _) = send(&app, "GET", "/api/sessions", None).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+        // Nor is the promoted send route, which is the one route here that
+        // puts text into somebody else's terminal. It sits in the same
+        // protected router as the rest, and this says so out loud.
+        let (st, _, _) = send(
+            &app,
+            "POST",
+            "/api/workers/hw/send",
+            Some(json!({ "text": "hi" })),
+        )
+        .await;
         assert_eq!(st, StatusCode::UNAUTHORIZED);
         let (st, _, _) = send_with(
             &app,

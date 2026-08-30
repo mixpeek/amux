@@ -19,7 +19,8 @@
 //
 // The stub is deliberately not the only evidence, and the real-data test is
 // deliberately not asked to produce a red row it has no honest way to produce.
-import { test, expect, Page } from '@playwright/test';
+import { test, expect } from './fixtures';
+import type { Page } from '@playwright/test';
 
 // BLOCK THE SERVICE WORKER — this file stubs /api/system-jobs with page.route,
 // and a registered SW silently defeats that (AF-46, measured 2026-08-13).

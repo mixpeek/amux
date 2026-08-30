@@ -63,14 +63,68 @@ const homes: Record<string, string> = Object.fromEntries(
 // future narrowing cannot be silent, which is the property that was missing —
 // not a rule telling the next person to remember (CLAUDE.md: a fix owes a
 // signal, or the next instance is just as invisible as this one was).
+// WHICH TARGETS THIS INVOCATION ACTUALLY RUNS (AMUX-3605).
+//
+// The loop below described the CONFIG, not the RUN, so `--project=desktop`
+// printed "target ios-safari: full suite" while running zero iOS tests. That is
+// the same defect this banner was written to catch, one level up: a line that
+// reads as coverage on a run that had none. Measured on this file: a
+// `--project=ios-safari` run announced all three targets.
+//
+// Read off process.argv because Playwright applies --project AFTER evaluating
+// this file, so the config object cannot know. Both spellings, since
+// `--project=x` and `--project x` are equally common.
+const selected: string[] = (() => {
+  const out: string[] = [];
+  const argv = process.argv;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i].startsWith('--project=')) out.push(argv[i].slice('--project='.length));
+    else if (argv[i] === '--project' && argv[i + 1]) out.push(argv[i + 1]);
+  }
+  return out;
+})();
+
 for (const t of TARGETS) {
   const scoped = (t as { testMatch?: unknown }).testMatch;
+  const running = selected.length === 0 || selected.includes(t.name);
+  const what = scoped
+    ? `SCOPED to ${String(scoped)} — it does NOT run the full suite`
+    : 'full suite';
   console.log(
-    scoped
-      ? `[e2e] target ${t.name}: SCOPED to ${String(scoped)} — it does NOT run the full suite.`
-      : `[e2e] target ${t.name}: full suite.`,
+    running
+      ? `[e2e] target ${t.name}: ${what}.`
+      : `[e2e] target ${t.name}: NOT RUN by this invocation (--project=${selected.join(',')}) — ${what} when it does run.`,
   );
 }
+if (selected.length && !selected.includes('ios-safari')) {
+  // Named explicitly because ios-safari is the target that exists to catch what
+  // the other two structurally cannot: a bottom-sheet fix passed desktop+mobile
+  // Chromium at 375px while the menu was still invisible on a real phone.
+  // Omitting it is legitimate for a quick loop and must not be silent.
+  console.log(
+    '[e2e] NOTE: ios-safari is omitted from this run. It is the only WebKit target, and ' +
+      'Chromium at a phone width is not Safari on a phone — a green run here says nothing ' +
+      'about position:fixed in a transformed ancestor, env(safe-area-inset-*), or dvh.',
+  );
+}
+
+// WHAT THE MACHINE WAS DOING, on every run (AMUX-3605 + AMUX-3646).
+//
+// AMUX-3605 reported `browserType.launch: Timeout 180000ms exceeded` for
+// ios-safari on every dev-machine run. It does not reproduce: WebKit launches
+// here in 451ms, and playwright 1.62.1 wants webkit-2336 which is installed, so
+// the card's own revision hypothesis is dead. The cause is unknown and the
+// reason it is unknown is that a launch timeout records nothing about the host.
+//
+// This box compiles and tests amux continuously — 28 cores routinely carrying a
+// load average in the thirties (AMUX-3646) — and a 180s launch budget is not
+// obviously safe under that. Stated as a candidate, not a conclusion: printing
+// the number every run is what makes the NEXT report decidable instead of
+// another round of hypotheses.
+console.log(
+  `[e2e] host: load ${os.loadavg().map((n) => n.toFixed(2)).join(' / ')} on ${os.cpus().length} cores. ` +
+    'If a browser launch times out, this line is the first thing to check.',
+);
 
 export default defineConfig({
   testDir: '.',

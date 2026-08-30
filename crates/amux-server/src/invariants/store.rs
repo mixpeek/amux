@@ -14,7 +14,20 @@ use serde_json::json;
 /// Retention for the append-only evaluation log. Short by design: its purpose
 /// is "is this check still running / when did it last pass", not history.
 /// Incidents are the durable record and are never trimmed here.
+///
+/// Differential (AMUX-3489): a flat 7-day window held 8M rows (~2GB of DB) —
+/// 15 invariants fanned out per-entity write ~13 rows/sec, overwhelmingly
+/// green heartbeats nothing reads past the first minutes. Failures keep the
+/// week (they are what gets grepped after an incident); passes keep an hour,
+/// 12x the 300s stale_checks threshold that is the only consumer of
+/// pass-row age. Flap history lives in _amux_invariant_incident either way.
 const RESULT_RETAIN_SECS: f64 = 7.0 * 86400.0;
+const PASS_RETAIN_SECS: f64 = 3600.0;
+/// Trim cap per write cycle: the first cycle after the differential retention
+/// ships faces a ~7M-row backlog, and deleting it in one transaction would
+/// balloon the WAL past the DB's own size. The monitor cycles constantly, so
+/// a capped trim drains the backlog in hours anyway.
+const TRIM_BATCH_ROWS: i64 = 20_000;
 
 fn now() -> f64 {
     std::time::SystemTime::now()
@@ -101,23 +114,61 @@ pub async fn record(store: &SharedStore, results: Vec<InvariantResult>, duration
                     if changed > 0 && occ == 1 {
                         opened_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
-                } else if r.status == Status::Pass {
+                } else if r.status == Status::Pass || r.status == Status::Unknown {
                     // A pass RESOLVES the matching live incident. Deliberately
                     // not a DELETE: "broke at 09:14, healed at 09:51" is a real
                     // signal, and deleting the row erases the flap.
+                    //
+                    // UNKNOWN RESOLVES IT TOO, and records itself as `unknown`
+                    // rather than `pass` so the row still says what happened
+                    // (AMUX-3575). Unknown is what a check reports when it STOPS
+                    // BEING ABLE TO RUN — the table it reads went empty, the
+                    // probe's target disappeared. Before this, only Pass
+                    // resolved, so a fail -> unknown transition left the
+                    // incident open FOREVER: nothing could clear it, and no
+                    // action by anyone would.
+                    //
+                    // The specimen: `schema.timestamp_units_declared` opened on
+                    // waitlist.ts while its unit was undeclared, 7aaa2a32
+                    // declared it, and the verdict moved fail -> unknown ("no
+                    // rows to check the unit against") rather than fail -> pass,
+                    // because `waitlist` has zero rows and NO WRITER anywhere in
+                    // the Rust codebase. It can never have rows, so it could
+                    // never pass, so the incident could never resolve — and it
+                    // auto-filed a card for a condition no action can satisfy,
+                    // which is ethos rule 3.
+                    //
+                    // Keeping it open is the worse failure, not the safer one:
+                    // 22 of 24 open incidents measured on 2026-08-23 had no
+                    // evaluation in over 24h, and an open list that is 94% dead
+                    // trains people to skim past the two that are real.
+                    // Distinguishing the terminal state is what keeps this
+                    // honest — "ended unknown" is not a claim that it healed.
+                    let end_status =
+                        if r.status == Status::Pass { "pass" } else { "unknown" };
                     conn.execute(
                         "UPDATE _amux_invariant_incident
-                            SET resolved_at = ?3, status = 'pass'
+                            SET resolved_at = ?3, status = ?4
                           WHERE invariant_id = ?1 AND entity_key = ?2
                             AND resolved_at IS NULL",
-                        rusqlite::params![r.invariant_id, r.entity_key, ts],
+                        rusqlite::params![r.invariant_id, r.entity_key, ts, end_status],
                     )?;
                 }
             }
-            // Opportunistic trim of the evaluation log only.
+            // Opportunistic trim of the evaluation log only. The predicate is
+            // range-bound on ts first so idx_inv_result_ts drives it, and the
+            // rowid-IN shape is because DELETE..LIMIT needs a nonstandard
+            // SQLite build flag.
             let _ = conn.execute(
-                "DELETE FROM _amux_invariant_result WHERE ts < ?1",
-                [ts - RESULT_RETAIN_SECS],
+                "DELETE FROM _amux_invariant_result WHERE rowid IN (
+                    SELECT rowid FROM _amux_invariant_result
+                     WHERE ts < ?2 AND (status = 'pass' OR ts < ?1)
+                     LIMIT ?3)",
+                rusqlite::params![
+                    ts - RESULT_RETAIN_SECS,
+                    ts - PASS_RETAIN_SECS,
+                    TRIM_BATCH_ROWS
+                ],
             );
             Ok(WriteOutcome { applied: true, events: vec![] })
         })
@@ -163,12 +214,44 @@ pub fn live_incidents(store: &SharedStore) -> anyhow::Result<Vec<serde_json::Val
 /// its last (stale) verdict — evidence freshness, spec §25.
 pub fn latest_per_invariant(store: &SharedStore) -> anyhow::Result<Vec<serde_json::Value>> {
     let conn = store.read()?;
+    // AEAB-44. The obvious spelling of this — a `GROUP BY invariant_id`
+    // subquery — scans the WHOLE evaluation log to produce 304 rows, and that
+    // log is the largest table amux has (9.4M rows / 1.7 GB with indexes on
+    // 2026-08-22, see AEAB-41). Measured on the live DB: 12.9s for the GROUP BY
+    // form, 0.002s for this one, returning row-for-row identical results.
+    //
+    // The recursive CTE is a loose index scan: walk the DISTINCT invariant_ids
+    // by repeatedly asking for the next one greater than the last, then ask
+    // `max(ts)` per id. Both steps are index seeks on
+    // idx_inv_result_id (invariant_id, ts DESC) — the index was already there,
+    // the GROUP BY simply could not use it. Cost is O(distinct ids), not
+    // O(rows), so this stays fast as the log grows rather than degrading in
+    // exact proportion to the thing it measures. That mattered: this is the
+    // ONLY view of live incidents and of checks that have STOPPED running, so
+    // it was least usable at the moment it was most needed.
+    //
+    // NOTE it is deliberately NOT one row per invariant despite the name. It
+    // returns every row of the newest BATCH for each invariant — one per
+    // entity — which is what the caller renders. Collapsing to one row per
+    // invariant would silently hide 63 of the 64 entities of
+    // route.callers_have_routes.
     let mut stmt = conn.prepare(
-        "SELECT r.invariant_id, r.status, r.entity_key, r.expected, r.observed, r.ts
+        "WITH RECURSIVE ids(id) AS (
+             SELECT (SELECT min(invariant_id) FROM _amux_invariant_result)
+             UNION ALL
+             SELECT (SELECT min(invariant_id) FROM _amux_invariant_result
+                      WHERE invariant_id > ids.id)
+               FROM ids WHERE ids.id IS NOT NULL
+         ),
+         latest AS (
+             SELECT id AS invariant_id,
+                    (SELECT max(ts) FROM _amux_invariant_result r
+                      WHERE r.invariant_id = ids.id) AS mt
+               FROM ids WHERE id IS NOT NULL
+         )
+         SELECT r.invariant_id, r.status, r.entity_key, r.expected, r.observed, r.ts
            FROM _amux_invariant_result r
-           JOIN (SELECT invariant_id, MAX(ts) mt
-                   FROM _amux_invariant_result GROUP BY invariant_id) m
-             ON m.invariant_id = r.invariant_id AND m.mt = r.ts
+           JOIN latest l ON l.invariant_id = r.invariant_id AND l.mt = r.ts
           ORDER BY r.invariant_id",
     )?;
     let now = now();
@@ -190,6 +273,19 @@ pub fn latest_per_invariant(store: &SharedStore) -> anyhow::Result<Vec<serde_jso
     Ok(rows)
 }
 
+/// Size of the evaluation log itself: (rows, oldest_age_s). Feeds both
+/// `/api/debug/invariants` and the store.result_log_bounded check (AMUX-3489)
+/// so the meter a human reads and the meter that pages cannot disagree.
+pub fn result_log_stats(store: &SharedStore) -> anyhow::Result<(i64, f64)> {
+    let conn = store.read()?;
+    let (rows, oldest): (i64, Option<f64>) = conn.query_row(
+        "SELECT COUNT(*), MIN(ts) FROM _amux_invariant_result",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok((rows, oldest.map(|t| (now() - t).max(0.0)).unwrap_or(0.0)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +295,150 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let s = crate::db::Store::open(&d.path().join("t.db")).unwrap();
         (std::sync::Arc::new(s), d)
+    }
+
+    /// Insert an evaluation row at an EXPLICIT ts, so the test does not depend
+    /// on wall-clock ordering between two `record` calls.
+    async fn put(s: &SharedStore, ts: f64, id: &str, entity: &str, status: &str) {
+        let (id, entity, status) = (id.to_string(), entity.to_string(), status.to_string());
+        s.write_async(move |c| {
+            c.execute(
+                "INSERT INTO _amux_invariant_result
+                   (ts, invariant_id, status, entity_key, expected, observed, evidence, duration_ms)
+                 VALUES (?1,?2,?3,?4,'','','{}',0)",
+                rusqlite::params![ts, id, status, entity],
+            )?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        })
+        .await
+        .unwrap();
+    }
+
+    /// AMUX-3575: a check that stops being ABLE to run must not leave a
+    /// permanently-open incident.
+    ///
+    /// The specimen, rebuilt from the live one: `schema.timestamp_units_declared`
+    /// opened on `waitlist.ts` while its unit was undeclared; 7aaa2a32 declared
+    /// it, and the verdict went fail -> UNKNOWN ("no rows to check the unit
+    /// against") rather than fail -> pass, because `waitlist` has zero rows and
+    /// no writer anywhere. It can never pass, so under the old rule the incident
+    /// could never resolve, and it auto-filed a card for a condition no action
+    /// satisfies.
+    ///
+    /// The control is the half that keeps this honest: resolving on unknown must
+    /// NOT record it as a pass. "Stopped being checkable" and "healed" are
+    /// different facts and the row has to keep saying which.
+    #[tokio::test]
+    async fn an_unknown_resolves_an_incident_without_claiming_it_healed() {
+        let (s, _d) = store();
+        let res = |st: &str| {
+            let mut r = InvariantResult::new("schema.timestamp_units_declared", match st {
+                "fail" => Status::Fail,
+                "pass" => Status::Pass,
+                _ => Status::Unknown,
+            });
+            r.entity_key = "waitlist.ts".into();
+            r
+        };
+
+        record(&s, vec![res("fail")], 0).await;
+        let (status, resolved): (String, Option<f64>) = s
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT status, resolved_at FROM _amux_invariant_incident \
+                 WHERE entity_key='waitlist.ts'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "fail", "precondition: the incident must actually be open");
+        assert!(resolved.is_none(), "precondition: and unresolved");
+
+        record(&s, vec![res("unknown")], 0).await;
+        let (status, resolved): (String, Option<f64>) = s
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT status, resolved_at FROM _amux_invariant_incident \
+                 WHERE entity_key='waitlist.ts'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(
+            resolved.is_some(),
+            "an unknown must clear the incident — otherwise a check that stops being able \
+             to run stays open forever and nobody can action it"
+        );
+        assert_eq!(
+            status, "unknown",
+            "and it must NOT be recorded as a pass: 'stopped being checkable' is not 'healed'"
+        );
+    }
+
+    /// AEAB-44. `latest_per_invariant` returns the newest BATCH for each
+    /// invariant — every entity in it — not one row per invariant.
+    ///
+    /// Both halves can fail independently and both have to be here:
+    ///   - drop the older generation (a query that returns everything passes a
+    ///     "the newest row is present" assertion and is still wrong), and
+    ///   - keep ALL entities of the newest generation (collapsing to one row
+    ///     per invariant would hide 63 of the 64 entities of
+    ///     route.callers_have_routes in production, and would pass any
+    ///     assertion phrased per-invariant).
+    ///
+    /// This is the test the index rewrite had to survive. Verified against the
+    /// live 9.4M-row table too: old and new forms returned 304 rows with
+    /// `EXCEPT` empty in BOTH directions — and note that had to be done inside
+    /// ONE transaction, because comparing two queries against a table the
+    /// monitor is writing to every 30s reports every row as different.
+    #[tokio::test]
+    async fn latest_per_invariant_is_the_newest_batch_with_every_entity() {
+        let (s, _d) = store();
+        // Older generation — must NOT appear.
+        put(&s, 100.0, "a.check", "e1", "fail").await;
+        put(&s, 100.0, "a.check", "e2", "fail").await;
+        put(&s, 100.0, "b.check", "", "pass").await;
+        // Newest generation for a.check: three entities, all must appear.
+        put(&s, 200.0, "a.check", "e1", "pass").await;
+        put(&s, 200.0, "a.check", "e2", "fail").await;
+        put(&s, 200.0, "a.check", "e3", "unknown").await;
+        // b.check's newest is older than a.check's — per-invariant, not global.
+        put(&s, 150.0, "b.check", "", "fail").await;
+
+        let got = latest_per_invariant(&s).unwrap();
+
+        let a: Vec<_> = got.iter().filter(|r| r["invariant_id"] == "a.check").collect();
+        assert_eq!(a.len(), 3, "every entity of the newest batch must appear: {got:?}");
+        assert!(
+            a.iter().all(|r| r["checked_at"].as_f64().unwrap() == 200.0),
+            "the older generation must be gone: {got:?}"
+        );
+        let mut ents: Vec<&str> =
+            a.iter().map(|r| r["entity"].as_str().unwrap()).collect();
+        ents.sort();
+        assert_eq!(ents, vec!["e1", "e2", "e3"]);
+
+        let b: Vec<_> = got.iter().filter(|r| r["invariant_id"] == "b.check").collect();
+        assert_eq!(b.len(), 1, "b.check has one entity: {got:?}");
+        assert_eq!(
+            b[0]["checked_at"].as_f64().unwrap(),
+            150.0,
+            "each invariant's own newest ts, not the table's: {got:?}"
+        );
+        assert_eq!(b[0]["status"], "fail");
+    }
+
+    /// The empty case, because the recursive CTE seeds itself from
+    /// `min(invariant_id)` — which is NULL on an empty table. A seed that is
+    /// NULL must terminate the recursion rather than loop or error, and
+    /// "nothing has ever run" must come back as an empty list rather than as a
+    /// failure the caller renders as `unwrap_or_default()` silence.
+    #[tokio::test]
+    async fn latest_per_invariant_is_empty_and_ok_on_an_empty_table() {
+        let (s, _d) = store();
+        assert_eq!(latest_per_invariant(&s).unwrap().len(), 0);
     }
 
     /// THE dedupe property: the same failure 100 times is ONE incident.
@@ -257,5 +497,49 @@ mod tests {
         let latest = latest_per_invariant(&s).unwrap();
         assert_eq!(latest.len(), 1, "...but it must still be recorded");
         assert_eq!(latest[0]["status"], "unknown");
+    }
+
+    /// AMUX-3489: the differential trim. A 2h-old PASS row (past the 1h pass
+    /// window, inside the 7d fail window) must age out on the next write
+    /// cycle; an equally old FAIL row must survive the week. Without the
+    /// differential this table held 8M rows of green heartbeats.
+    #[tokio::test]
+    async fn old_pass_rows_trim_while_equally_old_fail_rows_survive() {
+        let (s, _d) = store();
+        let old = now() - 7200.0;
+        let _ = s
+            .write_async(move |conn| {
+                for (st, id) in [("pass", "old.pass"), ("fail", "old.fail")] {
+                    conn.execute(
+                        "INSERT INTO _amux_invariant_result
+                           (ts, invariant_id, status, entity_key, expected, observed, evidence, duration_ms)
+                         VALUES (?1, ?2, ?3, '', '', '', '{}', 1)",
+                        rusqlite::params![old, id, st],
+                    )?;
+                }
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .await;
+        // Any record() triggers the opportunistic trim.
+        record(&s, vec![InvariantResult::pass("fresh.check")], 1).await;
+
+        let conn = s.read().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT invariant_id FROM _amux_invariant_result ORDER BY invariant_id")
+            .unwrap();
+        let left: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(
+            left,
+            vec!["fresh.check".to_string(), "old.fail".to_string()],
+            "stale pass gone, stale fail kept, fresh row kept"
+        );
+
+        let (rows, oldest) = result_log_stats(&s).unwrap();
+        assert_eq!(rows, 2);
+        assert!(oldest >= 7000.0, "oldest_age_s must reflect the surviving fail row, got {oldest}");
     }
 }

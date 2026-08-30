@@ -32,7 +32,7 @@
 //! permanently. Name the file as contested and say who else is in it; the
 //! recipient can then stage per-hunk instead of per-file.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The staged-guard's verdict, transcribed. Every field is a list of paths.
 ///
@@ -69,6 +69,15 @@ pub struct Freshness {
     /// origin has commits on the path that local HEAD lacks: the worktree copy
     /// is OLDER. Committing it SILENTLY REVERTS origin. Restore, do not commit.
     pub stale: Vec<String>,
+    /// BOTH directions have commits on the path — novel and stale at once.
+    /// Neither single-arm remedy is safe: commit reverts origin's side,
+    /// restore reverts the local side, and every restore-safety test passes
+    /// while doing it (locally-committed content is "reachable from a commit"
+    /// too). Live specimen 2026-08-20: mixpeek .githooks/pre-push, origin
+    /// carrying 96ea161803 and local HEAD carrying the MG-1483 guard — the
+    /// two-bucket classifier filed it STALE and the prescribed restore
+    /// silently disarmed a data-loss push guard. Merge, or hand to the owner.
+    pub diverged: Vec<String>,
     /// Absent from origin/main. Genuinely new work; LOST if never committed.
     pub new: Vec<String>,
     /// Differs from origin, which has not moved past HEAD on this path. A
@@ -77,6 +86,103 @@ pub struct Freshness {
     /// Byte-identical to origin: dirty only because local HEAD is behind.
     /// Suppressed entirely as noise (48 of 321 on the motivating checkout).
     pub same: Vec<String>,
+    /// The worktree copy is an OLD COMMITTED REVISION of this path, and HEAD
+    /// and origin/main agree on the current one. Committing it silently REVERTS
+    /// content both refs hold (AMUX-3695, reported by mixpeek-frustrations).
+    ///
+    /// Its own bucket rather than folded into `stale`, even though the remedy
+    /// is the same restore. `stale` says "origin has commits local HEAD lacks",
+    /// which is FALSE here — the refs agree, which is precisely why both
+    /// ancestry arms are blind to it. Filing it under a bucket whose
+    /// explanation does not hold is the mistake `diverged` exists to correct:
+    /// the two-bucket classifier called a diverged path STALE and its
+    /// prescribed restore disarmed a live push guard.
+    ///
+    /// Restore IS safe here, and that is checkable rather than assumed: the
+    /// on-disk bytes are reachable from a commit by construction, since that
+    /// is how the path was classified.
+    pub revived: Vec<String>,
+    /// How many paths were NOT put through the revived discriminator because
+    /// the run hit its budget (AMUX-3695, measured by mixpeek-frustrations).
+    ///
+    /// NEVER SILENT. Those paths fall back to `edited`, which is the safe
+    /// direction but is also indistinguishable from a path that was checked and
+    /// found novel. A reader who cannot tell "checked, it is fine" from "we ran
+    /// out of budget" has been told something false by omission, and on the
+    /// checkout that motivated this the second case is the majority.
+    pub revived_unchecked: usize,
+    /// How many paths the discriminator ACTUALLY examined. Coverage, not a
+    /// count of findings — and the share of a partial sample must never be
+    /// generalised to the checkout without it (mixpeek-frustrations measured
+    /// 4 of 59 checked under the default budget on a large repo, i.e. 0.5%
+    /// coverage on a 772-path listing).
+    pub revived_checked: usize,
+    /// Which bound ended the revived sampling: "cap", "clock", or "" when it
+    /// finished the list. `revived_checked: 0` is honest about coverage and
+    /// silent about cause, and the two causes want different actions
+    /// (AMUX-3760).
+    pub revived_stopped_by: &'static str,
+}
+
+/// Is the worktree copy of `path` an OLD COMMITTED REVISION rather than a new
+/// edit? (AMUX-3695.)
+///
+/// Only meaningful where HEAD and origin/main AGREE on the path, which is the
+/// one state both ancestry arms are blind to: there is no "origin has commits
+/// HEAD lacks" to find, because the refs hold the same bytes. Committing an old
+/// revision from there silently reverts what both agree on.
+///
+/// TWO QUESTIONS, CHEAPEST FIRST, and the order is the whole cost story:
+///
+///   1. Is the on-disk blob a known object AT ALL? A genuine new edit produces
+///      bytes never committed anywhere, so this is a single hash lookup that
+///      settles the common case in ~30ms with no ref walk.
+///   2. Only if it is: does any commit on any ref carry that blob at this path?
+///
+/// Measured on this repo before shipping (141 refs, 4158 commits): step 2's
+/// worst case, a full walk finding nothing, is 0.103s. That was the number the
+/// card asked for and it is what made this buildable.
+///
+/// FAILS TOWARD `edited` on every error. A false `revived` would prescribe a
+/// restore against work that is genuinely new, which destroys it; a false
+/// `edited` merely under-warns, and under-warning is the direction this whole
+/// gate already fails in deliberately.
+async fn revives_an_old_revision(dir: &str, path: &str) -> bool {
+    let hash = match tokio::process::Command::new("git")
+        .args(["-C", dir, "hash-object", "--", path])
+        .output()
+        .await
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => return false,
+    };
+    if hash.is_empty() {
+        return false;
+    }
+    // The O(1) gate. Exit != 0 means these bytes are in no commit anywhere, so
+    // the path is novel work and no walk is warranted.
+    let known = tokio::process::Command::new("git")
+        .args(["-C", dir, "cat-file", "-e", &hash])
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !known {
+        return false;
+    }
+    // The blob exists. Now the only question left is whether it was ever the
+    // content OF THIS PATH — a blob can be a known object because some other
+    // file has the same bytes, and calling that a revert would be wrong.
+    tokio::process::Command::new("git")
+        .args([
+            "-C", dir, "log", "--all", "--oneline", "-1",
+            &format!("--find-object={hash}"),
+            "--", path,
+        ])
+        .output()
+        .await
+        .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+        .unwrap_or(false)
 }
 
 /// The nudge, or None when there is nothing honest to say.
@@ -136,6 +242,12 @@ pub fn build(
     // also the honest state when local HEAD is not behind origin.
     let same: BTreeSet<&str> = fresh.same.iter().map(String::as_str).collect();
     let stale_set: BTreeSet<&str> = fresh.stale.iter().map(String::as_str).collect();
+    let diverged_set: BTreeSet<&str> = fresh.diverged.iter().map(String::as_str).collect();
+    // AMUX-3695. Classified but not rendered would be the worse bug: the path
+    // would silently leave `commit_worthy` and the nudge would stop mentioning
+    // it at all, so a silent revert becomes an invisible one. A bucket that
+    // nothing reads is the same as no bucket (ethos rule 1).
+    let revived_set: BTreeSet<&str> = fresh.revived.iter().map(String::as_str).collect();
 
     // Drop SAME first. If that empties the set there is nothing honest to say:
     // identical-to-origin is the same non-event as a clean tree.
@@ -147,14 +259,250 @@ pub fn build(
 
     let stale_paths: Vec<&str> =
         dirty.iter().copied().filter(|p| stale_set.contains(*p)).collect();
+    let diverged_paths: Vec<&str> =
+        dirty.iter().copied().filter(|p| diverged_set.contains(*p)).collect();
+    let revived_paths: Vec<&str> =
+        dirty.iter().copied().filter(|p| revived_set.contains(*p)).collect();
     let commit_worthy: Vec<String> = dirty
         .iter()
         .copied()
-        .filter(|p| !stale_set.contains(*p))
+        .filter(|p| {
+            !stale_set.contains(*p) && !diverged_set.contains(*p) && !revived_set.contains(*p)
+        })
         .map(str::to_string)
         .collect();
 
+    // WHOSE files? (MG-1484's other half; mixpeek-general's 3-vs-20.) The
+    // STALE and DIVERGED headers used to say "{n} of your dirty file(s)" over
+    // sets with NO ownership filter — dirty ∩ stale on a SHARED checkout
+    // includes peers' work and generated churn (an SDK regen landing on
+    // origin makes its outputs read stale in every checkout behind it). The
+    // pronoun was accidentally right when the recipient's touched set
+    // coincided (a firing of 3) and wrong when the regen widened it (20, of
+    // which 17 the addressed session had never opened — they classified the
+    // noise by hand to find their 3). Same axis commit_worthy_body already
+    // uses: only a positive attribution is "yours"; the rest is named as
+    // such, with the owner where one is known.
+    let foreign_owner: BTreeMap<&str, &str> =
+        own.foreign.iter().map(|(p, o)| (p.as_str(), o.as_str())).collect();
+    let unknown_owner: BTreeSet<&str> = own
+        .unclaimed
+        .iter()
+        .chain(own.undecided.iter())
+        .map(String::as_str)
+        .collect();
+    let not_mine = |p: &str| foreign_owner.contains_key(p) || unknown_owner.contains(p);
+    let whose = |paths: &[&str]| {
+        let n = paths.len();
+        let n_mine = paths.iter().filter(|p| !not_mine(p)).count();
+        if n_mine == n {
+            "of your dirty file(s)".to_string()
+        } else if n_mine == 0 {
+            "dirty file(s) in this SHARED checkout (NONE carries your edit record — peers' \
+             work or generated churn, e.g. an SDK regen on origin; not yours to reconcile, \
+             but do not commit them either)"
+                .to_string()
+        } else {
+            format!(
+                "dirty file(s) in this SHARED checkout ({n_mine} with your edit record, {} \
+                 without — peers' work or generated churn)",
+                n - n_mine
+            )
+        }
+    };
+    let tagged_list = |paths: &[&str]| -> String {
+        let mut mine: Vec<String> = Vec::new();
+        let mut other: Vec<String> = Vec::new();
+        for p in paths {
+            if let Some(o) = foreign_owner.get(*p) {
+                other.push(format!("  {p}  [{o}'s]\n"));
+            } else if unknown_owner.contains(*p) {
+                other.push(format!("  {p}  [no edit record of yours]\n"));
+            } else {
+                mine.push(format!("  {p}\n"));
+            }
+        }
+        let n = mine.len() + other.len();
+        mine.into_iter().chain(other).take(10).collect::<String>()
+            + if n > 10 { "  …\n" } else { "" }
+    };
+
     let mut sections: Vec<String> = Vec::new();
+
+    // DIVERGED before everything: both remedies the rest of this message
+    // teaches are wrong for these paths, and the reader must hit that before
+    // either recipe. The missing cell that disarmed the mixpeek MG-1483 guard
+    // (2026-08-20): both directions carry commits, so commit reverts origin's
+    // side, restore reverts the local side, and the restore-safety check
+    // passes throughout because locally-committed content is
+    // reachable-from-a-commit too.
+    if !diverged_paths.is_empty() {
+        let n = diverged_paths.len();
+        let list = tagged_list(&diverged_paths);
+        let whose_d = whose(&diverged_paths);
+        sections.push(format!(
+            "DIVERGED: {n} {whose_d} under {dir} have commits in BOTH directions — \
+             origin/main carries commits on them that your HEAD lacks, AND your HEAD carries \
+             commits origin lacks. They are novel and stale AT ONCE, so NEITHER standard remedy \
+             is safe:\n{list}\
+             Committing carries your side forward and SILENTLY REVERTS origin's commits; \
+             `git checkout origin/main -- <path>` reverts YOUR landed commits — and the \
+             find-object restore-safety check PASSES while it does, because locally-committed \
+             content is reachable-from-a-commit too (that is how the mixpeek MG-1483 push guard \
+             was silently disarmed, 2026-08-20). MERGE the two versions, or hand the path to its owner. Do \
+             not clear these with any single-arm command."
+        ));
+    }
+
+    if !revived_paths.is_empty() {
+        let n = revived_paths.len();
+        let list = tagged_list(&revived_paths);
+        let whose_r = whose(&revived_paths);
+        // WHEN THIS IS THE MAJORITY IT IS ONE FINDING, NOT N ALARMS
+        // (mixpeek-frustrations measured 7 of 10 on a checkout 6x this repo).
+        // A bucket that fires on most of the set reads as noise and gets
+        // scrolled past, which is how a real silent-revert warning stops being
+        // read at all. Lead with the ratio and name the checkout-level
+        // condition, because at that share the story is the checkout rather
+        // than any one path.
+        // THE SHARE IS OF WHAT WAS CHECKED, AND ONLY GENERALISES IF COVERAGE
+        // SUPPORTS IT (mixpeek-frustrations, probes 1 and 2).
+        //
+        // Two separate errors were possible here and both were live. First, the
+        // denominator: dividing by every dirty path counts unchecked ones as
+        // not-revived, which understates by exactly the coverage gap. Second and
+        // worse, generalising at all — under the default budget their repo
+        // checked 4 of 59 paths, so a "75% of your checkout" claim would rest on
+        // four files. A checkout-level statement needs checkout-level coverage.
+        //
+        // A FLOOR ON THE COUNT TOO. 1 of 2 paths is 50% and is not a
+        // checkout-wide condition; an existing test caught that by going red.
+        let denom = fresh.revived_checked.max(n);
+        // SAFE ONLY BECAUSE THE `>= 50` BRANCH BELOW IS THE SOLE RENDER SITE.
+        // Integer division can take a small nonzero share to 0 (5 of 501 is 0),
+        // and a rendered "0%" beside a nonzero count is not an imprecise number,
+        // it is the ZERO THAT MEANS NONE — the same collision that made
+        // "0% coverage" read as "nothing was checked". If you ever print
+        // `share` outside that branch, give it the `<1%` treatment `cov` has.
+        let share = (n * 100).checked_div(denom).unwrap_or(0);
+        let coverage = fresh.revived_checked + fresh.revived_unchecked;
+        let well_covered = coverage == 0 || fresh.revived_checked * 2 >= coverage;
+        // A PERCENTAGE NEEDS ENOUGH OBSERVATIONS TO BE ONE (mixpeek-frustrations).
+        //
+        // Their granularity floor, and it is not a precision argument, it is a
+        // range argument: at n=4 the only values this can produce are 0, 25, 50,
+        // 75 and 100. The true share on their checkout is 63%, and that is not
+        // in the estimator's range AT ANY CONFIDENCE. A share printed from four
+        // observations is not a noisy measurement of the share, it is a
+        // different quantity wearing a percent sign.
+        //
+        // Their arithmetic on how many it would take, at p=0.63 with a finite
+        // population correction and the 458ms mean walk they measured:
+        //   n=4    +/- 47 points     2s
+        //   n=40   +/- 14 points    18s
+        //   n=93   +/-  9 points    43s
+        // So no cap compatible with a 2s budget supports a proportion, and the
+        // answer to "is 40 the right cap" is that there is no right cap. Below
+        // 10 the count IS the honest statement, so print the count.
+        let enough_for_a_rate = denom >= 10;
+        let lede = if share >= 50 && n >= 5 && well_covered && enough_for_a_rate {
+            format!(
+                "OLD REVISIONS ON DISK — {n} of the {} path(s) examined ({share}%). At this \
+                 share the finding is the CHECKOUT, not the individual files: it is broadly \
+                 carrying content that was already superseded. Treat this as ONE condition to \
+                 resolve deliberately, not {n} separate alarms",
+                fresh.revived_checked.max(n)
+            )
+        } else {
+            format!("OLD REVISION ON DISK: {n} {whose_r} under {dir}")
+        };
+        sections.push(format!(
+            "{lede} — content that was ALREADY COMMITTED at some point, while HEAD and \
+             origin/main agree on the current version:\n{list}\
+             Committing these SILENTLY REVERTS what both refs hold. This is invisible to the \
+             usual stale check precisely BECAUSE the refs agree, so there is no \
+             'origin is ahead' to find — it was reported as the one population the \
+             refs-agree gate did not split (AMUX-3695).\n\
+             Confirm with: git log --all --oneline --find-object=$(git hash-object <path>) -- <path>\n\
+             A commit printing there IS the old revision. `git checkout origin/main -- <path>` \
+             is safe here and loses nothing, because the on-disk bytes are reachable from that \
+             commit — which is how the path was classified in the first place. If you PUT the \
+             old content there deliberately, commit it and say so; nothing here can tell an \
+             intentional revert from an accidental one, and that call is yours."
+        ));
+    }
+
+    // NO SILENT CAP. On a large repo the discriminator runs out of budget long
+    // before the dirty list ends, and those paths land in `edited` — the safe
+    // fallback, and also the exact output a path that WAS checked and found
+    // novel produces. Saying nothing here would let "we did not look" read as
+    // "we looked and it is fine", which is the difference between a bound and a
+    // lie. Measured need: 772 paths in one real listing (mixpeek-frustrations).
+    if fresh.revived_unchecked > 0 {
+        let total = fresh.revived_checked + fresh.revived_unchecked;
+        // Coverage is an EXACT quantity (we counted both sides), not an
+        // estimate, so a percentage is legitimate here at any n — unlike the
+        // share above, which is a sample statistic. Rendered only when it adds
+        // something the two counts do not: 4-of-59 is much easier to feel as
+        // "6%", and 2-of-6 is not.
+        let pct = (fresh.revived_checked * 100).checked_div(total).unwrap_or(0);
+        // "<1%", NEVER "0%", when anything was actually examined.
+        //
+        // Integer division takes 4-of-524 — mixpeek-frustrations' real shape —
+        // to exactly 0, and their naming of why that matters is the reusable
+        // part: truncation turned a small nonzero into THE ZERO THAT MEANS
+        // NONE. Not an imprecise number, a different claim. "0% coverage"
+        // beside a sentence saying four paths were examined is two fields
+        // contradicting each other, and the reader believes the number.
+        //
+        // Same family as a can't-tell rendering as a known-good, an unreachable
+        // cell rendering as a pass, and an all() over an empty set rendering as
+        // success: the value meaning "we did not look" and the value meaning
+        // "we looked and found little" must stay distinguishable, and
+        // arithmetic collapses them without anyone writing the collision.
+        //
+        // The counts carry the actionable part either way, which is why they
+        // are printed beside it rather than replaced by it: at these ratios the
+        // percentage is atmosphere and "4 of 524" is the thing a reader can use.
+        let cov = if total < 10 {
+            String::new()
+        } else if pct == 0 && fresh.revived_checked > 0 {
+            " (<1% coverage)".to_string()
+        } else {
+            format!(" ({pct}% coverage)")
+        };
+        // NAME THE BOUND THAT BIT (AMUX-3760). "hit its budget" names two knobs
+        // and leaves the reader to guess which, and they want opposite actions:
+        // a cap hit means raise the cap, a clock hit means the machine is loaded
+        // or the walks are slow. Before this, a clock hit at ZERO checked was
+        // also how the revived discriminator silently stopped running under load
+        // — the budget clock was started before the classification phase and was
+        // already spent when the sampling began.
+        let why = match fresh.revived_stopped_by {
+            "cap" => " — it stopped on the PATH CAP (AMUX_NUDGE_REVIVED_MAX_PATHS); raise that to examine more",
+            "clock" => " — it stopped on the CLOCK (AMUX_NUDGE_REVIVED_BUDGET_MS); the walks are slow or the machine is loaded, so raising the cap alone will not help",
+            _ => "",
+        };
+        sections.push(format!(
+            "NOT CHECKED FOR OLD-REVISION: {} of {total} candidate path(s) were examined\
+             {cov}; the other {} were not, because this run hit its budget{why} \
+             (AMUX_NUDGE_REVIVED_BUDGET_MS / AMUX_NUDGE_REVIVED_MAX_PATHS). The unchecked ones \
+             are listed above as ordinary edits, which is the SAFE fallback and NOT a finding \
+             that they are clean.\n\
+             COVERAGE, STATED AS A PERCENTAGE ON PURPOSE: on a large checkout the per-path \
+             test costs ~700ms and the clock cuts after about four paths, so a long dirty list \
+             gets low single digits. That is an honest bound and it is NOT a sample — do not \
+             read the proportions above as representative of the rest. Measured: reporting a \
+             share to within 10 points would need ~93 paths and ~43s, so there is no cap \
+             compatible with a 2s budget that supports one. The examined paths are allocated \
+             across top-level directories in PROPORTION to their size, which removes both the \
+             alphabetical bias and the equal-weight-per-directory bias that replacing it \
+             introduced — neither of which makes four files a survey.\n\
+             To check one by hand:\n  \
+             git log --all --oneline --find-object=$(git hash-object <path>) -- <path>",
+            fresh.revived_checked, fresh.revived_unchecked
+        ));
+    }
 
     // STALE FIRST and most prominently. The opposite instruction to the rest of
     // the nudge: do NOT commit these, restore them.
@@ -184,14 +532,10 @@ pub fn build(
     // for a never-committed mid-edit and its `git checkout` remedy deleted it.
     if !stale_paths.is_empty() {
         let n = stale_paths.len();
-        let list: String = stale_paths
-            .iter()
-            .take(10)
-            .map(|p| format!("  {p}\n"))
-            .collect::<String>()
-            + if n > 10 { "  …\n" } else { "" };
+        let list = tagged_list(&stale_paths);
+        let whose_s = whose(&stale_paths);
         sections.push(format!(
-            "STALE: {n} of your dirty file(s) under {dir} are OLDER than origin/main. Origin \
+            "STALE: {n} {whose_s} under {dir} are OLDER than origin/main. Origin \
              has commits on these paths that your local HEAD does not (this checkout is behind). \
              DO NOT COMMIT them. `git add -A` or `git commit -a` would carry the older copy \
              forward and SILENTLY REVERT origin (no conflict, the older file just wins, \
@@ -232,7 +576,60 @@ pub fn build(
         return None;
     }
     let mut msg = sections.join("\n\n");
-    msg.push_str(&format!("\n\n({provenance})"));
+    // THE APPEND-ONLY NOTE BELONGS TO THE WHOLE DIRTY SET, NOT TO ONE ARM
+    // (AMUX-3718, near-miss 2026-08-25).
+    //
+    // It used to be emitted from inside `commit_worthy_body`, which `build`
+    // hands `commit_worthy` — defined three lines up as the paths that are NOT
+    // stale/diverged/revived. So the archive check was structurally unreachable
+    // for a DIVERGED frustrations.md: the ONE state in which this nudge
+    // actually prescribes a union-merge was the one state that could not be
+    // told how to perform it safely. A lane followed the bare directive
+    // verbatim and would have resurrected an entry closed on a 692/692 prod
+    // measurement.
+    //
+    // Its own unit test was green throughout, because it called
+    // `commit_worthy_body` directly and pinned a layer the broken path does not
+    // flow through (ethos rule 7 / AF-161). Hoisting it here means the note
+    // travels with EVERY arm, and `dirty` is the honest input: the note is
+    // about the file, not about which remedy the file happens to be under.
+    if let Some(note) = append_only_note(&dirty) {
+        msg.push_str(&note);
+    }
+    // SAME SHAPE, ONE INSTANCE OVER (flagged by mixpeek-frustrations while
+    // reviewing the fix above; measured with a positive control before acting).
+    //
+    // `ATTRIBUTION IS PARTIAL` was also emitted only from `commit_worthy_body`,
+    // so a nudge whose every path is DIVERGED — commit_worthy empty, that
+    // function never called — dropped it. Probe: diverged+partial rendered
+    // false, commit-worthy+partial rendered true.
+    //
+    // It matters most exactly where it went missing. The DIVERGED arm's
+    // prescribed exit is "hand the path to its owner", and this caveat is the
+    // one that says the ownership axis is unreliable. The arm that most needs
+    // to know attribution is blind was the arm that could not be told.
+    //
+    // The generalisation, worth more than either fix: A SAFETY NOTE ATTACHED TO
+    // THE HEALTHY BRANCH OF A CONDITIONAL CANNOT REACH THE UNHEALTHY ONE. When
+    // you write a warning, check which states actually receive it. Caveats
+    // about the WHOLE dirty set belong here, at the top level, never inside an
+    // arm — an arm-scoped emitter silently scopes the warning to that arm.
+    if let Some(why) = &own.partial {
+        msg.push_str(&format!("\n\nATTRIBUTION IS PARTIAL — {why}"));
+    }
+    // AF-135 defect 1: the message timestamped origin's tip but never said
+    // when it OBSERVED the tree, so a snapshot composed before a commit and
+    // delivered at the next turn boundary read as live and named files
+    // already committed minutes earlier. Harmless on the commit branch (a
+    // no-op); on the STALE branch the same lag prescribes `git checkout
+    // origin/main -- <path>` against paths origin does not have, which
+    // deletes them. Stamp the observation so the reader compares it against
+    // their own last commit in one glance.
+    msg.push_str(&format!(
+        "\n\n({provenance}; tree observed {}Z — if you committed AFTER that moment this \
+         nudge predates it: re-run `git status` before acting on any remedy)",
+        chrono::Utc::now().format("%H:%M:%S")
+    ));
     Some(msg)
 }
 
@@ -240,6 +637,89 @@ pub fn build(
 /// rendered under the ownership axis (mine / unknown / foreign / shared). Returns
 /// the message WITHOUT the trailing provenance so [`build`] can stamp it exactly
 /// once across a STALE section and this body.
+/// An append-only, multi-writer shared file — `frustrations.md` is the canonical
+/// one (matched case-insensitively; macOS resolves FRUSTRATIONS.md to the same
+/// file). Its whole failure mode is that the two direction remedies this nudge
+/// prescribes BOTH lose data on it, so it needs its own directive.
+fn is_append_only_shared(path: &str) -> bool {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path)
+        .eq_ignore_ascii_case("frustrations.md")
+}
+
+/// The union-merge directive for any append-only shared file in the dirty set,
+/// or None if there is none. Appended to whichever nudge fires (AMUX-3367): an
+/// append-only file can be NOVEL AND STALE at once — you appended locally while a
+/// peer landed different entries on origin — so committing the path REVERTS the
+/// peer's entries and restoring DELETES yours. The direction test cannot separate
+/// these because both are true, so name the file and prescribe the only safe
+/// operation, which neither generic remedy performs.
+///
+/// CORRECTED by CD-78 (creative-dna retracting their own AMUX-3367 directive,
+/// 2026-08-21): these files are not truly append-only — an entry legitimately
+/// LEAVES via a companion archive (FRUSTRATIONS_ARCHIVE.md), so a blind
+/// re-append re-injects deliberately archived entries. Measured on the shared
+/// mixpeek checkout: 15 of 15 "lost" entries were archive moves, zero were
+/// lost work, and the restore/remove cycle had run three times on origin
+/// (d89dcf843a "restore 13 entries" -> 1391eed484 "12 archived entries came
+/// back"). The general form: a set-difference over ONE file cannot see a
+/// move and reports it as a deletion every time — before treating a
+/// disappearance as loss, look where it may have legitimately moved to.
+fn append_only_note(dirty: &[&str]) -> Option<String> {
+    let mut ao: Vec<&str> = dirty.iter().copied().filter(|p| is_append_only_shared(p)).collect();
+    ao.sort();
+    ao.dedup();
+    if ao.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "\n\nAPPEND-ONLY SHARED FILE — {} can be NOVEL AND STALE at once (you and a peer \
+         appended to different bases), so BOTH remedies above lose data on it: committing the \
+         path REVERTS the peer's origin-only entries, `git checkout origin/main -- <path>` \
+         DELETES yours. UNION-MERGE instead — `git checkout origin/main -- <path>` to take their \
+         version, then re-append ONLY YOUR OWN entries, with the ARCHIVE CHECK first (CD-78 \
+         corrected AMUX-3367): an entry can legitimately LEAVE this file by moving to its \
+         companion archive (e.g. FRUSTRATIONS_ARCHIVE.md), so before re-appending anything \
+         'missing', grep the archive for it — present there means the deletion was a deliberate \
+         move, and re-appending it manufactures a duplicate (measured: 15 of 15 'lost' entries \
+         were archive moves; the restore/remove cycle ran three times on origin). Only an entry \
+         absent from BOTH files is lost work. Never a plain add/commit or a bare restore.",
+        ao.join(", ")
+    ))
+}
+
+/// The delivered-text invariant behind the AMUX-3718 WARN: if an append-only
+/// shared file is in the dirty set, the message MUST carry CD-78's archive
+/// check. Returns the offending paths when it does not.
+///
+/// Deliberately checks the RENDERED message rather than re-deriving which arm
+/// fired. Re-deriving is how the original defect survived: the note's own test
+/// reasoned about `commit_worthy` and was correct about it, while the bytes a
+/// lane received had no archive check in them at all.
+/// Takes `fresh` so it can SHARE the predicate of the code it describes rather
+/// than re-derive it: `build` drops paths byte-identical to origin before it
+/// renders anything, so a SAME frustrations.md legitimately produces no note and
+/// a checker that missed that would cry wolf on healthy text. A view that
+/// disagrees with the mechanism it reports on is wrong in whichever direction it
+/// disagrees, and a WARN nobody trusts is worse than no WARN.
+fn missing_archive_check(dirty: &[String], fresh: &Freshness, msg: &str) -> Option<String> {
+    if msg.contains("ARCHIVE CHECK") {
+        return None;
+    }
+    let same: BTreeSet<&str> = fresh.same.iter().map(String::as_str).collect();
+    let bad: Vec<&str> = dirty
+        .iter()
+        .map(String::as_str)
+        .filter(|p| is_append_only_shared(p) && !same.contains(*p))
+        .collect();
+    if bad.is_empty() {
+        return None;
+    }
+    Some(bad.join(", "))
+}
+
 fn commit_worthy_body(dir: &str, dirty: &[String], own: &Ownership) -> Option<String> {
     if dirty.is_empty() {
         return None;
@@ -282,7 +762,9 @@ fn commit_worthy_body(dir: &str, dirty: &[String], own: &Ownership) -> Option<St
         }
         let n = unknown.len();
         let list: String = unknown.iter().take(10).map(|f| format!("  {f}\n")).collect();
-        let mut m = format!(
+        // Not `mut`: the partial-attribution caveat used to be appended here and
+        // now renders once in `build`, so it reaches every arm (AMUX-3718).
+        let m = format!(
             "You went idle with {n} uncommitted change(s) under {dir} whose OWNERSHIP IS \
              UNKNOWN — no session has an edit record for {}:\n{list}\n\
              Do NOT assume {} yours. `git add -A` here would commit whatever a peer is \
@@ -295,7 +777,11 @@ fn commit_worthy_body(dir: &str, dirty: &[String], own: &Ownership) -> Option<St
              you lack = STALE, so do not commit; restore with `git checkout origin/main -- <path>` \
              ONLY after `git log --all --find-object=$(git hash-object <path>) -- <path>` prints a \
              commit (empty or errored means the stale copy carries novel mid-edit a restore would \
-             DELETE, so commit the path instead); \
+             DELETE, so commit the path instead) AND the reverse test \
+             `git log --oneline origin/main..HEAD -- <path>` prints NOTHING — if BOTH directions \
+             print commits the path has DIVERGED (novel and stale at once) and either single-arm \
+             remedy destroys one side's landed work: MERGE the versions or hand the path to its \
+             owner; \
              prints NOTHING = origin has nothing you lack, so it is current content, and if it \
              is not yours it is a peer's mid-edit: hands off either way. Do NOT use \
              `git cat-file -e $(git hash-object <path>)` for this: blob existence cannot separate \
@@ -305,9 +791,6 @@ fn commit_worthy_body(dir: &str, dirty: &[String], own: &Ownership) -> Option<St
             if n == 1 { "it" } else { "them" },
             if n == 1 { "it is" } else { "they are" },
         );
-        if let Some(why) = &own.partial {
-            m.push_str(&format!("\n\nATTRIBUTION IS PARTIAL — {why}"));
-        }
         return Some(m);
     }
 
@@ -336,9 +819,17 @@ fn commit_worthy_body(dir: &str, dirty: &[String], own: &Ownership) -> Option<St
          \u{2022} `git log --oneline HEAD..origin/main -- <path>`: if it prints ANY commit, \
          origin has work on this path that your HEAD lacks, so the worktree copy is genuinely \
          older (STALE); do not commit. Restore with `git checkout origin/main -- <path>` ONLY \
-         after `git log --all --find-object=$(git hash-object <path>) -- <path>` prints a commit; \
-         an empty or errored result means the stale copy carries novel mid-edit a restore would \
-         DELETE, so commit the path instead.\n\
+         after BOTH: `git log --all --find-object=$(git hash-object <path>) -- <path>` prints a \
+         commit (empty or errored means the stale copy carries novel mid-edit a restore would \
+         DELETE, so commit the path instead), AND the REVERSE test \
+         `git log --oneline origin/main..HEAD -- <path>` prints NOTHING.\n\
+         \u{2022} if BOTH directions print commits, the path has DIVERGED — novel AND stale at \
+         once — and commit and restore each destroy one side's landed work while every test \
+         above passes as prescribed. MERGE the two versions (or hand the path to its owner); \
+         neither single-arm remedy is safe. Live specimen 2026-08-20: mixpeek \
+         .githooks/pre-push, origin carrying 96ea161803 and HEAD carrying the MG-1483 guard \
+         chain — the one-direction protocol read it STALE and the prescribed restore silently \
+         disarmed a data-loss push guard.\n\
          \u{2022} if it prints NOTHING, origin has nothing you lack: the content is yours to \
          keep, `checkout` would DESTROY it, and the safe action is COMMIT, not restore.\n\
          This is the same predicate the guard itself classifies with, so its verdict and your \
@@ -365,18 +856,34 @@ fn commit_worthy_body(dir: &str, dirty: &[String], own: &Ownership) -> Option<St
             list.join(", ")
         ));
     }
-    if let Some(why) = &own.partial {
-        msg.push_str(&format!("\n\nATTRIBUTION IS PARTIAL — {why}"));
-    }
     if !own.shared.is_empty() {
-        let who: BTreeSet<&str> = own.shared.iter().map(|(_, w)| w.as_str()).collect();
-        let paths: Vec<&str> = own.shared.iter().take(4).map(|(p, _)| p.as_str()).collect();
-        msg.push_str(&format!(
-            "\n\nCONTESTED — {} also edited by {}. Stage per-HUNK (`git add -p`), not per-file: \
-             `git add <file>` takes their in-flight hunks too.",
-            paths.join(", "),
-            who.into_iter().collect::<Vec<_>>().join("/")
-        ));
+        // AF-135 defect 2: "(unknown)" is the NO-PEER placeholder from the
+        // server's shared branch (AF-24), not a session name — "also edited
+        // by (unknown)" asserts a co-editor who does not exist, on a line
+        // whose whole argument is that a NAMED peer has in-flight work. Say
+        // the real fact instead.
+        type Row<'a> = Vec<&'a (String, String)>;
+        let (named, unowned): (Row, Row) =
+            own.shared.iter().partition(|(_, w)| w.as_str() != "(unknown)");
+        if !named.is_empty() {
+            let who: BTreeSet<&str> = named.iter().map(|(_, w)| w.as_str()).collect();
+            let paths: Vec<&str> = named.iter().take(4).map(|(p, _)| p.as_str()).collect();
+            msg.push_str(&format!(
+                "\n\nCONTESTED — {} also edited by {}. Stage per-HUNK (`git add -p`), not per-file: \
+                 `git add <file>` takes their in-flight hunks too.",
+                paths.join(", "),
+                who.into_iter().collect::<Vec<_>>().join("/")
+            ));
+        }
+        if !unowned.is_empty() {
+            let paths: Vec<&str> = unowned.iter().take(4).map(|(p, _)| p.as_str()).collect();
+            msg.push_str(&format!(
+                "\n\nCO-EDIT RECORDS, UNATTRIBUTED — {}: edit records beyond yours exist but \
+                 name no session. Not a named co-editor (the no-peer shape, AF-24); stage \
+                 per-hunk (`git add -p`) if you are unsure which hunks are currently yours.",
+                paths.join(", ")
+            ));
+        }
     }
 
     if !own.foreign.is_empty() {
@@ -695,13 +1202,55 @@ async fn ownership_from_guard(session: &str, dir: &str, paths: &[String]) -> Opt
             })
             .unwrap_or_default()
     };
-    Some(Ownership {
+    let mut own = Ownership {
         foreign: pairs("foreign"),
         shared: pairs("shared"),
         undecided: plain("undecided"),
         partial,
         unclaimed: plain("unclaimed"),
-    })
+    };
+    // SETTLED-MINE + DIRTY-THEIRS IS NOT A CONTEST (AMUX-3436). `shared` keys
+    // on edit records inside the window, which cannot tell edited-and-committed
+    // from edited-and-dirty: a session whose every hunk already landed in HEAD
+    // was told to stage per-hunk over a file where all dirty bytes were a
+    // peer's in-flight work. The discriminator exists — owner_committed_since,
+    // the same check the victim notice runs — so ask it: a shared path whose
+    // OWN edit is strictly settled by a newer own commit demotes to foreign
+    // (NOT YOURS, the peer named). Unsettled, unknown-peer, or unanswerable
+    // rows keep today's CONTESTED, the safe direction.
+    let mut settled: BTreeSet<String> = BTreeSet::new();
+    if let Some(rows) = v.get("shared").and_then(Value::as_array) {
+        for row in rows {
+            let Some(path) = row.get("path").and_then(Value::as_str) else { continue };
+            let peer = row.get("owner").and_then(Value::as_str).unwrap_or("(unknown)");
+            let Some(mine_age) = row.get("mine_age_secs").and_then(Value::as_i64) else {
+                continue;
+            };
+            if peer == "(unknown)" || session.is_empty() {
+                continue;
+            }
+            if crate::api::git_guard::owner_committed_since(dir, path, session, mine_age)
+                .await
+                .is_some()
+            {
+                settled.insert(path.to_string());
+            }
+        }
+    }
+    demote_settled_shared(&mut own, &settled);
+    Some(own)
+}
+
+/// Pure half of the AMUX-3436 demotion: move settled shared rows to foreign,
+/// keeping the peer as the named owner.
+fn demote_settled_shared(own: &mut Ownership, settled: &BTreeSet<String>) {
+    if settled.is_empty() {
+        return;
+    }
+    let (moved, kept): (Vec<_>, Vec<_>) =
+        own.shared.drain(..).partition(|(p, _)| settled.contains(p));
+    own.shared = kept;
+    own.foreign.extend(moved);
 }
 
 /// Per-path freshness for `paths`, computed against origin/main (MG-1467).
@@ -716,14 +1265,199 @@ async fn ownership_from_guard(session: &str, dir: &str, paths: &[String]) -> Opt
 /// [`drop_paths_identical_to_origin`] refreshed earlier in the same tick, so it
 /// MUST run after that filter. It does not fetch again.
 ///
+/// How many lines the WORKTREE copy of `p` has that `origin/main`'s copy does
+/// not. `None` when either side is unreadable — absence of an answer, never
+/// zero, because zero is the permission to prescribe a destructive restore.
+///
+/// Line-set rather than diff-hunk: the paths this guards are append-only ledgers
+/// (`frustrations.md` and friends), where entries are appended and occasionally
+/// MOVED to a companion archive. A hunk-based comparison reports a move as a
+/// change on both sides; a set comparison asks the only question that matters
+/// here, which is whether any content would be DESTROYED by taking origin's copy.
+///
+/// Blank and whitespace-only lines are dropped so that reflowing cannot
+/// manufacture novelty, and the comparison is over a set so that reordering
+/// cannot either. Both directions of that choice are conservative: they can only
+/// make the difference SMALLER, and a smaller difference is what unlocks the
+/// downgrade — so the caller pairs this with `Some(0)` only, never with a
+/// threshold.
+/// How many line INSTANCES of `want` are not covered by `have`.
+///
+/// ONE PRODUCER FOR BOTH DIRECTIONS, deliberately. The two callers below ask
+/// mirror questions and must not answer them by different rules: a downgrade is
+/// only sound if "nothing is at risk" means the same thing in each arm. They
+/// were two hand-written loops for two days and had already drifted in the way
+/// that matters, because the second was written by copying the first.
+///
+/// MULTISET, NOT SET (gtm-media-assets, 2026-08-26, reviewing 90eaa6dc). Set
+/// membership ignores multiplicity, so dropping ONE of a repeated line scores
+/// zero: origin `x = 1 / } / }` against worktree `x = 1 / } / novel` reported
+/// nothing missing while a closing brace was being deleted. Counting instances
+/// keeps the property the set was chosen for — a line MOVED within the file is
+/// not a loss — and drops the one it was not chosen for.
+///
+/// RAW LINES, NOT TRIMMED, same report. `str::trim` makes indentation
+/// invisible, and in Python or YAML an indent change IS a semantic change, so
+/// origin re-indenting a block scored zero and the owner was told that
+/// committing reverts nothing. Whitespace-only lines are still skipped: a lost
+/// blank line is not lost work, and `str::lines` already strips the `\r` of a
+/// CRLF ending, so trimming was buying nothing else.
+///
+/// BOTH CHANGES TIGHTEN, which is why they are safe to make together on an arm
+/// that has shipped since 2026-08-24. Each caller downgrades only on a zero, so
+/// counting more losses can only mean FEWER downgrades and more of the loud
+/// verdict. The failure mode stays "warned too loudly" rather than "prescribed a
+/// remedy that ate committed work".
+fn missing_line_instances(have: &str, want: &str) -> usize {
+    // `trim_end`, not `trim` (AMUX-3786). The two ends of a line are treated
+    // differently here, and the justification is a COST COMPARISON, not a fact
+    // about languages. The first version of this comment claimed the latter and
+    // was wrong; a premise in a codebase outlives the decision it justified, so
+    // it is written as the trade it actually is.
+    //
+    // LEADING whitespace is content wherever indentation carries meaning
+    // (Python, YAML), and erasing it was the second half of the bug this
+    // function was rewritten for. That one is not a trade: an indent change is a
+    // behaviour change, so it stays significant.
+    //
+    // TRAILING whitespace IS content too. Markdown's hard line break is two
+    // trailing spaces, and Markdown is the most common file type this nudge
+    // touches. Measured by gtm-media-assets while reviewing this change, and
+    // reproduced 2026-08-26. The two commands report different UNITS, so both
+    // are given: quoting one and citing the other's number makes a reader who
+    // runs it think the comment is stale.
+    //
+    //     git grep -IP  '\S  +$' -- '*.md'   # LINES:  amux 3,  mixpeek 1986
+    //     git grep -IlP '\S  +$' -- '*.md'   # FILES:  amux 1,  mixpeek 294
+    //
+    // We drop it anyway, because the two failures are not the same size. Losing
+    // it costs a line break in rendered output. Treating it as content holds
+    // DIVERGED open every time an editor strips trailing whitespace on save,
+    // across those 294 files — the noisier failure, and the one this card was
+    // filed for. Special-casing two trailing spaces in .md is more machinery
+    // than a rendering nit deserves.
+    //
+    // REVISIT IF this ever runs against files where trailing whitespace is
+    // load-bearing rather than cosmetic: a .patch fixture, a golden file, a
+    // snapshot test. That is what would change the answer.
+    let mut pool: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for l in have.lines().map(str::trim_end).filter(|l| !l.is_empty()) {
+        *pool.entry(l).or_default() += 1;
+    }
+    let mut missing = 0usize;
+    for l in want.lines().map(str::trim_end).filter(|l| !l.is_empty()) {
+        match pool.get_mut(l) {
+            Some(n) if *n > 0 => *n -= 1,
+            _ => missing += 1,
+        }
+    }
+    missing
+}
+
+async fn read_origin_and_worktree(dir: &str, p: &str) -> Option<(String, String)> {
+    let origin = tokio::process::Command::new("git")
+        .args(["-C", dir, "show", &format!("origin/main:{p}")])
+        .output()
+        .await
+        .ok()
+        .filter(|o| o.status.success())?;
+    let origin = String::from_utf8_lossy(&origin.stdout).into_owned();
+    let mine = tokio::fs::read_to_string(std::path::Path::new(dir).join(p)).await.ok()?;
+    Some((origin, mine))
+}
+
+async fn worktree_lines_absent_from_origin(dir: &str, p: &str) -> Option<usize> {
+    let (origin, mine) = read_origin_and_worktree(dir, p).await?;
+    Some(missing_line_instances(&origin, &mine))
+}
+
+/// The MIRROR of [`worktree_lines_absent_from_origin`], and the half the
+/// DIVERGED verdict never asked (gtm-media-assets, 2026-08-26).
+///
+/// DIVERGED tells the owner that both single-arm remedies destroy landed work,
+/// so they must hand-merge. That claim has TWO independent halves, and only one
+/// of them was ever measured:
+///
+///   restore risk  the worktree holds lines origin lacks, so
+///                 `git checkout origin/main -- <path>` destroys them.
+///                 Measured, by the function above.
+///   commit  risk  origin holds lines the worktree lacks, so committing the
+///                 worktree REVERTS them.  NEVER MEASURED — inferred from sha
+///                 ancestry, which is exactly what a graft-push replay breaks.
+///
+/// A path can fail the first test and pass the second, and on a fleet that
+/// graft-pushes that is the COMMON case rather than a corner: graft-push lands
+/// the work under a new sha and leaves the local commit object behind, so
+/// `origin/main..HEAD` prints commits for a path whose content origin already
+/// has. Both arms fire, and the verdict is "novel and stale at once".
+///
+/// THE LIVE SPECIMEN, server/mvs/shard-rs/src/grpc.rs on the mixpeek checkout:
+/// both ancestry arms print commits, and `git diff --numstat origin/main` reads
+/// 42 added, ZERO deleted. The worktree is a strict SUPERSET of origin — it
+/// already contains origin's newest commit on that path. Nothing to merge,
+/// nothing of origin's at risk, and the correct action was the ordinary commit
+/// that DIVERGED told them not to make.
+///
+/// The cost of being wrong in that direction is what makes this worth a second
+/// subprocess: a false DIVERGED tells the owner both remedies are destructive
+/// and sends them to a manual reconciliation, which is the operation most
+/// likely to lose the work the warning was protecting.
+///
+/// Shares [`missing_line_instances`] with its mirror, with the arguments the
+/// other way round. Order ignored, multiplicity counted, indentation
+/// significant.
+async fn origin_lines_absent_from_worktree(dir: &str, p: &str) -> Option<usize> {
+    let (origin, mine) = read_origin_and_worktree(dir, p).await?;
+    Some(missing_line_instances(&mine, &origin))
+}
+
 /// When it cannot classify a path (git error, no origin/main ref) it treats the
 /// path as ordinary work, never STALE, so a failure degrades to today's
 /// behaviour rather than inventing a revert warning.
+/// Wall-clock the revived discriminator may spend across ONE nudge run.
+///
+/// MEASURED ON A REPO 6x THIS ONE (mixpeek-frustrations, 2026-08-25): 594 refs,
+/// 26,190 commits, 43,837 tracked files. A single `--find-object` walk costs
+/// 691ms there against 103ms here, and — the part that actually breaks the
+/// design — the O(1) prefilter INVERTS. Of 59 dirty paths sampled, 58 had their
+/// blob already in the object database, so 98% paid the full walk instead of the
+/// 30ms lookup. Projected 40s for that sample, and their idle nudge that morning
+/// listed 772 paths.
+///
+/// The premise this was built on ("a genuine new edit produces bytes committed
+/// nowhere") is not wrong, it is just not load-bearing on a checkout whose dirty
+/// set is genuinely MOSTLY old revisions — which is what their classification
+/// showed: 7 of 10 revived. The prefilter stays because it costs 107ms against a
+/// 691ms walk and it does save everything on repos shaped like this one; it is
+/// simply not the thing that bounds the cost.
+///
+/// A NUDGE MUST NOT COST MINUTES OF GIT SUBPROCESSES. This runs on a shared
+/// checkout, so the cost is paid in the same resource the sessions need, which
+/// is the shape ethos.md warns about: a detector that makes the thing it watches
+/// worse the harder it looks.
+fn revived_budget_ms() -> u128 {
+    std::env::var("AMUX_NUDGE_REVIVED_BUDGET_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2_000)
+}
+
+/// Hard cap on paths put through the discriminator, independent of the clock.
+/// Belt and braces: a budget alone still starts one walk per path, and on a
+/// 772-path listing the first check of the clock happens after the first walk.
+fn revived_max_paths() -> usize {
+    std::env::var("AMUX_NUDGE_REVIVED_MAX_PATHS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40)
+}
+
 async fn freshness_from_repo(dir: &str, paths: &[String]) -> Freshness {
     let mut fresh = Freshness::default();
     if paths.is_empty() {
         return fresh;
     }
+    let mut pending_revived: Vec<String> = Vec::new();
 
     // Resolve the repo root and address paths from there. `git status` emits
     // repo-root-relative paths, but a lane's CC_DIR is often a SUBDIRECTORY; run
@@ -789,6 +1523,107 @@ async fn freshness_from_repo(dir: &str, paths: &[String]) -> Freshness {
             continue;
         }
 
+        // 2b. THE REFS ALREADY AGREE, so neither STALE nor DIVERGED can be true
+        //     (mixpeek-frustrations, 2026-08-24 — their discriminator, and it is
+        //     better than the one it replaces).
+        //
+        //     Step 2 asks whether the WORKTREE matches origin, via
+        //     `hash-object -- <path>`, which reads the file on disk. When the
+        //     file is DELETED locally that command fails, `identical` is false,
+        //     and the path falls through to the ancestry arms below. On a
+        //     graft-pushed checkout both arms print commits, so a path whose
+        //     content is byte-identical at HEAD, at origin/main and at both
+        //     graft twins was reported DIVERGED: "novel and stale at once,
+        //     NEITHER standard remedy is safe". Their live specimen:
+        //     research/extractors/HYPERSPECTRAL-RASTER-EXTRACTOR-GAP.md, four
+        //     blobs all 1e435f5c9fba, arms 5.5h apart by author date.
+        //
+        //     This compares the two REFS instead. It needs no worktree file, so
+        //     a deletion cannot defeat it, and identical bytes at both refs mean
+        //     there is nothing to merge and nothing at risk WHATEVER the two
+        //     ancestries say. It also subsumes the graft-twin case reported
+        //     first, without anyone having to reason about twins.
+        //
+        //     It does not weaken real STALE either, which is the check worth
+        //     doing before accepting this. STALE means committing the worktree
+        //     would silently REVERT origin — and if HEAD and origin hold the
+        //     same bytes, origin's commits on this path did not change its
+        //     content relative to HEAD, so there is nothing for a commit to
+        //     revert. The honest classification is then the worktree's own
+        //     story: an ordinary edit, or a local deletion, which is the
+        //     OWNER's call rather than something a prescribed restore should
+        //     decide for them.
+        let head_blob = tokio::process::Command::new("git")
+            .args(["-C", dir, "rev-parse", "--verify", "-q", &format!("HEAD:{p}")])
+            .output()
+            .await;
+        let origin_blob = tokio::process::Command::new("git")
+            .args(["-C", dir, "rev-parse", "--verify", "-q", &format!("origin/main:{p}")])
+            .output()
+            .await;
+        let refs_agree = match (head_blob, origin_blob) {
+            (Ok(h), Ok(o)) => match (blob(&h), blob(&o)) {
+                (Some(a), Some(b)) => a == b,
+                // Same rule as step 2: one side unreadable is not agreement.
+                // Absence is not evidence, and calling it agreement here would
+                // suppress a genuine STALE.
+                _ => false,
+            },
+            _ => false,
+        };
+        //     ONE POPULATION THIS DOES NOT SPLIT, and it is a real silent
+        //     revert (mixpeek-frustrations, reviewing the above). 2b is reached
+        //     only when the worktree ALREADY differs from origin, so the state
+        //     here is: worktree != origin, HEAD == origin. That holds two cases:
+        //
+        //       (a) a genuine new edit          -> `edited` is exactly right
+        //       (b) an OLD committed revision on disk -> committing REVERTS the
+        //           content both refs agree on
+        //
+        //     (b) is invisible to both ancestry arms PRECISELY BECAUSE the refs
+        //     agree, so it is the AMUX-3000 shape reached from a direction the
+        //     arms cannot see. It is not an argument against this gate: `edited`
+        //     prescribes no destructive remedy, so the failure is UNDER-warning
+        //     rather than a bad prescription, which is the right way to fail.
+        //
+        //     The discriminator, if anyone wants it, is one command and is
+        //     already in this file's toolkit — a commit printing here means the
+        //     on-disk copy is an old revision:
+        //
+        //       git log --all --oneline --find-object=$(git hash-object <path>) -- <path>
+        //
+        //     MEASURED, then shipped (AMUX-3695). The cost objection did not
+        //     survive the numbers: on this repo (141 refs, 4158 commits) a full
+        //     `--all --find-object` walk that finds NOTHING — the worst case,
+        //     and the common one — costs 0.103s with a pathspec.
+        //
+        //     And it is not even paid usually, because of the prefilter below.
+        //     A genuine new edit produces bytes that were never committed
+        //     anywhere, so its blob is not in the object database at all, and
+        //     `git cat-file -e` answers that with a single hash lookup in
+        //     0.030s and no walk. Only a path whose on-disk content IS a known
+        //     object pays the walk, and that is exactly the (b) candidate.
+        //
+        //     So the ordering is the optimisation: ask the cheap question that
+        //     can only be answered one way, and reach for the expensive one
+        //     solely when the cheap answer is inconclusive.
+        if refs_agree {
+            // DEFERRED, NOT DECIDED HERE (mixpeek-frustrations, probe 2). This
+            // loop runs in `git status` order, which is alphabetical, so
+            // checking inline meant the budget always sampled the alphabetically
+            // first paths. On their repo that is 11 canvas/apps and 6
+            // .github/workflows out of a population dominated by 342 SDK
+            // packages, and the two ends disagree wildly: head-of-status reads
+            // 35% revived, a random sample of the same set at the same moment
+            // reads 75%. Same repo, opposite sides of the share threshold,
+            // purely from path ordering.
+            //
+            // So the candidates are collected here and CHECKED in stratified
+            // order below.
+            pending_revived.push(p.clone());
+            continue;
+        }
+
         // 3. STALE: origin has commits on this path that local HEAD lacks, so
         //    the worktree copy is older and committing it would REVERT origin.
         //    Here stdout emptiness IS the right test: this is `git log` output,
@@ -800,7 +1635,112 @@ async fn freshness_from_repo(dir: &str, paths: &[String]) -> Freshness {
             .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
             .unwrap_or(false);
         if stale {
-            fresh.stale.push(p.clone());
+            // 3b. DIVERGED: local HEAD ALSO has commits origin lacks on this
+            //     path. Filing it STALE prescribes a restore that reverts the
+            //     local side's landed work — and the restore-safety check
+            //     passes while it happens, because locally-committed content
+            //     is reachable-from-a-commit too (the mixpeek .githooks
+            //     disarm, 2026-08-20). The missing cell, not a tighter test.
+            let local_ahead = tokio::process::Command::new("git")
+                .args(["-C", dir, "log", "--oneline", "origin/main..HEAD", "--", p])
+                .output()
+                .await
+                .map(|o| {
+                    o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty()
+                })
+                .unwrap_or(false);
+            // 3c. …but `git log origin/main..HEAD` counts commits BY SHA, and a
+            //     commit already upstream under a DIFFERENT sha (cherry-pick,
+            //     rebase, graft-push replay) sits in that range permanently —
+            //     the duplicate-sha case the Deploy section of CLAUDE.md
+            //     documents for `origin/main..main`. On a graft-push checkout
+            //     EVERY path reads local_ahead, so DIVERGED fired for paths that
+            //     were merely STALE and the safe restore was withheld
+            //     (reported by mixpeek-frustrations, 2026-08-24).
+            //
+            //     The discriminator has to be CONTENT, because sha identity is
+            //     exactly what a replay destroys. The remedy under discussion
+            //     (`git checkout origin/main -- <path>`) overwrites the
+            //     WORKTREE, so restore-safety is precisely "does the worktree
+            //     hold lines origin does not". Zero means there is nothing here
+            //     to lose whatever the sha arithmetic said.
+            //
+            //     ONE-SIDED ON PURPOSE. It can only ever DOWNGRADE diverged to
+            //     stale, and only on a positive finding (a readable pair, and an
+            //     empty difference). Any error, unreadable side or non-empty
+            //     difference leaves the DIVERGED verdict standing, so the
+            //     failure mode stays "warned too loudly" rather than "prescribed
+            //     a restore that ate committed work" — which is the incident
+            //     this whole cell exists for.
+            if local_ahead {
+                match worktree_lines_absent_from_origin(dir, p).await {
+                    Some(0) => {
+                        // Downgrade, and SAY SO. A verdict that silently changes
+                        // class is the one nobody can audit later: STALE-because-
+                        // downgraded and STALE-outright would otherwise be
+                        // byte-identical in the log, and this is the arm that
+                        // prescribes a destructive remedy.
+                        tracing::info!(
+                            target: "autofix",
+                            path = %p,
+                            dir = %dir,
+                            "commit-nudge: DIVERGED downgraded to STALE — local commits exist \
+                             on this path but contribute no lines origin lacks (replayed or \
+                             cherry-picked upstream), so the restore is safe"
+                        );
+                        fresh.stale.push(p.clone());
+                    }
+                    other => {
+                        // 3d. THE OTHER HALF OF THE CLAIM, which nothing here
+                        //     had ever measured (gtm-media-assets, 2026-08-26).
+                        //     Reaching this arm proves only that the worktree
+                        //     holds lines origin lacks — the RESTORE is unsafe.
+                        //     DIVERGED additionally asserts that COMMITTING is
+                        //     unsafe, and that half was inferred from sha
+                        //     ancestry, which a graft-push replay breaks for
+                        //     every path on the checkout.
+                        //
+                        //     If origin holds no line the worktree lacks, the
+                        //     worktree is a strict SUPERSET of origin: the
+                        //     commit reverts nothing, so the honest class is an
+                        //     ordinary edit and the honest advice is to commit.
+                        //     Not STALE — STALE prescribes the restore that
+                        //     would eat the local lines counted just above.
+                        //
+                        //     SAME ONE-SIDED SHAPE as 3c: it can only downgrade,
+                        //     only on a readable positive zero, and any error or
+                        //     unreadable side leaves DIVERGED standing.
+                        match origin_lines_absent_from_worktree(dir, p).await {
+                            Some(0) => {
+                                tracing::info!(
+                                    target: "autofix",
+                                    path = %p,
+                                    dir = %dir,
+                                    novel_lines = ?other,
+                                    "commit-nudge: DIVERGED downgraded to EDITED — the worktree \
+                                     is a strict superset of origin, so committing reverts \
+                                     nothing and there is nothing to hand-merge"
+                                );
+                                fresh.edited.push(p.clone());
+                            }
+                            lost => {
+                                tracing::info!(
+                                    target: "autofix",
+                                    path = %p,
+                                    dir = %dir,
+                                    novel_lines = ?other,
+                                    origin_lines_at_risk = ?lost,
+                                    "commit-nudge: DIVERGED stands — content differs in both \
+                                     directions"
+                                );
+                                fresh.diverged.push(p.clone());
+                            }
+                        }
+                    }
+                }
+            } else {
+                fresh.stale.push(p.clone());
+            }
             continue;
         }
 
@@ -808,6 +1748,8 @@ async fn freshness_from_repo(dir: &str, paths: &[String]) -> Freshness {
         //    plausible in-flight edit; commit-worthy like today.
         fresh.edited.push(p.clone());
     }
+    drain_revived(dir, &pending_revived, &mut fresh).await;
+
     fresh
 }
 
@@ -820,6 +1762,31 @@ pub async fn nudge_tick(state: &AppState, lanes: &[(String, String)], now: f64) 
     let mut sent = 0usize;
     for (session, dir) in lanes {
         if session.is_empty() || dir.is_empty() {
+            continue;
+        }
+        // AN ISOLATED WORKER IS A RAW AGENT — DO NOT STEER THE HARNESS INTO IT
+        // (Ethan, 2026-08-26: "we have an isolated worker but it still has amux
+        // shit", naming gtm-research, which had CC_ISOLATED=1 and was receiving
+        // this nudge).
+        //
+        // `session_is_isolated`'s own doc calls itself "the single source of
+        // truth every isolation decision consults" and lists seven consumers:
+        // spawn-env suppression, --mcp-config, board auto-capture, the peer
+        // fleet list, the fleet roster, the peer-send guard, and the
+        // status/rate-limit sweep. Every one of those is about what the worker
+        // is TOLD ABOUT or DISCOVERABLE BY. None of them cover what gets typed
+        // INTO its pane, and measured on 2026-08-26 ZERO of the 15
+        // runtime_jobs consulted it at all — while three of them steer.
+        //
+        // So the designation promised "the amux harness stripped" and delivered
+        // env suppression: the worker still got commit nudges. That is ethos
+        // rule 1's exemption question — when you exempt something from a loop,
+        // name what still reaches it — answered the wrong way for two months.
+        //
+        // The owner's own peek/send still work; that is the documented boundary
+        // and it is untouched here. What stops is amux typing at a lane whose
+        // whole point is to run untouched.
+        if crate::api::session_verbs::session_is_isolated(session) {
             continue;
         }
         // Filtered against ORIGIN, not local HEAD — see
@@ -872,7 +1839,31 @@ pub async fn nudge_tick(state: &AppState, lanes: &[(String, String)], now: f64) 
                 Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
             })
             .await;
-        crate::api::session_verbs::steer_enqueue(state, session, &msg, "commit-nudge", "").await;
+        // SELF-CHECK ON THE TEXT WE ARE ABOUT TO SEND (AMUX-3718, second fix).
+        //
+        // The bug this catches shipped for weeks with a green unit test, because
+        // the test pinned a layer the broken path did not flow through. A CI
+        // cell that asserts the right property in the wrong place is
+        // indistinguishable from one in the right place, so the durable
+        // instrument is a check on the ACTUAL delivered bytes: if an append-only
+        // shared file is in the set, the message MUST carry the archive check,
+        // whichever arm rendered it. Without it the nudge prescribes only the
+        // half that loses data.
+        //
+        // WARN, not a suppression: a nudge naming a real divergence is still
+        // worth more than silence, and swallowing it would trade a loud bug for
+        // a quiet one. This is the line a log sweep finds without anyone
+        // knowing to look for it.
+        if let Some(bad) = missing_archive_check(&dirty, &fresh, &msg) {
+            tracing::warn!(
+                session = %session,
+                paths = %bad,
+                "commit-nudge: append-only shared file prescribed a remedy WITHOUT the archive \
+                 check — the union-merge directive lost its safety half and this nudge can \
+                 resurrect archived entries (AMUX-3718 regression)"
+            );
+        }
+        let _ = crate::api::session_verbs::steer_enqueue(state, session, &msg, "commit-nudge", "").await;
         sent += 1;
     }
     sent
@@ -964,6 +1955,159 @@ fn idle_lanes_with_dirs(state: &AppState) -> Vec<(String, String)> {
     out
 }
 
+/// The revived pass, as its OWN function, so the budget structurally measures
+/// only the walks it governs (AMUX-3760).
+///
+/// It used to be inline in `freshness_from_repo`, with `started` set at the top
+/// of that function — before the entire per-path classification phase. The
+/// revived budget was therefore charged for git calls it does not bound, and
+/// under I/O contention (measured: a concurrent release build) the 2000ms was
+/// already spent when the loop began. It broke on the FIRST iteration, checked
+/// nothing, and every candidate fell through to `edited`.
+///
+/// EXTRACTED RATHER THAN JUST MOVING THE LINE, and that is the point. Moving it
+/// fixes today; a function boundary fixes tomorrow, because `started` cannot be
+/// hoisted above work it should not measure without being hoisted out of the
+/// function entirely. It is verified by SCOPE, which matters here specifically
+/// because it is NOT verified by a test: the cell that would catch a
+/// mispositioned clock has to pin the budget high to stop the two bounds
+/// racing, which is what made this test flaky in the first place. A test that
+/// discriminates the clock's position would have to be load-dependent, i.e. the
+/// exact property being removed. Said plainly rather than papered over.
+async fn drain_revived(dir: &str, pending_revived: &[String], fresh: &mut Freshness) {
+    if pending_revived.is_empty() {
+        return;
+    }
+
+    // ---- the revived pass, in STRATIFIED order --------------------------
+    //
+    // Round-robin across top-level directories rather than taking the first N
+    // (mixpeek-frustrations, probe 2). `git status` is alphabetical, so first-N
+    // samples one end of the repo: on their checkout the first 20 dirty paths
+    // are 11 canvas/apps and 6 .github/workflows, while the population is 342
+    // SDK packages full of regen churn. Head-of-status read 35% revived and a
+    // random sample of the SAME set at the SAME moment read 75% — opposite
+    // sides of the share threshold, decided by path ordering alone.
+    //
+    // Round-robin rather than a shuffle: deterministic, so two runs on an
+    // unchanged tree agree, and a nudge that reported a different verdict each
+    // firing would be worse than a biased one.
+    let mut by_dir: std::collections::BTreeMap<&str, Vec<&String>> = Default::default();
+    for p in pending_revived {
+        by_dir.entry(p.split('/').next().unwrap_or("")).or_default().push(p);
+    }
+    // PROPORTIONAL, NOT ONE-PER-GROUP (mixpeek-frustrations, third probe).
+    //
+    // The first version took one path per directory per round, which fixes the
+    // alphabetical bias and introduces a worse one when the groups are unequal:
+    // it weights GROUPS equally. On their checkout that is 524 files in 41
+    // groups, 17 of them singleton root-level .md files. So the singletons take
+    // 41% of the round-robin weight while being 3% of the population, and the
+    // three directories holding 63% of the files take 7% of it. The
+    // deterministic first four came out as three root .md files and one
+    // workflow, and ZERO of the 332 SDK files — which are the population the
+    // whole check is about there.
+    //
+    // Each item gets position (i + offset_g) / n_g within its own group, so a
+    // group of 132 lays 132 marks evenly across [0,1) and sorting by the key
+    // makes any PREFIX proportional, not merely the whole list.
+    //
+    // THE PREFIX IS THE ONLY PART THAT EVER RUNS, which is what makes the
+    // offset load-bearing rather than a flourish. The first draft used the
+    // midpoint, (2i+1)/2n, and that is proportional in aggregate and badly
+    // skewed in the prefix: every singleton group lands on exactly 0.5, so with
+    // one group of 20 and eight singletons the first TEN picks were all from
+    // the big group and not one singleton appeared. A budget that stops at four
+    // would have seen a single directory. A test caught it.
+    //
+    // `offset_g` is a stable hash of the group name folded into [0,1), which
+    // scatters the singletons across the interval instead of stacking them at
+    // the midpoint. Deterministic — FNV-1a written out rather than DefaultHasher,
+    // whose output Rust does not promise to keep stable across releases — so two
+    // runs over an unchanged tree still agree, which is the property that ruled
+    // out a shuffle in the first place.
+    let offset = |name: &str| -> f64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in name.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x1000_0000_01b3);
+        }
+        (h >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let mut keyed: Vec<(f64, &String)> = Vec::with_capacity(pending_revived.len());
+    for (name, v) in &by_dir {
+        let (n, off) = (v.len() as f64, offset(name));
+        for (i, p) in v.iter().enumerate() {
+            keyed.push(((i as f64 + off) / n, p));
+        }
+    }
+    // Tie-break on the path so equal keys cannot reorder between runs.
+    keyed.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+    let order: Vec<&String> = keyed.into_iter().map(|(_, p)| p).collect();
+    let (budget, cap) = (revived_budget_ms(), revived_max_paths());
+    // THE CLOCK STARTS HERE, NOT AT THE TOP OF THE FUNCTION (AMUX-3760).
+    //
+    // `started` had exactly one reader — the check below — and was set before
+    // the whole per-path classification phase, so the revived budget was being
+    // charged for git calls it does not govern. Under I/O contention (measured:
+    // a concurrent release build) the 2000ms was already spent by the time this
+    // loop began, it broke on the FIRST iteration, and every candidate fell
+    // through to `edited` with `revived_checked: 0`.
+    //
+    // That is a live behaviour bug, not just a flaky test: the busier the
+    // checkout, the more likely the discriminator silently does nothing — and
+    // busy is exactly when a shared checkout has revived paths worth catching.
+    // A detector that stops working under the load that produces its subject
+    // matter is the shape ethos.md warns about.
+    //
+    // THE TRADE, stated rather than hidden: the function's total wall-clock can
+    // now exceed what it was before by up to one budget, because the
+    // classification phase no longer eats into this one. Nothing is less
+    // bounded than it was — the earlier phase was never bounded by this clock,
+    // it was only stealing from it.
+    let started = std::time::Instant::now();
+    let mut checked: std::collections::BTreeSet<&str> = Default::default();
+    // WHICH BOUND STOPPED US. "0 of 8 examined" is honest about coverage and
+    // silent about cause, and the two causes want different actions: a cap hit
+    // means raise AMUX_NUDGE_REVIVED_MAX_PATHS, a clock hit means the machine
+    // is loaded or the walks are slow. Same distinction the counts themselves
+    // draw between "we did not look" and "we looked and found little".
+    let mut stopped_by = "";
+    for p in order {
+        // The clock is checked BETWEEN paths, so a run can overshoot by up to
+        // one walk. Measured at 2374ms against a 2000ms budget on a repo whose
+        // walks cost ~458ms, which is exactly one walk of overshoot. Stated
+        // rather than tuned away: bounding it properly needs a timeout on the
+        // git child, and the overshoot is one walk either way.
+        if checked.len() >= cap {
+            stopped_by = "cap";
+            break;
+        }
+        if started.elapsed().as_millis() >= budget {
+            stopped_by = "clock";
+            break;
+        }
+        checked.insert(p.as_str());
+        if revives_an_old_revision(dir, p).await {
+            fresh.revived.push(p.clone());
+        } else {
+            fresh.edited.push(p.clone());
+        }
+    }
+    for p in pending_revived {
+        if !checked.contains(p.as_str()) {
+            // UNCHECKED -> `edited`, the safe fallback, and COUNTED. The
+            // fallback output is byte-identical to a path that WAS checked and
+            // found novel, so without the count "we did not look" reads as "we
+            // looked and it is fine".
+            fresh.revived_unchecked += 1;
+            fresh.edited.push(p.clone());
+        }
+    }
+    fresh.revived_checked = checked.len();
+    fresh.revived_stopped_by = stopped_by;
+}
+
 #[cfg(test)]
 mod tests {
     /// A nudge may not exist without stating what it was measured against —
@@ -1028,6 +2172,29 @@ mod tests {
                  every committed-but-unpushed file and its remedy reverts them: {m}"
             );
         }
+    }
+
+    /// The DIVERGED cell must render as its own section that forbids BOTH
+    /// single-arm remedies (the mixpeek MG-1483 disarm, 2026-08-20): a path in
+    /// `diverged` must never be listed as commit-worthy or STALE, and the text
+    /// must name the merge as the only exit.
+    #[test]
+    fn diverged_paths_get_their_own_section_and_leave_both_recipes() {
+        let dirty = vec!["hooks/pre-push".to_string()];
+        let fresh =
+            Freshness { diverged: vec!["hooks/pre-push".to_string()], ..Default::default() };
+        let m = build("/repo", &dirty, &Ownership::default(), &fresh, "S")
+            .expect("diverged section must render");
+        assert!(m.contains("DIVERGED:"), "the cell must have its own section: {m}");
+        assert!(
+            m.contains("reachable-from-a-commit too"),
+            "must say WHY the restore-safety check cannot catch this: {m}"
+        );
+        assert!(m.contains("MERGE the two versions"), "the only safe exit must be named: {m}");
+        assert!(
+            !m.contains("STALE:"),
+            "a diverged path must not also render the STALE restore recipe: {m}"
+        );
     }
 
     /// The STALE section's RESTORE-SAFETY check must be the reachable-from-a-commit
@@ -1558,6 +2725,80 @@ mod tests {
         assert!(msg.contains("new.rs"), "the commit-worthy path must be listed: {msg}");
     }
 
+    /// MG-1484 (mixpeek-general's 3-vs-20): the STALE header said "of your
+    /// dirty file(s)" over a set with no ownership filter, so a regen bot's
+    /// churn on a shared checkout was addressed to whoever the nudge reached —
+    /// 17 of 20 paths the recipient had never opened, classified by hand to
+    /// find their 3. Only a positive attribution may say "your"; the rest is
+    /// named as not-yours, with the owner where one is known.
+    #[test]
+    fn stale_paths_without_your_edit_record_are_not_called_yours() {
+        let dirty = s(&["mine.rs", "sdk/model_a.py", "sdk/model_b.py"]);
+        let fresh = Freshness {
+            stale: s(&["mine.rs", "sdk/model_a.py", "sdk/model_b.py"]),
+            ..Default::default()
+        };
+        let own = Ownership {
+            unclaimed: s(&["sdk/model_a.py"]),
+            foreign: vec![("sdk/model_b.py".into(), "peer-lane".into())],
+            ..Default::default()
+        };
+        let msg = build("/repo", &dirty, &own, &fresh, "test-provenance").unwrap();
+        assert!(
+            msg.contains("1 with your edit record, 2 without"),
+            "the header must split the claim instead of calling all three yours: {msg}"
+        );
+        assert!(
+            !msg.contains("of your dirty file(s)"),
+            "a mixed set must not carry the unqualified pronoun: {msg}"
+        );
+        assert!(msg.contains("[no edit record of yours]"), "{msg}");
+        assert!(msg.contains("[peer-lane's]"), "the known owner must be named: {msg}");
+        // The all-bot firing (the 20-shape with zero of yours): the header
+        // must say NONE carries the recipient's record.
+        let own_none = Ownership {
+            unclaimed: s(&["mine.rs", "sdk/model_a.py", "sdk/model_b.py"]),
+            ..Default::default()
+        };
+        let msg = build("/repo", &dirty, &own_none, &fresh, "test-provenance").unwrap();
+        assert!(
+            msg.contains("NONE carries your edit record"),
+            "the zero-yours firing must say so: {msg}"
+        );
+    }
+
+    /// AMUX-3436: a shared path whose OWN edit is already settled in HEAD
+    /// demotes to foreign — the nudge then says NOT YOURS (with the peer
+    /// named) instead of prescribing per-hunk staging over a file where the
+    /// recipient owns zero dirty hunks. An unsettled shared path keeps
+    /// CONTESTED, the safe direction.
+    #[test]
+    fn a_settled_shared_path_renders_not_yours_instead_of_contested() {
+        let mut own = Ownership {
+            shared: vec![
+                ("app.js".into(), "desktop".into()),
+                ("still-mine.rs".into(), "desktop".into()),
+            ],
+            ..Default::default()
+        };
+        let settled: BTreeSet<String> = ["app.js".to_string()].into_iter().collect();
+        demote_settled_shared(&mut own, &settled);
+        assert_eq!(own.shared, vec![("still-mine.rs".to_string(), "desktop".to_string())]);
+        assert_eq!(own.foreign, vec![("app.js".to_string(), "desktop".to_string())]);
+
+        let dirty = s(&["app.js", "still-mine.rs"]);
+        let msg =
+            build("/repo", &dirty, &own, &Freshness::default(), "test-provenance").unwrap();
+        let contested =
+            msg.split("CONTESTED — ").nth(1).expect("CONTESTED section: {msg}").split("\n\n").next().unwrap();
+        assert!(contested.contains("still-mine.rs"), "{msg}");
+        assert!(!contested.contains("app.js"), "the settled path must not read contested: {msg}");
+        let notyours =
+            msg.split("NOT YOURS — ").nth(1).expect("NOT YOURS section").split("\n\n").next().unwrap();
+        assert!(notyours.contains("app.js"), "{msg}");
+        assert!(notyours.contains("desktop"), "the peer must be named: {msg}");
+    }
+
     /// SAME files are byte-identical to origin, dirty only because local HEAD is
     /// behind. They are pure noise and must be suppressed entirely, not counted.
     #[test]
@@ -1595,6 +2836,292 @@ mod tests {
         let msg = build("/repo", &dirty, &Ownership::default(), &fresh, "test-provenance").unwrap();
         assert!(msg.contains("2 uncommitted change(s)"), "both NEW and EDITED are commit-worthy: {msg}");
         assert!(msg.contains("added.rs") && msg.contains("changed.rs"), "{msg}");
+    }
+
+    /// AMUX-3367: an append-only multi-writer file (frustrations.md) can diverge
+    /// BOTH ways at once, so the nudge's "commit the path" / "restore" advice both
+    /// lose data on it. A dirty frustrations.md must therefore get an explicit
+    /// UNION-MERGE directive, and a dirty set without one must not.
+    #[test]
+    fn an_append_only_shared_file_gets_a_union_merge_directive() {
+        // Case-insensitive basename, any directory, ONLY frustrations.md.
+        assert!(is_append_only_shared("frustrations.md"));
+        assert!(is_append_only_shared("FRUSTRATIONS.md")); // macOS resolves to the same file
+        assert!(is_append_only_shared("deep/path/frustrations.md"));
+        assert!(!is_append_only_shared("frustrations.md.bak"));
+        assert!(!is_append_only_shared("src/app.js"));
+
+        // THROUGH `build`, NOT `commit_worthy_body` (AMUX-3718). This cell used
+        // to call the inner function directly and was green for the entire time
+        // the note was unreachable from the DIVERGED arm — a real property
+        // asserted at a layer the broken path does not flow through.
+        let dirty = s(&["frustrations.md", "app.js"]);
+        let msg =
+            build("/repo", &dirty, &Ownership::default(), &Freshness::default(), "S").unwrap();
+        assert!(msg.contains("APPEND-ONLY SHARED FILE"), "{msg}");
+        assert!(msg.contains("UNION-MERGE"), "{msg}");
+        assert!(msg.contains("frustrations.md"), "{msg}");
+        // CD-78's correction is protection-losing if it regresses: without the
+        // archive check the directive re-injects deliberately archived entries
+        // (measured 15/15 on the mixpeek checkout, three restore/remove cycles
+        // on origin), so its presence is pinned like the directive itself.
+        assert!(msg.contains("ARCHIVE CHECK"), "{msg}");
+        assert!(msg.contains("absent from BOTH files"), "{msg}");
+
+        // No append-only file in the set -> no such block.
+        let plain = s(&["app.js", "main.rs"]);
+        let msg2 =
+            build("/repo", &plain, &Ownership::default(), &Freshness::default(), "S").unwrap();
+        assert!(!msg2.contains("APPEND-ONLY SHARED FILE"), "{msg2}");
+    }
+
+    /// THE ARCHIVE CHECK MUST REACH THE **DIVERGED** ARM — the one state in which
+    /// the nudge actually prescribes a union-merge (AMUX-3718, near-miss by
+    /// mixpeek-frustrations 2026-08-25).
+    ///
+    /// The test above is green and pins the wrong layer (ethos rule 7 / AF-161).
+    /// It calls `commit_worthy_body` directly, and `build` hands that function
+    /// `commit_worthy`, which is *defined* as the dirty paths that are NOT
+    /// stale/diverged/revived. So a DIVERGED frustrations.md is structurally
+    /// excluded from the only code that emits the archive check, while the
+    /// DIVERGED section itself says "union-merge" with the safety half behind a
+    /// citation. The reader who is being told to union-merge is precisely the
+    /// reader who cannot be shown how to do it safely.
+    ///
+    /// That is not a hypothetical: a lane followed the bare directive verbatim
+    /// tonight and would have resurrected an entry closed on a 692/692 prod
+    /// measurement.
+    #[test]
+    fn a_diverged_append_only_file_still_gets_the_archive_check() {
+        let dirty = s(&["FRUSTRATIONS.md"]);
+        let fresh = Freshness { diverged: s(&["FRUSTRATIONS.md"]), ..Default::default() };
+        let m = build("/repo", &dirty, &Ownership::default(), &fresh, "S")
+            .expect("a diverged append-only path must still produce a nudge");
+
+        // PREMISE: we are in the arm that prescribes the merge. Without this the
+        // assertions below could pass from some other section and prove nothing.
+        assert!(m.contains("DIVERGED:"), "premise: the diverged arm must be the one firing: {m}");
+        assert!(m.contains("MERGE the two versions"), "premise: a merge must be prescribed: {m}");
+
+        assert!(
+            m.contains("ARCHIVE CHECK"),
+            "the arm that prescribes a union-merge must carry CD-78's archive check, or it \
+             prescribes the destructive half alone: {m}"
+        );
+        assert!(m.contains("absent from BOTH files"), "{m}");
+    }
+
+    /// THE DELIVERY-TIME WARN MUST DISCRIMINATE (AMUX-3718, second fix).
+    ///
+    /// A check that cannot fire is theatre and a check that always fires is
+    /// noise, so both directions are pinned — and the positive case is built
+    /// from the ACTUAL pre-fix text, not from a convenient string. The specimen
+    /// below is the DIVERGED section as it shipped, which is the message a lane
+    /// really received on 2026-08-25.
+    #[test]
+    fn the_archive_check_warn_fires_on_the_real_specimen_and_stays_quiet_on_healthy_text() {
+        let dirty = s(&["FRUSTRATIONS.md"]);
+        let fresh = Freshness::default();
+
+        // The pre-fix bytes: prescribes the merge, carries no archive check.
+        let broken = "DIVERGED: ... MERGE the two versions (for append-only files, union-merge \
+                      per .claude/rules/frustrations.md), or hand the path to its owner.";
+        assert_eq!(
+            missing_archive_check(&dirty, &fresh, broken).as_deref(),
+            Some("FRUSTRATIONS.md"),
+            "the WARN must fire on the exact text that shipped, or it certifies the bug"
+        );
+
+        // The shipped text, end to end, in EVERY arm — including DIVERGED, the
+        // arm the bug lived in. Pinning only the default arm would leave the
+        // runtime instrument green against the exact regression it exists to
+        // catch, which is the wrong-layer failure one level out.
+        for f in [
+            Freshness::default(),
+            Freshness { diverged: s(&["FRUSTRATIONS.md"]), ..Default::default() },
+            Freshness { stale: s(&["FRUSTRATIONS.md"]), ..Default::default() },
+            Freshness { revived: s(&["FRUSTRATIONS.md"]), ..Default::default() },
+        ] {
+            let live = build("/repo", &dirty, &Ownership::default(), &f, "S").unwrap();
+            assert!(
+                missing_archive_check(&dirty, &f, &live).is_none(),
+                "the fixed nudge must not trip its own WARN: {live}"
+            );
+        }
+
+        // No append-only file in the set -> silent, however the message reads.
+        let plain = s(&["src/app.js"]);
+        assert!(missing_archive_check(&plain, &fresh, broken).is_none());
+
+        // SAME is dropped by `build` before rendering, so a byte-identical
+        // frustrations.md legitimately produces no note and must not warn.
+        let same_fresh = Freshness { same: s(&["FRUSTRATIONS.md"]), ..Default::default() };
+        assert!(
+            missing_archive_check(&dirty, &same_fresh, broken).is_none(),
+            "the checker must share `build`'s same-filter, not re-derive it"
+        );
+    }
+
+    /// A CAVEAT ABOUT THE WHOLE DIRTY SET MUST REACH EVERY ARM (AMUX-3718,
+    /// second instance, flagged by mixpeek-frustrations).
+    ///
+    /// The archive check and the partial-attribution disclosure are both
+    /// properties of the SET, not of whichever remedy the set happens to be
+    /// under. Both were emitted from `commit_worthy_body`, which only ever sees
+    /// `commit_worthy` — the paths that are NOT stale/diverged/revived — so both
+    /// vanished from exactly the arms that most needed them. Measured before
+    /// fixing, with a control: diverged+partial rendered false, ordinary
+    /// commit-worthy+partial rendered true.
+    ///
+    /// This cell exists so the SHAPE cannot come back quietly. It is a matrix,
+    /// not a case: a third caveat added to the wrong function fails here the
+    /// moment someone adds its arm to the list.
+    #[test]
+    fn set_wide_caveats_render_in_every_arm_not_only_the_commit_worthy_one() {
+        let dirty = s(&["FRUSTRATIONS.md"]);
+        let own = Ownership {
+            partial: Some("no transcript for cotenant amux-helper".into()),
+            ..Default::default()
+        };
+        // Every arm `build` can render, including the default (commit-worthy)
+        // one, which is the control: if IT ever goes false the test is broken
+        // rather than the code.
+        let arms: [(&str, Freshness); 4] = [
+            ("commit-worthy", Freshness::default()),
+            ("diverged", Freshness { diverged: s(&["FRUSTRATIONS.md"]), ..Default::default() }),
+            ("stale", Freshness { stale: s(&["FRUSTRATIONS.md"]), ..Default::default() }),
+            ("revived", Freshness { revived: s(&["FRUSTRATIONS.md"]), ..Default::default() }),
+        ];
+        for (arm, fresh) in arms {
+            let m = build("/repo", &dirty, &own, &fresh, "S")
+                .unwrap_or_else(|| panic!("{arm}: must render"));
+            assert!(
+                m.contains("ATTRIBUTION IS PARTIAL"),
+                "{arm}: a blind guard must be disclosed whichever remedy is prescribed — the \
+                 DIVERGED arm says 'hand the path to its owner' and this is the line saying the \
+                 ownership axis cannot be trusted: {m}"
+            );
+            assert!(m.contains("amux-helper"), "{arm}: name who is invisible: {m}");
+            assert!(
+                m.contains("ARCHIVE CHECK"),
+                "{arm}: the archive check is a property of the file, not of the arm: {m}"
+            );
+        }
+    }
+
+    /// THE DIFFERENTIAL FORM, WHICH NEEDS NO REGISTRY (AMUX-3718;
+    /// mixpeek-frustrations, reviewing the matrix above).
+    ///
+    /// The matrix is a registry of strings I already know about. A third
+    /// set-wide caveat pushed inside `commit_worthy_body` next month is
+    /// invisible to it until someone remembers to add a row — and "someone must
+    /// remember" is precisely the step that failed twice, once for the archive
+    /// check and once for partial attribution.
+    ///
+    /// This compares two RENDERINGS of the same dirty set instead: every
+    /// `\n\n`-delimited block the commit-worthy arm emits must also appear in
+    /// the DIVERGED arm, minus the blocks that are legitimately arm-specific.
+    /// A caveat nobody registered is caught the day it is added, by this test,
+    /// without anyone touching it.
+    ///
+    /// It fails closed in the useful direction: adding a genuinely
+    /// arm-specific note to `commit_worthy_body` also trips it, which is a
+    /// prompt to name it in ARM_SPECIFIC and say why, rather than a false
+    /// alarm. That list is short and every entry is a claim someone had to
+    /// make deliberately.
+    #[test]
+    fn every_caveat_the_commit_worthy_arm_emits_also_reaches_the_diverged_arm() {
+        // Blocks that belong to the commit-worthy arm BY DESIGN: they describe
+        // staging work you are being told to commit, which the DIVERGED arm
+        // explicitly forbids. Anything not listed here is presumed set-wide.
+        const ARM_SPECIFIC: &[&str] = &[
+            "uncommitted change(s)",  // the commit-worthy headline itself
+            "OWNERSHIP IS UNKNOWN",   // "stage only what you recognise" advice
+            "NOT YOURS",              // do-not-commit warning about staging
+            "also edited by",         // shared-path staging caveat
+            // The ancestry direction protocol. Flagged by this test on its first
+            // run, and the judgement is that it is genuinely arm-specific: it
+            // exists to decide commit-vs-restore for paths whose DIRECTION is
+            // unknown. In the DIVERGED arm the direction is already known to be
+            // "both", and that arm forbids both remedies outright, so running
+            // the test there only leads the reader back to the verdict they were
+            // already given. The safety point it carries is not lost — the
+            // DIVERGED section states the same danger in its own terms,
+            // including that the find-object restore-safety check PASSES while
+            // reverting your landed commits.
+            "IS NOT A DIRECTION",
+        ];
+
+        let dirty = s(&["FRUSTRATIONS.md", "src/app.js"]);
+        let own = Ownership {
+            partial: Some("no transcript for cotenant amux-helper".into()),
+            ..Default::default()
+        };
+
+        let worthy = build("/repo", &dirty, &own, &Freshness::default(), "S").unwrap();
+        let diverged = build(
+            "/repo",
+            &dirty,
+            &own,
+            &Freshness { diverged: s(&["FRUSTRATIONS.md", "src/app.js"]), ..Default::default() },
+            "S",
+        )
+        .unwrap();
+
+        // PREMISE: the two renderings must actually differ, or a bug that made
+        // build() ignore `fresh` entirely would satisfy this test vacuously.
+        assert_ne!(worthy, diverged, "premise: the two arms must render differently");
+
+        let mut missing: Vec<&str> = Vec::new();
+        for block in worthy.split("\n\n") {
+            let block = block.trim();
+            // The provenance stamp carries a wall-clock time, so the two
+            // renderings differ in it by construction; compare on the marker.
+            if block.is_empty() || block.starts_with("(S; tree observed") {
+                continue;
+            }
+            if ARM_SPECIFIC.iter().any(|a| block.contains(a)) {
+                continue;
+            }
+            // Compare on the block's own leading marker rather than the whole
+            // text: the arms legitimately word counts and lists differently.
+            let marker: String = block.chars().take(40).collect();
+            if !diverged.contains(marker.trim()) {
+                missing.push(block);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "these caveats reach the commit-worthy arm and NOT the DIVERGED arm. Either they \
+             are set-wide and belong at the top of `build` (see AMUX-3718, twice), or they are \
+             genuinely arm-specific and belong in ARM_SPECIFIC with a reason:\n\n{}\n\n\
+             --- DIVERGED rendering was ---\n{diverged}",
+            missing.join("\n---\n")
+        );
+    }
+
+    /// THE PROCEDURE MUST BE INLINE, NEVER A REPO-RELATIVE CITATION (AMUX-3718).
+    ///
+    /// The nudge fires in EVERY lane's own checkout, and `.claude/rules/` exists
+    /// in amux and in almost none of them (measured: absent in ~/Dev/mixpeek).
+    /// A path citation therefore resolves for the author and dead-ends for the
+    /// reader — who then either follows the dangerous half from memory or files
+    /// a bug saying the file does not exist. Both happened on 2026-08-25.
+    #[test]
+    fn the_nudge_never_cites_a_repo_relative_path_for_its_own_procedure() {
+        let dirty = s(&["FRUSTRATIONS.md"]);
+        for fresh in [
+            Freshness { diverged: s(&["FRUSTRATIONS.md"]), ..Default::default() },
+            Freshness { stale: s(&["FRUSTRATIONS.md"]), ..Default::default() },
+            Freshness { edited: s(&["FRUSTRATIONS.md"]), ..Default::default() },
+        ] {
+            let m = build("/repo", &dirty, &Ownership::default(), &fresh, "S").unwrap();
+            assert!(
+                !m.contains(".claude/rules/"),
+                "the procedure must travel with the message, not as a path only the amux \
+                 checkout can open: {m}"
+            );
+        }
     }
 
     /// THE EXIT-CODE DISCRIMINATOR, against a real repo (MG-1467). The classifier
@@ -1673,6 +3200,823 @@ mod tests {
         assert_eq!(fresh.same, s(&["same.txt"]), "identical-to-origin must be SAME");
         assert_eq!(fresh.stale, s(&["stale.txt"]), "origin-ahead-on-path must be STALE");
         assert_eq!(fresh.edited, s(&["edited.txt"]), "differs, origin unmoved, must be EDITED");
+
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// AMUX-3695: an OLD COMMITTED REVISION on disk is not an edit, and both
+    /// ancestry arms are blind to it.
+    ///
+    /// Reported by mixpeek-frustrations reviewing the refs-agree gate. Step 2b
+    /// is reached only when the worktree differs from origin while HEAD and
+    /// origin AGREE, and that state holds two populations: a genuine new edit,
+    /// and an old revision sitting on disk whose commit would silently revert
+    /// what both refs hold. The arms cannot see the second PRECISELY because
+    /// the refs agree, so there is no "origin is ahead" to find.
+    ///
+    /// BOTH CELLS ARE LOAD-BEARING. Without the edited one, classifying every
+    /// refs-agree path as `revived` would pass the first and prescribe a
+    /// restore against genuinely new work — which destroys it, and is the one
+    /// direction this gate must never fail in.
+    #[tokio::test]
+    async fn an_old_revision_on_disk_is_revived_not_edited() {
+        let tmp = std::env::temp_dir().join(format!("amux-revived-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let (bare, work) = (tmp.join("origin.git"), tmp.join("work"));
+        std::fs::create_dir_all(&work).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        std::process::Command::new("git")
+            .args(["init", "--bare", "-b", "main"])
+            .arg(&bare)
+            .output()
+            .unwrap();
+        git(&work, &["init", "-b", "main"]);
+        git(&work, &["config", "user.email", "t@t"]);
+        git(&work, &["config", "user.name", "t"]);
+        git(&work, &["remote", "add", "origin", bare.to_str().unwrap()]);
+
+        // v1 of the path is COMMITTED, then superseded by v2. Both refs end up
+        // agreeing on v2, which is the state that blinds the ancestry arms.
+        std::fs::write(work.join("revived.txt"), "v1-old\n").unwrap();
+        std::fs::write(work.join("edited.txt"), "orig\n").unwrap();
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-m", "v1"]);
+        std::fs::write(work.join("revived.txt"), "v2-current\n").unwrap();
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-m", "v2"]);
+        git(&work, &["push", "-q", "origin", "main"]);
+        git(&work, &["fetch", "-q", "origin"]);
+
+        // THE SPECIMEN: put the OLD committed content back on disk. Byte for
+        // byte v1, which is a real commit in this repo's history.
+        std::fs::write(work.join("revived.txt"), "v1-old\n").unwrap();
+        // The control: content that was never committed anywhere.
+        std::fs::write(work.join("edited.txt"), "genuinely new\n").unwrap();
+
+        let dir = work.to_str().unwrap();
+        let fresh = freshness_from_repo(dir, &s(&["revived.txt", "edited.txt"])).await;
+
+        assert_eq!(
+            fresh.revived,
+            s(&["revived.txt"]),
+            "an old COMMITTED revision on disk reverts what both refs hold — not an edit: {fresh:?}"
+        );
+        assert_eq!(
+            fresh.edited,
+            s(&["edited.txt"]),
+            "content committed nowhere is novel work, and a restore would DESTROY it: {fresh:?}"
+        );
+
+        // AND IT MUST REACH THE READER. A bucket that classifies correctly and
+        // renders nothing is worse than no bucket: the path silently leaves
+        // commit_worthy and the nudge stops naming it at all, so a silent
+        // revert becomes an invisible one.
+        let n = build(dir, &s(&["revived.txt", "edited.txt"]), &Default::default(), &fresh, "")
+            .expect("a dirty tree must produce a nudge");
+        // The PROPERTY, not the exact heading: the heading now varies with the
+        // share (a majority-revived checkout gets a different lede), and pinning
+        // the wording would make improving that message look like a regression
+        // — which is exactly how this assertion first went red.
+        assert!(
+            n.contains("OLD REVISION") && n.contains("ALREADY COMMITTED"),
+            "the section must render: {n}"
+        );
+        assert!(n.contains("revived.txt"), "and must name the path: {n}");
+        assert!(
+            n.contains("SILENTLY REVERTS"),
+            "and must say what committing it does, not merely that it is odd: {n}"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// AMUX-3695 follow-up: the discriminator is BOUNDED, and the bound is
+    /// never silent.
+    ///
+    /// mixpeek-frustrations measured the shipped version on a repo 6x this one
+    /// (594 refs, 26,190 commits, 43,837 files) and the cost model did not
+    /// survive: a walk costs 691ms there against 103ms here, and the O(1)
+    /// prefilter INVERTS — 58 of 59 sampled dirty paths already had their blob
+    /// in the object database, so 98% paid the full walk. Their idle nudge that
+    /// morning listed 772 paths. Unbounded, that is minutes of git subprocesses
+    /// on a shared checkout, i.e. a detector paying its cost in the same
+    /// resource the sessions need.
+    ///
+    /// THE SECOND CELL IS THE ONE THAT MATTERS. Falling back to `edited` is the
+    /// safe direction, and it is also byte-identical to the output for a path
+    /// that WAS checked and found novel. If the nudge does not say which
+    /// happened, a bound becomes a false statement about coverage.
+    #[tokio::test]
+    async fn the_revived_check_is_bounded_and_says_what_it_skipped() {
+        let tmp = std::env::temp_dir().join(format!("amux-revcap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let (bare, work) = (tmp.join("origin.git"), tmp.join("work"));
+        std::fs::create_dir_all(&work).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        std::process::Command::new("git")
+            .args(["init", "--bare", "-b", "main"])
+            .arg(&bare)
+            .output()
+            .unwrap();
+        git(&work, &["init", "-b", "main"]);
+        git(&work, &["config", "user.email", "t@t"]);
+        git(&work, &["config", "user.name", "t"]);
+        git(&work, &["remote", "add", "origin", bare.to_str().unwrap()]);
+
+        // Six paths, each with a real v1 superseded by v2, so every one of them
+        // WOULD classify as revived if the budget allowed.
+        let names: Vec<String> = (0..6).map(|i| format!("r{i}.txt")).collect();
+        for n in &names {
+            std::fs::write(work.join(n), "v1-old\n").unwrap();
+        }
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-m", "v1"]);
+        for n in &names {
+            std::fs::write(work.join(n), "v2-current\n").unwrap();
+        }
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-m", "v2"]);
+        git(&work, &["push", "-q", "origin", "main"]);
+        git(&work, &["fetch", "-q", "origin"]);
+        for n in &names {
+            std::fs::write(work.join(n), "v1-old\n").unwrap();
+        }
+
+        // Cap at 2. Set on this process only; the default (40) is what ships.
+        let _serial = REVIVED_ENV.lock().await;
+        std::env::set_var("AMUX_NUDGE_REVIVED_MAX_PATHS", "2");
+        let dir = work.to_str().unwrap();
+        let fresh = freshness_from_repo(dir, &names).await;
+        std::env::remove_var("AMUX_NUDGE_REVIVED_MAX_PATHS");
+
+        // CELL 1 — the cap holds, and the overflow lands in the SAFE bucket.
+        assert_eq!(fresh.revived.len(), 2, "the cap must bound the walks: {fresh:?}");
+        assert_eq!(fresh.revived_unchecked, 4, "and the rest must be COUNTED: {fresh:?}");
+        assert_eq!(
+            fresh.edited.len(),
+            4,
+            "unchecked paths fall back to edited, never to revived — a false revived \
+             prescribes a restore against work that may be novel: {fresh:?}"
+        );
+
+        // CELL 2 — and the nudge SAYS so. Without this the bound is a lie by
+        // omission: 4 paths reported as ordinary edits with nothing marking
+        // them as unexamined.
+        let n = build(dir, &names, &Default::default(), &fresh, "").expect("nudge");
+        assert!(n.contains("NOT CHECKED FOR OLD-REVISION"), "the cap must be visible: {n}");
+        assert!(n.contains("2 of 6 candidate path(s) were examined"), "state coverage: {n}");
+        // NO PERCENTAGE AT SMALL n. "33%" off 6 candidates adds nothing the two
+        // counts do not already say, and printing a rate where a count is the
+        // honest quantity is the same error the SHARE has at n=4
+        // (mixpeek-frustrations: at 4 observations the estimable values are
+        // 0/25/50/75/100 and the true 63% is not in the range at all).
+        assert!(
+            !n.contains("% coverage"),
+            "a coverage rate off 6 candidates is a count wearing a percent sign: {n}"
+        );
+
+        // ...AND IT DOES APPEAR once there are enough to be worth feeling as a
+        // rate. Driven through `build` directly with a synthetic Freshness,
+        // because 4-of-59 is the shape that matters and standing up 59 real
+        // paths would test git rather than this. Both cells, because a floor
+        // that suppressed the percentage ALWAYS would pass the one above.
+        let big = Freshness {
+            revived: vec!["a.txt".into()],
+            edited: (0..58).map(|i| format!("e{i}.txt")).collect(),
+            revived_checked: 4,
+            revived_unchecked: 55,
+            ..Default::default()
+        };
+        let mut big_paths = big.revived.clone();
+        big_paths.extend(big.edited.clone());
+        let bn = build(dir, &big_paths, &Default::default(), &big, "").expect("nudge");
+        assert!(bn.contains("4 of 59 candidate path(s) were examined"), "{bn}");
+        assert!(bn.contains("(6% coverage)"), "59 candidates is enough to feel as a rate: {bn}");
+
+        // THEIR REAL SHAPE, 4 of 524, which integer division takes to exactly
+        // zero. "0% coverage" next to "4 ... were examined" is two fields
+        // contradicting each other, and it reads as "nothing was checked".
+        let huge = Freshness {
+            revived: vec!["a.txt".into()],
+            edited: (0..523).map(|i| format!("e{i}.txt")).collect(),
+            revived_checked: 4,
+            revived_unchecked: 520,
+            ..Default::default()
+        };
+        let mut huge_paths = huge.revived.clone();
+        huge_paths.extend(huge.edited.clone());
+        let hn = build(dir, &huge_paths, &Default::default(), &huge, "").expect("nudge");
+        assert!(hn.contains("4 of 524 candidate path(s) were examined"), "{hn}");
+        assert!(hn.contains("(<1% coverage)"), "0.8% must not render as 0%: {hn}");
+        assert!(!hn.contains("(0% coverage)"), "{hn}");
+        assert!(
+            n.contains("NOT a finding that they are clean"),
+            "and must refuse the reading that silence means checked: {n}"
+        );
+        assert!(
+            n.contains("is NOT a sample"),
+            "and must refuse the OTHER misreading — that the checked proportion generalises \
+             to the rest (mixpeek-frustrations measured 4 of 59 under the default budget): {n}"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Serialises the tests that set AMUX_NUDGE_REVIVED_MAX_PATHS.
+    ///
+    /// The var is PROCESS-GLOBAL and cargo runs tests in parallel, so without
+    /// this one test's `remove_var` lands in the middle of the other's run and
+    /// the cap silently becomes the default. That is a flake that reproduces
+    /// perhaps one run in ten and reads as a logic bug in the code under test.
+    /// `tokio::sync::Mutex`, not `std`: the guard is held across `.await` in
+    /// both tests, and a std guard there is a clippy deny and a real deadlock
+    /// hazard on a multi-threaded runtime.
+    static REVIVED_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// AMUX-3695 probe 2: the budgeted sample is spread across directories, not
+    /// taken alphabetically.
+    ///
+    /// mixpeek-frustrations measured the same dirty set two ways at the same
+    /// moment: head-of-`git status` read 35% revived, a random sample read 75%.
+    /// The cause is directory mix, not chance — status is alphabetical, so the
+    /// first 20 paths there are 11 canvas/apps and 6 .github/workflows while the
+    /// population is 342 SDK packages full of regen churn. First-N samples the
+    /// wrong end of the repo.
+    ///
+    /// That matters beyond the sample, because the share threshold decides
+    /// between "one checkout-level condition" and "N alarms", and 35% and 75%
+    /// fall on opposite sides of it. The same repo, the same second, decided by
+    /// path ordering.
+    ///
+    /// The fixture reproduces the shape: an alphabetically-first directory that
+    /// would monopolise a first-N budget, and a later one that would never be
+    /// reached.
+    #[tokio::test]
+    async fn the_budgeted_sample_is_spread_across_directories_not_taken_alphabetically() {
+        let tmp = std::env::temp_dir().join(format!("amux-strat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let (bare, work) = (tmp.join("origin.git"), tmp.join("work"));
+        std::fs::create_dir_all(work.join("aaa")).unwrap();
+        std::fs::create_dir_all(work.join("zzz")).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        std::process::Command::new("git")
+            .args(["init", "--bare", "-b", "main"])
+            .arg(&bare)
+            .output()
+            .unwrap();
+        git(&work, &["init", "-b", "main"]);
+        git(&work, &["config", "user.email", "t@t"]);
+        git(&work, &["config", "user.name", "t"]);
+        git(&work, &["remote", "add", "origin", bare.to_str().unwrap()]);
+
+        // Four in `aaa` (alphabetically first, would eat a first-N budget of 2)
+        // and four in `zzz` (would never be reached).
+        let names: Vec<String> = (0..4)
+            .map(|i| format!("aaa/a{i}.txt"))
+            .chain((0..4).map(|i| format!("zzz/z{i}.txt")))
+            .collect();
+        for n in &names {
+            std::fs::write(work.join(n), "v1-old\n").unwrap();
+        }
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-m", "v1"]);
+        for n in &names {
+            std::fs::write(work.join(n), "v2-current\n").unwrap();
+        }
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-m", "v2"]);
+        git(&work, &["push", "-q", "origin", "main"]);
+        git(&work, &["fetch", "-q", "origin"]);
+        for n in &names {
+            std::fs::write(work.join(n), "v1-old\n").unwrap();
+        }
+
+        let _serial = REVIVED_ENV.lock().await;
+        std::env::set_var("AMUX_NUDGE_REVIVED_MAX_PATHS", "2");
+        // NEUTRALISE THE CLOCK, because this test is about the CAP and the
+        // ORDERING (AMUX-3760). With the default 2000ms budget the two bounds
+        // race, and on a loaded machine the clock wins: it failed twice while a
+        // release build was compiling, with `revived_checked: 0` and every path
+        // in `edited`, then passed 3/3 on a quiet one. A test that is green
+        // three runs in four is worse than one that is red, because the green
+        // runs are what get pushed.
+        //
+        // This is not papering over the flake — the underlying cause was that
+        // the budget clock started before the classification phase, which is
+        // fixed above. Pinning the budget here is what makes the assertion
+        // BELOW mean "the cap bound it", which is the property under test. The
+        // clock's own behaviour is covered by its own cell.
+        std::env::set_var("AMUX_NUDGE_REVIVED_BUDGET_MS", "600000");
+        let dir = work.to_str().unwrap();
+        let fresh = freshness_from_repo(dir, &names).await;
+        // The determinism cell below runs under the SAME cap. Removing the var
+        // before it was the first draft's bug: the second run then used the
+        // default 40, checked all eight, and "disagreed" with the first for a
+        // reason that had nothing to do with ordering.
+        let again = freshness_from_repo(dir, &names).await;
+        std::env::remove_var("AMUX_NUDGE_REVIVED_MAX_PATHS");
+        std::env::remove_var("AMUX_NUDGE_REVIVED_BUDGET_MS");
+
+        assert_eq!(fresh.revived_checked, 2, "the cap still binds: {fresh:?}");
+        assert_eq!(
+            fresh.revived_stopped_by, "cap",
+            "and it must be the CAP that bound it, not the clock — otherwise this test is \
+             measuring machine load, which is exactly how it went flaky: {fresh:?}"
+        );
+        // THE CLAIM: both directories are represented. Under the first-N version
+        // this was aaa/a0 and aaa/a1 and `zzz` was invisible.
+        let dirs: std::collections::BTreeSet<&str> =
+            fresh.revived.iter().filter_map(|p| p.split('/').next()).collect();
+        assert_eq!(
+            dirs.len(),
+            2,
+            "a 2-path budget over two directories must take one from each, not two from the \
+             alphabetically first: {:?}",
+            fresh.revived
+        );
+        assert!(dirs.contains("zzz"), "the LATER directory must be reachable: {:?}", fresh.revived);
+
+        // DETERMINISM. A shuffle would also spread the sample and would make the
+        // nudge report a different verdict on each firing over an unchanged
+        // tree, which is worse than a biased one. Round-robin is stable.
+        assert_eq!(
+            fresh.revived, again.revived,
+            "two runs over an unchanged tree must agree, or the nudge contradicts itself"
+        );
+
+        // THE CLOCK CELL (AMUX-3760). The failure that made this test flaky was
+        // a clock cut at ZERO checked, and it was indistinguishable from a cap
+        // of zero or from a run that found nothing to check. Reproduce it on
+        // purpose, with a budget that cannot be met, and assert it LABELS
+        // itself.
+        //
+        // This is the honest version of the bug: a zero here is legitimate, and
+        // what was missing is the field saying which bound produced it. The
+        // same distinction the `revived_unchecked` counter already draws
+        // between "we did not look" and "we looked and found little".
+        std::env::set_var("AMUX_NUDGE_REVIVED_BUDGET_MS", "0");
+        let starved = freshness_from_repo(dir, &names).await;
+        std::env::remove_var("AMUX_NUDGE_REVIVED_BUDGET_MS");
+        assert_eq!(starved.revived_checked, 0, "a zero budget checks nothing: {starved:?}");
+        assert_eq!(
+            starved.revived_stopped_by, "clock",
+            "and it must say the CLOCK stopped it — a cap hit and a clock hit want opposite \
+             actions, and before this they were the same silent zero: {starved:?}"
+        );
+        assert_eq!(
+            starved.revived_unchecked,
+            names.len(),
+            "every candidate must be COUNTED as unchecked, not quietly reported as an ordinary \
+             edit: {starved:?}"
+        );
+        assert!(
+            starved.revived.is_empty() && starved.edited.len() == names.len(),
+            "the safe fallback is still `edited`; the counters are what make it honest: {starved:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// AMUX-3695 probe 3: the allocation is PROPORTIONAL to group size, not one
+    /// slot per group.
+    ///
+    /// Fixing the alphabetical bias with one-path-per-directory introduced a
+    /// worse one when groups are unequal, and mixpeek-frustrations measured how
+    /// unequal they are: 524 dirty files in 41 groups, 17 of them singleton
+    /// root-level .md files, and three directories holding 63% of the files.
+    /// Equal-per-group gives the singletons 41% of the weight for 3% of the
+    /// population, and the three dominant directories 7% for 63% of it. Their
+    /// deterministic first four came out as three root .md files and one
+    /// workflow, with ZERO of the 332 SDK files — the population the check is
+    /// actually about there.
+    ///
+    /// This is a PURE ordering test on purpose: standing up 200 real git paths
+    /// would measure git, and the defect is in the allocation.
+    #[test]
+    fn the_allocation_is_proportional_to_group_size_not_one_slot_per_group() {
+        // Their shape in miniature: one dominant directory and a crowd of
+        // singletons that would otherwise monopolise the budget.
+        let mut paths: Vec<String> = (0..20).map(|i| format!("big/b{i:02}.txt")).collect();
+        paths.extend((0..8).map(|i| format!("s{i}.md")));
+
+        let mut by_dir: std::collections::BTreeMap<&str, Vec<&String>> = Default::default();
+        for p in &paths {
+            by_dir.entry(p.split('/').next().unwrap_or("")).or_default().push(p);
+        }
+        let offset = |name: &str| -> f64 {
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            for b in name.as_bytes() {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x1000_0000_01b3);
+            }
+            (h >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut keyed: Vec<(f64, &String)> = Vec::new();
+        for (name, v) in &by_dir {
+            let (n, off) = (v.len() as f64, offset(name));
+            for (i, p) in v.iter().enumerate() {
+                keyed.push(((i as f64 + off) / n, p));
+            }
+        }
+        keyed.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        let order: Vec<&str> = keyed.iter().map(|(_, p)| p.as_str()).collect();
+
+        // `big` is 20 of 28 files (71%). Over the first 10 picks it must get
+        // roughly that share. Equal-per-group would give it 5 of 10 (50%) —
+        // one per round against 8 singleton groups that exhaust after one each.
+        let first10 = &order[..10];
+        let big_share = first10.iter().filter(|p| p.starts_with("big/")).count();
+        assert!(
+            big_share >= 6,
+            "the directory holding 71% of the files must take most of the early budget, not \
+             one slot: got {big_share} of 10 — {first10:?}"
+        );
+        // ...and the singletons must not be shut out either, or this would have
+        // swapped one bias for its mirror image.
+        assert!(
+            first10.iter().any(|p| p.ends_with(".md")),
+            "proportional is not winner-take-all: {first10:?}"
+        );
+        // DETERMINISM, again: the tie-break on path is what makes equal keys
+        // (a singleton at 0.5 against an odd group's midpoint) stable.
+        let mut keyed2 = keyed.clone();
+        keyed2.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        let order2: Vec<&str> = keyed2.iter().map(|(_, p)| p.as_str()).collect();
+        assert_eq!(order, order2, "the ordering must be stable across runs");
+    }
+
+    /// A GRAFT-PUSH CHECKOUT MUST NOT READ AS DIVERGED (reported by
+    /// mixpeek-frustrations, 2026-08-24).
+    ///
+    /// `git log origin/main..HEAD -- <path>` counts commits BY SHA, and a commit
+    /// already upstream under a different sha — cherry-picked, rebased, replayed
+    /// by a graft push — sits in that range permanently. On such a checkout every
+    /// path reads local-ahead, so DIVERGED fired for paths that were merely
+    /// STALE, and the safe restore was withheld from the one file class that
+    /// most needs it: the append-only ledgers.
+    ///
+    /// Both cells run against the SAME repo so the control is not a different
+    /// world. `replayed.md` is the specimen (local commits exist, worktree
+    /// contributes no line origin lacks -> STALE); `truly-diverged.md` holds one
+    /// line origin has never seen -> DIVERGED stands. Without the second, a
+    /// downgrade that fired unconditionally would pass the first — the
+    /// matches-everything filter that looks identical to a correct one from the
+    /// rows alone.
+    #[tokio::test]
+    async fn a_replayed_commit_downgrades_diverged_to_stale_but_real_divergence_stands() {
+        let tmp = std::env::temp_dir().join(format!("amux-graft-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let (bare, work, peer) = (tmp.join("origin.git"), tmp.join("work"), tmp.join("peer"));
+        std::fs::create_dir_all(&work).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out =
+                std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        std::process::Command::new("git")
+            .args(["init", "--bare", "-b", "main"])
+            .arg(&bare)
+            .output()
+            .unwrap();
+        git(&work, &["init", "-b", "main"]);
+        git(&work, &["config", "user.email", "t@t"]);
+        git(&work, &["config", "user.name", "t"]);
+        git(&work, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        std::fs::write(work.join("replayed.md"), "entry A\n").unwrap();
+        std::fs::write(work.join("truly-diverged.md"), "entry A\n").unwrap();
+        // BLOB TWIN + local deletion (mixpeek-frustrations' second report).
+        std::fs::write(work.join("twin.md"), "entry A\n").unwrap();
+        // STRICT SUPERSET (gtm-media-assets' report, 2026-08-26): the worktree
+        // ends up holding everything origin has PLUS local lines, while both
+        // ancestry arms print commits.
+        std::fs::write(work.join("superset.md"), "entry A\n").unwrap();
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-m", "base"]);
+        git(&work, &["push", "-q", "origin", "main"]);
+
+        // LOCAL commits entry B on both paths. These commits never reach origin
+        // under this sha — the graft-push shape.
+        std::fs::write(work.join("replayed.md"), "entry A\nentry B\n").unwrap();
+        std::fs::write(work.join("truly-diverged.md"), "entry A\nentry B\n").unwrap();
+        std::fs::write(work.join("twin.md"), "entry A\nentry B\n").unwrap();
+        std::fs::write(work.join("superset.md"), "entry A\nentry LOCAL\n").unwrap();
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-m", "local: entry B"]);
+
+        // A peer lands entry B AND entry C from the base — so origin's copy is a
+        // SUPERSET of the local content, reached by different commits.
+        std::process::Command::new("git")
+            .args(["clone", "-q", bare.to_str().unwrap()])
+            .arg(&peer)
+            .output()
+            .unwrap();
+        git(&peer, &["config", "user.email", "t@t"]);
+        git(&peer, &["config", "user.name", "t"]);
+        std::fs::write(peer.join("replayed.md"), "entry A\nentry B\nentry C\n").unwrap();
+        std::fs::write(peer.join("truly-diverged.md"), "entry A\nentry B\nentry C\n").unwrap();
+        // The peer lands the SAME BYTES local already committed, under a
+        // different sha: the graft twin. HEAD:twin.md == origin/main:twin.md.
+        std::fs::write(peer.join("twin.md"), "entry A\nentry B\n").unwrap();
+        // Origin moves on superset.md with a line the LOCAL commit never had.
+        std::fs::write(peer.join("superset.md"), "entry A\nentry PEER\n").unwrap();
+        git(&peer, &["add", "-A"]);
+        git(&peer, &["commit", "-m", "peer: entries B and C"]);
+        git(&peer, &["push", "-q", "origin", "main"]);
+        git(&work, &["fetch", "-q", "origin"]);
+
+        // Worktree: the specimen carries only content origin already has. The
+        // control carries one line origin has never seen.
+        std::fs::write(work.join("replayed.md"), "entry A\nentry B\n").unwrap();
+        std::fs::write(
+            work.join("truly-diverged.md"),
+            "entry A\nentry B\nentry LOCAL-ONLY\n",
+        )
+        .unwrap();
+        // The superset specimen: everything origin has, plus a local line. This
+        // is the shape `git diff --numstat origin/main` reports as "N  0".
+        std::fs::write(work.join("superset.md"), "entry A\nentry PEER\nentry LOCAL\n").unwrap();
+
+        let dir = work.to_str().unwrap();
+
+        // PREMISE CHECK, not decoration: both paths must read local-ahead BY SHA,
+        // or this test proves nothing about the downgrade — it would just be
+        // exercising the ordinary STALE path. "I built the specimen" is a claim,
+        // not a premise.
+        for p in ["replayed.md", "truly-diverged.md", "superset.md"] {
+            let ahead = std::process::Command::new("git")
+                .args(["-C", dir, "log", "--oneline", "origin/main..HEAD", "--", p])
+                .output()
+                .unwrap();
+            assert!(
+                !String::from_utf8_lossy(&ahead.stdout).trim().is_empty(),
+                "{p} is not local-ahead by sha, so the DIVERGED arm is never reached and this \
+                 test is vacuous"
+            );
+        }
+
+        let fresh =
+            freshness_from_repo(dir, &s(&["replayed.md", "truly-diverged.md", "superset.md"]))
+                .await;
+
+        // A STRICT SUPERSET OF ORIGIN IS NOT DIVERGED (gtm-media-assets, 2026-08-26).
+        // Both ancestry arms print commits — the premise loop above proves it —
+        // and the worktree still holds every line origin has. Committing reverts
+        // nothing, so telling the owner that both remedies destroy landed work
+        // sends them to a hand-merge that can only lose work.
+        //
+        // NOT STALE EITHER, and that is the trap in this cell: STALE prescribes
+        // `git checkout origin/main -- <path>`, which would delete `entry LOCAL`.
+        // A downgrade to the nearer-looking class would still destroy the work.
+        assert_eq!(
+            fresh.edited,
+            s(&["superset.md"]),
+            "a worktree containing every line origin has, plus local ones, is an ordinary EDIT: \
+             {fresh:?}"
+        );
+
+        // The two assertions below are also the control for the cell above: they
+        // are exact-equality, so a downgrade that fired unconditionally would
+        // empty them and fail here rather than passing quietly.
+        assert_eq!(
+            fresh.stale,
+            s(&["replayed.md"]),
+            "a path whose local commits contribute no line origin lacks is STALE, not DIVERGED — \
+             the restore is safe and withholding it is the reported bug"
+        );
+        assert_eq!(
+            fresh.diverged,
+            s(&["truly-diverged.md"]),
+            "a path holding a line origin has never seen must STAY DIVERGED — a downgrade that \
+             fires unconditionally passes the specimen above and destroys real work"
+        );
+
+        // A LOCALLY DELETED FILE WHOSE REFS AGREE IS NOT DIVERGED
+        // (mixpeek-frustrations' second report, 2026-08-24 — their
+        // discriminator, on their specimen's shape).
+        //
+        // Their live case: research/extractors/HYPERSPECTRAL-RASTER-EXTRACTOR-GAP.md,
+        // blob 1e435f5c9fba at HEAD, at origin/main and at BOTH graft twins,
+        // and NOT ON DISK. Step 2's `hash-object -- <path>` cannot read a
+        // deleted file, so the worktree-identical check cannot run and the path
+        // falls through to the ancestry arms — which on this checkout both
+        // print commits. Verdict: "novel and stale at once, NEITHER standard
+        // remedy is safe", on a path where every blob matches.
+        //
+        // IT LIVES IN THIS TEST, NOT THE FOUR-CLASS ONE, and that was not the
+        // first draft. I wrote these cells against a fixture where origin had
+        // NOT moved on the path, so the row never reached the ancestry arms at
+        // all — mutating the gate to `if false` left them GREEN. The mutation
+        // caught it; reading the test did not. A deleted-file cell only
+        // discriminates where both arms genuinely fire.
+        std::fs::remove_file(work.join("twin.md")).unwrap();
+        let twin_ahead = std::process::Command::new("git")
+            .args(["-C", dir, "log", "--oneline", "origin/main..HEAD", "--", "twin.md"])
+            .output()
+            .unwrap();
+        assert!(
+            !String::from_utf8_lossy(&twin_ahead.stdout).trim().is_empty(),
+            "premise: twin.md must be local-ahead by sha, or the DIVERGED arm is never reached \
+             and this cell is vacuous — which is exactly how its first draft failed"
+        );
+        let del = freshness_from_repo(dir, &s(&["twin.md"])).await;
+        assert!(
+            del.diverged.is_empty(),
+            "identical blobs at HEAD and origin/main cannot be diverged whatever the two \
+             ancestries say — there is nothing to merge and nothing at risk: {del:?}"
+        );
+        assert!(
+            del.stale.is_empty(),
+            "and not STALE either: STALE prescribes a RESTORE, and whether a local deletion is \
+             deliberate is the OWNER's call, not something a nudge decides for them: {del:?}"
+        );
+        assert_eq!(
+            del.edited,
+            s(&["twin.md"]),
+            "it is an ordinary worktree change against agreeing refs: {del:?}"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// SET SEMANTICS HID TWO REAL LOSSES (gtm-media-assets, 2026-08-26,
+    /// reviewing 90eaa6dc). Both downgrade arms asked "is any line of X absent
+    /// from Y" with a `HashSet` of trimmed lines, which cannot see:
+    ///
+    ///   MULTIPLICITY  dropping ONE of a repeated line. Origin `x = 1 / } / }`
+    ///                 against a worktree holding a single `}` scored zero, so
+    ///                 the nudge said committing reverts nothing while a closing
+    ///                 brace was being deleted.
+    ///   INDENTATION   `str::trim` makes leading whitespace invisible, and in
+    ///                 Python or YAML an indent change IS a semantic change.
+    ///
+    /// They found it by reading the code and reproducing it against their own
+    /// reimplementation, and flagged it as a hypothesis until a real harness
+    /// agreed. This is that harness: these cells run the shipped functions
+    /// through `freshness_from_repo` against a constructed repo.
+    ///
+    /// THE LAST CELL IS THE CONTROL and it is the reason this test cannot be
+    /// satisfied by making the counters pessimistic. A genuine superset must
+    /// still downgrade; a fix that simply counted more would fail there.
+    ///
+    /// PRECONDITION ASSERTED, not assumed: every path must read local-ahead by
+    /// sha, or the DIVERGED arm is never reached and the whole test degenerates
+    /// into an ordinary-STALE case that passes for the wrong reason.
+    #[tokio::test]
+    async fn a_dropped_duplicate_and_a_reindent_are_losses_the_set_could_not_see() {
+        let tmp = std::env::temp_dir().join(format!("amux-multiset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let (bare, work, peer) = (tmp.join("origin.git"), tmp.join("work"), tmp.join("peer"));
+        std::fs::create_dir_all(&work).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out =
+                std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        std::process::Command::new("git")
+            .args(["init", "--bare", "-b", "main"])
+            .arg(&bare)
+            .output()
+            .unwrap();
+        git(&work, &["init", "-b", "main"]);
+        git(&work, &["config", "user.email", "t@t"]);
+        git(&work, &["config", "user.name", "t"]);
+        git(&work, &["remote", "add", "origin", bare.to_str().unwrap()]);
+
+        // BASE, pushed. braces.md carries a REPEATED line; indent.py carries a
+        // block whose meaning is its leading whitespace.
+        std::fs::write(work.join("braces.md"), "x = 1\n}\n}\n").unwrap();
+        std::fs::write(work.join("indent.py"), "def f():\n    if a:\n        g()\n").unwrap();
+        std::fs::write(work.join("superset-ctl.md"), "entry A\n").unwrap();
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-m", "base"]);
+        git(&work, &["push", "-q", "origin", "main"]);
+
+        // LOCAL commits that never reach origin under this sha — the graft shape
+        // that makes every path read local-ahead.
+        std::fs::write(work.join("braces.md"), "x = 1\n}\n}\nLOCAL\n").unwrap();
+        std::fs::write(work.join("indent.py"), "def f():\n    if a:\n        g()\nLOCAL\n")
+            .unwrap();
+        std::fs::write(work.join("superset-ctl.md"), "entry A\nentry LOCAL\n").unwrap();
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-m", "local"]);
+
+        // A peer moves origin ahead of HEAD on all three paths.
+        std::process::Command::new("git")
+            .args(["clone", "-q", bare.to_str().unwrap()])
+            .arg(&peer)
+            .output()
+            .unwrap();
+        git(&peer, &["config", "user.email", "t@t"]);
+        git(&peer, &["config", "user.name", "t"]);
+        std::fs::write(peer.join("braces.md"), "x = 1\n}\n}\nPEER\n").unwrap();
+        std::fs::write(peer.join("indent.py"), "def f():\n    if a:\n        g()\nPEER\n").unwrap();
+        std::fs::write(peer.join("superset-ctl.md"), "entry A\nentry PEER\n").unwrap();
+        git(&peer, &["add", "-A"]);
+        git(&peer, &["commit", "-m", "peer"]);
+        git(&peer, &["push", "-q", "origin", "main"]);
+        git(&work, &["fetch", "-q", "origin"]);
+
+        // WORKTREES. Each holds novel lines (so arm 3c cannot downgrade it and
+        // the mirror question is actually asked), and each loses something of
+        // origin's that set-of-trimmed-lines cannot see.
+        std::fs::write(work.join("braces.md"), "x = 1\n}\nPEER\nLOCAL\nNOVEL\n").unwrap(); // one } gone
+        std::fs::write(
+            work.join("indent.py"),
+            "def f():\n    if a:\n    g()\nPEER\nLOCAL\nNOVEL\n", // g() dedented 8 -> 4
+        )
+        .unwrap();
+        // CONTROL: loses nothing of origin's.
+        std::fs::write(work.join("superset-ctl.md"), "entry A\nentry PEER\nentry LOCAL\n").unwrap();
+
+        let dir = work.to_str().unwrap();
+        let names = s(&["braces.md", "indent.py", "superset-ctl.md"]);
+        for p in &names {
+            let ahead = std::process::Command::new("git")
+                .args(["-C", dir, "log", "--oneline", "origin/main..HEAD", "--", p])
+                .output()
+                .unwrap();
+            assert!(
+                !String::from_utf8_lossy(&ahead.stdout).trim().is_empty(),
+                "premise: {p} must be local-ahead by sha, or the DIVERGED arm is never reached \
+                 and this cell is vacuous"
+            );
+        }
+
+        let fresh = freshness_from_repo(dir, &names).await;
+
+        assert_eq!(
+            fresh.diverged,
+            s(&["braces.md", "indent.py"]),
+            "dropping one of a repeated line, and re-indenting a block, are both losses of \
+             origin content — committing reverts them, so DIVERGED must stand: {fresh:?}"
+        );
+        assert_eq!(
+            fresh.edited,
+            s(&["superset-ctl.md"]),
+            "and the control must still downgrade, or the fix is just a pessimistic counter: \
+             {fresh:?}"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The shared counter's own contract, at the unit level, so a future edit
+    /// cannot satisfy the fixture test by coincidence. Order-insensitivity is
+    /// the property the set was chosen for and must survive.
+    #[test]
+    fn missing_line_instances_counts_instances_and_respects_indentation() {
+        assert_eq!(missing_line_instances("a\nb\n", "b\na\n"), 0, "a MOVED line is not a loss");
+        assert_eq!(missing_line_instances("}\n", "}\n}\n"), 1, "one of two braces is missing");
+        assert_eq!(missing_line_instances("}\n}\n", "}\n"), 0, "a spare copy is not a loss");
+        assert_eq!(
+            missing_line_instances("    g()\n", "        g()\n"),
+            1,
+            "a re-indent is a real change wherever whitespace carries meaning"
+        );
+        assert_eq!(
+            missing_line_instances("a\n\n   \nb\n", "a\nb\n"),
+            0,
+            "blank and whitespace-only lines are not content"
+        );
+        // THE TWO ENDS OF A LINE ARE NOT THE SAME KIND OF THING (AMUX-3786).
+        // These two cells must hold TOGETHER: dropping the second would let a
+        // full `trim` back in and re-open the re-indent bug, and dropping the
+        // first would hold DIVERGED open every time an editor strips trailing
+        // whitespace on save.
+        assert_eq!(
+            missing_line_instances("g()\n", "g()   \n"),
+            0,
+            "TRAILING whitespace is dropped ON PURPOSE, not because it is meaningless — a \
+             Markdown hard break is two trailing spaces. Losing it costs a rendered line break; \
+             keeping it holds DIVERGED open on every strip-on-save. See the trade in \
+             missing_line_instances"
+        );
+        assert_eq!(
+            missing_line_instances("g()\n", "    g()\n"),
+            1,
+            "LEADING whitespace is content wherever indentation carries meaning"
+        );
     }
 }
