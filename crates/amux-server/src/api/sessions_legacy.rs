@@ -1944,8 +1944,6 @@ pub(crate) fn worker_model_env(
         raw_model.to_string()
     } else if provider == "claude" {
         default_model.to_string()
-    } else if provider == "grok" {
-        "grok-4.6".to_string()
     } else {
         String::new()
     };

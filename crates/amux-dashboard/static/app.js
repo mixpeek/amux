@@ -7944,7 +7944,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.745';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.746';   // bump together with the sw.js CACHE version
 
 // ── No silent failures (Ethan, 2026-08-09: "make sure every action has some
 // kind of response in the ui — i just deleted a worker and nothing happened").
