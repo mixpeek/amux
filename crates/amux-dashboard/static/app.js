@@ -2682,6 +2682,16 @@ async function fetchSessions() {
     // Same guard as fetchBoard (live crash 2026-08-09): a 401 error object
     // must not become `sessions` — every card render maps over it.
     if (!Array.isArray(data)) {
+      // THE SERVER ANSWERED. Reaching this line means a response came back
+      // with a body we could parse — that is proof of connectivity regardless
+      // of whether the payload was usable. Returning without clearing the
+      // failure state left a client that had already latched offline showing
+      // "Offline" against a server it was successfully talking to, and the
+      // commonest way to land here is the stale-shell 401 whose own recovery
+      // is rate-limited to once per 10 minutes.
+      consecutiveFailures = 0;
+      _lastDataTime = Date.now();
+      if (!online) setOnline(true);
       if (r.status === 401) _staleShellRecover();
       console.warn('sessions fetch returned non-array (status ' + r.status + ') — keeping previous set');
       return;
@@ -8293,7 +8303,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.769';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.770';   // bump together with the sw.js CACHE version
 
 // ── No silent failures (Ethan, 2026-08-09: "make sure every action has some
 // kind of response in the ui — i just deleted a worker and nothing happened").
@@ -23210,6 +23220,16 @@ async function fetchBoard() {
     // fetch bricked the whole page). Keep the previous array; a 401 means
     // the SHELL (and its injected token) is stale, so refresh it once.
     if (!Array.isArray(data)) {
+      // THE SERVER ANSWERED. Reaching this line means a response came back
+      // with a body we could parse — that is proof of connectivity regardless
+      // of whether the payload was usable. Returning without clearing the
+      // failure state left a client that had already latched offline showing
+      // "Offline" against a server it was successfully talking to, and the
+      // commonest way to land here is the stale-shell 401 whose own recovery
+      // is rate-limited to once per 10 minutes.
+      consecutiveFailures = 0;
+      _lastDataTime = Date.now();
+      if (!online) setOnline(true);
       if (r.status === 401) _staleShellRecover();
       console.warn('board fetch returned non-array (status ' + r.status + ') — keeping previous set');
       return;
@@ -28326,6 +28346,26 @@ let _sse = null;
 let _sseRetries = 0;
 let _sseFallback = false;
 let _pollTimer = null;
+// ── THE WAY BACK OUT OF POLLING ────────────────────────────────────────────
+// `_sseFallback` was a ONE-WAY LATCH: set in enablePollingFallback(), cleared
+// in exactly one other place — setOnline()'s false→true edge. That edge needs
+// the client to lose the server ENTIRELY first, and the commonest way to lose
+// SSE does not lose the server: the auto-builder swaps this binary on every
+// commit and every stream dies with it (see /api/debug/sse's own note), while
+// plain HTTP is answering again seconds later. Three failed retries latch the
+// fallback, the 5s poll succeeds, `online` never goes false — so the latch is
+// never cleared, and for the LIFE OF THE PAGE the tab has no SSE, no staleness
+// watchdog (it returns early on _sseFallback) and no resume-reconnect (same
+// guard). On a phone the page lives for days.
+//
+// The two timestamps make the fallback revocable and let the beacon say how
+// long the client was stuck, which is the part the server could not otherwise
+// see: from there a client on polling is indistinguishable from one that is
+// simply idle.
+let _sseFallbackSince = 0;      // when we entered fallback (0 = not in it)
+let _sseFallbackLastTry = 0;    // last SSE re-attempt, so retries are paced
+const _SSE_FALLBACK_RETRY_MS = 60000;  // background cadence for re-attempts
+const _SSE_RESUME_FLOOR_MS = 5000;     // one iOS resume fires visibility+pageshow+focus
 
 let _invBoardTimer = null;
 let _invSessTimer = null;
@@ -28340,6 +28380,14 @@ function connectSSE() {
     if (_initialLoad) { _initialLoad = false; render(); }
     if (!_liveSSE) { _liveSSE = true; updateConnectionStatus(); }
     if (!online) setOnline(true);
+    // PROMOTE ON PROOF, not on attempt. _retrySseFromFallback() deliberately
+    // leaves the poll timers running while a re-attempt is in flight, so a
+    // retry that fails costs nothing — the fallback is still covering. This is
+    // the only place that knows SSE actually delivered, so this is where the
+    // covering timers are retired.
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+    if (typeof boardTimer !== 'undefined' && boardTimer) { clearInterval(boardTimer); boardTimer = null; }
+    _sseFallbackSince = 0;
     // On reconnect after being offline / zombie: catch up on anything we missed.
     // Note: _sseRetries is reset above, so we key off wasOffline alone.
     if (wasOffline) {
@@ -28485,6 +28533,10 @@ function connectSSE() {
 }
 
 function enablePollingFallback() {
+  // Only stamp the ENTRY. A failed re-attempt lands back here and must not
+  // reset the clock, or "how long has this client been off SSE" — the whole
+  // point of the beacon — would restart every retry and never grow.
+  if (!_sseFallback) _sseFallbackSince = Date.now();
   _sseFallback = true;
   if (_sse) { _sse.close(); _sse = null; }
   fetchSessions(); fetchBoard(); _runDeltaSync();
@@ -28559,6 +28611,66 @@ function _resyncEverything() {
   fetchBoard();
   _runDeltaSync();
 }
+
+// Pure, and separated from the DOM for the same reason _connEpisodeKind is:
+// this decides whether a client ever gets back onto the realtime backbone, and
+// that decision should be checkable without a browser. Answers ONLY "may we
+// re-attempt SSE now"; the caller owns the attempt.
+//
+// `online` is the load-bearing input. In fallback, polling is the only thing
+// still talking to the server, so `online === false` means the SERVER is gone,
+// not that SSE is broken — retrying the stream there is noise, and the existing
+// setOnline() edge already reconnects when the server returns. We retry only in
+// the case that edge cannot see: server reachable, SSE absent anyway.
+// Same shape, same reason, for the resume refetch. AC-275 fixed _sseLooksStale()
+// to fall back to page load because a client that never received a first datum
+// could not declare itself stale — the one state where a refetch is the only
+// thing that helps. _onClientResume's refetch guard had the identical
+// `_lastDataTime &&` shape and kept the hole: a PWA cold-started while the
+// server was down has a null _lastDataTime, so every resume refetched NOTHING,
+// forever. Pure so the null case is checkable rather than argued about.
+function _resumeNeedsRefetch(lastData, pageLoad, now) {
+  return (now - (lastData || pageLoad)) > _SSE_REFRESH_MS;
+}
+
+function _shouldRetrySse(st, now) {
+  if (!st.fallback) return false;   // not in fallback — connectSSE()/the watchdog own this
+  if (st.hidden) return false;      // a hidden tab cannot verify the result; resume retries
+  if (!st.online) return false;     // server unreachable: an outage, not an SSE-only fault
+  const floor = st.resume ? _SSE_RESUME_FLOOR_MS : _SSE_FALLBACK_RETRY_MS;
+  return (now - (st.lastTry || 0)) >= floor;
+}
+
+// Leaves the poll timers RUNNING. If SSE comes back the onmessage handler
+// retires them; if it does not, onerror walks its retries and lands back in
+// enablePollingFallback() with the fallback still covering the whole window.
+// A retry therefore cannot open a gap in coverage, which is what makes it safe
+// to run on every resume.
+function _retrySseFromFallback(reason) {
+  const now = Date.now();
+  const stuckMs = _sseFallbackSince ? now - _sseFallbackSince : 0;
+  _sseFallbackLastTry = now;
+  _dbgLog('SSE retry from polling fallback: ' + reason + ' (stuck ' + Math.round(stuckMs / 1000) + 's)');
+  // BEACON THE ESCAPE ATTEMPT. Its absence was the bug's cover: a client pinned
+  // to polling forever looks, from the server, exactly like one that is idle —
+  // /api/debug/sse's live_connections simply does not count it, and nothing
+  // says whether it is ever coming back. `stuck_ms` is the number a sweep can
+  // act on; a p50 in the hours means the latch is live again.
+  try {
+    fetch(API + '/api/client-debug', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        kind: 'sse-fallback-retry', reason: reason || '?',
+        stuck_ms: Math.round(stuckMs),
+        ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?'),
+        hidden: document.hidden ? 1 : 0
+      })
+    }).catch(() => {});
+  } catch (e) {}
+  _sseFallback = false;
+  _sseRetries = 0;
+  connectSSE();
+}
 function _onClientResume(reason) {
   if (document.hidden) { _peekPollStop('hidden'); return; }   // tab backgrounded → pause the open-view poller (beaconed)
   // Resume the open-view poller if we're on a peek and it was paused while
@@ -28567,11 +28679,19 @@ function _onClientResume(reason) {
   if (peekSession && !peekTimer) { refreshPeek(); if (typeof updatePeekStatus === 'function') updatePeekStatus(); _schedulePeekPoll(); }
   if (window._peekEmbed) { refreshPeek(); return; }
   // Always pull fresh state — cheap and the user expects up-to-date data.
-  if (_lastDataTime && Date.now() - _lastDataTime > _SSE_REFRESH_MS) {
+  // The null-_lastDataTime case is the one that mattered; see the predicate.
+  if (_resumeNeedsRefetch(_lastDataTime, _pageLoadTime, Date.now())) {
     _resyncEverything();
   }
-  // If the SSE connection looks dead (zombie after iOS background), bounce it.
-  if (!_sseFallback && (_sseLooksStale() || !_sse)) {
+  // Back onto the realtime backbone if we are stuck on polling. Checked BEFORE
+  // the zombie bounce because the two are mutually exclusive by construction:
+  // the bounce is guarded on !_sseFallback and can never fire while latched,
+  // which is what left this branch unreachable for the life of the page.
+  if (_shouldRetrySse({ fallback: _sseFallback, hidden: document.hidden, online: online,
+                        lastTry: _sseFallbackLastTry, resume: true }, Date.now())) {
+    _retrySseFromFallback(reason);
+  } else if (!_sseFallback && (_sseLooksStale() || !_sse)) {
+    // If the SSE connection looks dead (zombie after iOS background), bounce it.
     _forceSseReconnect(reason);
   }
 }
@@ -28582,9 +28702,18 @@ window.addEventListener('online',    () => _onClientResume('online'));
 // Periodic stale-watchdog — only fires when visible, so it's cheap on phones.
 setInterval(() => {
   if (document.hidden) return;
-  if (_sseFallback) return;
   if (window._peekEmbed) return;
-  if (_sseLooksStale()) _forceSseReconnect('watchdog stale ' + Math.round((Date.now() - _lastDataTime)/1000) + 's');
+  // `if (_sseFallback) return;` used to be here, and it is why a latched client
+  // never tried again unattended: the one loop still running was forbidden from
+  // acting. It now paces re-attempts instead of abandoning them.
+  if (_sseFallback) {
+    if (_shouldRetrySse({ fallback: true, hidden: false, online: online,
+                          lastTry: _sseFallbackLastTry, resume: false }, Date.now())) {
+      _retrySseFromFallback('watchdog');
+    }
+    return;
+  }
+  if (_sseLooksStale()) _forceSseReconnect('watchdog stale ' + Math.round((Date.now() - (_lastDataTime || _pageLoadTime))/1000) + 's');
 }, 5000);
 
 if (window._peekEmbed) {

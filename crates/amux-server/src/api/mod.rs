@@ -678,20 +678,48 @@ async fn debug_sse(
     // endpoint's own note spends a paragraph warning about in the OTHER
     // direction. `scanned` is the beacon population; None means the ring could
     // not be read at all.
-    let (stale, sample, scanned) = match CLIENT_DEBUG_RING.lock() {
+    let (stale, sample, scanned, escapes, stuck_p50, stuck_max) = match CLIENT_DEBUG_RING.lock() {
         Ok(ring) => {
             let scanned = ring.len();
+            let fresh = |v: &&serde_json::Value| {
+                v.get("ts").and_then(serde_json::Value::as_f64).unwrap_or(0.0) >= cutoff
+            };
             let hits: Vec<&serde_json::Value> = ring
                 .iter()
                 .filter(|v| {
-                    v.get("kind").and_then(|k| k.as_str()) == Some("sse-stale-reconnect")
-                        && v.get("ts").and_then(serde_json::Value::as_f64).unwrap_or(0.0) >= cutoff
+                    v.get("kind").and_then(|k| k.as_str()) == Some("sse-stale-reconnect") && fresh(v)
                 })
                 .collect();
             let n = hits.len();
-            (n, hits.into_iter().rev().take(5).cloned().collect::<Vec<_>>(), Some(scanned))
+            // The OTHER half of the backbone's health, and the one that had no
+            // instrument at all: a client that gave up on SSE and fell back to
+            // polling used to have no way back, and from here that is invisible
+            // — it simply stops being counted in live_connections, which is
+            // also what closing a tab looks like. These beacons are clients
+            // ATTEMPTING to get back on, and `stuck_ms` is how long they had
+            // been off. A p50 in the hours means they are only escaping when
+            // the user happens to foreground the app.
+            let mut stuck: Vec<f64> = ring
+                .iter()
+                .filter(|v| {
+                    v.get("kind").and_then(|k| k.as_str()) == Some("sse-fallback-retry") && fresh(v)
+                })
+                .filter_map(|v| v.get("stuck_ms").and_then(serde_json::Value::as_f64))
+                .collect();
+            let escapes = stuck.len();
+            stuck.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let p50 = stuck.get(stuck.len() / 2).copied();
+            let max = stuck.last().copied();
+            (
+                n,
+                hits.into_iter().rev().take(5).cloned().collect::<Vec<_>>(),
+                Some(scanned),
+                escapes,
+                p50,
+                max,
+            )
         }
-        Err(_) => (0, Vec::new(), None),
+        Err(_) => (0, Vec::new(), None, 0, None, None),
     };
     let body = serde_json::json!({
         "live_connections": live,
@@ -702,6 +730,13 @@ async fn debug_sse(
         "stale_reconnects": stale,
         "stale_window_h": since_h,
         "recent_stale_beacons": sample,
+        // Clients re-attempting SSE after falling back to 5s polling. Null p50
+        // with escapes: 0 is NOT "nobody got stuck" — it is "no client running
+        // a build with the beacon reported one", the same ramp-up caveat as
+        // stale_reconnects. Read it beside live_connections.
+        "fallback_escapes": escapes,
+        "fallback_stuck_ms_p50": stuck_p50,
+        "fallback_stuck_ms_max": stuck_max,
         // VOLATILE, and said out loud rather than left to be assumed: the
         // builder swaps this binary on every commit and every SSE connection
         // dies with it, so both counters are per-PROCESS. A zero here after a
