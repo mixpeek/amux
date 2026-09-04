@@ -5,8 +5,8 @@
 
 ## Decisions
 
-- **rule 1** - Whenever you fix a bug: 1) fix it at the root cause, 2) make it surface in amux logs so a sweep would catch it. _(source: CLAUDE.md)_
-- **rule 2** - `crates/amux-server` -- axum server: `src/api/`, `src/db/`, `migrations/`, `src/runtime_jobs/` _(source: CLAUDE.md)_
+- Whenever you fix a bug: 1) fix it at the root cause, 2) make it surface in amux logs so a sweep would catch it. _(source: CLAUDE.md)_
+- `crates/amux-server` -- axum server: `src/api/`, `src/db/`, `migrations/`, `src/runtime_jobs/` _(source: CLAUDE.md)_
 
 ## Being worked on right now
 
