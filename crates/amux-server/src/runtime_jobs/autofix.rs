@@ -256,6 +256,27 @@ const LONG_BY_DESIGN: &[(&str, f64)] = &[
     // a budget in advance. The next route to call `inbox_messages` will file too,
     // for a duration that was designed in before it existed.
     ("/api/email/search", 30_000.0),
+    // GET /api/gmail/thread/{id} (AMUX-114). `get_thread` (integrations/
+    // email.rs) fetches the thread through the same `self.api(...)` quota-
+    // backed call every other entry in this table reasons from, so it gets
+    // the same 30s budget for the same reason: a single wedged call to
+    // Google hits that transport's own 30s timeout, and a bound derived
+    // from that (not padded) still means "something hung" when crossed.
+    //
+    // NOT fixed here, named because it is real and this route is the one
+    // place it lives: after the thread GET, `get_thread` clears UNREAD on
+    // every unread message SEQUENTIALLY (`for uid in unread_ids { ...
+    // self.api(...).await }`), not with the bounded concurrency AMUX-66/84
+    // already gave the sibling N+1 shapes on /gmail/inbox and
+    // /gmail/accounts. Both real occurrences this card investigated were
+    // ~30001ms — consistent with ONE call hitting the transport timeout,
+    // not several stacking toward 60s+ — so the flat 30s bound holds for
+    // what has actually been observed. A thread with many unread messages
+    // could still legitimately exceed it without any single call hanging;
+    // that would show as a design-duration false positive here, not a
+    // wedge, and is the tell that this loop needs the same buffered() fix
+    // its siblings already got.
+    ("/api/gmail/thread/{id}", 30_000.0),
     // POST /api/alert/owner (AMUX-3522, third filing on one mechanism): while
     // the Messages Automation permission stays missing (MI-4933), the
     // iMessage breaker re-probes once per 15-min cooldown and that probe IS
@@ -12347,6 +12368,56 @@ mod tests {
         let (f2, _) = detect_latency(&st.store.read().unwrap(), now + 1.0);
         assert!(
             f2.iter().any(|x| x.signature.contains("/api/gmail/inbox")),
+            "past the 30s budget this is a hang, not a design duration, and must still file: {f2:?}"
+        );
+    }
+
+    /// AMUX-114: /api/gmail/thread/{id} is a wildcard-parameter route --
+    /// pins that a REAL thread id in the logged path (not the literal
+    /// `{id}` template) still resolves to the LONG_BY_DESIGN entry, via the
+    /// same route-table normalization every other target in this table
+    /// relies on implicitly.
+    #[tokio::test]
+    async fn gmail_thread_is_judged_against_its_own_transport_timeout() {
+        let (st, _d) = state();
+        let now = unix_now();
+        log_row(
+            &st,
+            Row {
+                ts: now - 300.0,
+                method: "GET",
+                path: "/api/gmail/thread/1a065ea83437499a", // a real id, not the template
+                family: "/api/gmail",
+                status: 200,
+                body: "",
+                worker: "",
+                ua: "curl/8",
+                ms: 20_020.0, // AMUX-114's own worst measured, single-call
+            },
+        );
+        let (f, _) = detect_latency(&st.store.read().unwrap(), now);
+        assert!(
+            !f.iter().any(|x| x.signature.contains("/api/gmail/thread")),
+            "inside its 30s design budget, a quota-bound thread fetch must not file: {f:?}"
+        );
+
+        log_row(
+            &st,
+            Row {
+                ts: now - 100.0,
+                method: "GET",
+                path: "/api/gmail/thread/1a060bfebc7ab94a",
+                family: "/api/gmail",
+                status: 200,
+                body: "",
+                worker: "",
+                ua: "curl/8",
+                ms: 45_000.0,
+            },
+        );
+        let (f2, _) = detect_latency(&st.store.read().unwrap(), now + 1.0);
+        assert!(
+            f2.iter().any(|x| x.signature.contains("/api/gmail/thread")),
             "past the 30s budget this is a hang, not a design duration, and must still file: {f2:?}"
         );
     }
