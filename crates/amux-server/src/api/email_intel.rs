@@ -689,6 +689,18 @@ pub async fn theme_refresh_loop() {
     // and the mechanism disagree.
     loop {
         one_theme_pass().await;
+        // AMUX-123: this loop never called the registry's tick() — every
+        // sibling loop of this exact "do the work, then sleep for the
+        // interval" shape does (see pipe_reconcile_loop). Without it, `ticks`
+        // stays 0 and `last_tick_at` stays null FOREVER, regardless of
+        // whether the loop is actually healthy: classify()'s own "never
+        // ticked past the stall budget" rule then reports this job as
+        // `stalled` on every single run, permanently, whether or not a real
+        // recompute (or a legitimate skip-because-fresh) happened. Recorded
+        // here rather than inside one_theme_pass() itself, so a skip counts
+        // as a real, healthy pass — the loop's job is deciding whether to
+        // recompute, not only the recompute itself.
+        crate::runtime_jobs::registry::tick(crate::runtime_jobs::registry::ids::EMAIL_THEMES);
         tokio::time::sleep(std::time::Duration::from_secs(THEME_REFRESH_SECS)).await;
     }
 }
