@@ -550,6 +550,11 @@ async fn async_main() {
         );
     }
 
+    // No GOOGLE CALENDAR SYNC loop here on purpose: gcal.rs reads events
+    // live from Google's API on each request and only ever creates NEW
+    // events there, never stores or reconciles a local mirror -- see that
+    // file's own header comment. Nothing to run periodically.
+
     // Captured BEFORE the router takes `state` by value: the browser reaper is
     // spawned further down (after the listener is up) and now needs the store to
     // tell a lane its browser was released (AF-497).

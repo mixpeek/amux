@@ -15,6 +15,7 @@ pub mod board;
 pub mod criteria;
 pub mod browser;
 pub mod calendar;
+pub mod gcal;
 pub mod connectors;
 pub mod dictation;
 pub mod tts;
@@ -163,6 +164,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/branding/asset/{fname}", axum::routing::get(branding::serve_asset))
         .nest("/api/email", email::routes())
         .nest("/api/cal-events", calendar::routes())
+        .nest("/api/gcal", gcal::routes())
         // Legacy SHAPE (not just path): the SPA renders this array (RR-0075).
         // POST creates a FLEET worker (an env file), which is a different
         // substrate from POST /api/workers (a `workers` table row) — the

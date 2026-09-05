@@ -66,6 +66,9 @@ crates/amux-dashboard/eslint.globals.generated.json
 # builds somewhere it cannot write.
 /.cargo/config.toml
 
+secrets/amux-secrets.yaml
+secrets/*.yaml
+
 # Manual build artifact from the live-binary-swap deploy workflow — never
 # belongs in the repo (was accidentally committed once, 37MB, see 055121f4).
 amux-server.new

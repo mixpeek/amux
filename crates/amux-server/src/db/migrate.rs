@@ -332,6 +332,23 @@ const MIGRATIONS: &[Migration] = &[
         name: "0056_search_prompts",
         sql: include_str!("../../migrations/0056_search_prompts.sql"),
     },
+    // Renumbered from 49, then 54, then 55, then 56 (collision with main's
+    // own 0049_email_annotations, then 0050-0053's telegram migrations, then
+    // 0054_telegram_chat_type, then 0055_issue_callbacks, then
+    // 0056_search_prompts — all merged independently while this branch also
+    // claimed each slot in turn) — same contributor-collision case
+    // documented on the entries above. Jumped to 58, not 57: PR #163
+    // (central-secrets-sops, also unmerged) independently claimed 57 for its
+    // own secret_metadata migration during this same window, so 57 is
+    // reserved even though it isn't on main yet. 0050_gcal_event_details (a
+    // second migration adding columns to a local event-mirror table) was
+    // dropped entirely along with that mirror — see the gcal re-scope
+    // commit.
+    Migration {
+        version: 58,
+        name: "0058_google_calendar_sync",
+        sql: include_str!("../../migrations/0058_google_calendar_sync.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.
