@@ -571,6 +571,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-torrents" onclick="switchView('torrents')"><span class="tab-ico">↓</span><span class="tab-lbl">Torrents</span></button>
   <button id="tab-terminal" onclick="switchView('terminal')"><span class="tab-ico">⮞</span><span class="tab-lbl">Terminal</span></button>
   <button id="tab-browser" onclick="switchView('browser')"><span class="tab-ico">◳</span><span class="tab-lbl">Browser</span></button>
+  <button id="tab-secrets" onclick="switchView('secrets')"><span class="tab-ico">🔐</span><span class="tab-lbl">Secrets</span></button>
 </div>
 <div class="tab-customize-wrap">
   <button class="tab-customize-btn" onclick="event.stopPropagation();toggleTabCustomizer()" title="Show/hide tabs">&#x229E;</button>
@@ -3096,6 +3097,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
      at the overlay's z (8000) and the guided-build dialogs lifted to 8002 hid
      the guidance text entirely. As a sibling it stacks above them. -->
 <div id="wt-tooltip"></div>
+
+<!-- Secrets Management View -->
+<div id="secrets-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;padding:14px 16px;">
+  <h1 style="margin:0 0 20px;font-size:24px;">🔐 Secrets Manager</h1>
+  <div id="secrets-container"></div>
+</div>
 
 <!-- DevTools Panel -->
 <div id="devtools-panel">

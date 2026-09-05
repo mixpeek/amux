@@ -1513,6 +1513,17 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/gmail/inbox", methods: &["GET"] },
     RouteEntry { path: "/api/gmail/thread/{id}", methods: &["GET"] },
     RouteEntry { path: "/api/gmail/send", methods: &["POST"] },
+    // Encrypted secrets store (api/secrets.rs).
+    RouteEntry { path: "/api/secrets", methods: &["GET"] },
+    RouteEntry { path: "/api/secrets/inspect", methods: &["GET"] },
+    RouteEntry { path: "/api/secrets/reload", methods: &["POST"] },
+    RouteEntry { path: "/api/secrets/manifest", methods: &["GET"] },
+    RouteEntry { path: "/api/secrets/{path}", methods: &["GET", "POST"] },
+    RouteEntry { path: "/api/secrets/{path}/metadata", methods: &["GET", "POST"] },
+    // GitHub OAuth connector (api/github_connector.rs).
+    RouteEntry { path: "/api/github/auth/start", methods: &["GET"] },
+    RouteEntry { path: "/api/github/auth/callback", methods: &["GET"] },
+    RouteEntry { path: "/api/github/status", methods: &["GET"] },
     // Merged-router routes the census scanner could not see until it learned
     // to follow `.merge()` (AMUX-2883's table pass): four runtime-jobs debug
     // surfaces and the workers-spelling of the session verb dispatcher.
@@ -2960,6 +2971,7 @@ mod tests {
 
     fn state(store: Arc<crate::db::Store>) -> AppState {
         AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store,
             started: std::time::Instant::now(),
             build_hash: "test".into(),

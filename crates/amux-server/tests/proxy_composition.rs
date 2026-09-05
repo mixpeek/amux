@@ -35,6 +35,7 @@ fn app() -> (axum::Router, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("amux-test.db")).unwrap();
     let state = AppState {
+        secrets: std::sync::Arc::new(amux_server::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
         store: std::sync::Arc::new(store),
         started: std::time::Instant::now(),
         build_hash: "test".into(),

@@ -5024,13 +5024,13 @@ SQLite schema is preserved, so the DB file is directly compatible. But:
 #### Cutover sequence: strangler-fig (continuous, not six-month shadow)
 
 Rust goes on port 8822 from Phase 1 -- not Phase 11. It serves migrated route
-groups natively and proxies the rest to Python on 8823. Cutover is continuous:
+groups natively and proxies the rest to Python on 8824. Cutover is continuous:
 each phase migrates more routes to native Rust, shrinking the proxy surface.
 Rollback is per-route (revert to proxying), not all-or-nothing.
 
 ```
 Phase 1:  /health, /api/workers (+/api/sessions alias)  → native Rust
-          everything else                               → proxy to Python:8823
+          everything else                               → proxy to Python:8824
 Phase 2:  + /api/board, /api/tasks (+/api/issues alias) → native Rust
 Phase 3:  + /api/schedules                       → native Rust
 Phase 4:  + /api/sessions/*/send, steering       → native Rust
@@ -5050,7 +5050,7 @@ Benefits over shadow mode:
   single big-bang in week 24.
 
 The proxy is a simple HTTP reverse proxy in the Rust binary: unmigrated routes
-forward to `http://localhost:8823` with headers preserved. It is the first thing
+forward to `http://localhost:8824` with headers preserved. It is the first thing
 deleted, not a permanent abstraction.
 
 #### Backend migration
@@ -9056,12 +9056,12 @@ verification state hidden in a comment — so the cheap path is no longer cheape
   Status: IN_PROGRESS
   Evidence: (partial, 2026-08-09) subsystem lifecycles covered piecewise (golden scenarios, settings suite, board/worker/schedule/memory/message tests) / missing: the single net-new all-subsystem acceptance run
 
-- [x] RR-0134 — Strangler-fig proxy: Rust on 8822, Python on 8823
+- [x] RR-0134 — Strangler-fig proxy: Rust on 8822, Python on 8824
   Phase: 1
   Depends on: RR-0029, RR-0019
   Invariant: —
   Requirement: Rust binary serves on 8822. Routes not yet implemented in Rust proxy
-    to Python on 8823 via simple HTTP reverse proxy. Headers preserved. Response
+    to Python on 8824 via simple HTTP reverse proxy. Headers preserved. Response
     bodies unmodified. The proxy is the mechanism for continuous cutover, not shadow
     validation. Each subsequent phase removes routes from the proxy as they become
     native. Automated comparison of proxied vs direct Python responses for migrated

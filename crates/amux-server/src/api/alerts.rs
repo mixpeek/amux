@@ -1117,6 +1117,7 @@ mod tests {
         let store = crate::db::Store::open(&dir.path().join("alerts-test.db")).unwrap();
         std::mem::forget(dir);
         let state = AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store: Arc::new(store),
             started: std::time::Instant::now(),
             build_hash: "test".into(),
@@ -1475,6 +1476,7 @@ mod tests {
         // reading of send_all, so a mocked push would prove nothing.
         let store = crate::db::Store::open(&dir.path().join("push-test.db")).unwrap();
         let state = AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store: Arc::new(store),
             started: std::time::Instant::now(),
             build_hash: "test".into(),

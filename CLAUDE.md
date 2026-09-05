@@ -433,3 +433,142 @@ and lives only in `server.env`. Never commit the actual URL (repo is public).
 ## Browser Automation
 
 Use `/chrome-cdp`: `node skills/chrome-cdp/scripts/cdp.mjs <list|snap|shot|click|type|eval|nav> <target>`.
+
+## Encrypted Secrets Management
+
+**Status:** ✅ Fully operational with age (X25519) encryption.
+
+Central encrypted secrets store for passwords, API keys, OAuth credentials, and webhooks. All workers and handlers can access decrypted secrets via AppState or environment variables.
+
+**Architecture:**
+1. **At rest:** `secrets/amux-secrets.yaml` encrypted with age (X25519)
+2. **At startup:** Server decrypts once, caches in-memory via `Arc<Mutex>`
+3. **In memory:** `SecretStore` provides dot-separated path lookup
+4. **Via API:** `/api/secrets/*` endpoints (GET, POST)
+5. **Legacy code:** Secrets loaded into environment variables (`EXTERNAL_*`, etc.)
+
+**Setup (one-time):**
+```bash
+# Generate age key (if not exists)
+mkdir -p ~/.config/sops/age
+age-keygen -o ~/.config/sops/age/keys.txt
+
+# Encrypt initial secrets with age
+age -r <public-key-from-above> secrets/amux-secrets.yaml.plaintext > secrets/amux-secrets.yaml
+
+# Key is NOT committed; only encrypted .yaml file is
+echo "secrets/amux-secrets.yaml" >> .gitignore
+```
+
+**API Endpoints:**
+```bash
+# List all secret paths (no values)
+curl -sk https://localhost:8824/api/secrets
+
+# Get specific secret
+curl -sk https://localhost:8824/api/secrets/external_services.openai.api_key
+
+# Get schema structure (all values redacted)
+curl -sk https://localhost:8824/api/secrets/inspect
+
+# Update secret (re-encrypts)
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"value":"new-value"}' \
+  https://localhost:8824/api/secrets/external_services.openai.api_key
+```
+
+**Environment Variables Populated:**
+Secrets are automatically loaded into env vars for legacy code:
+- `EXTERNAL_SERVICES_OPENAI_API_KEY` = `external_services.openai.api_key`
+- `OAUTH_GOOGLE_CLIENT_ID` = `oauth.google.client_id`
+- And all others under `external_services`, `oauth`, `databases`, `webhooks`, `api_keys`
+
+**Graceful Degradation:**
+If secrets cannot be loaded, server logs a warning and continues (allows operation without credentials for development).
+
+**Security Notes:**
+- Age encryption (X25519) at rest
+- Age key stored at `~/.config/sops/age/keys.txt` (never committed)
+- Decrypted only once at startup
+- Cached in memory only
+- Environment variable leakage risk — prefer API access for sensitive operations
+- API endpoints require authentication (checked against `state.auth_token`)
+
+**Phase 5: Web UI Dashboard** ✅
+- Secrets management interface at `/ui/secrets`
+- Create, read, update secrets via web UI
+- Search and filter functionality
+- Modal dialogs for editing
+- Dark mode support
+
+**Phase 6: MCP Integration — NOT actually wired up.** `mcp_secrets.rs` existed
+with `request_secret`/`list_secrets`/`inspect_schema` functions and this
+section claimed ✅, but there is no MCP tool dispatcher anywhere in the
+codebase that calls them by name — `dead_pub_api.rs`'s bare-name scanner
+caught `request_secret` (the other two escaped detection only because they
+share a name with unrelated functions in `api/secrets.rs`). Removed
+2026-08-27: the real, working path for secret access is the REST API below
+(`/api/secrets/*`), already used by the dashboard's Secrets tab. If MCP tool
+access is wanted, it needs an actual dispatcher wired to a real MCP server,
+not just handler functions sitting in a module nothing calls.
+
+**Phase 7: GitHub OAuth Connector** ✅
+- Full OAuth 2.0 flow with GitHub
+- Credentials stored in encrypted secrets
+- GitHub issue/PR sync to amux board
+- Webhook integration ready
+- Setup: See `docs/github-setup.md`
+
+## GitHub Connector (Phase 7)
+
+Integrates GitHub OAuth using the secrets infrastructure.
+
+**Setup:**
+```bash
+# 1. Create OAuth app at https://github.com/settings/developers/new
+# 2. Add credentials to ~/.amux/server.env or secrets store:
+EXTERNAL_SERVICES_GITHUB_CLIENT_ID=Ov23li...
+EXTERNAL_SERVICES_GITHUB_CLIENT_SECRET=...
+
+# 3. Test connection
+curl -sk https://localhost:8824/api/github/status
+```
+
+**Endpoints:**
+- `GET /api/github/status` — Check connection
+- `GET /api/github/auth/start` — Begin OAuth flow
+- `GET /api/github/auth/callback` — Handle OAuth redirect
+
+All credentials are encrypted using the secrets infrastructure (Phases 1-4).
+
+## Secret Metadata Store (Phase 3 — Under Development)
+
+Tracks purpose, ownership, and rotation schedule for encrypted secrets.
+Endpoints: `GET /api/secrets/manifest`, `GET /api/secrets/{path}/metadata`, 
+`POST /api/secrets/{path}/metadata`
+
+Response includes pre-populated Google OAuth metadata with rotation tracking.
+
+### Known Build Issue: Binary Permissions
+
+The auto-builder (`rust-auto-build.sh`) may install the binary without execute
+permissions, causing "exec failed — Permission denied" during self-adoption.
+
+**Fix:**
+```bash
+# Check permissions (should show -rwx------)
+ls -l ~/.local/bin/amux-server-rs
+
+# If not executable:
+chmod +x ~/.local/bin/amux-server-rs
+
+# Restart server
+pkill -9 amux-server-rs
+~/.local/bin/amux-server-rs &
+
+# Verify (server listens on 8824)
+curl -sk https://localhost:8824/health
+```
+
+**Note:** Port 8824 is the canonical server port (8822 is retired).
+The `endpoint.json` self-heal handles port discovery for scripts using `$(amux url)`.

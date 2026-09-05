@@ -35,6 +35,7 @@ fn rig() -> Rig {
     let db_path = dir.path().join("replay-test.db");
     let store = Arc::new(Store::open(&db_path).unwrap());
     let state = AppState {
+        secrets: std::sync::Arc::new(amux_server::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
         store: store.clone(),
         started: std::time::Instant::now(),
         build_hash: "test".into(),

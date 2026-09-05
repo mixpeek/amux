@@ -2136,6 +2136,7 @@ mod callback_dispatch_tests {
             build_hash: "callback-test".into(),
             auth_token: None,
             reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
         }
     }
 

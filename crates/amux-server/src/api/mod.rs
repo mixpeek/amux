@@ -90,9 +90,12 @@ pub mod why;
 pub mod worker_create;
 pub mod workers;
 pub mod workers_deadletters;
+pub mod github_connector;
+pub mod secrets;
 
 use crate::db::SharedStore;
 use axum::Router;
+use std::sync::Arc;
 use std::time::Instant;
 use tower_http::compression::CompressionLayer;
 
@@ -107,6 +110,8 @@ pub struct AppState {
     pub build_hash: String,
     /// Bearer token; None disables auth (tests, first-run).
     pub auth_token: Option<String>,
+    /// Central secrets store (Phase 3: decrypted at startup, shared to all handlers)
+    pub secrets: Arc<crate::secrets::SecretStore>,
     /// `false` until startup reconciliation completes. The listener binds
     /// BEFORE reconciliation so the fleet gets 503s instead of connection-
     /// refused during the startup window (AMUX-3969b: 88s blackout).
@@ -237,6 +242,8 @@ pub fn router(state: AppState) -> Router {
         .merge(habits::routes())
         .merge(observability::routes())
         .merge(connectors::routes())
+        .merge(secrets::routes())
+        .merge(github_connector::routes())
         .nest("/api/telegram", telegram::routes())
         .merge(grants::routes())
         .merge(self_update::routes())

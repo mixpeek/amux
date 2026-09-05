@@ -44,7 +44,8 @@ use crate::integrations::email::{
     base64url_nopad, connected_accounts_in, html_escape, HttpTransport, ReqwestTransport,
     DEFAULT_TOKEN_URI,
 };
-use axum::extract::{Path, Query};
+use crate::secrets::SecretStore;
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -539,35 +540,47 @@ fn env_val(file_env: &std::collections::BTreeMap<String, String>, key: &str) -> 
 /// `gmail-oauth-client.json` that `gmail_auth` already uses — so the four Google
 /// connectors REUSE the one OAuth client Ethan already configured, with no secret
 /// copied into server.env by hand (AMUX-3341, and the connectors-setup "reuse
-/// this one" note). The value is for presence/masking and the server's own OAuth
-/// flow only; never emitted raw.
-fn resolve_cred_in(
+/// this one" note) — and finally, the encrypted `SecretStore`, for a credential
+/// that lives ONLY there (see `secrets.rs`'s module doc: this replaced the
+/// removed `set_var` mirror as the bridge). Only the (small, curated) set of
+/// keys `known_env_secret_path` maps get that last tier; an unmapped key finds
+/// nothing there, same as before this tier existed. The value is for
+/// presence/masking and the server's own OAuth flow only; never emitted raw.
+async fn resolve_cred_in(
     home: &std::path::Path,
     file_env: &std::collections::BTreeMap<String, String>,
     category: &str,
     key: &str,
+    secrets: &SecretStore,
 ) -> Option<String> {
     if let Some(v) = env_val(file_env, key) {
         return Some(v);
     }
     if category == "Google" {
         if let Some((cid, csec)) = crate::api::gmail_auth::google_oauth_client_file(home) {
-            return match key {
+            let v = match key {
                 "GOOGLE_OAUTH_CLIENT_ID" => Some(cid),
                 "GOOGLE_OAUTH_CLIENT_SECRET" => Some(csec),
                 _ => None,
             };
+            if v.is_some() {
+                return v;
+            }
         }
     }
-    None
+    match crate::secrets::known_env_secret_path(key) {
+        Some(path) => secrets.get(path).await,
+        None => None,
+    }
 }
 
-fn resolve_cred(
+async fn resolve_cred(
     file_env: &std::collections::BTreeMap<String, String>,
     category: &str,
     key: &str,
+    secrets: &SecretStore,
 ) -> Option<String> {
-    resolve_cred_in(&amux_home(), file_env, category, key)
+    resolve_cred_in(&amux_home(), file_env, category, key, secrets).await
 }
 
 // ---- OAuth broker: family model, pending state, token store ----------------
@@ -852,8 +865,21 @@ async fn mattermost_login(
 /// accepted for parity with the scope explain link but the status here is
 /// global (credential presence + token); per-scope enablement is the scope
 /// read.
-async fn list() -> Response {
+async fn list(State(state): State<AppState>) -> Response {
     let file_env = parse_env_file(&amux_home().join("server.env"));
+    // Pre-resolve every (provider, key) credential up front: resolve_cred's
+    // SecretStore tier needs an .await, and the per-provider status below is
+    // built inside a sync closure (REGISTRY.iter().map(...)) that can't hold
+    // one. `env_keys` returns `&'static str`s straight off the registry, so
+    // this keys cleanly on (provider id, key name) with no lifetime dance.
+    let mut cred_cache: std::collections::HashMap<(&'static str, &'static str), Option<String>> =
+        std::collections::HashMap::new();
+    for p in REGISTRY.iter() {
+        for k in env_keys(p) {
+            let v = resolve_cred(&file_env, p.category, k, &state.secrets).await;
+            cred_cache.insert((p.id, k), v);
+        }
+    }
     let items: Vec<Value> = REGISTRY
         .iter()
         .map(|p| {
@@ -861,7 +887,7 @@ async fn list() -> Response {
             let key_status: Vec<Value> = keys
                 .iter()
                 .map(|k| {
-                    let v = resolve_cred(&file_env, p.category, k);
+                    let v = cred_cache.get(&(p.id, *k)).cloned().flatten();
                     json!({
                         "name": k,
                         "set": v.is_some(),
@@ -1314,6 +1340,7 @@ async fn set_credentials(Path(id): Path<String>, Json(body): Json<Value>) -> Res
 /// the right profile, and it names the token file if the userinfo lookup
 /// cannot). For ApiKey providers there is nothing to authorize.
 async fn begin_auth(
+    State(state): State<AppState>,
     Extension(ctx): Extension<Arc<ConnectorsCtx>>,
     Path(id): Path<String>,
     Query(q): Query<std::collections::HashMap<String, String>>,
@@ -1346,9 +1373,9 @@ async fn begin_auth(
             base_url_env,
         } => {
             let (Some(base_url), Some(username), Some(password)) = (
-                resolve_cred_in(&ctx.home, &file_env, p.category, base_url_env),
-                resolve_cred_in(&ctx.home, &file_env, p.category, username_env),
-                resolve_cred_in(&ctx.home, &file_env, p.category, password_env),
+                resolve_cred_in(&ctx.home, &file_env, p.category, base_url_env, &state.secrets).await,
+                resolve_cred_in(&ctx.home, &file_env, p.category, username_env, &state.secrets).await,
+                resolve_cred_in(&ctx.home, &file_env, p.category, password_env, &state.secrets).await,
             ) else {
                 return (
                     StatusCode::CONFLICT,
@@ -1416,7 +1443,8 @@ async fn begin_auth(
                 )
                     .into_response();
             }
-            let Some(client_id) = resolve_cred_in(&ctx.home, &file_env, p.category, client_id_env)
+            let Some(client_id) =
+                resolve_cred_in(&ctx.home, &file_env, p.category, client_id_env, &state.secrets).await
             else {
                 return (
                     StatusCode::CONFLICT,
@@ -1605,6 +1633,7 @@ fn cb_page(status: StatusCode, body: String) -> Response {
 /// legacy shape, so ONE approval also repairs the email subsystem. Every
 /// worker then mints from the stored grant; nobody re-authorizes.
 async fn callback(
+    State(app_state): State<AppState>,
     Extension(ctx): Extension<Arc<ConnectorsCtx>>,
     Path(url_family): Path<String>,
     Query(p): Query<CallbackParams>,
@@ -1616,8 +1645,15 @@ async fn callback(
     if !error.is_empty() {
         tracing::warn!("connector_oauth_callback: {} answered error={}", url_family, error);
         if error.contains("redirect_uri_mismatch") && url_family == "google" {
-            let cid = resolve_cred_in(&ctx.home, &file_env, "Google", "GOOGLE_OAUTH_CLIENT_ID")
-                .unwrap_or_default();
+            let cid = resolve_cred_in(
+                &ctx.home,
+                &file_env,
+                "Google",
+                "GOOGLE_OAUTH_CLIENT_ID",
+                &app_state.secrets,
+            )
+            .await
+            .unwrap_or_default();
             let uri = google_redirect_uri();
             let pre = super::gmail_auth::oauth_prerequisite(&cid, &uri);
             return cb_page(
@@ -1655,7 +1691,7 @@ async fn callback(
             ),
         );
     }
-    complete_exchange(&ctx, family, code, hint_account, verifier).await
+    complete_exchange(&ctx, family, code, hint_account, verifier, &app_state.secrets).await
 }
 
 /// Called by the gmail callback when a state it does not own arrives: if the
@@ -1670,6 +1706,7 @@ pub(crate) async fn delegate_gmail_callback(
     home: &std::path::Path,
     state: &str,
     code: &str,
+    secrets: &SecretStore,
 ) -> Option<Response> {
     let (family, hint_account, verifier) = pending_take(home, state)?;
     if family != "google" {
@@ -1685,7 +1722,7 @@ pub(crate) async fn delegate_gmail_callback(
         ));
     }
     let ctx = ConnectorsCtx { http, home: home.to_path_buf() };
-    Some(complete_exchange(&ctx, family, code.to_string(), hint_account, verifier).await)
+    Some(complete_exchange(&ctx, family, code.to_string(), hint_account, verifier, secrets).await)
 }
 
 /// The code→token exchange + store write shared by BOTH entry points: the
@@ -1697,6 +1734,7 @@ async fn complete_exchange(
     code: String,
     hint_account: String,
     verifier: Option<String>,
+    secrets: &SecretStore,
 ) -> Response {
     let file_env = parse_env_file(&ctx.home.join("server.env"));
     let category = if family == "google" { "Google" } else { "Chat" };
@@ -1706,8 +1744,8 @@ async fn complete_exchange(
         ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
     };
     let (Some(client_id), Some(client_secret)) = (
-        resolve_cred_in(&ctx.home, &file_env, category, id_key),
-        resolve_cred_in(&ctx.home, &file_env, category, secret_key),
+        resolve_cred_in(&ctx.home, &file_env, category, id_key, secrets).await,
+        resolve_cred_in(&ctx.home, &file_env, category, secret_key, secrets).await,
     ) else {
         return cb_page(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -3236,6 +3274,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&dir.path().join("c.db")).unwrap();
         let state = AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store: Arc::new(store),
             started: std::time::Instant::now(),
             build_hash: "test".into(),
@@ -3464,6 +3503,7 @@ mod tests {
         let dir2 = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&dir2.path().join("c.db")).unwrap();
         let gstate = AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store: Arc::new(store),
             started: std::time::Instant::now(),
             build_hash: "test".into(),

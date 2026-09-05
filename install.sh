@@ -310,6 +310,30 @@ if [[ -f "$SCRIPT_DIR/scripts/hooks/hook-report.sh" ]]; then
   fi
 fi
 
+# ── 4b. Secrets key (age) ────────────────────────────────────────────────────
+# Review @esteininger, PR #163, 2026-08-28: encrypt_and_persist() used to
+# encrypt every secret to ONE hardcoded age public key baked into the
+# binary, with the age_key_path parameter that looks like it configures
+# the recipient sitting there unused. Combined with secrets/*.age being
+# un-ignored (committed) and this repo being public, that meant "every
+# credential this server ever writes is encrypted to a key whose private
+# half lives on one machine, published as ciphertext." persist.rs now
+# derives the recipient FROM this identity file (via `age-keygen -y`)
+# instead — which means a fresh install with no key would previously have
+# had no path to get one. This generates one if it's missing.
+AGE_KEY_PATH="${AMUX_AGE_KEY_PATH:-$HOME/.config/sops/age/keys.txt}"
+if [[ -f "$AGE_KEY_PATH" ]]; then
+  say "age key: $AGE_KEY_PATH (existing, untouched)"
+elif command -v age-keygen >/dev/null 2>&1; then
+  mkdir -p "$(dirname "$AGE_KEY_PATH")"
+  age-keygen -o "$AGE_KEY_PATH" 2>/dev/null || die "age-keygen failed to write $AGE_KEY_PATH"
+  chmod 600 "$AGE_KEY_PATH"
+  say "age key: generated $AGE_KEY_PATH (600) — this machine's secrets/amux-secrets.yaml is now encrypted to it"
+else
+  warn "age-keygen not found — secrets encryption will fail until one exists at $AGE_KEY_PATH"
+  warn "  install age (apt install age / brew install age), then: age-keygen -o $AGE_KEY_PATH"
+fi
+
 # ── 5. Service ──────────────────────────────────────────────────────────────
 if [[ "$OS" == "Linux" ]] && command -v systemctl &>/dev/null; then
   # envsubst ships in gettext-base (Debian/Ubuntu) / gettext (Fedora), not

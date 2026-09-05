@@ -23,9 +23,9 @@ requires and where to get it.
 
 ## Phase A — shadow (current state)
 
-Rust runs on **8823** against the SAME DB file (WAL readers coexist). The
+Rust runs on **8824** against the SAME DB file (WAL readers coexist). The
 Python server owns all writes that matter operationally; the Rust server's
-write surface is exercised by its own tests and by anyone pointed at 8823.
+write surface is exercised by its own tests and by anyone pointed at 8824.
 
 - Scheduler: Rust is in SHADOW mode (fires nothing; journals
   `schedule_shadow` events). Compare against Python's `schedule_runs`:
@@ -37,7 +37,7 @@ write surface is exercised by its own tests and by anyone pointed at 8823.
   touch the Python plist):
   ```bash
   # plist ProgramArguments: /path/to/target/release/amux-server
-  # EnvironmentVariables: AMUX_RS_PORT=8823
+  # EnvironmentVariables: AMUX_RS_PORT=8824
   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.amux.server-rs.plist
   ```
 
@@ -48,7 +48,7 @@ Exit criteria for A: 7 consecutive days of (1) shadow-scheduler agreement,
 
 1. Freeze: announce on the board; no deploys during the swap window.
 2. Regenerate both standing evidence rows above. Red = stop.
-3. Swap ports: Python plist gets `AMUX_PORT=8823` (its fallback home), Rust
+3. Swap ports: Python plist gets `AMUX_PORT=8824` (its fallback home), Rust
    plist gets `AMUX_RS_PORT=8822`. `launchctl kickstart -k` both.
 4. Smoke, in order (each can fail; stop on first red):
    ```bash
@@ -79,7 +79,7 @@ moving, board writes from real sessions landing (ask one session to run
 # migrations mean the Python server reads the same file it always did
 # (proven each rehearsal run, step 5).
 launchctl kickstart -k gui/$(id -u)/com.amux.server      # Python back on 8822
-launchctl kickstart -k gui/$(id -u)/com.amux.server-rs   # Rust back on 8823
+launchctl kickstart -k gui/$(id -u)/com.amux.server-rs   # Rust back on 8824
 ```
 Post-rollback: file the failure as a board card with the exact smoke line
 that went red. The rehearsal + baseline must be re-run after the fix.

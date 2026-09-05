@@ -598,6 +598,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(&dir.path().join("amux-test.db")).unwrap());
         let state = AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store: store.clone(),
             started: std::time::Instant::now(),
             build_hash: "test".into(),

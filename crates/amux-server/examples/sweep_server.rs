@@ -81,6 +81,7 @@ async fn main() {
 
     let store = Arc::new(Store::open(&canon).expect("open store"));
     let state = AppState {
+        secrets: std::sync::Arc::new(amux_server::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
         store,
         started: Instant::now(),
         build_hash: amux_server::build_hash(),

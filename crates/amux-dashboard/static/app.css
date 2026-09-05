@@ -3039,7 +3039,13 @@
        --tc-max-h is set from the live anchor by _capTabCustomizerHeight. The
        60vh fallback is for the no-JS path only and is NOT the fix: from that
        anchor it lands at 822, still 22px over, which is the number the e2e run
-       reported. */
+       reported.
+
+       Supersedes a fixed `calc(100vh - 200px)` this branch (central-secrets-
+       sops, hitting the same clip via its own 21st tab) had added independently
+       — that was a viewport-relative guess tuned to one fixture size; this is
+       measured from the real anchor and covers every tab count including the
+       22 this merge now has (main's 'email' tab + this branch's 'secrets'). */
     max-height: var(--tc-max-h, 60vh); overflow-y: auto; overscroll-behavior: contain;
   }
   #peek-tab-customizer-menu { position: fixed; z-index: 300; }

@@ -10037,6 +10037,7 @@ mod tests {
         let store = Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
         (
             AppState {
+                secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
                 store,
                 started: std::time::Instant::now(),
                 build_hash: "test".into(),
@@ -10435,6 +10436,7 @@ mod tests {
         // what is on disk — which is the whole question.
         *last_report_cell().write().unwrap() = None;
         let restarted = AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store: st.store.clone(),
             started: std::time::Instant::now(),
             build_hash: "test-after-restart".into(),
@@ -13377,6 +13379,7 @@ mod tests {
         // A RESTART: new AppState over the same DB, in-memory report cleared.
         *last_report_cell().write().unwrap() = None;
         let restarted = AppState {
+            secrets: std::sync::Arc::new(crate::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
             store: st.store.clone(),
             started: std::time::Instant::now(),
             build_hash: "after-restart".into(),

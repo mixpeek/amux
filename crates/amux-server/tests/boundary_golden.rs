@@ -149,6 +149,7 @@ async fn native_output_matches_recorded_python_fixtures() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("t.db")).unwrap();
     let app = router(AppState {
+        secrets: std::sync::Arc::new(amux_server::secrets::SecretStore::new(std::path::PathBuf::new(), std::path::PathBuf::new())),
         store: std::sync::Arc::new(store),
         started: std::time::Instant::now(),
         build_hash: "test".into(),

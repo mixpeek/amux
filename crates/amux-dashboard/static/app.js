@@ -8898,7 +8898,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.812';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.813';   // bump together with the sw.js CACHE version
 
 // ── No silent failures (Ethan, 2026-08-09: "make sure every action has some
 // kind of response in the ui — i just deleted a worker and nothing happened").
@@ -21597,6 +21597,10 @@ function switchView(view) {
   // the three lists. A structure where forgetting one of three edits produces a
   // silently blank screen is the bug, not the omission. Triples cannot
   // misalign — a new view is one row or it is absent, never half-present.
+  //
+  // 'secrets' merged in alongside 'connectors' (AMUX-3969, feature/central-
+  // secrets-sops) — both used 'flex' in the pre-refactor parallel-array
+  // version this replaced.
   const _svViews = [
     ['session', 'sessions', ''], ['board', 'board', ''], ['groups', 'groups', ''],
     ['calendar', 'calendar', 'flex'], ['scheduler', 'scheduler', ''],
@@ -21606,6 +21610,7 @@ function switchView(view) {
     ['cost', 'cost', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', ''],
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'],
+    ['secrets', 'secrets', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -21637,6 +21642,7 @@ function switchView(view) {
   if (view === 'mdai') _mdaiTabLoad();
   if (view === 'email') _emailLoad();
   if (view === 'connectors') _connectorsTabLoad();
+  if (view === 'secrets') _secretsTabLoad();
   if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
   if (view !== 'files') {
     try { if (location.hash.startsWith('#path=')) history.replaceState({}, '', location.pathname); } catch(e) {}
@@ -37388,3 +37394,111 @@ function _dpInit() {
 }
 if (document.body) _dpInit();
 else document.addEventListener('DOMContentLoaded', _dpInit);
+
+// ── Secrets Tab ──────────────────────────────────────────────────────────────
+async function _secretsTabLoad() {
+  const container = document.getElementById('secrets-container');
+  if (!container) return;
+
+  try {
+    container.innerHTML = '<div style="padding:20px; text-align:center;">Loading secrets...</div>';
+
+    const response = await fetch(API + '/api/secrets', {
+      headers: _authHeaders({})
+    });
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const data = await response.json();
+    const secrets = data.secrets || [];
+
+    // Build toolbar with refresh button
+    let html = '<div style="margin-bottom:20px; display:flex; gap:8px;">';
+    html += '<button onclick="_secretsRefresh()" style="padding:10px 16px; background:var(--accent); color:#fff; border:none; border-radius:4px; cursor:pointer; font-weight:bold; box-shadow:0 2px 4px rgba(0,0,0,0.2); transition:opacity 0.2s;">🔄 Refresh Secrets</button>';
+    html += '</div>';
+
+    if (!secrets.length) {
+      html += '<div style="padding:20px; color:var(--dim);">No secrets configured yet.</div>';
+      container.innerHTML = html;
+      return;
+    }
+
+    html += '<div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:15px;">';
+
+    for (const path of secrets) {
+      html += `<div style="border:1px solid var(--border); border-radius:8px; padding:15px; background:var(--card);">
+        <div style="font-family:monospace; font-size:13px; margin-bottom:10px; word-break:break-all; color:var(--accent);">${esc(path)}</div>
+        <div style="display:flex; gap:8px;">
+          <button onclick="_secretsView('${esc(path)}')" style="flex:1; padding:8px; border:1px solid var(--border); border-radius:4px; background:var(--bg); cursor:pointer; font-size:12px;">View</button>
+          <button onclick="_secretsCopy('${esc(path)}')" style="flex:1; padding:8px; border:1px solid var(--border); border-radius:4px; background:var(--bg); cursor:pointer; font-size:12px;">Copy</button>
+        </div>
+      </div>`;
+    }
+
+    html += '</div>';
+    container.innerHTML = html;
+  } catch (e) {
+    container.innerHTML = `<div style="padding:20px; color:#f85149;">Error loading secrets: ${esc(e.message)}</div>`;
+  }
+}
+
+async function _secretsRefresh() {
+  try {
+    const response = await fetch(API + '/api/secrets/reload', {
+      method: 'POST',
+      headers: _authHeaders({})
+    });
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const data = await response.json();
+
+    if (data.ok) {
+      showToast('✓ Secrets reloaded');
+      _secretsTabLoad(); // Reload the list
+    } else {
+      showToast(`✗ Reload failed: ${data.error}`);
+    }
+  } catch (e) {
+    showToast(`✗ Error: ${e.message}`);
+  }
+}
+
+async function _secretsView(path) {
+  try {
+    const response = await fetch(API + `/api/secrets/${encodeURIComponent(path)}`, {
+      headers: _authHeaders({})
+    });
+    
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    
+    const data = await response.json();
+    const value = data.value || '(empty)';
+    
+    alert(`Secret: ${path}\n\n${value}`);
+  } catch (e) {
+    showToast(`Error reading secret: ${e.message}`);
+  }
+}
+
+async function _secretsCopy(path) {
+  try {
+    const response = await fetch(API + `/api/secrets/${encodeURIComponent(path)}`, {
+      headers: _authHeaders({})
+    });
+    
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    
+    const data = await response.json();
+    const value = data.value || '';
+    
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(value);
+      showToast(`✓ Copied to clipboard`);
+    } else {
+      alert(`Value:\n\n${value}`);
+    }
+  } catch (e) {
+    showToast(`Error copying secret: ${e.message}`);
+  }
+}
