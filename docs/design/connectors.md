@@ -13,6 +13,51 @@ Status: proposed (AMUX-3101). Owner: `amux`. Captured from Ethan's 2026-08-14 vi
 > `~/.amux/gmail-tokens/` so the email subsystem is repaired by the same approval.
 > Token rot auto-files one board card per account (autofix `connector-auth` detector).
 
+> **2026-09-04 update — Slack connector requirement gap, found before any code
+> landed:** the real driving use case for Slack (Ivo, `customers` lane) is
+> **posting as the authorizing human user's own Slack identity**, inside a
+> **customer's** own workspace (IWF's `iwf-ops.slack.com`, for ongoing managed-
+> services communication) — not a bot/app identity in an internal workspace.
+> This changes AMUX-3104's shape in two ways the rest of this doc doesn't yet
+> cover, verified directly against the checked-out code:
+> - **Bot scopes vs. user scopes.** The current `slack` registry row
+>   (`connectors.rs`) requests only bot scopes (`channels:read chat:write
+>   channels:history`) via `scope=` — confirmed by the code's own comment,
+>   "Slack bot tokens do not expire." A message sent with that token appears
+>   from an "amux" app, never from the human who authorized it. Posting as the
+>   user requires Slack's separate `user_scope=` parameter on the same OAuth
+>   v2 authorize call (e.g. `chat:write`, plus whichever read scopes are
+>   wanted — `channels:history`, `channels:read`, `groups:read`,
+>   `groups:history`, `im:read`, `im:history`), and the callback capturing
+>   `authed_user.access_token` (the `xoxp-...` user token) from the OAuth
+>   exchange, stored distinctly from any bot token. Nothing below in "Data
+>   model" or the provider registry currently allows for a second, per-user
+>   token on one connector row — that shape needs adding, not assumed away.
+> - **Write-safety is deny-list-only today; this needs an allow-list.** "Write
+>   safety" below (AMUX-3271) says a connector may read broadly but must
+>   **never** write to a customer channel — right as a *default*, but IWF's
+>   Slack is a legitimate, deliberate exception to that default: Ivo owns the
+>   IWF relationship and the whole point is posting there as himself. The
+>   `connectors` scope value's `deny_channels`/`deny_recipients` fields have no
+>   corresponding *allow* concept for "this one customer workspace, tied to
+>   this one owned relationship, is permitted" — that needs to exist so this
+>   ships as a scoped, explicit exception (e.g. an allow-list entry keyed to
+>   `iwf-ops.slack.com` + the IWF CRM/customer record) rather than either (a)
+>   silently blocked by the existing deny-customer-channel default, or (b) a
+>   blanket loosening of that default for Slack generally.
+> - **The send/read verbs don't exist yet at all**, independent of the above —
+>   grepped the whole `amux-server` crate for `chat.postMessage`, no hits.
+>   Today's Slack connector is OAuth handshake (`auth`/`callback`) plus a
+>   health canary (`auth.test`) only; no MCP tool actually posts or reads a
+>   message. This was already implicitly true from build-order items 6
+>   ("Per-connector clients") and 5 ("Write-safety guard") not being done for
+>   Slack, but is worth stating plainly so it isn't assumed half-built.
+>
+> None of this is a reason to hold AMUX-3104 — it's scope info so whoever
+> picks it up builds the user-identity version with an explicit allow-list
+> from the start, instead of the bot-identity version this doc otherwise
+> implies.
+
 A "connector" is amux's word for a configured third-party integration: Gmail, Slack,
 Google Drive, a Mixpeek API, an MCP tool server. Today these are scattered across
 bespoke code paths. This doc defines one coherent surface for them, built entirely from
@@ -27,7 +72,12 @@ primitives amux already has, and names the one gap that has to be closed to make
 - **AMUX-3103**: Gmail connector, multiple accounts scoped to different workers
   (`info@`/`ethan@mixpeek.com` for mixpeek workers, personal for refresh.house), with
   unhappy-path validation.
-- **AMUX-3104**: Slack connector, OAuth via the browser.
+- **AMUX-3104**: Slack connector, OAuth via the browser. **Scope note
+  (2026-09-04):** must support posting as the authorizing human user (Slack
+  user-token scopes, `authed_user.access_token`), not just a bot identity —
+  see the dated update above. First real use case writes into a customer
+  workspace (IWF's `iwf-ops.slack.com`) as a deliberate, allow-listed
+  exception to the write-safety default below, not the default itself.
 
 ## The thesis: a connector is a composition of four primitives, not a new subsystem
 
@@ -198,6 +248,13 @@ Design, in primitives (this is scope + a guarded verb, not a new subsystem):
   `deny_recipients` fields above. It resolves global -> group -> worker like every other
   scope layer, so "read-only for this whole group, one worker may send from `info@`" is
   expressible without special-casing.
+- **Gap (2026-09-04):** these fields are deny-only — there is no `allow_channels`/
+  `allow_recipients` counterpart for a scoped, explicit exception to a broader deny
+  default. Slack's first real use case (AMUX-3104, see the dated update above) needs
+  exactly that: IWF's `iwf-ops.slack.com` permitted while every other customer channel
+  stays denied. Add the allow-list fields alongside the deny ones rather than working
+  around their absence with a narrower deny-list-of-everything-else, which would silently
+  stop denying new customer channels added later.
 - **Fail closed.** A connector with no explicit `write` is `read_only`. A write verb whose
   target matches a `deny_*` rule, or that cannot be evaluated against the policy, is
   refused before the provider call, never after.
@@ -232,7 +289,17 @@ tightens the guard automatically.
 6. **Gmail on the new broker**: multi-account, per-worker scope, unhappy-path eval
    (AMUX-3103), read + guarded send.
 7. **Connectors tab**; remove the MCP tab (AMUX-3105, AMUX-3102).
-8. **Slack connector** (AMUX-3104), read + guarded post (never a customer channel).
+8. **Slack connector** (AMUX-3104), read + guarded post. **Not** "never a
+   customer channel" unconditionally — see the 2026-09-04 update above: the
+   first real use case (Ivo, `customers` lane) *is* a customer workspace
+   (IWF's `iwf-ops.slack.com`), posted as the human user via Slack
+   `user_scope`, permitted through an explicit allow-list entry rather than
+   the deny-customer-channel default. Requires: (a) OAuth broker requesting
+   `user_scope=` alongside/instead of bot `scope=` and storing
+   `authed_user.access_token`; (b) the send/read MCP tools, which don't exist
+   yet for Slack at all; (c) the allow-list mechanism on the `connectors`
+   scope value, which doesn't exist yet either (today only `deny_channels`/
+   `deny_recipients`).
 9. **Nango re-evaluation gate**: only if provider count crosses ~5.
 
 ## Open questions for Ethan
