@@ -35,10 +35,25 @@ PASS=0; FAIL=0
 ok()  { echo "  ok   $1"; PASS=$((PASS+1)); }
 bad() { echo "  FAIL $1"; [ -n "${2:-}" ] && echo "       $2"; FAIL=$((FAIL+1)); }
 
-# The one line whose removal reproduces AMUX-3145. Unique in the file: it is the only
-# AMUX_API declaration resolved via $(cmd_url) (the others use a literal default), so
-# deleting it leaves the use at amux:650 out of scope without touching any other path.
+# The one line whose removal reproduces AMUX-3145: the only AMUX_API declaration
+# resolved via $(cmd_url) (the others use a literal default), so deleting it leaves
+# the use at amux:650 out of scope without touching any other path.
+#
+# NOT necessarily unique in the whole FILE, though — AF-496 (2026-09-04) added
+# cmd_browser, which legitimately needs the exact same resolution for the exact same
+# reason and copied the line verbatim. That is a second correct use, not a second bug;
+# the thing that has to stay unique is cmd_start's OWN declaration, so the specimen is
+# now matched within cmd_start's function body specifically (see fn_body below),
+# immune to any other function later reusing the identical line.
 SPECIMEN='local AMUX_API="${AMUX_API:-$(cmd_url)}"'
+
+# Extract exactly cmd_start's body — from its own line to the next line that is a
+# bare `}` at column 0 (this file's own convention for closing a top-level function).
+# grep/sed against the WHOLE FILE would count or delete every function's copy of the
+# specimen, not just this one's.
+fn_body() {
+  awk '/^cmd_start\(\) \{/ { on=1 } on { print } on && /^}$/ { exit }' "$1"
+}
 
 # ── Isolated fleet ───────────────────────────────────────────────────────────
 # CC_HOME is overridable (amux:35), so the worker roster is a throwaway dir. A stub
@@ -90,19 +105,29 @@ else
 fi
 
 # ── 2. self-check / negative control: the AMUX-3145 specimen must be caught ────
-# Build the broken copy by deleting cmd_start's AMUX_API declaration.
+# Build the broken copy by deleting cmd_start's AMUX_API declaration — and ONLY
+# cmd_start's: a whole-file `grep -Fv` would also strip cmd_browser's own, unrelated
+# copy of the identical line (AF-496), which is real code this test has no business
+# touching, not a second specimen.
 BROKEN="$WORK/amux-broken"
-grep -Fv "$SPECIMEN" "$AMUX_BIN" > "$BROKEN"
+awk -v spec="$SPECIMEN" '
+  /^cmd_start\(\) \{/ { on=1 }
+  on==1 && index($0, spec) > 0 { next }
+  { print }
+  on==1 && /^}$/ { on=0 }
+' "$AMUX_BIN" > "$BROKEN"
 # Prove the fixture is ACTUALLY broken before trusting its failure. A self-check that
 # silently no-ops (the specimen line drifted, so nothing was deleted) is the exact
-# theatre rule 7 warns about: build a broken fixture, verify it is broken.
-n_orig=$(grep -Fc "$SPECIMEN" "$AMUX_BIN")
-n_brk=$(grep -Fc "$SPECIMEN" "$BROKEN" || true)
+# theatre rule 7 warns about: build a broken fixture, verify it is broken. Counted
+# within cmd_start's OWN body (fn_body), not the whole file — the whole-file count
+# stopped being meaningful the moment a second, legitimate use existed elsewhere.
+n_orig=$(fn_body "$AMUX_BIN" | grep -Fc "$SPECIMEN")
+n_brk=$(fn_body "$BROKEN" | grep -Fc "$SPECIMEN" || true)
 if [ "$n_orig" -eq 1 ] && [ "$n_brk" -eq 0 ]; then
   ok "broken fixture built: cmd_start AMUX_API declaration removed (was $n_orig, now $n_brk)"
 else
   bad "could not build the broken fixture; has the specimen line drifted?" \
-      "expected exactly 1 occurrence in $AMUX_BIN and 0 in the copy; got $n_orig and $n_brk"
+      "expected exactly 1 occurrence in cmd_start and 0 in the copy; got $n_orig and $n_brk"
 fi
 run_launch "$BROKEN"; RC=$?; OUT=$(cat "$WORK/out")
 if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q "unbound variable"; then
